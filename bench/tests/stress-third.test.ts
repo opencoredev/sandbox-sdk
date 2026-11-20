@@ -15,9 +15,10 @@ import { cohortBoundMs } from "../src/scenarios.js";
 import { siteData, siteDataCommand } from "../src/site-data.js";
 import { heartbeatWindow } from "../src/survival.js";
 import { parseV2 } from "../src/v2-config.js";
-import type { Sample } from "../src/v2-model.js";
 import { writeV2 } from "../src/v2-report.js";
 import { runV2 } from "../src/v2-runner.js";
+
+type Row = MergeSource["samples"][number];
 
 const bootId = "4f9c1d1e-8b2a-4c1e-9d3f-0a1b2c3d4e5f";
 
@@ -96,6 +97,10 @@ describe("P1.1: reported spend covers every sandbox until it is confirmed gone",
     let allocatedAt = 0;
     let deletedAt: number | null = null;
     let pricedBy = 0;
+    // When each delete attempt's ownership check listed (after allocation), and when the run's
+    // final sweep first listed by label, both relative to the allocation.
+    const ownershipChecks: number[] = [];
+    let sweepAt: number | null = null;
 
     provider.register("cat", async ({ stdout }) => {
       if (++heartbeats === 2) await sleep(75);
@@ -115,6 +120,16 @@ describe("P1.1: reported spend covers every sandbox until it is confirmed gone",
     const slow = () => (input.kind === "survival" ? heartbeats > 1 : allocatedAt > 0);
 
     provider.list = async (...args) => {
+      const keys = Object.keys(args[0] ?? {})
+        .sort()
+        .join(",");
+
+      if (allocatedAt > 0 && keys === "sandbox-bench-run")
+        sweepAt ??= performance.now() - allocatedAt;
+
+      if (allocatedAt > 0 && sweepAt === null && keys !== "sandbox-bench-run")
+        ownershipChecks.push(performance.now() - allocatedAt);
+
       if (slow()) await sleep(input.slowMs);
 
       return list(...args);
@@ -165,7 +180,17 @@ describe("P1.1: reported spend covers every sandbox until it is confirmed gone",
 
       const live = (await list({})).map((s) => s.id);
 
-      return { report, live, deletes, allocatedAt, deletedAt, pricedBy, max };
+      return {
+        report,
+        live,
+        deletes,
+        allocatedAt,
+        deletedAt,
+        pricedBy,
+        max,
+        bound,
+        ownershipChecks,
+      };
     } finally {
       for (const s of await list({})) await destroy(s.id);
     }
@@ -216,15 +241,24 @@ describe("P1.1: reported spend covers every sandbox until it is confirmed gone",
     expect(budget?.stop).toMatch(/over the .*cap/i);
   }, 30_000);
 
-  it("prices a late create's cleanup, which ends by the reserve inside its iteration", async () => {
+  it("ends a late create's own cleanup by its reserve and prices the sweep past it", async () => {
+    // The re-check's case: the create returns after its 250 ms deadline, checks and deletes take
+    // 236 ms, and the first two deletes fail.
+    const timeout = 250;
+
     const run = await overrun({
-      // Boat bills whole seconds: these timings put the third delete past the bound's second.
       kind: "cpu-burst",
-      timeout: 280,
-      createDelayMs: 340,
-      slowMs: 300,
+      timeout,
+      createDelayMs: 310,
+      slowMs: 236,
       failures: 2,
     });
+
+    // The first check is the create's own; every delete attempt in the iteration starts while a
+    // whole attempt (check and delete) still fits in the reserve.
+    expect(run.ownershipChecks.length).toBeGreaterThan(1);
+
+    for (const at of run.ownershipChecks) expect(at).toBeLessThanOrEqual(run.bound - 2 * timeout);
 
     const budget = run.report.budgets.boat;
     const end = run.deletedAt ?? run.pricedBy;
@@ -234,9 +268,25 @@ describe("P1.1: reported spend covers every sandbox until it is confirmed gone",
     );
 
     for (const id of run.live) expect(budget?.openLiabilities?.map((l) => l.id)).toContain(id);
+  }, 30_000);
 
-    // The late create's own cleanup ended by its reserve, so its iteration's work settled.
-    expect(run.report.cleanup.map((c) => c.error ?? "").join("\n")).not.toMatch(/did not settle/);
+  it("lists a late create whose ownership cannot be checked as an open liability", async () => {
+    // Listings take longer than the step timeout, so ownership is never verified and no delete
+    // is attempted: the sandbox may be live at return, and is reported so.
+    const run = await overrun({
+      kind: "cpu-burst",
+      timeout: 280,
+      createDelayMs: 340,
+      slowMs: 300,
+      failures: 2,
+    });
+
+    const budget = run.report.budgets.boat;
+
+    for (const id of run.live) expect(budget?.openLiabilities?.map((l) => l.id)).toContain(id);
+    expect(budget?.estimatedUSD ?? 0).toBeGreaterThanOrEqual(
+      boatCost(run.pricedBy - run.allocatedAt) - slack,
+    );
   }, 30_000);
 });
 
@@ -309,12 +359,17 @@ describe("P1.2: a guest clock step excludes its CPU cohort", () => {
 });
 
 /** Build a two-member cpu-burst cohort's rows from a real source's cold row. */
-function cpuCohort(base: Sample, drifts: readonly (number | undefined)[]) {
+function cpuCohort(base: Row, drifts: readonly (number | undefined)[]) {
   const at = 1_795_146_433_000;
   const rate = 28_000_000;
   const work = { segments: 4, steps: 10_000_000 };
 
-  const row = (scenario: string, iteration: number, value: number, details: unknown): Sample => ({
+  const row = (
+    scenario: string,
+    iteration: number,
+    value: number,
+    details: Row["details"],
+  ): Row => ({
     ...structuredClone(base),
     scenario,
     iteration,
@@ -332,19 +387,21 @@ function cpuCohort(base: Sample, drifts: readonly (number | undefined)[]) {
       clockUncertaintyMs: 5,
       cpus: { visible: 2, affinity: 2, quota: null },
       python: "3.12",
-      ...(drift === undefined ? {} : { clockDriftMs: drift }),
     };
+
+    // A member from before drift was recorded has no clockDriftMs at all.
+    const recorded = drift === undefined ? shared : { ...shared, clockDriftMs: drift };
 
     return [
       row("cpu-burst-2/cold", iteration, 100, null),
       row("cpu-burst-2/cpu", iteration, 2900, null),
       row("cpu-burst-2/cpu-single", iteration, rate, {
-        ...shared,
+        ...recorded,
         workers: 1,
         guest: [at, at + 1400],
       }),
       row("cpu-burst-2/cpu-all", iteration, rate * 2, {
-        ...shared,
+        ...recorded,
         workers: 2,
         guest: [at + 1400, at + 2900],
       }),
@@ -432,7 +489,7 @@ describe("P1.2 and P1.3: publication recomputes from raw evidence", () => {
     .catchall(z.unknown());
 
   /** The survival export after `edit` rewrites the first member's window row. */
-  function survivalRow(edit: (details: z.infer<typeof windowDetails>, window: Sample) => void) {
+  function survivalRow(edit: (details: z.infer<typeof windowDetails>, window: Row) => void) {
     const samples = structuredClone(survival.samples);
     const window = samples.find((s) => s.scenario === "survival-2/window" && s.iteration === 0);
 

@@ -333,15 +333,22 @@ const clockResolutionMs = 2;
 export type Interval = readonly [number, number];
 
 /**
+ * The largest change in a guest clock's offset, between the reads before and after a probe run,
+ * that a cohort may show and still be published. A larger change means the guest clock stepped
+ * or drifted during the run: where its phases really fell on the host clock is unknown, so the
+ * cohort is excluded as clock-unstable rather than modelled.
+ */
+export const clockStepToleranceMs = 20;
+
+/**
  * Run a staged probe. `returnedAt` (`performance.now()`) is taken as soon as the exec returns,
  * before any checks or report writes; `guest` holds each phase's interval on the host clock,
  * placed with the offset read at staging.
  *
- * The guest clock is read again after the run, so a drift or step since staging is measured,
- * not assumed away. Under one step or a steady drift, the offset during the run lies between
- * the two reads (each within its own uncertainty), and the run's phases must also fall inside
- * the exec the host timed. `clockUncertaintyMs` is the largest error the staged offset can have
- * under both constraints; the run is refused when they cannot both hold.
+ * The guest clock is read again after the run. `clockDriftMs` is the offset change between the
+ * two reads; publication refuses a cohort where it exceeds `clockStepToleranceMs`.
+ * `clockUncertaintyMs` bounds the staged offset's error during the run by that change plus both
+ * reads' own uncertainty, and the run is refused when its phases fall outside the exec even then.
  */
 export async function runStagedCpuProbe(
   box: Sandbox,
@@ -367,24 +374,13 @@ export async function runStagedCpuProbe(
   const returnedEpoch = dispatchedEpoch + (returnedAt - dispatchedAt);
   const drift = after.offsetMs - staged.clockOffsetMs;
 
-  const readError = Math.max(staged.clockUncertaintyMs, after.uncertaintyMs) + clockResolutionMs;
-  // The staged offset's error during the run: between the two reads ...
-  const readsLow = Math.min(0, drift) - readError;
-  const readsHigh = Math.max(0, drift) + readError;
-  // ... and such that the phases, corrected by it, fall inside the exec (to the guest's resolution).
-  const low = Math.max(readsLow, guest.all[1] - returnedEpoch - clockResolutionMs);
-  const high = Math.min(readsHigh, guest.single[0] - dispatchedEpoch + clockResolutionMs);
+  const uncertainty =
+    Math.abs(drift) + staged.clockUncertaintyMs + after.uncertaintyMs + clockResolutionMs;
 
-  if (low > high)
+  if (guest.single[0] < dispatchedEpoch - uncertainty || guest.all[1] > returnedEpoch + uncertainty)
     throw new Error("CPU probe timing is inconsistent: guest phases fall outside the exec");
 
-  return {
-    result,
-    returnedAt,
-    guest,
-    clockUncertaintyMs: Math.max(Math.abs(low), Math.abs(high)),
-    clockDriftMs: drift,
-  };
+  return { result, returnedAt, guest, clockUncertaintyMs: uncertainty, clockDriftMs: drift };
 }
 
 /** A cohort's CPU phases count as run together when all members overlap this share of a phase. */

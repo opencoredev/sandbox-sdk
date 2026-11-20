@@ -178,8 +178,7 @@ describe("P1: cleanup stays inside the admitted reserve", () => {
 
     const left = await list({});
 
-    // The harness charged no more than the cap, and held the sandbox no longer than its bound.
-    expect(report.budgets.boat?.estimatedUSD ?? Infinity).toBeLessThanOrEqual(max);
+    // The iteration held the sandbox no longer than its bound.
     expect(
       report.samples.find((s) => s.scenario === "survival-1/sandbox-lifetime")?.durationMs,
     ).toBeLessThanOrEqual(bound);
@@ -193,6 +192,7 @@ describe("P1: cleanup stays inside the admitted reserve", () => {
       destroys,
       lifetimeMs: destroyedAt === null ? null : destroyedAt - allocatedAt,
       bound,
+      max,
     };
   }
 
@@ -203,6 +203,8 @@ describe("P1: cleanup stays inside the admitted reserve", () => {
     expect(member.destroys).toBe(3);
     expect(member.lifetimeMs).not.toBeNull();
     expect(member.lifetimeMs ?? Infinity).toBeLessThanOrEqual(member.bound);
+    // Deleted inside its reserve, the sandbox cost no more than the cap.
+    expect(member.report.budgets.boat?.estimatedUSD ?? Infinity).toBeLessThanOrEqual(member.max);
   }, 30_000);
 
   it("holds the re-check's slow transient failures inside the cap", async () => {
@@ -218,8 +220,11 @@ describe("P1: cleanup stays inside the admitted reserve", () => {
   it("stops retrying when the reserve runs out and leaves the sandbox for reap", async () => {
     const member = await cappedMember(Infinity);
 
+    // The final sweep's retries fail too: the sandbox stays journaled for reap, and is reported
+    // as still live rather than priced as if it were gone.
     expect(member.left).toHaveLength(1);
-    expect(member.report.cleanupReview?.map((r) => r.reason).join("\n")).toMatch(/reserve.*reap/i);
+    expect(member.report.cleanup[0]?.remaining).toEqual(member.left);
+    expect(member.report.budgets.boat?.openLiabilities?.map((l) => l.id)).toEqual(member.left);
     expect(await readFile(join(member.out, "ownership.json"), "utf8")).toContain(member.left[0]);
   }, 30_000);
 
@@ -451,6 +456,7 @@ describe("P2.4: stress failure classes", () => {
       {
         elapsedMs: 1,
         expected: heartbeats.length + 1,
+        heartbeatTimeoutMs: 1000,
         heartbeats,
         verdict: classifyHeartbeats(heartbeats, heartbeats.length + 1),
       },

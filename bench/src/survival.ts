@@ -10,11 +10,13 @@ import type { SurvivalPlan } from "./scenarios.js";
  */
 export const heartbeatCommand = "cat /proc/sys/kernel/random/boot_id";
 
+const bootIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** The heartbeat's reply as a boot ID, or an error: an empty or garbled reply is no answer. */
 export function parseBootId(output: string) {
   const bootId = output.trim();
 
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(bootId))
+  if (!bootIdPattern.test(bootId))
     throw new Error(`Heartbeat reply is not a boot ID: ${JSON.stringify(bootId.slice(0, 80))}`);
 
   return bootId.toLowerCase();
@@ -284,7 +286,11 @@ export async function heartbeatWindow(input: WindowInput) {
         input.track(input.heartbeat(AbortSignal.any([signal, stop]))),
       );
 
-      heartbeat = { kind: "ok", atMs, latencyMs: performance.now() - start - atMs, bootId };
+      const latencyMs = performance.now() - start - atMs;
+
+      // Judged by when the reply arrived: a deadline timer that fires late changes nothing.
+      if (latencyMs > callMs) throw new DeadlineError(`Heartbeat replied after ${callMs} ms`);
+      heartbeat = { kind: "ok", atMs, latencyMs, bootId };
     } catch (error) {
       if (stop.aborted) {
         stopped = true;
@@ -319,6 +325,8 @@ export async function heartbeatWindow(input: WindowInput) {
   return {
     heartbeats,
     expected: offsets.length,
+    /** Each heartbeat's deadline: a reply later than this is a miss. */
+    heartbeatTimeoutMs: callMs,
     elapsedMs: performance.now() - start,
     verdict: classifyHeartbeats(heartbeats, offsets.length, stopped),
   };
@@ -414,6 +422,7 @@ export function heartbeatDetails(result: WindowResult) {
         ? { ...verdict, evidence: compact(verdict.evidence) }
         : verdict,
     expected: result.expected,
+    heartbeatTimeoutMs: result.heartbeatTimeoutMs,
     ok: result.heartbeats.filter((h) => h.kind === "ok").length,
     missed: result.heartbeats.filter((h) => h.kind === "missed").length,
     skipped: result.heartbeats.filter((h) => h.kind === "skipped").length,
@@ -449,6 +458,7 @@ const compactSchema = z.discriminatedUnion("kind", [
 export const windowEvidenceSchema = z.object({
   plan: z.object({ windowMs: z.number().positive(), intervalMs: z.number().positive() }),
   verdict: z.object({ kind: z.enum(["survived", "died", "unresponsive", "interrupted"]) }),
+  heartbeatTimeoutMs: z.number().positive(),
   heartbeats: z.array(compactSchema),
 });
 
@@ -477,35 +487,90 @@ function expand(h: z.infer<typeof compactSchema>): Heartbeat {
   }
 }
 
+/** Why publication refuses a member's window evidence. */
+export type InvalidEvidence =
+  | "unreadable"
+  | "plan-mismatch"
+  | "off-slot"
+  | "late-reply"
+  | "bad-boot-id"
+  | "verdict-mismatch";
+
+/** Whose failure a decided window is, in the failure taxonomy's terms. */
+export type WindowFailure = "provider-operation" | "provider-account-limit";
+
+export type MemberEvidence =
+  | {
+      kind: "valid";
+      verdict: SurvivalVerdict["kind"];
+      /** Null for a survivor or an interrupted window. */
+      failure: WindowFailure | null;
+    }
+  | { kind: "invalid"; reason: InvalidEvidence };
+
 /**
- * A window row's verdict, recomputed from its recorded heartbeats and plan rather than trusted:
- * every heartbeat must sit on its scheduled slot (sent no earlier, and no later than the grace),
- * and the recomputed verdict must be the one the row recorded. Anything else is `invalid`.
+ * A member's verdict and failure class, recomputed from its raw heartbeat records alone; the
+ * row's stored outcome and failure class are never read. The window must have run the cohort's
+ * plan, every heartbeat must sit on its slot, every answer must be a boot ID received within the
+ * heartbeat deadline, and the verdict the row recorded must be the one the heartbeats give.
+ * Anything else is invalid evidence, left out of publication; so are details that do not parse
+ * as `windowEvidenceSchema` (`unreadable`), which the caller checks.
  */
-export function windowVerdict(
+export function memberEvidence(
   evidence: WindowEvidence,
-): { kind: "valid"; verdict: SurvivalVerdict["kind"] } | { kind: "invalid"; reason: string } {
-  const { plan, heartbeats } = evidence;
+  cohortPlan: SurvivalPlan | null,
+): MemberEvidence {
+  const { plan, heartbeats, heartbeatTimeoutMs, verdict: recorded } = evidence;
+
+  if (heartbeatTimeoutMs > plan.intervalMs) return { kind: "invalid", reason: "unreadable" };
+
+  if (
+    !cohortPlan ||
+    plan.windowMs !== cohortPlan.windowMs ||
+    plan.intervalMs !== cohortPlan.intervalMs
+  )
+    return { kind: "invalid", reason: "plan-mismatch" };
   const offsets = heartbeatOffsets(plan);
 
-  if (heartbeats.length > offsets.length)
-    return { kind: "invalid", reason: "more heartbeats than slots" };
+  if (heartbeats.length > offsets.length) return { kind: "invalid", reason: "off-slot" };
 
-  // Recorded times are rounded to the millisecond.
   for (const [index, h] of heartbeats.entries()) {
     const offset = offsets[index] ?? Infinity;
 
+    // Recorded times are rounded to the millisecond.
     if (h.atMs < offset - 1 || (h.kind !== "skipped" && h.atMs > offset + graceMs(plan) + 1))
-      return { kind: "invalid", reason: `heartbeat ${index} off its ${offset} ms slot` };
+      return { kind: "invalid", reason: "off-slot" };
+
+    if (h.kind !== "ok") continue;
+
+    if (!bootIdPattern.test(h.bootId)) return { kind: "invalid", reason: "bad-boot-id" };
+
+    if (h.latencyMs > heartbeatTimeoutMs) return { kind: "invalid", reason: "late-reply" };
   }
 
-  const verdict = classifyHeartbeats(heartbeats.map(expand), offsets.length).kind;
+  const verdict = classifyHeartbeats(heartbeats.map(expand), offsets.length);
 
-  if (verdict !== evidence.verdict.kind)
-    return {
-      kind: "invalid",
-      reason: `recorded ${evidence.verdict.kind}, evidence shows ${verdict}`,
-    };
+  if (verdict.kind !== recorded.kind) return { kind: "invalid", reason: "verdict-mismatch" };
 
-  return { kind: "valid", verdict };
+  switch (verdict.kind) {
+    case "survived":
+    case "interrupted":
+      return { kind: "valid", verdict: verdict.kind, failure: null };
+    case "died":
+      return { kind: "valid", verdict: verdict.kind, failure: "provider-operation" };
+    case "unresponsive":
+      return {
+        kind: "valid",
+        verdict: verdict.kind,
+        failure:
+          missKind(verdict.evidence.failure) === "quota"
+            ? "provider-account-limit"
+            : "provider-operation",
+      };
+    default: {
+      const exhaustive: never = verdict;
+
+      return exhaustive;
+    }
+  }
 }

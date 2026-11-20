@@ -684,6 +684,9 @@ export async function siteDataCommand(args: string[]) {
     },
   });
 
+  if (values["stress-report"] === "")
+    throw new Error("--stress-report needs a directory (a merge of stress runs)");
+
   if (values["no-stress"] === (values["stress-report"] !== undefined))
     throw new Error(
       "Pass exactly one of --stress-report DIR (a merge of stress runs) or --no-stress (publish an empty stress section)",

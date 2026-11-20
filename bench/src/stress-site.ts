@@ -8,9 +8,14 @@ import {
 import { parseCohortScenario } from "./scenarios.js";
 import { statistics } from "./stats.js";
 import { distribution } from "./v2-stats.js";
-import { throughputSpread } from "./cpu.js";
+import { clockStepToleranceMs, cpuOverlap, throughputSpread } from "./cpu.js";
 import { isStressRun, isStressSample, stressUnit } from "./suite.js";
-import { windowEvidenceSchema, windowVerdict } from "./survival.js";
+import {
+  memberEvidence,
+  windowEvidenceSchema,
+  type InvalidEvidence,
+  type WindowFailure,
+} from "./survival.js";
 
 /**
  * The site's `stress` section: CPU sustained, CPU burst and burst survival, collected after the
@@ -51,17 +56,17 @@ const survivalPlanSchema = z.object({ windowMs: finite.positive(), intervalMs: f
 /** The plan a cohort aggregate records: the survival window, or the CPU work. */
 const survivalAggregateSchema = z.object({ plan: survivalPlanSchema });
 
+/** The CPU work a cpu-burst cohort aggregate records, to group cohorts that ran the same. */
 const cpuAggregateSchema = z.object({
   work: z.object({ segments: z.number().int().positive(), steps: z.number().int().positive() }),
-  overlap: z
-    .object({
-      ok: z.boolean(),
-      single: z.object({ startSkewMs: finite }),
-      all: z.object({ startSkewMs: finite }),
-    })
-    .nullable()
-    .optional(),
-  single: z.object({ maxOverMin: finite.nullable() }).optional(),
+});
+
+/** What a cpu-burst member's throughput row records about where its phase ran (v2-runner). */
+const cpuPhaseSchema = z.object({
+  guest: z.tuple([finite, finite]),
+  clockUncertaintyMs: finite.nonnegative(),
+  /** Missing on rows from before it was recorded: such a cohort is clock-unstable. */
+  clockDriftMs: finite.optional(),
 });
 
 const parsed = <T>(schema: z.ZodType<T>, rows: readonly StressInput[]) =>
@@ -256,30 +261,75 @@ const incomplete = (units: readonly CohortUnit[]) => {
   return { cohorts: partial.length, members: partial.reduce((n, u) => n + u.cold.length, 0) };
 };
 
+/** Why a complete cpu-burst cohort is left out of the K-way spread. */
+type CpuExclusion = "clock-unstable" | "low-overlap" | "invalid-evidence";
+
+/**
+ * Whether a complete cpu-burst cohort's members ran their CPU phases together, recomputed from
+ * the members' own rows; the aggregate's stored overlap is never read. A member whose guest clock
+ * moved more than `clockStepToleranceMs` between its two reads (or that recorded no drift) makes
+ * the cohort clock-unstable; otherwise the members' phases must overlap by the threshold.
+ */
+function cpuCohort(u: CohortUnit) {
+  const phases = (name: "cpu-single" | "cpu-all") =>
+    u.cold.map((c) => {
+      const row = u.rows.find(
+        (s) =>
+          parseCohortScenario(s.scenario)?.member === name &&
+          s.sourceIteration === c.sourceIteration &&
+          s.outcome.kind === "sample",
+      );
+
+      return cpuPhaseSchema.safeParse(row?.details).data ?? null;
+    });
+
+  const single = phases("cpu-single");
+  const all = phases("cpu-all");
+
+  const members = single.flatMap((s, i) => {
+    const a = all[i];
+
+    return s && a ? [{ single: s, all: a }] : [];
+  });
+
+  if (members.length !== u.k) return { exclusion: "invalid-evidence" as const, overlap: null };
+
+  const unstable = members.some((m) =>
+    [m.single.clockDriftMs, m.all.clockDriftMs].some(
+      (d) => d === undefined || Math.abs(d) > clockStepToleranceMs,
+    ),
+  );
+
+  if (unstable) return { exclusion: "clock-unstable" as const, overlap: null };
+
+  const overlap = cpuOverlap(
+    members.map((m) => ({ single: m.single.guest, all: m.all.guest })),
+    Math.max(...members.flatMap((m) => [m.single.clockUncertaintyMs, m.all.clockUncertaintyMs])),
+  );
+
+  return { exclusion: overlap.ok ? null : ("low-overlap" as const), overlap };
+}
+
 function cpuBurst(units: readonly CohortUnit[]) {
-  const plan = (u: CohortUnit) => cpuAggregateSchema.safeParse(u.aggregate?.details).data ?? null;
+  const work = (u: CohortUnit) => cpuAggregateSchema.safeParse(u.aggregate?.details).data?.work;
 
   return groupBy(units, (u) =>
-    JSON.stringify([u.provider, allocation(u.cold[0] ?? u.rows[0]!), plan(u)?.work ?? null]),
+    JSON.stringify([u.provider, allocation(u.cold[0] ?? u.rows[0]!), work(u) ?? null]),
   ).map((group) => {
     const [first] = group;
     const complete = group.filter((u) => u.complete);
+    const finished = complete.filter((u) => u.aggregate?.outcome.kind === "sample");
+    const judged = finished.map((u) => ({ u, ...cpuCohort(u) }));
 
     // K-way spreads come only from cohorts whose members all completed and ran together.
-    const together = complete.filter(
-      (u) => u.aggregate?.outcome.kind === "sample" && plan(u)?.overlap?.ok === true,
-    );
+    const together = judged.flatMap((j) => (j.exclusion === null ? [j.u] : []));
 
-    const overlaps = complete.flatMap((u) => {
-      const overlap = plan(u)?.overlap;
-
-      return overlap ? [overlap] : [];
-    });
+    const excluded = (reason: CpuExclusion) => judged.filter((j) => j.exclusion === reason).length;
 
     const withinCohort = together.flatMap((u) => {
-      const spread = plan(u)?.single?.maxOverMin;
+      const spread = throughputSpread(values(member([u], "cpu-single"))).maxOverMin;
 
-      return spread === undefined || spread === null ? [] : [spread];
+      return spread === null ? [] : [spread];
     });
 
     const complete_ = statistics(
@@ -287,17 +337,25 @@ function cpuBurst(units: readonly CohortUnit[]) {
     );
 
     const within = statistics(withinCohort);
-    const skew = statistics(overlaps.map((o) => Math.max(o.single.startSkewMs, o.all.startSkewMs)));
-    const work = first ? plan(first)?.work : undefined;
+
+    const skew = statistics(
+      judged.flatMap((j) =>
+        j.overlap ? [Math.max(j.overlap.single.startSkewMs, j.overlap.all.startSkewMs)] : [],
+      ),
+    );
 
     return {
       provider: first?.provider ?? "",
       ...allocation(first?.cold[0] ?? first?.rows[0] ?? { requestedSize: null, template: null }),
-      work: work ?? null,
+      work: (first && work(first)) ?? null,
       cohorts: complete.length,
-      completeCohorts: complete.filter((u) => u.aggregate?.outcome.kind === "sample").length,
-      /** Complete cohorts whose members' CPU phases overlapped less than the threshold. */
-      lowOverlapCohorts: overlaps.filter((o) => !o.ok).length,
+      completeCohorts: finished.length,
+      /** Complete cohorts left out of the K-way spread, by reason. */
+      excluded: {
+        clockUnstable: excluded("clock-unstable"),
+        lowOverlap: excluded("low-overlap"),
+        invalidEvidence: excluded("invalid-evidence"),
+      },
       incomplete: incomplete(group),
       members: {
         attempted: member(complete, "cold").length,
@@ -305,7 +363,7 @@ function cpuBurst(units: readonly CohortUnit[]) {
         completed: values(member(complete, "cpu")).length,
       },
       failures: failureClasses([...member(complete, "cold"), ...member(complete, "cpu")]),
-      /** From cohorts that all completed with overlapping CPU phases. */
+      /** From cohorts that all completed with steady clocks and overlapping CPU phases. */
       perSandbox: {
         cohorts: together.length,
         single: throughputSpread(values(member(together, "cpu-single"))),
@@ -322,23 +380,34 @@ function cpuBurst(units: readonly CohortUnit[]) {
   });
 }
 
-/**
- * One survival member's verdict, from its create and window rows. The window's verdict is
- * recomputed from its heartbeats and plan; evidence that does not bear it out is `invalid`.
- */
-function survivalMember(cold: StressInput, window: StressInput | undefined) {
-  if (cold.outcome.kind !== "sample") return "create-failed";
+type SurvivalMember =
+  | { kind: "create-failed" }
+  /** Created but never given its window: the run stopped while it waited. */
+  | { kind: "no-window" }
+  | { kind: "invalid"; reason: InvalidEvidence }
+  | { kind: "decided"; verdict: SurvivalVerdictKind; failure: WindowFailure | null };
 
-  // Created but never given its window: the run stopped while it waited.
+type SurvivalVerdictKind = "survived" | "died" | "unresponsive" | "interrupted";
+
+/** One survival member, from its create row and its window's raw heartbeats (see `memberEvidence`). */
+function survivalMember(
+  cold: StressInput,
+  window: StressInput | undefined,
+  plan: z.infer<typeof survivalPlanSchema> | null,
+): SurvivalMember {
+  if (cold.outcome.kind !== "sample") return { kind: "create-failed" };
+
   if (!window || window.outcome.kind === "skipped" || window.outcome.kind === "blocked")
-    return "interrupted";
+    return { kind: "no-window" };
 
-  const evidence = windowEvidenceSchema.safeParse(window.details);
+  const parsed = windowEvidenceSchema.safeParse(window.details);
 
-  if (!evidence.success) return "invalid";
-  const checked = windowVerdict(evidence.data);
+  if (!parsed.success) return { kind: "invalid", reason: "unreadable" };
+  const evidence = memberEvidence(parsed.data, plan);
 
-  return checked.kind === "valid" ? checked.verdict : "invalid";
+  return evidence.kind === "valid"
+    ? { kind: "decided", verdict: evidence.verdict, failure: evidence.failure }
+    : evidence;
 }
 
 function burstSurvival(units: readonly CohortUnit[]) {
@@ -351,28 +420,35 @@ function burstSurvival(units: readonly CohortUnit[]) {
     const [first] = group;
     const complete = group.filter((u) => u.complete);
     const cold = member(complete, "cold");
-    const windows = member(complete, "window");
 
-    const members = cold.map((c) => {
-      const window = windows.find(
-        (w) =>
-          w.sourceRunId === c.sourceRunId &&
-          w.provider === c.provider &&
-          w.sourceIteration === c.sourceIteration,
-      );
+    const members = complete.flatMap((u) =>
+      u.cold.map((c) =>
+        survivalMember(
+          c,
+          u.rows.find(
+            (w) =>
+              parseCohortScenario(w.scenario)?.member === "window" &&
+              w.sourceIteration === c.sourceIteration,
+          ),
+          plan(u),
+        ),
+      ),
+    );
 
-      return { window, verdict: survivalMember(c, window) };
-    });
-
-    const verdict = (kind: (typeof members)[number]["verdict"]) =>
-      members.filter((m) => m.verdict === kind).length;
-
+    const decided = members.flatMap((m) => (m.kind === "decided" ? [m] : []));
+    const verdict = (kind: SurvivalVerdictKind) => decided.filter((m) => m.verdict === kind).length;
+    const invalid = members.flatMap((m) => (m.kind === "invalid" ? [m.reason] : []));
     const createFailed = failureClasses(cold);
 
-    // Window failures of members whose evidence bears out their verdict.
-    const windowFailures = failureClasses(
-      members.flatMap((m) => (m.window && m.verdict !== "invalid" ? [m.window] : [])),
-    );
+    // Recomputed from each window's heartbeats; a window's own row is never read for its class.
+    const windowFailures = {
+      accountLimit: decided.filter((m) => m.failure === "provider-account-limit").length,
+      clientNetwork: 0,
+      provider: decided.filter((m) => m.failure === "provider-operation").length,
+    };
+
+    const interrupted =
+      verdict("interrupted") + members.filter((m) => m.kind === "no-window").length;
 
     const survived = verdict("survived");
 
@@ -383,10 +459,9 @@ function burstSurvival(units: readonly CohortUnit[]) {
       cold.length -
       createFailed.accountLimit -
       createFailed.clientNetwork -
-      verdict("interrupted") -
-      verdict("invalid") -
-      windowFailures.accountLimit -
-      windowFailures.clientNetwork;
+      interrupted -
+      invalid.length -
+      windowFailures.accountLimit;
 
     const p = first ? plan(first) : null;
 
@@ -406,15 +481,22 @@ function burstSurvival(units: readonly CohortUnit[]) {
       died: verdict("died"),
       unresponsive: verdict("unresponsive"),
       /** Members whose window the run cut short, counted once each and never against the provider. */
-      interrupted: verdict("interrupted"),
-      /** Members whose heartbeat evidence does not bear out their recorded verdict: left out. */
-      invalidEvidence: verdict("invalid"),
+      interrupted,
+      /** Members whose raw heartbeat evidence does not hold up: left out. */
+      invalidEvidence: invalid.length,
+      /** `invalidEvidence` by reason. */
+      invalidReasons: Object.fromEntries(counts_(invalid)),
       /** Heartbeat failures by class; account limits (rate-limited heartbeats) are not the provider's. */
       windowFailures,
       survivalRate: denominator > 0 ? round(survived / denominator, 4) : null,
     };
   });
 }
+
+/** How often each string occurs, in first-seen order. */
+const counts_ = (xs: readonly string[]) => [
+  ...xs.reduce((m, x) => m.set(x, (m.get(x) ?? 0) + 1), new Map<string, number>()),
+];
 
 /** Cohort sizes collected for one kind, ascending. */
 function sizes(units: readonly CohortUnit[]) {

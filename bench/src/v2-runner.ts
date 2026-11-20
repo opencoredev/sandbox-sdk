@@ -19,7 +19,7 @@ import {
   type LoadedProvider,
   type ReadyProvider,
 } from "./providers.js";
-import type { ReportV2, Sample, HostSample, Outcome } from "./v2-model.js";
+import type { ReportV2, Sample, HostSample, Outcome, ProviderBudget } from "./v2-model.js";
 import { PhaseClock, perfMetrics, filePayloads, firstByteAttempt } from "./measurement.js";
 import { collectMetadata, headroom } from "./publication.js";
 import {
@@ -47,6 +47,7 @@ import {
   type SurvivalPlan,
 } from "./scenarios.js";
 import {
+  clockStepToleranceMs,
   cpuOverlap,
   cpuWork,
   maxStepsPerSecond,
@@ -398,6 +399,7 @@ export async function runV2(
       "Network: 25,000,000 bytes from speed.cloudflare.com including TLS; mean of five TCP connects to 1.1.1.1:443. Egress geography, CDN caches, shared host load and provider caches are uncontrolled.",
       "Costs are estimates, not invoices; marginal usage only, excludes subscriptions/credits/transfer/persistent snapshot retention. Cost per scenario allocates its measured duration; sandbox-lifetime records include setup and idle time and must not be summed with scenario allocations. Upstash/boxd allocated-resource estimates are upper bounds. Modal is priced on its requested allocation, never the guest view: exact when sized (request = limit), a lower bound on the default track (0.125 CPU / 128 MiB minimum request; billed burst usage above it is not counted), with Modal's region multiplier for a pinned region. Unknown resources yield null, never zero. Pricing retrieval dates are recorded per provider; EUR and USD remain separate with no cross-currency ranking.",
       "Budget admission reserves timeout × scenario count at observed or conservative default resources. Dollar budgets are estimates, not account spend caps; boxd uses conservative 2 USD/EUR for budget only. Failed/unknown creations count toward sandbox budget.",
+      "Reported budget spend prices every sandbox from its iteration's start until its deletion was confirmed. Cleanup time past a reserve cannot be bounded: a sandbox still there when its reserve runs out is deleted by the run's final sweep and priced until then, and one still live at return is listed in budgets as an open liability priced only to the return. An estimate over the dollar cap says so in the budget's stop note.",
     ],
   };
 
@@ -408,7 +410,7 @@ export async function runV2(
 
   if (config.scenarios.includes("cpu-burst"))
     report.methodology.push(
-      `CPU burst: K sandboxes created at once; each stages its probe, then once every member is ready (or failed) all dispatch the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's exec return (timestamped before any report write) and is a sample only when all K complete. Overlap: each member's phases are placed on the host clock using the guest clock offset read at staging; the guest clock is read again after the run, and the uncertainty is the largest offset error consistent with both reads (each within half its round trip) and the exec the host timed, so drift or a step widens it. The aggregate records start skew and the share of a median phase during which every member ran it, and flags the cohort when the unrounded worst case falls below ${overlapThreshold}. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.`,
+      `CPU burst: K sandboxes created at once; each stages its probe, then once every member is ready (or failed) all dispatch the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's exec return (timestamped before any report write) and is a sample only when all K complete. Overlap: each member's phases are placed on the host clock using the guest clock offset read at staging; the guest clock is read again after the run. Each member's throughput rows record that offset change (clockDriftMs) and an uncertainty of the change plus both reads' half round trips; publication excludes a cohort as clock-unstable when any member's clock moved more than ${clockStepToleranceMs} ms, and recomputes the overlap from the members' rows. The aggregate records start skew and the share of a median phase during which every member ran it, and flags the cohort when the unrounded worst case falls below ${overlapThreshold}. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.`,
     );
 
   if (config.scenarios.includes("survival"))
@@ -461,11 +463,23 @@ export async function runV2(
   const unsafeProviders = new Set<string>();
   const deletions = new DeletionWork();
   /**
-   * Sandboxes whose iteration's cleanup reserve ran out before a deletion was confirmed. They
-   * stay journaled for `bun bench reap`; this run touches them no more, so no sandbox is held
-   * past the reserve its admission charged.
+   * Sandboxes whose iteration's cleanup reserve ran out before a deletion was confirmed. Their
+   * iteration touches them no more; the run's final sweep retries them, and they stay journaled
+   * for `bun bench reap` if that fails too.
    */
   const leftForReap = new Set<string>();
+
+  /** When each sandbox's deletion (or absence) was confirmed, by `provider/id`. */
+  const gone = new Map<string, number>();
+
+  /**
+   * What each sandbox's iteration charged the budget for it: from `since` to `chargedUntil`,
+   * at `price` per duration. Time past `chargedUntil` is priced again once the run's cleanup ends.
+   */
+  type Charge = { since: number; chargedUntil: number; price: (ms: number) => number | null };
+
+  const charges = new Map<string, Charge>();
+  const runStart = performance.now();
   const restores = new RestoreCleanup();
 
   const owned = new Map<
@@ -552,6 +566,7 @@ export async function runV2(
       id,
       evidence,
     );
+    gone.set(`${p.name}/${id}`, performance.now());
     restores.mark(p.name, id, "destroyed");
     owned.delete(`${p.name}/${id}`);
     await persist();
@@ -574,7 +589,7 @@ export async function runV2(
     review(
       loaded.name,
       id,
-      "Cleanup reserve exhausted before deletion was confirmed; left running and journaled for `bun bench reap`",
+      "Cleanup reserve exhausted before deletion was confirmed; retried by the run's final sweep, else journaled for `bun bench reap`",
     );
 
     for (const item of report.cleanupReview ?? [])
@@ -582,7 +597,7 @@ export async function runV2(
         item.status = "unresolved";
     const state = states.get(loaded.name);
 
-    if (state) state.stop ??= "Cleanup reserve exhausted; sandbox left for reap";
+    if (state) state.stop ??= "Cleanup reserve exhausted; no more sandboxes admitted";
 
     return new Error(`Cleanup reserve exhausted for ${id}; run bun bench reap`);
   }
@@ -686,6 +701,7 @@ export async function runV2(
           measurement?.clock.finish();
         }
 
+        gone.set(`${loaded.name}/${id}`, performance.now());
         restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
 
@@ -802,6 +818,18 @@ export async function runV2(
       (!cohort && config.scenarios.includes("cpu-sustained"));
 
     const cleanupEndBy = stress ? lifeStart + boundMs : undefined;
+
+    /** Remove one of this iteration's sandboxes; a stress sandbox's cleanup ends by its reserve. */
+    const removeOwn = (id: string) => remove(p, id, undefined, cleanupEndBy);
+
+    // Priced once the iteration ends; until then a sandbox's charge is open.
+    const charge: Charge = { since: lifeStart, chargedUntil: Infinity, price: () => null };
+
+    /** Record a sandbox this iteration created, for cleanup and for pricing. */
+    const own = (id: string) => {
+      ids.add(id);
+      charges.set(`${p.name}/${id}`, charge);
+    };
 
     /** A cleanup wait: the step timeout, cut to what is left of a stress sandbox's reserve. */
     const cleanupMs = () =>
@@ -974,7 +1002,7 @@ export async function runV2(
                 if (restore) restores.identify(restore, info.id, "alive");
                 createEvidence.sandboxId = info.id;
                 createEvidence.stage = "ownership-persist";
-                ids.add(info.id);
+                own(info.id);
 
                 if (input.from) restoredId = info.id;
                 owned.set(`${p.name}/${info.id}`, {
@@ -996,7 +1024,7 @@ export async function runV2(
                 }
 
                 if (input.signal?.aborted) {
-                  await remove(p, info.id);
+                  await removeOwn(info.id);
                   ids.delete(info.id);
                   throw new Error("Late create cleaned up");
                 }
@@ -1076,7 +1104,7 @@ export async function runV2(
 
                     if (restore) restores.identify(restore, nativeId, "alive");
                     createEvidence.sandboxId = nativeId;
-                    ids.add(nativeId);
+                    own(nativeId);
 
                     if (allocation) allocated(allocation.app, allocation.id, nativeId);
 
@@ -1091,7 +1119,7 @@ export async function runV2(
                     await persist();
 
                     try {
-                      await remove(p, nativeId);
+                      await removeOwn(nativeId);
                       ids.delete(nativeId);
                       createEvidence.cleanupOutcome = "succeeded";
                     } catch {
@@ -1111,7 +1139,7 @@ export async function runV2(
         if (key === "destroy")
           return (id: string) =>
             pending.track(
-              remove(p, id).then(() => {
+              removeOwn(id).then(() => {
                 ids.delete(id);
               }),
             );
@@ -1382,6 +1410,7 @@ export async function runV2(
           seed: ran.result.probe.seed,
           guest: ran.guest,
           clockUncertaintyMs: ran.clockUncertaintyMs,
+          clockDriftMs: ran.clockDriftMs,
         };
       });
 
@@ -1410,6 +1439,7 @@ export async function runV2(
                 guestVcpus: probe.result.guestVcpus,
                 guest: probe.result.guest[phase],
                 clockUncertaintyMs: probe.result.clockUncertaintyMs,
+                clockDriftMs: probe.result.clockDriftMs,
                 cpus: probe.result.probe.cpus,
                 python: probe.result.probe.python,
               }
@@ -2020,9 +2050,9 @@ export async function runV2(
                 // A restore that is still quarantined must be resolved/deleted before its snapshot.
                 const pendingRestore = createEvidence.unverifiedSandboxId;
 
-                if (pendingRestore) await remove(p, pendingRestore);
+                if (pendingRestore) await removeOwn(pendingRestore);
 
-                if (restoredId && owned.has(`${p.name}/${restoredId}`)) await remove(p, restoredId);
+                if (restoredId && owned.has(`${p.name}/${restoredId}`)) await removeOwn(restoredId);
                 await clean?.(id);
                 report.cleanupReview = report.cleanupReview?.filter(
                   (r) => !(r.provider === p.name && r.id === id && r.kind === "snapshot"),
@@ -2257,7 +2287,7 @@ export async function runV2(
 
       if (createEvidence.unverifiedSandboxId) {
         try {
-          await remove(p, createEvidence.unverifiedSandboxId, undefined, cleanupEndBy);
+          await removeOwn(createEvidence.unverifiedSandboxId);
         } catch {
           /* Keep unresolved quarantine. */
         }
@@ -2375,6 +2405,19 @@ export async function runV2(
           await previous.close();
         });
       const duration = performance.now() - lifeStart;
+
+      charge.chargedUntil = lifeStart + duration;
+
+      charge.price = (ms) => {
+        const usd = estimateCost(
+          p.name,
+          ms,
+          reservationResources(p.name, fp ?? state.fp, allocation.requestedSize),
+          p.region,
+        );
+
+        return usd === null ? null : budgetUSD(p.name, usd);
+      };
 
       const sourceCost = estimateCost(p.name, duration, priced(fp), p.region);
 
@@ -2707,6 +2750,93 @@ export async function runV2(
         for (const p of ready) await runCohort(p, kind, k, cohortIndex);
       }
 
+  /**
+   * Charge the budget for every sandbox's life past what its iteration charged: to its confirmed
+   * deletion, or, when it is still live, to now, listing it as an open liability. A sandbox no
+   * iteration claimed (found only by its label, or in review) is priced from the run's start. A
+   * total over the dollar cap is stated in the stop note.
+   */
+  function priceBeyondCharges(
+    p: ReadyProvider,
+    swept: ReadonlySet<string>,
+    remaining: ReadonlySet<string>,
+  ) {
+    const state = states.get(p.name);
+
+    if (!state) return;
+    const now = performance.now();
+    const requestedSize = config.size[p.name] ?? (p.name === "local" ? "medium" : null);
+
+    const unclaimed: Charge = {
+      since: runStart,
+      chargedUntil: runStart,
+      price: (ms) => {
+        const usd = estimateCost(
+          p.name,
+          ms,
+          reservationResources(p.name, state.fp, requestedSize),
+          p.region,
+        );
+
+        return usd === null ? null : budgetUSD(p.name, usd);
+      },
+    };
+
+    const sandboxes = new Map([...charges].filter(([key]) => key.startsWith(`${p.name}/`)));
+
+    // Still live, or not proven gone: listed or journaled, or in review (its ownership or its
+    // deletion unresolved).
+    const live = new Set([
+      ...remaining,
+      ...(report.cleanupReview ?? []).flatMap((r) =>
+        r.provider === p.name && r.kind === "sandbox" ? [r.id] : [],
+      ),
+    ]);
+
+    for (const id of [...swept, ...live]) {
+      const key = `${p.name}/${id}`;
+      sandboxes.set(key, sandboxes.get(key) ?? unclaimed);
+    }
+
+    const open: { id: string; liveMs: number }[] = [];
+    let unpriced = false;
+
+    for (const [key, charge] of sandboxes) {
+      const id = key.slice(p.name.length + 1);
+      const end = gone.get(key) ?? now;
+
+      if (live.has(id)) open.push({ id, liveMs: Math.round(now - charge.since) });
+
+      if (end <= charge.chargedUntil) continue;
+      const usd = charge.price(end - charge.chargedUntil);
+
+      if (usd === null) unpriced = true;
+      else state.estimatedUSD += usd;
+    }
+
+    const capUSD = config["provider-max-dollars"][p.name] ?? config["max-dollars"];
+    const notes = [state.stop];
+
+    if (unpriced) notes.push("cost of cleanup past the reserve unknown");
+
+    // Compared with a relative margin, so float noise never reads as an overrun.
+    if (state.estimatedUSD > capUSD * (1 + 1e-9))
+      notes.push(`estimated USD ${state.estimatedUSD} is over the ${capUSD} cap`);
+
+    if (open.length)
+      notes.push(`${open.length} sandbox(es) still live at return; their cost grows until reaped`);
+
+    const budget: ProviderBudget = {
+      created: state.created,
+      estimatedUSD: state.estimatedUSD,
+      stop: notes.filter((n) => n !== null).join("; ") || null,
+      capUSD,
+    };
+
+    if (open.length) budget.openLiabilities = open;
+    report.budgets[p.name] = budget;
+  }
+
   for (const p of ready) {
     const errors: string[] = [];
     const deletionErrors = new Map<string, string>();
@@ -2763,8 +2893,9 @@ export async function runV2(
         .flatMap((v) => (v.kind === "snapshot-source" ? [v.id] : v.parent ? [v.parent] : [])),
     );
 
+    // Sandboxes whose reserve ran out are retried too: one left running costs more than a delete.
     for (const id of ids)
-      if (!sourceIds.has(id) && !leftForReap.has(`${p.name}/${id}`)) {
+      if (!sourceIds.has(id)) {
         try {
           await remove(p, id);
         } catch (e) {
@@ -2950,6 +3081,7 @@ export async function runV2(
       remaining: [...remaining],
       error: errors.length ? errors.join("; ") : null,
     });
+    priceBeyondCharges(p, ids, remaining);
   }
 
   for (const sample of report.samples) {

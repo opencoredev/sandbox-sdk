@@ -178,10 +178,16 @@ export function markdownV2(r: ReportV2) {
 
   for (const p of r.providers) rows.push(`- ${p.name}: ${p.note}`);
 
-  for (const [provider, b] of Object.entries(r.budgets))
+  for (const [provider, b] of Object.entries(r.budgets)) {
     rows.push(
-      `- ${provider}: ${b.created} sandbox attempts, estimated budget USD ${f(b.estimatedUSD)}; ${b.stop ?? "budget not hit"}.`,
+      `- ${provider}: ${b.created} sandbox attempts, estimated budget USD ${f(b.estimatedUSD)}${b.capUSD === undefined ? "" : ` of a ${f(b.capUSD)} cap`}; ${b.stop ?? "budget not hit"}.`,
     );
+
+    for (const l of b.openLiabilities ?? [])
+      rows.push(
+        `- ${provider}: sandbox ${l.id} still live at return after ${Math.round(l.liveMs / 1000)} s; priced only to the return, it costs more until \`bun bench reap\` removes it.`,
+      );
+  }
 
   for (const c of r.cleanup)
     rows.push(
