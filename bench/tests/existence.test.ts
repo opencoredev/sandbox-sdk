@@ -320,3 +320,36 @@ it("reads a local container's nested Docker state as evidence without calling it
     nativeState: "paused",
   });
 });
+
+it("reads a removed local container as absent: Docker's exact inspect answered 404", async () => {
+  const id = "c86ad5bc28459bc554afb7866930b80b224be85d06bcc353c32bcfdfb60861ec";
+  const { SandboxError } = await import("@opencoredev/sandbox-sdk");
+
+  // What the local Docker client throws for HTTP 404, with Podman's body as its message.
+  const local = (error: Error) => ({
+    ...memory(),
+    name: "local",
+    native: () => ({
+      client: {
+        call: async () => {
+          throw error;
+        },
+      },
+    }),
+  });
+
+  const removed = new SandboxError(
+    '{"cause":"no such container","message":"no container with name or ID found: no such container","response":404}. Docker request failed. Check Docker access and the supplied options.',
+    { code: "not_found", provider: "local" },
+  );
+
+  expect(await lookupSandbox(local(removed), id, 1000)).toMatchObject({ result: "not-found" });
+
+  // Any other failure proves nothing about the container.
+  const down = new SandboxError("connect ENOENT. Docker request failed.", {
+    code: "unavailable",
+    provider: "local",
+  });
+
+  expect(await lookupSandbox(local(down), id, 1000)).toMatchObject({ result: "unavailable" });
+});
