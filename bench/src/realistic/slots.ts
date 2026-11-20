@@ -57,6 +57,8 @@ export interface SlotProvider {
   workdir?: string;
   /** GiB of the volume this entry's adapter mounts on every sandbox (0: none), recorded on each attempt. */
   volumeGiB?: number;
+  /** GiB of the sandbox's own disk on this entry's track, recorded on each attempt. */
+  diskGiB?: number;
   /** Worker count on a track whose size differs per provider (the default track). */
   vcpuFor?(track: string): number | undefined;
   /** Label sandboxes with the run only (labels share a short name budget on Boat). */
@@ -324,6 +326,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
 
       if (entry.volumeGiB !== undefined) empty.volumeGiB = entry.volumeGiB;
 
+      if (entry.diskGiB !== undefined) empty.diskGiB = entry.diskGiB;
+
       return empty;
     };
 
@@ -430,6 +434,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         if (entry.workdir) attemptPlan.workdir = entry.workdir;
 
         if (entry.volumeGiB !== undefined) attemptPlan.volumeGiB = entry.volumeGiB;
+
+        if (entry.diskGiB !== undefined) attemptPlan.diskGiB = entry.diskGiB;
 
         if (entry.runLabelOnly) attemptPlan.runLabelOnly = true;
 

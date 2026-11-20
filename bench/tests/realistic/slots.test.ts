@@ -254,6 +254,29 @@ describe("slot execution", () => {
     });
   });
 
+  it("records the entry's disk on each attempt, so it is priced at the disk it ran with", async () => {
+    const records: AttemptRecord[] = [];
+
+    const failing: typeof runAttempt = async (plan, environment) => {
+      await environment.onSandbox?.(plan.provider.name, "made-1");
+
+      throw new Error("failed after create");
+    };
+
+    await runBatch(
+      batch(
+        {
+          slots: slots.slice(0, 1),
+          providers: [provider("e2b", { diskGiB: 20 })],
+          attempt: failing,
+        },
+        records,
+      ),
+    );
+
+    expect(records[0]).toMatchObject({ sandboxIds: ["made-1"], diskGiB: 20 });
+  });
+
   it("voids a window whose listing is only SDK-scoped", async () => {
     const records: AttemptRecord[] = [];
     await runBatch(

@@ -321,6 +321,7 @@ async function loadSlotProvider(
     paddingMs: 0,
     runLabelOnly: setup.adapter === "boat",
     volumeGiB: profile === undefined ? 0 : (setup.profileFactory?.[profile]?.volume?.sizeGiB ?? 0),
+    diskGiB: config.provisioned.diskGiB,
     workdir: "/workspace/rw",
     vcpuFor: () => config.vcpu,
     create: () => {

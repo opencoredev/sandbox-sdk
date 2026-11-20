@@ -62,4 +62,34 @@ describe("profile factory options", () => {
     );
     expect(provisionedOf(e2b, "same-machine", {})).toEqual(e2b.tracks["same-machine"].provisioned);
   });
+
+  test("a recorded attempt is priced with the disk it ran with, not today's setup", () => {
+    // Luxor is recorded under its company, Tenki.
+    const luxor = providerSetup("tenki");
+    const superserve = providerSetup("superserve");
+
+    // Records from before attempts named their disk ran with 5 GB (Luxor) and 4 GiB (Superserve).
+    expect(provisionedOf(luxor, "same-machine", {})).toEqual({ cpu: 4, memoryGiB: 8, diskGiB: 5 });
+    expect(provisionedOf(superserve, "same-machine", {})).toEqual({
+      cpu: 4,
+      memoryGiB: 8,
+      diskGiB: 4,
+    });
+    // New records name the 20 GB disk they ran with.
+    expect(provisionedOf(luxor, "same-machine", { diskGiB: 20 })).toEqual({
+      cpu: 4,
+      memoryGiB: 8,
+      diskGiB: 20,
+    });
+    expect(provisionedOf(superserve, "same-machine", { diskGiB: 20 })).toEqual({
+      cpu: 4,
+      memoryGiB: 8,
+      diskGiB: 20,
+    });
+    // A track whose disk never changed prices an old record at today's size.
+    expect(provisionedOf(luxor, "default", {})).toEqual(luxor.tracks.default.provisioned);
+    // New attempts provision, and budget, the 20 GB disk.
+    expect(provisionedFor(luxor, "same-machine", "build").diskGiB).toBe(20);
+    expect(provisionedFor(superserve, "same-machine", "build").diskGiB).toBe(20);
+  });
 });

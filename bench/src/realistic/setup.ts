@@ -32,6 +32,11 @@ export interface TrackSetup {
   /** Worker count for the frozen commands: the size's vCPUs. */
   readonly vcpu: number;
   readonly provisioned: ProvisionedSize;
+  /**
+   * The disk attempts ran with before records named theirs (`diskGiB`), when this track's disk has
+   * changed since. Unset: older records ran with today's disk.
+   */
+  readonly unrecordedDiskGiB?: number;
   /** Profiles the fit check found this size cannot complete, with FIT.md's reason. */
   readonly tooSmall: { readonly [profile: string]: string };
 }
@@ -167,6 +172,8 @@ export const providerSetups: readonly ProviderSetup[] = [
         size: { cpu: 4, memoryMb: 8192, diskGb: 20 },
         vcpu: 4,
         provisioned: size(4, 8, 20),
+        // Luxor's 5 GB minimum until 2026-11-18.
+        unrecordedDiskGiB: 5,
         tooSmall: {},
       },
       default: { vcpu: 2, provisioned: size(2, 3.8, 5), tooSmall: { build: fit.tenkiBuild } },
@@ -185,6 +192,8 @@ export const providerSetups: readonly ProviderSetup[] = [
         template: "sandbox-bench-node22-py311-4x8-d20-pinned",
         vcpu: 4,
         provisioned: size(4, 8, 20),
+        // sandbox-bench-node22-py311-4x8-pinned's 4 GiB until 2026-11-18.
+        unrecordedDiskGiB: 4,
         tooSmall: {},
       },
       default: {
@@ -312,16 +321,23 @@ export function provisionedAtMost(setup: ProviderSetup, track: TrackId): Provisi
 }
 
 /**
- * The size a recorded attempt provisioned: its track's, plus the volume the record says it
- * mounted. A record without `volumeGiB` from a provider whose setup mounts volumes predates the
- * field, so whether it had one is unknown: null, which prices nothing rather than guessing.
+ * The size a recorded attempt provisioned: its track's CPU and memory, the disk the record says it
+ * ran with, plus the volume it says it mounted. A record without `diskGiB` predates that field and
+ * ran with the track's disk of its time (`unrecordedDiskGiB`). A record without `volumeGiB` from a
+ * provider whose setup mounts volumes predates that field, so whether it had one is unknown: null,
+ * which prices nothing rather than guessing.
  */
 export function provisionedOf(
   setup: ProviderSetup,
   track: TrackId,
-  record: { readonly volumeGiB?: number | undefined },
-) {
-  const base = setup.tracks[track].provisioned;
+  record: { readonly diskGiB?: number | undefined; readonly volumeGiB?: number | undefined },
+): ProvisionedSize | null {
+  const config = setup.tracks[track];
+
+  const base = {
+    ...config.provisioned,
+    diskGiB: record.diskGiB ?? config.unrecordedDiskGiB ?? config.provisioned.diskGiB,
+  };
 
   if (record.volumeGiB !== undefined) return { ...base, diskGiB: base.diskGiB + record.volumeGiB };
 
