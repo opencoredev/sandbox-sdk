@@ -140,11 +140,40 @@ function ratio(xs: readonly (number | null)[]) {
   return s.count ? { p50: round(s.p50), min: round(s.min) } : null;
 }
 
+/** One iteration of one provider in one source run. */
+const iterationKey = (s: Pick<StressInput, "sourceRunId" | "provider" | "sourceIteration">) =>
+  JSON.stringify([s.sourceRunId, s.provider, s.sourceIteration]);
+
 /**
- * What one cpu-sustained attempt came to, by its probe row: a probe blocked by a failed create or
- * fingerprint counts as that row's failure, so a refusal stays visible as a failed attempt.
+ * Failed creates of a cpu-sustained run's iterations that have no probe row: `runV2` records a
+ * failed create as the iteration's `cold` row and returns before the probe. Only the sustained
+ * run's own `cold` rows count, never a cohort's member rows; an iteration with a probe row is
+ * already counted by that row (or the failure that blocked it).
  */
-function sustainedAttempts(probes: readonly StressInput[], samples: readonly StressInput[]) {
+function unprobedCreateFailures(samples: readonly StressInput[]) {
+  const probed = new Set(
+    samples.flatMap((s) => (s.scenario === "cpu-sustained" ? [iterationKey(s)] : [])),
+  );
+
+  return samples.filter(
+    (s) =>
+      s.suite === "cpu-sustained" &&
+      s.scenario === "cold" &&
+      s.outcome.kind === "failure" &&
+      !probed.has(iterationKey(s)),
+  );
+}
+
+/**
+ * What cpu-sustained attempts came to, one per iteration: by its probe row, where a probe blocked
+ * by a failed create or fingerprint counts as that row's failure, or by its failed create when
+ * the run stopped before the probe. Either way a refusal stays visible as a failed attempt.
+ */
+function sustainedAttempts(
+  probes: readonly StressInput[],
+  failedCreates: readonly StressInput[],
+  samples: readonly StressInput[],
+) {
   const blocker = (probe: StressInput) =>
     probe.outcome.kind === "blocked"
       ? samples.find(
@@ -167,7 +196,7 @@ function sustainedAttempts(probes: readonly StressInput[], samples: readonly Str
 
   return {
     successes: probes.filter((s) => s.outcome.kind === "sample").length,
-    failures: failureClasses(failed),
+    failures: failureClasses([...failed, ...failedCreates]),
     blocked: probes.filter((s) => s.outcome.kind === "blocked" && !blocker(s)).length,
     skipped: probes.filter((s) => s.outcome.kind === "skipped").length,
   };
@@ -175,7 +204,10 @@ function sustainedAttempts(probes: readonly StressInput[], samples: readonly Str
 
 /** cpu-sustained per provider and allocation. */
 function cpuSustained(samples: readonly StressInput[], seed: number) {
-  const rows = samples.filter((s) => /^cpu-sustained(-single|-all)?$/.test(s.scenario));
+  const rows = [
+    ...samples.filter((s) => /^cpu-sustained(-single|-all)?$/.test(s.scenario)),
+    ...unprobedCreateFailures(samples),
+  ];
 
   return groupBy(rows, (s) => JSON.stringify([s.provider, allocation(s)])).map((mine) => {
     const [first] = mine;
@@ -210,7 +242,11 @@ function cpuSustained(samples: readonly StressInput[], seed: number) {
       },
       guestVcpus: counts(allDetails.map((d) => d.guestVcpus)),
       workers: counts(allDetails.map((d) => d.workers)),
-      attempts: sustainedAttempts(probe, samples),
+      attempts: sustainedAttempts(
+        probe,
+        mine.filter((s) => s.scenario === "cold"),
+        samples,
+      ),
     };
   });
 }

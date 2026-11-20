@@ -22,6 +22,7 @@ import { estimateCost } from "../src/pricing.js";
 import { projectCosts } from "../src/projection.js";
 import { cohortBoundMs, selectedCohorts, selectsScenario } from "../src/scenarios.js";
 import { siteData, siteDataCommand } from "../src/site-data.js";
+import { stressData } from "../src/stress-site.js";
 import {
   classifyHeartbeats,
   heartbeatWindow,
@@ -835,4 +836,136 @@ describe("P2.8 and P3: cost projections price each sandbox", () => {
     // The mean duration (60 s) would be priced at the one-minute minimum alone.
     expect(cpuBurst25(60_000)).toBeLessThan((short + long) / 2);
   });
+});
+
+describe("cpu-sustained create failures reach the published attempts", () => {
+  /** A real run on Boat (the memory fake) whose creates fail where `refuse` says. */
+  async function refusingRun(run: string, args: string[], refuse: (attempt: number) => boolean) {
+    const provider = memoryBoat();
+    const create = provider.create.bind(provider);
+    let attempts = 0;
+
+    provider.create = async (...createArgs) => {
+      if (refuse(attempts++)) throw new Error("Boat reported quota");
+
+      return create(...createArgs);
+    };
+
+    const dir = await tempDir(run);
+
+    await runV2(
+      [{ kind: "ready", name: "boat", cloud: false, region: null, provider }],
+      parseV2(["--providers", "boat", "--run", run, "--out", dir, ...args]),
+      (report) => writeV2(report, dir),
+    );
+
+    return readSource(dir);
+  }
+
+  /** A real cpu-sustained run of `runs` iterations whose creates fail where `refuse` says. */
+  const sustainedRun = (run: string, runs: number, refuse: (attempt: number) => boolean) =>
+    refusingRun(
+      run,
+      [
+        "--runs",
+        String(runs),
+        "--concurrency",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "cpu-sustained",
+      ],
+      refuse,
+    );
+
+  it("counts the refused create beside the created iteration's own attempt", async () => {
+    const source = await sustainedRun("sustained-half", 2, (attempt) => attempt === 1);
+
+    // The runner wrote no probe row for the refused iteration: only its cold row.
+    expect(
+      source.samples.filter((s) => s.iteration === 1).map((s) => [s.scenario, s.outcome.kind]),
+    ).toEqual([
+      ["cold", "failure"],
+      ["sandbox-lifetime", "skipped"],
+    ]);
+
+    const stress = stressData(mergeSources([source], [], 45, policy), "default");
+
+    // The memory fake has no python3: the created iteration's fingerprint fails and blocks its
+    // probe, a provider failure. The refused create is Boat's quota, an account limit.
+    expect(stress.cpuSustained).toHaveLength(1);
+    expect(stress.cpuSustained[0]?.attempts).toEqual({
+      successes: 0,
+      failures: { accountLimit: 1, clientNetwork: 0, provider: 1 },
+      blocked: 0,
+      skipped: 0,
+    });
+  }, 60_000);
+
+  it("keeps a provider whose every create was refused", async () => {
+    const source = await sustainedRun("sustained-refused", 2, () => true);
+    const stress = stressData(mergeSources([source], [], 45, policy), "default");
+
+    expect(stress.cpuSustained).toHaveLength(1);
+    expect(stress.cpuSustained[0]).toMatchObject({
+      provider: "boat",
+      single: { n: 0 },
+      all: { n: 0 },
+      attempts: {
+        successes: 0,
+        failures: { accountLimit: 2, clientNetwork: 0, provider: 0 },
+        blocked: 0,
+        skipped: 0,
+      },
+    });
+  }, 60_000);
+
+  it("never counts a cohort member's refused create as a sustained attempt", async () => {
+    const [survival, sustained] = await Promise.all([
+      refusingRun("survival-refused", survivalArgs("2"), () => true),
+      sustainedRun("sustained-beside", 1, () => true),
+    ]);
+
+    const alone = stressData(mergeSources([survival], [], 45, policy), "default");
+
+    expect(alone.burstSurvival[0]?.providers[0]?.createFailed.total).toBe(2);
+    expect(alone.cpuSustained).toEqual([]);
+
+    const both = stressData(mergeSources([survival, sustained], [], 45, policy), "default");
+
+    expect(both.cpuSustained.map((p) => p.attempts.failures)).toEqual([
+      { accountLimit: 1, clientNetwork: 0, provider: 0 },
+    ]);
+  }, 60_000);
+
+  it("drops a refused create with the run a replacement rule sets aside", async () => {
+    const [refused, rerun] = await Promise.all([
+      sustainedRun("sustained-replaced", 2, (attempt) => attempt === 1),
+      sustainedRun("sustained-rerun", 1, () => false),
+    ]);
+
+    // The rule names the refused iteration's only stress row; the whole iteration goes with it.
+    const replaced = {
+      ...policy,
+      replacements: [
+        {
+          provider: "boat" as const,
+          suite: "cpu-sustained" as const,
+          scenario: "cold",
+          sourceRunIds: ["sustained-rerun"],
+        },
+      ],
+    };
+
+    const report = mergeSources([refused, rerun], [], 45, replaced);
+    const stress = stressData(report, "default");
+
+    expect(report.samples.some((s) => s.sourceRunId === "sustained-replaced")).toBe(false);
+    expect(Object.keys(report.stressSelectionRemoved ?? {})).toEqual(["replaced-source"]);
+    // The rerun's one created iteration, blocked by the memory fake's fingerprint; no refusal left.
+    expect(stress.cpuSustained.map((p) => p.attempts.failures)).toEqual([
+      { accountLimit: 0, clientNetwork: 0, provider: 1 },
+    ]);
+  }, 60_000);
 });
