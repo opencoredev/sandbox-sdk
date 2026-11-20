@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +20,21 @@ const proof = (sourceId: string) =>
     verifiedAt: new Date().toISOString(),
   });
 
+// Native clients take their credentials from the adapters' resolvers, which require a key.
+beforeEach(() => {
+  for (const key of [
+    "E2B_API_KEY",
+    "DAYTONA_API_KEY",
+    "BOXD_API_KEY",
+    "TENKI_API_KEY",
+    "FREESTYLE_API_KEY",
+    "SUPERSERVE_API_KEY",
+  ])
+    vi.stubEnv(key, "offline");
+});
+
 afterEach(async () => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.useRealTimers();
   await Promise.all(dirs.splice(0).map((out) => rm(out, { recursive: true, force: true })));

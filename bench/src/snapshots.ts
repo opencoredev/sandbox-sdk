@@ -1,32 +1,44 @@
 import { z } from "zod";
+import { resolveConfig as boxdConfig } from "@opencoredev/sandbox-sdk/boxd";
 import type { DaytonaNative } from "@opencoredev/sandbox-sdk/daytona";
+import { resolveConfig as e2bConfig } from "@opencoredev/sandbox-sdk/e2b";
+import { resolveConfig as freestyleConfig } from "@opencoredev/sandbox-sdk/freestyle";
+import { resolveConfig as instaboxConfig } from "@opencoredev/sandbox-sdk/instabox";
+import { resolveConfig as superserveConfig } from "@opencoredev/sandbox-sdk/superserve";
+import { resolveConfig as tenkiConfig } from "@opencoredev/sandbox-sdk/tenki";
+import { resolveConfig as upstashConfig } from "@opencoredev/sandbox-sdk/upstash";
+import { resolveConfig as vercelConfig } from "@opencoredev/sandbox-sdk/vercel";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
-import { localDocker, lookupError, nativeModules, type NativeModules } from "./existence.js";
+import {
+  daytonaClient,
+  localDocker,
+  lookupError,
+  nativeModules,
+  type NativeModules,
+} from "./existence.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
 
 async function daytonaSnapshots() {
-  const { Daytona } = await nativeModules.load("@daytonaio/sdk");
-
-  return new Daytona().snapshot;
+  return (await daytonaClient()).snapshot;
 }
 
 async function boxdSnapshots() {
   const { Boxd } = await nativeModules.load("@boxd-sh/sdk");
 
-  return new Boxd({ apiKey: process.env.BOXD_API_KEY }).snapshots;
+  return new Boxd(boxdConfig()).snapshots;
 }
 
 async function freestyleSnapshots() {
   const { Freestyle } = await nativeModules.load("freestyle");
 
-  return new Freestyle({ apiKey: process.env.FREESTYLE_API_KEY }).vms.snapshots;
+  return new Freestyle(freestyleConfig()).vms.snapshots;
 }
 
 async function tenkiClient() {
   const { TenkiSandbox } = await nativeModules.load("@tenkicloud/sandbox");
 
-  return new TenkiSandbox({ authToken: process.env.TENKI_API_KEY ?? process.env.TENKI_AUTH_TOKEN });
+  return new TenkiSandbox(tenkiConfig());
 }
 
 /** Run `action` with a fresh Modal client, closed afterwards. Cleanup can outlive the adapter's client. */
@@ -46,8 +58,11 @@ async function withModal<T>(
   }
 }
 
-function instaboxBase() {
-  return process.env.INSTABOX_API_URL ?? "https://api.instabox.sh";
+/** Superserve's connection for `@superserve/sdk` calls: the key and its region's control plane. */
+function superserveConnection() {
+  const { apiKey, baseUrl } = superserveConfig();
+
+  return { apiKey, baseUrl };
 }
 
 export async function snapshotCleaner(
@@ -58,10 +73,12 @@ export async function snapshotCleaner(
   if (name === "instabox") {
     // A fresh request: cleanup can run after the source machine is gone.
     return async (id) => {
-      const response = await fetch(`${instaboxBase()}/v1/snapshots/${encodeURIComponent(id)}`, {
+      const { apiKey, baseUrl } = instaboxConfig();
+
+      const response = await fetch(`${baseUrl}/v1/snapshots/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: {
-          "X-API-Key": process.env.INSTABOX_API_KEY ?? "",
+          "X-API-Key": apiKey,
           "Idempotency-Key": crypto.randomUUID(),
           "X-Confirm-Delete": id,
         },
@@ -78,7 +95,7 @@ export async function snapshotCleaner(
     const { Snapshot } = await nativeModules.load("@superserve/sdk");
 
     return async (id) => {
-      await Snapshot.deleteById(id);
+      await Snapshot.deleteById(id, superserveConnection());
     };
   }
 
@@ -103,7 +120,7 @@ export async function snapshotCleaner(
     const { Box } = await nativeModules.load("@upstash/box");
 
     return async (id) => {
-      await Box.deleteSnapshots({ snapshotIds: [id] });
+      await Box.deleteSnapshots({ ...upstashConfig(), snapshotIds: [id] });
     };
   }
 
@@ -111,7 +128,7 @@ export async function snapshotCleaner(
     const { Sandbox } = await nativeModules.load("e2b");
 
     return async (id) => {
-      await Sandbox.deleteSnapshot(id);
+      await Sandbox.deleteSnapshot(id, e2bConfig());
     };
   }
 
@@ -147,7 +164,7 @@ export async function snapshotCleaner(
     const { Snapshot } = await nativeModules.load("@vercel/sandbox");
 
     return async (id) => {
-      await (await Snapshot.get({ snapshotId: id })).delete();
+      await (await Snapshot.get({ ...vercelConfig(), snapshotId: id })).delete();
     };
   }
 
@@ -212,7 +229,7 @@ export async function snapshotsFromSource(provider: string, sourceSandboxId: str
 
   return z
     .array(z.object({ id: z.string(), name: z.string().optional() }))
-    .parse(await Snapshot.list(sourceSandboxId));
+    .parse(await Snapshot.list(sourceSandboxId, superserveConnection()));
 }
 
 const snapshotInfo = z.object({
@@ -241,7 +258,7 @@ export async function inspectSnapshot(
     switch (name) {
       case "e2b": {
         const { Sandbox } = await nativeModules.load("e2b");
-        const page = Sandbox.listSnapshots({ name: id, limit: 100 });
+        const page = Sandbox.listSnapshots({ ...e2bConfig(), name: id, limit: 100 });
 
         for (let index = 0; index < 100; index++) {
           const items = z.array(z.object({ snapshotId: z.string() })).parse(await page.nextItems());
@@ -284,8 +301,10 @@ export async function inspectSnapshot(
       }
 
       case "instabox": {
-        const response = await fetch(`${instaboxBase()}/v1/snapshots/${encodeURIComponent(id)}`, {
-          headers: { "X-API-Key": process.env.INSTABOX_API_KEY ?? "" },
+        const { apiKey, baseUrl } = instaboxConfig();
+
+        const response = await fetch(`${baseUrl}/v1/snapshots/${encodeURIComponent(id)}`, {
+          headers: { "X-API-Key": apiKey },
         });
 
         if (!response.ok)
@@ -299,15 +318,16 @@ export async function inspectSnapshot(
       case "superserve": {
         const { Snapshot } = await nativeModules.load("@superserve/sdk");
 
-        info = snapshotInfo.parse(await Snapshot.get(id));
+        info = snapshotInfo.parse(await Snapshot.get(id, superserveConnection()));
         break;
       }
 
       case "upstash": {
-        const response = await fetch(
-          `${process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com"}/v2/box/snapshots`,
-          { headers: { Authorization: `Bearer ${process.env.UPSTASH_BOX_API_KEY ?? ""}` } },
-        );
+        const { apiKey, baseUrl } = upstashConfig();
+
+        const response = await fetch(`${baseUrl}/v2/box/snapshots`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
 
         if (!response.ok)
           throw Object.assign(new Error("Snapshot metadata unavailable"), {
@@ -342,7 +362,7 @@ export async function inspectSnapshot(
         // Vercel keeps a deleted snapshot readable with status "deleted". Its source is a session
         // ID, not the sandbox name the ownership proof records, so no parent is compared.
         const { Snapshot } = await nativeModules.load("@vercel/sandbox");
-        const snapshot = await Snapshot.get({ snapshotId: id });
+        const snapshot = await Snapshot.get({ ...vercelConfig(), snapshotId: id });
 
         if (snapshot.snapshotId !== id) throw new Error("Snapshot metadata ID mismatch");
 

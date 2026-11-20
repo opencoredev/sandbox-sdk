@@ -105,12 +105,17 @@ it("does not accept a terminal state returned for a different ID", async () => {
 
 it("Upstash uses exact native get/status and preserves definitive404, not transient500", async () => {
   vi.stubEnv("UPSTASH_BOX_API_KEY", "offline");
+  vi.stubEnv("UPSTASH_BOX_BASE_URL", undefined);
   native.get.mockResolvedValue({ id: "target", getStatus: native.status });
   native.status.mockResolvedValue({ status: "deleted" });
   expect((await lookupSandbox({ ...memory(), name: "upstash" }, "target", 100)).result).toBe(
     "terminal",
   );
-  expect(native.get).toHaveBeenCalledWith("target");
+  // With the adapter's key and endpoint, from its resolver.
+  expect(native.get).toHaveBeenCalledWith("target", {
+    apiKey: "offline",
+    baseUrl: "https://us-east-1.box.upstash.com",
+  });
   native.get.mockRejectedValue(Object.assign(new Error("native"), { statusCode: 404 }));
   expect((await lookupSandbox({ ...memory(), name: "upstash" }, "target", 100)).result).toBe(
     "not-found",
@@ -249,7 +254,7 @@ it("uses the installed Daytona sandbox API without toolbox hydration", () => {
  const mod=await nativeModules.load("@daytonaio/sdk"), load=nativeModules.load;
  let calls=[], status=200, returnedId="target";
  class OfflineDaytona extends mod.Daytona {
-  constructor(){super({apiKey:"offline",otelEnabled:false}); this.sandboxApi={
+  constructor(){super({apiKey:"offline",otelEnabled:false,useDeprecatedPolling:true}); this.sandboxApi={
    getSandbox:async(id)=>{calls.push(id); if(status!==200) throw Object.assign(new Error("sandbox response"),{response:{status}}); return {data:{id:returnedId,state:"started"}};},
    getToolboxProxyUrl:async()=>{throw Object.assign(new Error("toolbox missing"),{response:{status:404}});}
   };}

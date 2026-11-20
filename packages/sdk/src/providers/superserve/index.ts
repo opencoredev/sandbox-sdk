@@ -38,6 +38,8 @@ import {
 } from "./routes.js";
 import { spawn } from "./session.js";
 
+export { resolveConfig, type SuperserveConfig } from "./routes.js";
+
 export interface SuperserveOptions {
   /** Defaults to SUPERSERVE_API_KEY; required on first use. */
   apiKey?: string;
@@ -622,7 +624,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         await sdkCall(
           Sandbox,
           "connect",
-          [sandboxId, { apiKey: config().apiKey, baseUrl: options.baseUrl }],
+          [sandboxId, { apiKey: config().apiKey, baseUrl: config().baseUrl }],
           sdkPackage,
         ),
         "Sandbox.connect",

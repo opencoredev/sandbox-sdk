@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
+import { resolveConfig as instaboxConfig } from "@opencoredev/sandbox-sdk/instabox";
+import { resolveConfig as vercelConfig } from "@opencoredev/sandbox-sdk/vercel";
 import type { Json } from "../json.js";
 import { pricing } from "../pricing.js";
 import type { OwnedSandbox } from "./input.js";
@@ -418,11 +420,14 @@ async function vercelSdk(): Promise<VercelModule> {
   return import(pathToFileURL(require.resolve("@vercel/sandbox")).href);
 }
 
-/** Reads and stops through the native SDK, which resolves OIDC or token credentials itself. Tests replace it. */
+/**
+ * Reads and stops through the native SDK with the adapter's credentials and scope: an explicit
+ * token's team and project, else OIDC. Tests replace it.
+ */
 export const vercelMeter = {
   async read(name: string): Promise<VercelMeter> {
     const { Sandbox } = await vercelSdk();
-    const box = await Sandbox.get({ name, resume: false });
+    const box = await Sandbox.get({ ...vercelConfig(), name, resume: false });
 
     return vercelMeterSchema.parse({
       name: box.name,
@@ -436,7 +441,7 @@ export const vercelMeter = {
   },
   async stop(name: string): Promise<void> {
     const { Sandbox } = await vercelSdk();
-    await (await Sandbox.get({ name, resume: false })).stop();
+    await (await Sandbox.get({ ...vercelConfig(), name, resume: false })).stop();
   },
 };
 
@@ -1149,7 +1154,9 @@ export async function collectProvider(
           : unavailable("Event pagination limit; history incomplete");
       } else if (provider === "instabox") {
         const headers = { "X-API-Key": key ?? "" };
-        const base = env.INSTABOX_API_URL ?? "https://api.instabox.sh";
+        // The adapter's base URL, without trailing slashes: `//v1/machines/<id>` can answer 404 for a
+        // live machine, which would mark its still-accruing usage final.
+        const base = instaboxConfig({ apiKey: key }).baseUrl;
 
         // Deletion first: a machine already gone (404) when its usage is read has a final meter.
         const deleted = await transport(`${base}/v1/machines/${id}`, headers).then(

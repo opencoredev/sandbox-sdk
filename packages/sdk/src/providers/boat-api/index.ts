@@ -204,6 +204,44 @@ function fileInfo(
 
 const statScript = `const fs=require('fs'),p=require('path');const stat=x=>{const s=fs.lstatSync(x);return {path:x,type:s.isSymbolicLink()?'symlink':s.isDirectory()?'directory':'file',size:s.size,modifiedAt:s.mtimeMs}};`;
 
+/** The options that choose where a Boat API adapter connects and as whom. */
+export type BoatConnection = Pick<BoatOptions, "apiKey" | "baseUrl" | "apiUrl">;
+
+/** What a Boat API adapter sends every request with. */
+export interface BoatConfig {
+  readonly apiKey: string;
+  /** The API base URL, without trailing slashes: `@boatdev/sdk`'s `basePath`. */
+  readonly baseUrl: string;
+}
+
+function baseUrlOf(options: BoatConnection, settings: BoatApiSettings): string {
+  return (
+    options.baseUrl ??
+    options.apiUrl ??
+    (settings.baseEnv ? process.env[settings.baseEnv] : undefined) ??
+    settings.baseUrl
+  ).replace(/\/+$/, "");
+}
+
+const keyOf = (options: BoatConnection, settings: BoatApiSettings) =>
+  options.apiKey ?? process.env[settings.keyEnv];
+
+/** The key and base URL `boatApi(options, settings)` uses. Throws `auth` when the key is missing. */
+export function resolveBoatApiConfig(
+  options: BoatConnection,
+  settings: BoatApiSettings = defaults,
+): BoatConfig {
+  const apiKey = keyOf(options, settings);
+
+  if (!apiKey)
+    throw errors(settings.name, settings.label, settings.keyEnv, settings.name !== "boat").failure(
+      `${settings.label} API key is missing. Authentication is required. Set ${settings.keyEnv} or pass apiKey.`,
+      "auth",
+    );
+
+  return { apiKey, baseUrl: baseUrlOf(options, settings) };
+}
+
 /** The adapter and the HTTP client it shares with `box.native`, `provider.api` and Sandboxer's extra calls. */
 export interface BoatCore {
   provider: Provider<BoatNative, "size"> & { readonly api: NativeApi<BoatPlane, BoatClientSdk> };
@@ -223,17 +261,11 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
   const environmentFiles = new Map<string, Map<string, Promise<string>>>();
   const environments = new Map<string, Record<string, string>>();
   const timeoutMs = options.requestTimeoutMs ?? 90_000;
-  const key = () => options.apiKey ?? process.env[settings.keyEnv];
+  const key = () => keyOf(options, settings);
 
   // Read on first use, not at construction, so a missing key or bad option fails the first call.
   function credentials() {
-    const value = key();
-
-    if (!value)
-      throw failure(
-        `${label} API key is missing. Authentication is required. Set ${settings.keyEnv} or pass apiKey.`,
-        "auth",
-      );
+    const { apiKey: value } = resolveBoatApiConfig(options, settings);
 
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
       throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
@@ -245,11 +277,7 @@ export function boatApi(options: BoatOptions = {}, settings: BoatApiSettings = d
     provider: settings.name,
     label,
     keyEnv: settings.keyEnv,
-    baseUrl: () =>
-      options.baseUrl ??
-      options.apiUrl ??
-      (settings.baseEnv ? process.env[settings.baseEnv] : undefined) ??
-      settings.baseUrl,
+    baseUrl: () => baseUrlOf(options, settings),
     credentials,
     secrets: () => [key()],
     timeoutMs: Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 90_000,

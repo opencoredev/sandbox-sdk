@@ -289,23 +289,56 @@ export type E2BProvider = Provider<E2BNative, E2BCapability, { e2b: E2BExtension
   buildTemplate(spec: E2BTemplateSpec, options: TemplateBuildOptions): Promise<TemplateInfo>;
 } & Required<Pick<Provider, "terminal" | "deleteSnapshot">>;
 
+/** The options that choose where an E2B adapter connects and as whom. */
+export type E2BConnection = Pick<E2BOptions, "apiKey" | "domain">;
+
+/**
+ * What an E2B adapter sends its control-plane requests with: `resolveConfig` returns it in the
+ * shape the `e2b` package's connection options take, so a client built from it reaches the same
+ * sandboxes as the adapter.
+ */
+export interface E2BConfig {
+  readonly apiKey: string;
+  readonly domain: string;
+  /** The control-plane base URL, without trailing slashes. */
+  readonly apiUrl: string;
+}
+
+function domainOf(options: E2BConnection): string {
+  return options.domain ?? (process.env.E2B_DOMAIN || "e2b.app");
+}
+
+function apiUrlOf(options: E2BConnection): string {
+  return (process.env.E2B_API_URL || `https://api.${domainOf(options)}`).replace(/\/+$/, "");
+}
+
+function apiKeyOf(options: E2BConnection): string {
+  const key = options.apiKey ?? process.env.E2B_API_KEY;
+
+  if (!key?.trim())
+    throw new SandboxError(
+      "E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey.",
+      { code: "auth", provider: "e2b" },
+    );
+
+  return key;
+}
+
+/**
+ * The key, domain and API URL `e2b(options)` uses, read from `options` and the environment as the
+ * adapter reads them. Throws `auth` when the key is missing. The adapter ignores `E2B_DEBUG`; pass
+ * this whole object to the `e2b` package so it does too: `Sandbox.getInfo(id, resolveConfig())`.
+ */
+export function resolveConfig(options: E2BConnection = {}): E2BConfig {
+  return { apiKey: apiKeyOf(options), domain: domainOf(options), apiUrl: apiUrlOf(options) };
+}
+
 /** E2B's template fixes CPU, RAM and disk; explicit size requests fail closed.
  * Talks to E2B's control plane and to envd directly over HTTP; the `e2b` package is not needed.
  */
 export function e2b(options: E2BOptions = {}): E2BProvider {
-  const domain = () => options.domain ?? (process.env.E2B_DOMAIN || "e2b.app");
-
-  const apiKey = () => {
-    const key = options.apiKey ?? process.env.E2B_API_KEY;
-
-    if (!key?.trim())
-      throw new SandboxError(
-        "E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey.",
-        { code: "auth", provider: "e2b" },
-      );
-
-    return key;
-  };
+  const domain = () => domainOf(options);
+  const apiKey = () => apiKeyOf(options);
 
   const requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
   const connections = new Map<string, Connection>();
@@ -340,7 +373,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     ],
     planes: {
       api: {
-        baseUrl: () => process.env.E2B_API_URL || `https://api.${domain()}`,
+        baseUrl: () => apiUrlOf(options),
         auth: () => ({ "x-api-key": apiKey() }),
       },
       envd: {
@@ -943,7 +976,8 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
   const binding: NativeSdkBinding = {
     package: "e2b",
     connect(module, sandboxId) {
-      const credentials = { apiKey: apiKey(), domain: domain(), requestTimeoutMs };
+      // An explicit apiUrl keeps the SDK on the adapter's API: alone, E2B_DEBUG points it at localhost.
+      const credentials = { ...resolveConfig(options), requestTimeoutMs };
 
       if (sandboxId === undefined) return sdkConstruct(module, "E2B", [credentials], "e2b");
 

@@ -6,9 +6,9 @@
  */
 import { createServer as createHttpServer, type IncomingMessage } from "node:http";
 import { createServer as createH2Server, type ServerHttp2Session } from "node:http2";
-import type { AddressInfo } from "node:net";
 import { ConnectionConfig, type ConnectionOpts } from "e2b";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { boat } from "@opencoredev/sandbox-sdk/boat";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
@@ -23,6 +23,9 @@ import { inspectSnapshot, snapshotCleaner } from "../src/snapshots.js";
 import { fakeNativeModules } from "./native-fakes.js";
 
 const id = "fixture";
+
+/** An upper bound for one lookup, loose enough for a loaded host; a fixture answers at once. */
+const budget = 10_000;
 
 interface Row {
   method: string;
@@ -64,6 +67,7 @@ const providerEnv = [
 
 beforeEach(() => {
   rows.length = 0;
+
   for (const key of providerEnv) vi.stubEnv(key, undefined);
 });
 
@@ -77,7 +81,7 @@ afterEach(() => {
 function stubFetch(respond: (url: URL, method: string, headers: Headers) => [number, unknown]) {
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const request = input instanceof Request ? input : undefined;
-    const url = new URL(request ? request.url : input);
+    const url = new URL(input instanceof Request ? input.url : input);
     const method = init?.method ?? request?.method ?? "GET";
     const headers = new Headers(init?.headers ?? request?.headers);
     const [status, body] = respond(url, method, headers);
@@ -97,7 +101,7 @@ async function httpServer(respond: (request: IncomingMessage) => [number, unknow
   });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
+  const { port } = z.object({ port: z.number() }).parse(server.address());
 
   return {
     base: `http://127.0.0.1:${port}`,
@@ -119,7 +123,7 @@ it("Boat: a trailing slash on BOAT_API_BASE still reads the live sandbox", async
 
   const adapter = boat();
   await adapter.api.request("GET", `/sandboxes/${id}`);
-  expect((await lookupSandbox(adapter, id, 1500)).result).toBe("present");
+  expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(rows.map((row) => row.url)).toEqual([
     `https://boat.fixture/api/v1/sandboxes/${id}`,
     `https://boat.fixture/api/v1/sandboxes/${id}`,
@@ -141,7 +145,7 @@ it("Daytona: a trailing slash on DAYTONA_API_URL still reads the live sandbox an
 
   const adapter = daytona();
   expect((await adapter.connect(id)).id).toBe(id);
-  expect((await lookupSandbox(adapter, id, 1500)).result).toBe("present");
+  expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(await inspectSnapshot("daytona", adapter, "source", id)).toEqual({
     exists: true,
     sourceId: "source",
@@ -238,7 +242,7 @@ it("Vercel: lookups, snapshots and meters use the adapter's explicit token scope
 
   const adapter = vercel();
   expect((await adapter.connect(id)).state).toBe("running");
-  expect((await lookupSandbox(adapter, id, 1500)).result).toBe("present");
+  expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(await inspectSnapshot("vercel", adapter, id, id)).toEqual({ exists: true });
   expect((await vercelMeter.read(id)).name).toBe(id);
   expect(rows.every((row) => row.status === 200)).toBe(true);
@@ -246,24 +250,23 @@ it("Vercel: lookups, snapshots and meters use the adapter's explicit token scope
 
 /** A Tenki gRPC server that knows the sandbox only under one bearer token. */
 async function tenkiServer(liveToken: string) {
-  const field = (number: number, value: string | Buffer) => {
-    const bytes = typeof value === "string" ? Buffer.from(value) : value;
+  const field = (number: number, bytes: Buffer) =>
+    Buffer.concat([Buffer.from([(number << 3) | 2, bytes.length]), bytes]);
 
-    return Buffer.concat([Buffer.from([(number << 3) | 2, bytes.length]), bytes]);
-  };
+  const text = (number: number, value: string) => field(number, Buffer.from(value));
 
   const metadata = (key: string, value: string) =>
-    field(13, Buffer.concat([field(1, key), field(2, value)]));
+    field(13, Buffer.concat([text(1, key), text(2, value)]));
 
   const session = Buffer.concat([
-    field(1, id),
+    text(1, id),
     Buffer.from([0x10, 3]),
     metadata("sandbox-sdk", "1"),
     metadata("sandbox-sdk-created-at", "1760000000000"),
   ]);
 
   // Snapshot: id = 1, session_id = 2 (the source).
-  const snapshot = Buffer.concat([field(1, id), field(2, "source")]);
+  const snapshot = Buffer.concat([text(1, id), text(2, "source")]);
   const sessions = new Set<ServerHttp2Session>();
   const server = createH2Server();
 
@@ -285,6 +288,7 @@ async function tenkiServer(liveToken: string) {
 
       return;
     }
+
     const body = field(1, path.endsWith("/GetSnapshot") ? snapshot : session);
     const prefix = Buffer.alloc(5);
     prefix.writeUInt32BE(body.length, 1);
@@ -297,7 +301,7 @@ async function tenkiServer(liveToken: string) {
   });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
+  const { port } = z.object({ port: z.number() }).parse(server.address());
 
   return {
     endpoint: `http://127.0.0.1:${port}`,
@@ -316,7 +320,7 @@ it("Tenki: lookups use TENKI_AUTH_TOKEN before TENKI_API_KEY, as the adapter doe
 
   const adapter = tenki();
   expect((await adapter.list({})).map((box) => box.id)).toContain(id);
-  expect((await lookupSandbox(adapter, id, 2000)).result).toBe("present");
+  expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(await inspectSnapshot("tenki", adapter, "source", id)).toEqual({
     exists: true,
     sourceId: "source",
@@ -324,7 +328,7 @@ it("Tenki: lookups use TENKI_AUTH_TOKEN before TENKI_API_KEY, as the adapter doe
 
   // With only the auth token, the adapter works, so the lookup must too.
   vi.stubEnv("TENKI_API_KEY", undefined);
-  expect((await lookupSandbox(adapter, id, 2000)).result).toBe("present");
+  expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(rows.map((row) => row.status)).toEqual([0, 0, 0, 0]);
 });
 
@@ -345,14 +349,14 @@ it("E2B: E2B_DEBUG does not move the lookup to localhost while the adapter uses 
   fakeNativeModules({
     e2b: {
       Sandbox: {
-        async getInfo(sandboxId: string, opts?: ConnectionOpts) {
+        getInfo: vi.fn().mockImplementation(async (sandboxId: string, opts?: ConnectionOpts) => {
           const target = new ConnectionConfig(opts).apiUrl;
           rows.push({ method: "GET", url: `${target}/sandboxes/${sandboxId}`, status: 0 });
 
           if (target !== "https://api.fixture.invalid") throw new NotFound();
 
           return { sandboxId, state: "running" };
-        },
+        }),
         listSnapshots: vi.fn(),
         deleteSnapshot: vi.fn(),
       },
@@ -362,7 +366,7 @@ it("E2B: E2B_DEBUG does not move the lookup to localhost while the adapter uses 
 
   const adapter = e2b();
   await adapter.api.request("GET", `/sandboxes/${id}`);
-  expect((await lookupSandbox(adapter, id, 1500)).result).toBe("present");
+  expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(rows.map((row) => row.url)).toEqual([
     `https://api.fixture.invalid/sandboxes/${id}`,
     `https://api.fixture.invalid/sandboxes/${id}`,

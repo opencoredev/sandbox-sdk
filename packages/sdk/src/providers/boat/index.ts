@@ -1,4 +1,9 @@
-import { boatApi } from "../boat-api/index.js";
+import {
+  boatApi,
+  resolveBoatApiConfig,
+  type BoatConfig,
+  type BoatConnection,
+} from "../boat-api/index.js";
 import type { BoatPlane } from "../boat-api/transport.js";
 import type { NativeApi } from "../../native.js";
 import type { Provider } from "../../provider.js";
@@ -68,6 +73,18 @@ export type BoatProvider = Provider<BoatNative, "size"> & {
   /** Boat's API with no sandbox bound, for account calls such as `GET /limits`. */
   readonly api: NativeApi<BoatPlane, BoatClientSdk>;
 };
+
+export type { BoatConfig, BoatConnection };
+
+/**
+ * The key and base URL `boat(options)` sends every request with, read from `options` and the
+ * environment as the adapter reads them. Throws `auth` when the key is missing. Build your own
+ * `@boatdev/sdk` client against the same account with
+ * `new Configuration({ basePath: config.baseUrl, accessToken: config.apiKey })`.
+ */
+export function resolveConfig(options: BoatConnection = {}): BoatConfig {
+  return resolveBoatApiConfig(options);
+}
 
 /** Boat API v1 over plain HTTP. No other package to install. */
 export function boat(options: BoatOptions = {}): BoatProvider {

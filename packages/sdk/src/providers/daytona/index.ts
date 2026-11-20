@@ -250,6 +250,71 @@ function fileInfo(path: string, file: FileDto): FileInfo {
   };
 }
 
+/** The options that choose where a Daytona adapter connects and as whom. */
+export type DaytonaConnection = Pick<
+  DaytonaOptions,
+  "apiKey" | "jwtToken" | "organizationId" | "baseUrl" | "apiUrl" | "target"
+>;
+
+/**
+ * What a Daytona adapter sends every request with: `resolveConfig` returns it in the shape
+ * `new Daytona(config)` from `@daytonaio/sdk` takes, so a client built from it reaches the same
+ * sandboxes as the adapter.
+ */
+export type DaytonaConfig = {
+  /** The API base URL, without trailing slashes. */
+  readonly apiUrl: string;
+  /** The default region for creates. */
+  readonly target: string;
+} & ({ readonly apiKey: string } | { readonly jwtToken: string; readonly organizationId: string });
+
+function apiUrlOf(options: DaytonaConnection): string {
+  return (
+    options.baseUrl ??
+    options.apiUrl ??
+    process.env.DAYTONA_API_URL ??
+    process.env.DAYTONA_SERVER_URL ??
+    "https://app.daytona.io/api"
+  ).replace(/\/+$/, "");
+}
+
+function targetOf(options: DaytonaConnection): string {
+  return options.target ?? process.env.DAYTONA_TARGET ?? "us";
+}
+
+function credentialsOf(
+  options: DaytonaConnection,
+): { apiKey: string } | { jwtToken: string; organizationId: string } {
+  const apiKey = options.apiKey ?? (options.jwtToken ? undefined : process.env.DAYTONA_API_KEY);
+  const jwtToken = apiKey ? undefined : (options.jwtToken ?? process.env.DAYTONA_JWT_TOKEN);
+  const organizationId = options.organizationId ?? process.env.DAYTONA_ORGANIZATION_ID;
+
+  if (apiKey) return { apiKey };
+
+  if (!jwtToken)
+    throw new SandboxError(
+      "Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey.",
+      { code: "auth", provider: "daytona" },
+    );
+
+  if (!organizationId)
+    throw new SandboxError(
+      "Daytona organization is missing. JWT authentication needs an organization ID. Set DAYTONA_ORGANIZATION_ID or pass organizationId.",
+      { code: "auth", provider: "daytona" },
+    );
+
+  return { jwtToken, organizationId };
+}
+
+/**
+ * The base URL, region and credentials `daytona(options)` uses, read from `options` and the
+ * environment as the adapter reads them. Throws `auth` when credentials are missing. Use it to build
+ * your own `@daytonaio/sdk` client that reaches the same account: `new Daytona(resolveConfig())`.
+ */
+export function resolveConfig(options: DaytonaConnection = {}): DaytonaConfig {
+  return { apiUrl: apiUrlOf(options), target: targetOf(options), ...credentialsOf(options) };
+}
+
 /** Direct Daytona adapter over HTTP. Nothing is sent and no credentials are read until the first operation. */
 export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   // Keep values across operations and concurrent creates, including env overrides.
@@ -272,36 +337,13 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   for (const secret of [options.jwtToken, process.env.DAYTONA_JWT_TOKEN])
     if (secret) knownSecrets.add(secret);
 
-  const baseUrl = () =>
-    options.baseUrl ??
-    options.apiUrl ??
-    process.env.DAYTONA_API_URL ??
-    process.env.DAYTONA_SERVER_URL ??
-    "https://app.daytona.io/api";
-
-  const target = () => options.target ?? process.env.DAYTONA_TARGET ?? "us";
+  const baseUrl = () => apiUrlOf(options);
+  const target = () => targetOf(options);
   let resolved: Credentials | undefined;
 
   /** Read once, on first use. An explicit jwtToken wins over the API key environment variable. */
   function credentials(): Credentials {
-    if (resolved) return resolved;
-    const apiKey = options.apiKey ?? (options.jwtToken ? undefined : process.env.DAYTONA_API_KEY);
-    const jwtToken = apiKey ? undefined : (options.jwtToken ?? process.env.DAYTONA_JWT_TOKEN);
-    const organizationId = options.organizationId ?? process.env.DAYTONA_ORGANIZATION_ID;
-
-    if (jwtToken && !organizationId)
-      throw new SandboxError(
-        "Daytona organization is missing. JWT authentication needs an organization ID. Set DAYTONA_ORGANIZATION_ID or pass organizationId.",
-        { code: "auth", provider: "daytona" },
-      );
-
-    if (!apiKey && !jwtToken)
-      throw new SandboxError(
-        "Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey.",
-        { code: "auth", provider: "daytona" },
-      );
-
-    return (resolved = apiKey ? { apiKey } : { jwtToken, organizationId });
+    return (resolved ??= credentialsOf(options));
   }
 
   const { http, control, toolbox } = daytonaHttp({
@@ -342,18 +384,10 @@ export function daytona(options: DaytonaOptions = {}): DaytonaProvider {
   const sdk: NativeSdkBinding = {
     package: "@daytonaio/sdk",
     async connect(module, sandboxId) {
-      const { apiKey, jwtToken, organizationId } = credentials();
-
       const client = sdkConstruct(
         module,
         "Daytona",
-        [
-          {
-            ...(apiKey ? { apiKey } : { jwtToken, organizationId }),
-            apiUrl: baseUrl(),
-            target: target(),
-          },
-        ],
+        [{ ...credentials(), apiUrl: baseUrl(), target: target() }],
         "@daytonaio/sdk",
       );
 

@@ -7,8 +7,12 @@ import {
   type UpstashProvider,
 } from "./provider.js";
 
+export { resolveConfig } from "./provider.js";
+
 export type {
   UpstashBoxOptions,
+  UpstashConfig,
+  UpstashConnection,
   UpstashCapability,
   UpstashEphemeralCapability,
   UpstashEphemeralOptions,

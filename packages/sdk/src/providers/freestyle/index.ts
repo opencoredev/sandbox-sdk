@@ -61,6 +61,41 @@ export type { FreestylePlane };
 /** `box.native`: Freestyle's API with `{vmId}` bound to the sandbox. Paths include `/v5`. */
 export type FreestyleNative = NativeApi<FreestylePlane, FreestyleVmSdk>;
 
+/** The options that choose where a Freestyle adapter connects and as whom. */
+export type FreestyleConnection = Pick<FreestyleOptions, "apiKey" | "baseUrl">;
+
+/** What a Freestyle adapter sends every request with, in the shape `new Freestyle(config)` takes. */
+export interface FreestyleConfig {
+  readonly apiKey: string;
+  /** The API base URL, without trailing slashes. */
+  readonly baseUrl: string;
+}
+
+function baseUrlOf(options: FreestyleConnection): string {
+  return (options.baseUrl ?? defaultBaseUrl).replace(/\/+$/, "");
+}
+
+function apiKeyOf(options: FreestyleConnection): string {
+  const key = options.apiKey ?? process.env.FREESTYLE_API_KEY;
+
+  if (!key?.trim())
+    throw failure(
+      "Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey.",
+      "auth",
+    );
+
+  return key;
+}
+
+/**
+ * The key and base URL `freestyle(options)` uses, read from `options` and the environment as the
+ * adapter reads them. Throws `auth` when the key is missing. `new Freestyle(resolveConfig())` from
+ * the `freestyle` package reaches the same account.
+ */
+export function resolveConfig(options: FreestyleConnection = {}): FreestyleConfig {
+  return { apiKey: apiKeyOf(options), baseUrl: baseUrlOf(options) };
+}
+
 /** `provider.api`: Freestyle's API with no VM bound. */
 export type FreestyleApi = NativeApi<FreestylePlane, FreestyleClientSdk>;
 
@@ -145,21 +180,14 @@ export function freestyle(options: FreestyleOptions = {}): FreestyleProvider {
   const autoDeleteSeconds =
     options.autoDeleteMs === undefined ? undefined : Math.ceil(options.autoDeleteMs / 1000);
 
-  const baseUrl = options.baseUrl ?? defaultBaseUrl;
+  const baseUrl = baseUrlOf(options);
 
   /** Checks the configuration on first use, so the factory constructs freely. */
   function apiKey(): string {
     if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs <= 0)
       throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
-    const key = options.apiKey ?? process.env.FREESTYLE_API_KEY;
 
-    if (!key?.trim())
-      throw failure(
-        "Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey.",
-        "auth",
-      );
-
-    return key;
+    return apiKeyOf(options);
   }
 
   const client = freestyleClient({

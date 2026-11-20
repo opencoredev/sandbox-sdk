@@ -980,7 +980,12 @@ describe("native API", () => {
     const connected = await native.sdk(async () => ({ Sandbox }));
     expectTypeOf(connected).toEqualTypeOf<Sandbox>();
     expect(connected.id).toBe("sb-1");
-    expect(calls).toEqual([["sb-1", { apiKey: "mock", baseUrl: undefined }]]);
+    // The control plane the adapter itself uses, so the SDK reaches the same region.
+    expect(calls).toEqual([["sb-1", { apiKey: "mock", baseUrl: "https://api.superserve.ai" }]]);
+    await superserve({ apiKey: "mock", baseUrl: "https://ss.fixture/" })
+      .native("sb-1")
+      .sdk(async () => ({ Sandbox }));
+    expect(calls[1]).toEqual(["sb-1", { apiKey: "mock", baseUrl: "https://ss.fixture" }]);
     const account = await provider.api.sdk(async () => ({ Sandbox }));
     expectTypeOf(account).toEqualTypeOf<typeof Sandbox>();
     expect(account).toBe(Sandbox);
