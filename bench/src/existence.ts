@@ -4,6 +4,7 @@ import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { BoatApi, Configuration } from "@boatdev/sdk";
 import type { Boxd } from "@boxd-sh/sdk";
 import type { Daytona, Sandbox as DaytonaSandbox } from "@daytonaio/sdk";
+import { SandboxError } from "@opencoredev/sandbox-sdk";
 import type { LocalNative } from "@opencoredev/sandbox-sdk/local";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Snapshot } from "@superserve/sdk";
@@ -518,9 +519,18 @@ export async function lookupSandbox(
         case "local": {
           const docker = localDocker(provider, id);
 
-          const container = dockerContainer.parse(
-            await docker.call("GET", `/containers/${encodeURIComponent(id)}/json`),
-          );
+          let inspected;
+
+          try {
+            inspected = await docker.call("GET", `/containers/${encodeURIComponent(id)}/json`);
+          } catch (error) {
+            // The local client maps exactly an HTTP 404 from this exact inspect to `not_found`.
+            if (error instanceof SandboxError && error.code === "not_found")
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+            throw error;
+          }
+
+          const container = dockerContainer.parse(inspected);
 
           // Docker nests the state ("running", "paused", "exited"). None is terminal: an exited
           // container still exists until removed, so cleanup treats it as present.
