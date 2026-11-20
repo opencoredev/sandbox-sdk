@@ -148,6 +148,26 @@ describe("a connection fingerprint names the whole connection without holding an
     expect(fingerprintOf(await load("e2b", {}))).not.toBe(fingerprintOf(run));
   });
 
+  // Where `resolveConfig` leaves a field to the provider's SDK, the SDK reads the environment.
+  it.each([
+    ["boxd", "BOXD_BASE_URL", { BOXD_API_KEY: "live-key" }, "https://elsewhere.invalid"],
+    ["boxd", "BOXD_API_URL", { BOXD_API_KEY: "live-key" }, "https://elsewhere.invalid"],
+    ["tenki", "TENKI_API_ENDPOINT", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
+    ["tenki", "TENKI_API_URL", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
+    ["vercel", "VERCEL_OIDC_TOKEN", {}, "other-oidc-token"],
+  ])("%s changes when %s, which its SDK reads itself, does", (name, variable, env, value) => {
+    for (const [key, set] of Object.entries(env)) vi.stubEnv(key, set);
+    vi.stubEnv("VERCEL_OIDC_TOKEN", "run-oidc-token");
+
+    const run = bound({ ...memory(), name });
+
+    vi.stubEnv(variable, value);
+    const other = bound({ ...memory(), name });
+
+    expect(fingerprintOf(run)).toMatch(/^[0-9a-f]{16}$/);
+    expect(fingerprintOf(other)).not.toBe(fingerprintOf(run));
+  });
+
   it("is null for an adapter that resolves its own connection", () => {
     expect(fingerprintOf(bound(memory()))).toBeNull();
   });
