@@ -409,7 +409,7 @@ Costs and budgets:
 - Account entitlements. Account caps are conservative admission settings, not verified limits.
 - Bounding cleanup past a reserve. It is priced instead, to the first lookup that sees the sandbox gone.
 - Exact stop times. A sandbox is priced until a lookup observes it gone, so the polling interval, rounding and charging cleanup separately from the iteration all over-report; nothing is subtracted for them.
-- Pricing past the return. A sandbox never observed gone is an open liability priced to the run's cutoff; its cost grows until reaped. On a provider with no exact lookup (Railway, AgentOS), or whose deleted sandboxes still read as live, every sandbox is reported this way.
+- Pricing past the cutoff. The cutoff is taken just before the final report save, not at process exit. A sandbox never observed gone is an open liability priced to that cutoff; its cost keeps growing until it is reaped. On a provider with no exact lookup (Railway, AgentOS), or whose deleted sandboxes still read as live, every sandbox is reported this way.
 - Currency conversion for ranking. EUR and USD stay separate; the 2 USD/EUR budget rate is admission-only.
 - Local host costs.
 

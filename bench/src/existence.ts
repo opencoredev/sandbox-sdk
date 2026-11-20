@@ -284,6 +284,24 @@ const { NotFoundError: boxdNotFound }: typeof import("@boxd-sh/sdk") = await imp
 /** Loads installed native SDKs; tests replace `load`. */
 export const nativeModules = { load: sdk };
 
+/**
+ * The control plane a Superserve key's sandboxes live on, as @superserve/sdk 0.11.4's
+ * `resolveConfig` picks it: a non-blank SUPERSERVE_BASE_URL, then the key's region
+ * (`ss_live_<region>_`), then US East. A lookup sent to another region's plane answers 404 for
+ * a sandbox that is still running there, which would read as absence.
+ */
+export function superserveControlPlane(
+  key = process.env.SUPERSERVE_API_KEY ?? "",
+  override = process.env.SUPERSERVE_BASE_URL,
+): string {
+  const explicit = override?.trim();
+
+  if (explicit) return explicit;
+  const region = /^ss_live_([a-z0-9]{1,17})_[A-Za-z0-9_-]{32}$/.exec(key)?.[1];
+
+  return region === "usw" ? "https://api-usw.superserve.ai" : "https://api.superserve.ai";
+}
+
 /** `local().native(id)`: the adapter's handle on its Docker container. */
 type LocalHandle = { readonly client: Pick<LocalNative["client"], "call"> };
 
@@ -471,7 +489,7 @@ export async function lookupSandbox(
         case "superserve": {
           // Sandbox.connect POSTs /activate; use the SDK's read-only getInfo endpoint directly.
           const response = await fetch(
-            `${process.env.SUPERSERVE_BASE_URL ?? "https://api.superserve.ai"}/sandboxes/${encodeURIComponent(id)}`,
+            `${superserveControlPlane()}/sandboxes/${encodeURIComponent(id)}`,
             { headers: { "X-API-Key": process.env.SUPERSERVE_API_KEY ?? "" }, signal },
           );
 

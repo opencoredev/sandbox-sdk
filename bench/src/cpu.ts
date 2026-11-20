@@ -390,11 +390,17 @@ export interface CpuMemberTiming {
  * ran fast, or the reply is wrong): the cohort is `inconsistent` and nothing is bounded.
  */
 export function cpuOverlap(members: readonly CpuMemberTiming[]) {
+  // Whole microseconds from the earliest dispatch. Epoch milliseconds lose precision in floating
+  // point, and every rounding below goes the conservative way: a latest start rounds up, an
+  // earliest end down, and a phase length up. So the bound can only shrink, never grow.
+  const origin = Math.min(...members.map((m) => m.exec[0]));
+  const us = (ms: number) => ms * 1000;
+
   const timings = members.map((m) => ({
-    start: m.exec[0],
-    end: m.exec[1],
-    single: m.singleSeconds * 1000,
-    all: m.allSeconds * 1000,
+    start: us(m.exec[0] - origin),
+    end: us(m.exec[1] - origin),
+    single: m.singleSeconds * 1e6,
+    all: m.allSeconds * 1e6,
   }));
 
   if (timings.some((t) => t.single + t.all > t.end - t.start))
@@ -403,19 +409,20 @@ export function cpuOverlap(members: readonly CpuMemberTiming[]) {
   const bound = (
     phase: readonly { latestStart: number; earliestEnd: number; length: number }[],
   ) => {
-    const provenMs = Math.max(
+    const provenUs = Math.max(
       0,
-      Math.min(...phase.map((p) => p.earliestEnd)) - Math.max(...phase.map((p) => p.latestStart)),
+      Math.min(...phase.map((p) => Math.floor(p.earliestEnd))) -
+        Math.max(...phase.map((p) => Math.ceil(p.latestStart))),
     );
 
-    const typical = median(phase.map((p) => p.length)) ?? 0;
-    const fraction = typical > 0 ? provenMs / typical : 0;
+    const typicalUs = median(phase.map((p) => Math.ceil(p.length))) ?? 0;
+    const fraction = typicalUs > 0 ? provenUs / typicalUs : 0;
 
     return {
-      provenMs: Math.round(provenMs),
+      provenMs: Math.round(provenUs / 1000),
       provenFraction: Number(fraction.toFixed(3)),
-      // Compared before rounding, so 0.7996 is below a 0.8 cutoff.
-      ok: fraction >= overlapThreshold,
+      // Compared on whole microseconds before rounding, so 0.7996 is below a 0.8 cutoff.
+      ok: typicalUs > 0 && provenUs >= overlapThreshold * typicalUs,
     };
   };
 
@@ -442,7 +449,7 @@ export function cpuOverlap(members: readonly CpuMemberTiming[]) {
     single,
     all,
     /** How far apart the members' execs were dispatched, on the host clock. */
-    dispatchSkewMs: Math.round(Math.max(...starts) - Math.min(...starts)),
+    dispatchSkewMs: Math.round((Math.max(...starts) - Math.min(...starts)) / 1000),
     threshold: overlapThreshold,
     ok: single.ok && all.ok,
   };
