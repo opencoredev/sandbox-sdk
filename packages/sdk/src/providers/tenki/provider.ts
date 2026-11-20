@@ -70,7 +70,9 @@ export interface TenkiConfig {
 /**
  * The token and endpoint `tenki(options)` uses, read from `options` and the environment as the
  * adapter reads them: a non-blank TENKI_AUTH_TOKEN wins over TENKI_API_KEY. Throws `auth` when
- * neither is set. A client with the other variable's token sees another account's sandboxes.
+ * neither is set, as the adapter does. A client with the other variable's token sees another
+ * account's sandboxes.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: TenkiConnection = {}): TenkiConfig {
   const authToken =

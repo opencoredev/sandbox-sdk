@@ -78,9 +78,10 @@ export type { BoatConfig, BoatConnection };
 
 /**
  * The key and base URL `boat(options)` sends every request with, read from `options` and the
- * environment as the adapter reads them. Throws `auth` when the key is missing. Build your own
- * `@boatdev/sdk` client against the same account with
+ * environment as the adapter reads them. Throws `auth` when the key is missing, as the adapter
+ * does. Build your own `@boatdev/sdk` client against the same account with
  * `new Configuration({ basePath: config.baseUrl, accessToken: config.apiKey })`.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: BoatConnection = {}): BoatConfig {
   return resolveBoatApiConfig(options);

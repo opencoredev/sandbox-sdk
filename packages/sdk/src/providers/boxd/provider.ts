@@ -62,8 +62,10 @@ export interface BoxdConfig {
 }
 
 /**
- * The key and endpoint `boxd(options)` uses, read from `options` and the environment as the adapter
- * reads them. Throws `auth` when the key is missing.
+ * The key and endpoint `boxd(options)` builds its `Boxd` client with, read from `options` and the
+ * environment as the adapter reads them. Throws `auth` when the key is missing, as the adapter's
+ * client does.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: BoxdConnection = {}): BoxdConfig {
   const apiKey = options.apiKey ?? process.env.BOXD_API_KEY;
@@ -278,7 +280,8 @@ export function createBoxdProvider<C extends BoxdClient>(
 
     return (webClient ??= openTransfers(
       {
-        ...resolveConfig(options),
+        apiKey: options.apiKey ?? process.env.BOXD_API_KEY,
+        baseURL: options.baseUrl ?? options.baseURL,
         timeout: options.requestTimeoutMs ?? 30000,
         maxRetries: 0,
       },

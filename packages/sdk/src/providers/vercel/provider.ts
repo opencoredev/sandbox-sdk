@@ -146,6 +146,7 @@ export type VercelConfig =
  * `auth` when a token lacks its team or project. Spread it into `@vercel/sandbox` calls, such as
  * `Sandbox.get({ ...resolveConfig(), name })`: without it, a token user's OIDC token can point at
  * another team and project, where the sandbox reads as missing.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: VercelConnection = {}): VercelConfig {
   const token = options.token ?? process.env.VERCEL_TOKEN;

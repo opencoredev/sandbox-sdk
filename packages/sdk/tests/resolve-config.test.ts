@@ -1,30 +1,66 @@
-// Each adapter's `resolveConfig` is what the adapter itself connects with, and the clients
-// `native.sdk()` builds get the same values, so code outside the adapter reaches the same account.
+// Each adapter's `resolveConfig` returns what that adapter already uses: the endpoint its own
+// requests go to and the credential they carry. It reads options and the environment and changes
+// neither. `request-parity.test.ts` proves the adapters themselves did not change.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { daytona } from "../src/providers/daytona/index.js";
+import { boat, resolveConfig as boatConfig } from "../src/providers/boat/index.js";
+import { daytona, resolveConfig as daytonaConfig } from "../src/providers/daytona/index.js";
 import { e2b, resolveConfig as e2bConfig } from "../src/providers/e2b/index.js";
+import { freestyle, resolveConfig as freestyleConfig } from "../src/providers/freestyle/index.js";
+import { instabox, resolveConfig as instaboxConfig } from "../src/providers/instabox/index.js";
+import {
+  superserve,
+  resolveConfig as superserveConfig,
+} from "../src/providers/superserve/index.js";
 import { resolveConfig as tenkiConfig } from "../src/providers/tenki/index.js";
-import { resolveConfig as upstashConfig } from "../src/providers/upstash/index.js";
+import { upstash, resolveConfig as upstashConfig } from "../src/providers/upstash/index.js";
 import { resolveConfig as vercelConfig } from "../src/providers/vercel/index.js";
-import { resolveConfig as boatConfig } from "../src/providers/boat/index.js";
-import { resolveConfig as superserveConfig } from "../src/providers/superserve/index.js";
 
 const variables = [
   "BOAT_API_KEY",
   "BOAT_API_BASE",
+  "DAYTONA_API_KEY",
   "DAYTONA_API_URL",
   "DAYTONA_SERVER_URL",
+  "DAYTONA_TARGET",
+  "E2B_API_KEY",
   "E2B_API_URL",
   "E2B_DEBUG",
   "E2B_DOMAIN",
+  "FREESTYLE_API_KEY",
+  "INSTABOX_API_KEY",
+  "INSTABOX_API_URL",
+  "SUPERSERVE_API_KEY",
   "SUPERSERVE_BASE_URL",
   "TENKI_API_KEY",
   "TENKI_AUTH_TOKEN",
+  "UPSTASH_BOX_API_KEY",
   "UPSTASH_BOX_BASE_URL",
   "VERCEL_TOKEN",
   "VERCEL_TEAM_ID",
   "VERCEL_PROJECT_ID",
 ];
+
+interface Sent {
+  readonly url: string;
+  readonly headers: Headers;
+}
+
+/** Every request the adapter sends, each answered 404. */
+function capture(): Sent[] {
+  const sent: Sent[] = [];
+
+  vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    sent.push({ url, headers: new Headers(init?.headers) });
+
+    return Response.json({ code: 404, message: "Not found" }, { status: 404 });
+  });
+
+  return sent;
+}
+
+/** `base` joined with `path` as the adapters' HTTP clients join them. */
+const joined = (base: string, path: string) => base.replace(/\/+$/, "") + path;
 
 beforeEach(() => {
   for (const key of variables) vi.stubEnv(key, undefined);
@@ -32,54 +68,132 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
-describe("native.sdk() clients connect where the adapter does", () => {
-  test("Daytona's client gets the base URL without trailing slashes", async () => {
-    class Daytona {
-      constructor(readonly config: { apiUrl?: string; apiKey?: string; target?: string }) {}
-      async get() {
-        return {};
-      }
-    }
+describe("resolveConfig is where and as whom the adapter's own requests go", () => {
+  test("Daytona: explicit options win over a conflicting environment", async () => {
+    vi.stubEnv("DAYTONA_API_KEY", "env-key");
+    vi.stubEnv("DAYTONA_API_URL", "https://env.invalid/api");
+    const options = { apiKey: "option-key", baseUrl: "https://option.invalid/api//" };
+    const sent = capture();
 
-    const client = await daytona({
-      apiKey: "k1",
-      baseUrl: "https://daytona.fixture/api//",
-    }).api.sdk(async () => ({ Daytona }));
+    await daytona(options)
+      .connect("sbx-1")
+      .catch(() => {});
 
-    expect(client.config).toEqual({
-      apiKey: "k1",
-      apiUrl: "https://daytona.fixture/api",
+    const config = daytonaConfig(options);
+
+    expect(config).toEqual({
+      apiKey: "option-key",
+      apiUrl: "https://option.invalid/api//",
       target: "us",
     });
+    expect(sent[0]?.url).toBe(joined(config.apiUrl, "/sandbox/sbx-1"));
+    expect(sent[0]?.headers.get("authorization")).toBe("Bearer option-key");
   });
 
-  test("E2B's client gets the adapter's API URL, so E2B_DEBUG cannot move it to localhost", async () => {
+  test("E2B: the adapter's API URL ignores E2B_DEBUG", async () => {
+    vi.stubEnv("E2B_API_KEY", "env-key");
     vi.stubEnv("E2B_DEBUG", "true");
+    vi.stubEnv("E2B_DOMAIN", "env.invalid");
+    const options = { apiKey: "option-key", domain: "option.invalid" };
+    const sent = capture();
 
-    class E2B {
-      constructor(readonly init: { apiUrl?: string; domain?: string }) {}
+    await e2b(options)
+      .connect("sbx-1")
+      .catch(() => {});
+
+    const config = e2bConfig(options);
+
+    expect(config).toEqual({
+      apiKey: "option-key",
+      domain: "option.invalid",
+      apiUrl: "https://api.option.invalid",
+    });
+    expect(sent[0]?.url.startsWith(`${config.apiUrl}/sandboxes/sbx-1`)).toBe(true);
+    expect(sent[0]?.headers.get("x-api-key")).toBe("option-key");
+  });
+
+  test("Boat, Freestyle, Instabox, Superserve and Upstash agree with their requests", async () => {
+    vi.stubEnv("BOAT_API_BASE", "https://env.invalid/boat");
+    vi.stubEnv("INSTABOX_API_URL", "https://env.invalid/ib");
+    vi.stubEnv("SUPERSERVE_BASE_URL", "https://env.invalid/ss");
+    vi.stubEnv("UPSTASH_BOX_BASE_URL", "https://env.invalid/up");
+
+    const cases = [
+      {
+        name: "boat",
+        config: boatConfig({ apiKey: "k1", baseUrl: "https://option.invalid/v1//" }),
+        run: () => boat({ apiKey: "k1", baseUrl: "https://option.invalid/v1//" }).connect("s1"),
+        path: "/sandboxes/s1",
+      },
+      {
+        name: "freestyle",
+        config: freestyleConfig({ apiKey: "k1", baseUrl: "https://option.invalid/fs/" }),
+        run: () => freestyle({ apiKey: "k1", baseUrl: "https://option.invalid/fs/" }).connect("s1"),
+        path: "/v5/vms/s1",
+      },
+      {
+        name: "instabox",
+        config: instaboxConfig({ apiKey: "k1", baseUrl: "https://option.invalid/ib//" }),
+        run: () => instabox({ apiKey: "k1", baseUrl: "https://option.invalid/ib//" }).connect("s1"),
+        path: "/v1/machines/s1",
+      },
+      {
+        name: "superserve",
+        config: superserveConfig({ apiKey: "k1", baseUrl: "https://option.invalid/ss/" }),
+        run: () =>
+          superserve({ apiKey: "k1", baseUrl: "https://option.invalid/ss/" }).destroy("s1"),
+        path: "/sandboxes/s1",
+      },
+      {
+        name: "upstash",
+        config: upstashConfig({ apiKey: "k1", baseUrl: "https://option.invalid/up//" }),
+        run: () => upstash({ apiKey: "k1", baseUrl: "https://option.invalid/up//" }).destroy("s1"),
+        path: "/v2/box/s1",
+      },
+    ];
+
+    for (const entry of cases) {
+      const sent = capture();
+
+      await entry.run().catch(() => {});
+
+      // Each adapter's HTTP client joins the configured URL its own way; Upstash drops one slash.
+      const expected =
+        entry.name === "upstash"
+          ? `${entry.config.baseUrl}${entry.path}`
+          : joined(entry.config.baseUrl, entry.path);
+
+      expect(entry.config.apiKey, entry.name).toBe("k1");
+      expect(
+        sent.some((request) => request.url.startsWith(expected)),
+        `${entry.name}: ${sent.map((request) => request.url).join(", ")}`,
+      ).toBe(true);
     }
-
-    const client = await e2b({ apiKey: "k1", domain: "e2b.fixture" }).api.sdk(async () => ({
-      E2B,
-    }));
-
-    expect(client.init).toMatchObject({ apiUrl: "https://api.e2b.fixture", domain: "e2b.fixture" });
   });
 });
 
-describe("resolveConfig", () => {
-  test("drops trailing slashes from base URLs", () => {
-    vi.stubEnv("BOAT_API_BASE", "https://boat.fixture/api/v1//");
-    vi.stubEnv("UPSTASH_BOX_BASE_URL", "https://up.fixture///");
-    vi.stubEnv("E2B_API_URL", "https://api.e2b.fixture/");
-    vi.stubEnv("SUPERSERVE_BASE_URL", " https://ss.fixture/ ");
-    expect(boatConfig({ apiKey: "k1" }).baseUrl).toBe("https://boat.fixture/api/v1");
-    expect(upstashConfig({ apiKey: "k1" }).baseUrl).toBe("https://up.fixture");
-    expect(e2bConfig({ apiKey: "k1" }).apiUrl).toBe("https://api.e2b.fixture");
-    expect(superserveConfig({ apiKey: "k1" }).baseUrl).toBe("https://ss.fixture");
+describe("resolveConfig reads and changes nothing else", () => {
+  test("options and the environment are left as they were", () => {
+    vi.stubEnv("DAYTONA_API_KEY", "env-key");
+    const options = Object.freeze({ baseUrl: "https://option.invalid/api/" });
+    const before = { ...process.env };
+
+    expect(daytonaConfig(options)).toEqual(daytonaConfig(options));
+    expect({ ...process.env }).toEqual(before);
+  });
+
+  test("a URL keeps the trailing slashes the adapter keeps", () => {
+    vi.stubEnv("BOAT_API_BASE", "https://boat.invalid/api/v1//");
+    vi.stubEnv("UPSTASH_BOX_BASE_URL", "https://up.invalid///");
+    vi.stubEnv("E2B_API_URL", "https://api.e2b.invalid/");
+    vi.stubEnv("SUPERSERVE_BASE_URL", " https://ss.invalid/ ");
+    expect(boatConfig({ apiKey: "k1" }).baseUrl).toBe("https://boat.invalid/api/v1//");
+    expect(upstashConfig({ apiKey: "k1" }).baseUrl).toBe("https://up.invalid//");
+    expect(e2bConfig({ apiKey: "k1" }).apiUrl).toBe("https://api.e2b.invalid/");
+    expect(superserveConfig({ apiKey: "k1" }).baseUrl).toBe("https://ss.invalid/");
   });
 
   test("Tenki prefers a non-blank TENKI_AUTH_TOKEN over TENKI_API_KEY", () => {

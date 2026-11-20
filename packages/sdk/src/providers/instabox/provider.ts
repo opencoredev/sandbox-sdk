@@ -238,8 +238,9 @@ function apiKeyOf(options: InstaboxConnection): string {
 }
 
 /**
- * The key and base URL `instabox(options)` uses, read from `options` and the environment as the
- * adapter reads them. Throws `auth` when the key is missing.
+ * The key and base URL `instabox(options)` sends every request with, read from `options` and the
+ * environment as the adapter reads them. Throws `auth` when the key is missing, as the adapter does.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: InstaboxConnection = {}): InstaboxConfig {
   return { apiKey: apiKeyOf(options), baseUrl: baseUrlOf(options) };

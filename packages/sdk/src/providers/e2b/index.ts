@@ -64,11 +64,19 @@ export interface E2BSandboxInit {
   trafficAccessToken?: string;
   apiKey?: string;
   domain?: string;
+  /**
+   * The control-plane URL, which the `e2b` package accepts. The adapter leaves it out, so the
+   * package reads E2B_API_URL, then E2B_DEBUG (localhost), then the domain.
+   */
+  apiUrl?: string;
   requestTimeoutMs?: number;
 }
 
 /** The connection options `provider.api.sdk(load)` passes to the `E2B` client. */
-export type E2BClientInit = Pick<E2BSandboxInit, "apiKey" | "domain" | "requestTimeoutMs">;
+export type E2BClientInit = Pick<
+  E2BSandboxInit,
+  "apiKey" | "domain" | "apiUrl" | "requestTimeoutMs"
+>;
 
 /** `box.native.sdk`: pass `() => import("e2b")` and get that module's `Sandbox` for this sandbox. */
 export type E2BSandboxSdk = <M extends { Sandbox: new (init: E2BSandboxInit) => object }>(
@@ -300,7 +308,10 @@ export type E2BConnection = Pick<E2BOptions, "apiKey" | "domain">;
 export interface E2BConfig {
   readonly apiKey: string;
   readonly domain: string;
-  /** The control-plane base URL, without trailing slashes. */
+  /**
+   * The control-plane base URL the adapter's own requests use: E2B_API_URL, else
+   * `https://api.<domain>`. They drop trailing slashes before they append a path.
+   */
   readonly apiUrl: string;
 }
 
@@ -309,7 +320,7 @@ function domainOf(options: E2BConnection): string {
 }
 
 function apiUrlOf(options: E2BConnection): string {
-  return (process.env.E2B_API_URL || `https://api.${domainOf(options)}`).replace(/\/+$/, "");
+  return process.env.E2B_API_URL || `https://api.${domainOf(options)}`;
 }
 
 function apiKeyOf(options: E2BConnection): string {
@@ -326,8 +337,12 @@ function apiKeyOf(options: E2BConnection): string {
 
 /**
  * The key, domain and API URL `e2b(options)` uses, read from `options` and the environment as the
- * adapter reads them. Throws `auth` when the key is missing. The adapter ignores `E2B_DEBUG`; pass
- * this whole object to the `e2b` package so it does too: `Sandbox.getInfo(id, resolveConfig())`.
+ * adapter reads them. Throws `auth` when the key is missing, as the adapter does. The adapter's own
+ * requests ignore `E2B_DEBUG`. The `e2b` package's clients from `native.sdk()` get only the key
+ * and domain, so the package reads E2B_API_URL and E2B_DEBUG itself and, with E2B_DEBUG, uses
+ * localhost. To reach what the adapter's requests reach, pass the whole object to the package:
+ * `Sandbox.getInfo(id, resolveConfig())`.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: E2BConnection = {}): E2BConfig {
   return { apiKey: apiKeyOf(options), domain: domainOf(options), apiUrl: apiUrlOf(options) };
@@ -976,8 +991,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
   const binding: NativeSdkBinding = {
     package: "e2b",
     connect(module, sandboxId) {
-      // An explicit apiUrl keeps the SDK on the adapter's API: alone, E2B_DEBUG points it at localhost.
-      const credentials = { ...resolveConfig(options), requestTimeoutMs };
+      const credentials = { apiKey: apiKey(), domain: domain(), requestTimeoutMs };
 
       if (sandboxId === undefined) return sdkConstruct(module, "E2B", [credentials], "e2b");
 

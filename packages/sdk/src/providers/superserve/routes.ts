@@ -18,7 +18,10 @@ import { failure } from "./errors.js";
 /** What a Superserve adapter sends its requests with, from `resolveConfig`. */
 export interface SuperserveConfig {
   readonly apiKey: string;
-  /** Control plane without trailing slashes, e.g. https://api.superserve.ai. */
+  /**
+   * Control plane, e.g. https://api.superserve.ai. The adapter's own requests drop trailing
+   * slashes before they append a path.
+   */
   readonly baseUrl: string;
   /** Data plane and preview host, e.g. sandbox.superserve.ai. */
   readonly sandboxHost: string;
@@ -59,8 +62,11 @@ function sandboxHostFor(baseUrl: string): string {
 /**
  * The key and endpoints `superserve(options)` uses, read from `options` and the environment as the
  * adapter reads them: a non-blank base URL wins, then the key's region (`ss_live_<region>_`), then
- * US East. Throws `auth` when the key is missing. A request to another region's control plane
- * answers 404 for a sandbox that is running, so pass `baseUrl` to `@superserve/sdk` calls too.
+ * US East. Throws `auth` when the key is missing, as the adapter does. A request to another
+ * region's control plane answers 404 for a sandbox that is running, so pass `baseUrl` to
+ * `@superserve/sdk` calls too. The adapter's `native.sdk()` passes only an explicit `baseUrl`
+ * option, and leaves the rest to the package.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(
   options: { apiKey?: string; baseUrl?: string } = {},
@@ -73,9 +79,7 @@ export function resolveConfig(
       "auth",
     );
 
-  // The HTTP client drops trailing slashes before it appends a path; so does this, for other clients.
-  const override =
-    (options.baseUrl ?? process.env.SUPERSERVE_BASE_URL)?.trim().replace(/\/+$/, "") || undefined;
+  const override = (options.baseUrl ?? process.env.SUPERSERVE_BASE_URL)?.trim() || undefined;
 
   if (override !== undefined)
     return { apiKey, baseUrl: override, sandboxHost: sandboxHostFor(override) };

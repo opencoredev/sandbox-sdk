@@ -210,7 +210,10 @@ export type BoatConnection = Pick<BoatOptions, "apiKey" | "baseUrl" | "apiUrl">;
 /** What a Boat API adapter sends every request with. */
 export interface BoatConfig {
   readonly apiKey: string;
-  /** The API base URL, without trailing slashes: `@boatdev/sdk`'s `basePath`. */
+  /**
+   * The API base URL as configured, which the adapter also hands `@boatdev/sdk` as `basePath`. Its
+   * own requests drop trailing slashes before they append a path.
+   */
   readonly baseUrl: string;
 }
 
@@ -220,13 +223,16 @@ function baseUrlOf(options: BoatConnection, settings: BoatApiSettings): string {
     options.apiUrl ??
     (settings.baseEnv ? process.env[settings.baseEnv] : undefined) ??
     settings.baseUrl
-  ).replace(/\/+$/, "");
+  );
 }
 
 const keyOf = (options: BoatConnection, settings: BoatApiSettings) =>
   options.apiKey ?? process.env[settings.keyEnv];
 
-/** The key and base URL `boatApi(options, settings)` uses. Throws `auth` when the key is missing. */
+/**
+ * The key and base URL `boatApi(options, settings)` uses. Throws `auth` when the key is missing.
+ * The result holds the API key: never log, print or store it.
+ */
 export function resolveBoatApiConfig(
   options: BoatConnection,
   settings: BoatApiSettings = defaults,

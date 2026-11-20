@@ -262,7 +262,10 @@ export type DaytonaConnection = Pick<
  * sandboxes as the adapter.
  */
 export type DaytonaConfig = {
-  /** The API base URL, without trailing slashes. */
+  /**
+   * The API base URL as configured. The adapter's own requests drop trailing slashes before they
+   * append a path; its `native.sdk()` client gets the URL as it is.
+   */
   readonly apiUrl: string;
   /** The default region for creates. */
   readonly target: string;
@@ -275,7 +278,7 @@ function apiUrlOf(options: DaytonaConnection): string {
     process.env.DAYTONA_API_URL ??
     process.env.DAYTONA_SERVER_URL ??
     "https://app.daytona.io/api"
-  ).replace(/\/+$/, "");
+  );
 }
 
 function targetOf(options: DaytonaConnection): string {
@@ -308,8 +311,10 @@ function credentialsOf(
 
 /**
  * The base URL, region and credentials `daytona(options)` uses, read from `options` and the
- * environment as the adapter reads them. Throws `auth` when credentials are missing. Use it to build
- * your own `@daytonaio/sdk` client that reaches the same account: `new Daytona(resolveConfig())`.
+ * environment as the adapter reads them. Throws `auth` when credentials are missing, as the adapter
+ * does. Use it to build your own `@daytonaio/sdk` client that reaches the same account:
+ * `new Daytona(resolveConfig())`, as the adapter's `native.sdk()` does.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: DaytonaConnection = {}): DaytonaConfig {
   return { apiUrl: apiUrlOf(options), target: targetOf(options), ...credentialsOf(options) };

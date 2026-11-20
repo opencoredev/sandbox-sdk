@@ -624,7 +624,7 @@ export function superserve(options: SuperserveOptions = {}): SuperserveProvider 
         await sdkCall(
           Sandbox,
           "connect",
-          [sandboxId, { apiKey: config().apiKey, baseUrl: config().baseUrl }],
+          [sandboxId, { apiKey: config().apiKey, baseUrl: options.baseUrl }],
           sdkPackage,
         ),
         "Sandbox.connect",

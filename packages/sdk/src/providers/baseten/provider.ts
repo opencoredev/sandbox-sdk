@@ -55,8 +55,9 @@ export interface BasetenConfig {
 }
 
 /**
- * The key and team `baseten(options)` uses, read from `options` and the environment as the adapter
- * reads them. Throws `auth` when the key is missing.
+ * The key and team `baseten(options)` builds its `SandboxClient` with, read from `options` and the
+ * environment as the adapter reads them. Throws `auth` when the key is missing, as the adapter does.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: BasetenConnection = {}): BasetenConfig {
   const apiKey = options.apiKey ?? process.env.BASETEN_API_KEY;

@@ -269,22 +269,25 @@ const baseUrlOf = (config: { baseUrl?: string }) =>
     config.baseUrl ??
     process.env.UPSTASH_BOX_BASE_URL ??
     "https://us-east-1.box.upstash.com"
-  ).replace(/\/+$/, "");
+  ).replace(/\/$/, "");
 
 /** The options that choose where an Upstash adapter connects and as whom. */
 export type UpstashConnection = Pick<CommonOptions, "apiKey" | "baseUrl">;
 
-/** What an Upstash adapter sends every request with, in the shape `@upstash/box`'s options take. */
+/** What an Upstash adapter sends its own requests with, in the shape `@upstash/box`'s options take. */
 export interface UpstashConfig {
   readonly apiKey: string;
-  /** The API base URL, without trailing slashes. */
+  /** The API base URL with one trailing slash dropped, as the adapter's own requests use it. */
   readonly baseUrl: string;
 }
 
 /**
- * The key and base URL `upstash(options)` uses, read from `options` and the environment as the
- * adapter reads them. Throws `auth` when the key is missing. Pass it to `@upstash/box` calls, such
- * as `Box.get(id, resolveConfig())`, to reach the same account.
+ * The key and base URL `upstash(options)` sends its own requests with, such as creates, read from
+ * `options` and the environment as the adapter reads them. Throws `auth` when the key is missing,
+ * as the adapter does. The adapter's `@upstash/box` calls get the `baseUrl` option as given, and the
+ * package resolves the rest. Pass this object to `@upstash/box` calls, such as
+ * `Box.get(id, resolveConfig())`, to reach where the adapter creates boxes.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: UpstashConnection = {}): UpstashConfig {
   const apiKey = options.apiKey ?? process.env.UPSTASH_BOX_API_KEY;
@@ -354,11 +357,10 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
   };
 
   const connection = () => {
-    const { apiKey, baseUrl } = resolveConfig(options);
+    const { apiKey } = resolveConfig(options);
     redactor.add([apiKey]);
 
-    // The native SDK gets the resolved base URL, so its requests and the adapter's own agree.
-    return { apiKey, baseUrl, enableTelemetry: options.enableTelemetry };
+    return { apiKey, baseUrl: options.baseUrl, enableTelemetry: options.enableTelemetry };
   };
 
   const sdk = async () => {

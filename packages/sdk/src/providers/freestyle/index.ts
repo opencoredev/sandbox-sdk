@@ -67,12 +67,15 @@ export type FreestyleConnection = Pick<FreestyleOptions, "apiKey" | "baseUrl">;
 /** What a Freestyle adapter sends every request with, in the shape `new Freestyle(config)` takes. */
 export interface FreestyleConfig {
   readonly apiKey: string;
-  /** The API base URL, without trailing slashes. */
+  /**
+   * The API base URL as configured. The adapter's own requests drop trailing slashes before they
+   * append a path; its `native.sdk()` client gets the URL as it is.
+   */
   readonly baseUrl: string;
 }
 
 function baseUrlOf(options: FreestyleConnection): string {
-  return (options.baseUrl ?? defaultBaseUrl).replace(/\/+$/, "");
+  return options.baseUrl ?? defaultBaseUrl;
 }
 
 function apiKeyOf(options: FreestyleConnection): string {
@@ -89,8 +92,9 @@ function apiKeyOf(options: FreestyleConnection): string {
 
 /**
  * The key and base URL `freestyle(options)` uses, read from `options` and the environment as the
- * adapter reads them. Throws `auth` when the key is missing. `new Freestyle(resolveConfig())` from
- * the `freestyle` package reaches the same account.
+ * adapter reads them. Throws `auth` when the key is missing, as the adapter does.
+ * `new Freestyle(resolveConfig())` from the `freestyle` package reaches the same account.
+ * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: FreestyleConnection = {}): FreestyleConfig {
   return { apiKey: apiKeyOf(options), baseUrl: baseUrlOf(options) };
