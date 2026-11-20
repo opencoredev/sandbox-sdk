@@ -265,7 +265,7 @@ it.each([true, false])(
       JSON.stringify({
         runId: "snapshot-run",
         // As the run journaled it: reap reads only through the connection the run used.
-        connectionFingerprints: { e2b: fingerprintOf(provider) },
+        connectionFingerprints: { e2b: await fingerprintOf(provider) },
         resources: [
           {
             provider: "e2b",
@@ -348,7 +348,7 @@ it("reap removes a restored sandbox, then its proven snapshot, then the source",
     JSON.stringify({
       runId: "snapshot-run",
       // As the run journaled it: reap reads only through the connection the run used.
-      connectionFingerprints: { e2b: fingerprintOf(provider) },
+      connectionFingerprints: { e2b: await fingerprintOf(provider) },
       resources: [
         { provider: "e2b", id: source.id, kind: "sandbox", parent: null },
         { provider: "e2b", id: restore.id, kind: "sandbox", parent: null },

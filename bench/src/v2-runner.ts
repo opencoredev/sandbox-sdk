@@ -559,7 +559,7 @@ export async function runV2(
   const connectionFingerprints: Record<string, string> = {};
 
   for (const p of loaded) {
-    const value = p.kind === "ready" ? fingerprintOf(p.provider) : null;
+    const value = p.kind === "ready" ? await fingerprintOf(p.provider) : null;
 
     if (value) connectionFingerprints[p.name] = value;
   }

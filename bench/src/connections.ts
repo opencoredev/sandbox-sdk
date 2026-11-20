@@ -38,7 +38,8 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  * use, from the SDK's `resolveConfig`. The harness reads, snapshots and cleans up through the
  * connection of the exact adapter instance that created the sandboxes. A read sent to another
  * endpoint, account, team or project answers 404 for a sandbox that is running, which would be
- * recorded as absence. Modal, local and memory resolve their own connection inside the adapter.
+ * recorded as absence. Local, Modal and Railway have no `resolveConfig`; their connection is read
+ * here from the same options and variables their adapters read.
  */
 export interface Connections {
   baseten: BasetenConfig;
@@ -48,10 +49,36 @@ export interface Connections {
   e2b: E2BConfig;
   freestyle: FreestyleConfig;
   instabox: InstaboxConfig;
+  local: LocalConfig;
+  modal: ModalConfig;
+  railway: RailwayConfig;
   superserve: SuperserveConfig;
   tenki: TenkiConfig;
   upstash: UpstashConfig;
   vercel: VercelConfig;
+}
+
+/** The Docker socket `local()` talks to (`new Docker(options.dockerHost)` in the local adapter). */
+export interface LocalConfig {
+  readonly socketPath: string;
+}
+
+/**
+ * The `ModalClient` params `modal()` sets from its options. Unset ones are left to Modal's SDK,
+ * which resolves them from the environment and then the profile file; the fingerprint reads the
+ * profile the SDK resolved.
+ */
+export interface ModalConfig {
+  readonly tokenId: string | undefined;
+  readonly tokenSecret: string | undefined;
+  readonly environment: string | undefined;
+}
+
+/** What `railway()` passes Railway's SDK (`api()` in the Railway adapter). */
+export interface RailwayConfig {
+  readonly token: string | undefined;
+  readonly environmentId: string | undefined;
+  readonly authType: string | undefined;
 }
 
 type Connected = keyof Connections;
@@ -66,21 +93,53 @@ const connectionOptions = z.object({
   apiKey: z.string().optional(),
   apiUrl: z.string().optional(),
   authToken: z.string().optional(),
+  authType: z.string().optional(),
   baseURL: z.string().optional(),
   baseUrl: z.string().optional(),
+  dockerHost: z.string().optional(),
   domain: z.string().optional(),
+  environment: z.string().optional(),
+  environmentId: z.string().optional(),
   jwtToken: z.string().optional(),
   organizationId: z.string().optional(),
   projectId: z.string().optional(),
   target: z.string().optional(),
   teamId: z.string().optional(),
   token: z.string().optional(),
+  tokenId: z.string().optional(),
+  tokenSecret: z.string().optional(),
 });
 
 export type ConnectionOptions = z.infer<typeof connectionOptions>;
 
-/** What `resolveConfig` returns for `name` with these factory options; null when the adapter resolves its own. */
-function resolve(name: string, options: ConnectionOptions): Connection | null {
+/** The local adapter's socket: `dockerHost`, then DOCKER_HOST, then Docker's default socket. */
+function localConfig(options: ConnectionOptions): LocalConfig {
+  const host = options.dockerHost ?? process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock";
+
+  // As the adapter's Docker client refuses it: only an absolute unix socket.
+  if (!host.startsWith("unix://") || !host.slice(7).startsWith("/"))
+    throw Object.assign(new Error("DOCKER_HOST is not an absolute unix socket"), {
+      code: "unsupported",
+    });
+
+  return { socketPath: host.slice(7) };
+}
+
+/**
+ * Providers with no connection to choose: they run in this process, so every instance reaches
+ * the same sandboxes and none survives the process. Each fingerprints as a constant of its name,
+ * so a journal still records it and a reap still compares it.
+ */
+const inProcess: ReadonlySet<string> = new Set(["memory", "agentos"]);
+
+/**
+ * The connection `name`'s adapter builds from these factory options and the environment: the
+ * SDK's `resolveConfig` where it has one. Throws for a provider with no connection model, so an
+ * adapter added to the registry without one is never treated as matching.
+ */
+function resolve(name: string, options: ConnectionOptions): Connection {
+  const env = process.env;
+
   switch (name) {
     case "baseten":
       return { name, config: basetenConfig(options) };
@@ -96,6 +155,26 @@ function resolve(name: string, options: ConnectionOptions): Connection | null {
       return { name, config: freestyleConfig(options) };
     case "instabox":
       return { name, config: instaboxConfig(options) };
+    case "local":
+      return { name, config: localConfig(options) };
+    case "modal":
+      return {
+        name,
+        config: {
+          tokenId: options.tokenId,
+          tokenSecret: options.tokenSecret,
+          environment: options.environment,
+        },
+      };
+    case "railway":
+      return {
+        name,
+        config: {
+          token: options.token ?? env.RAILWAY_API_TOKEN,
+          environmentId: options.environmentId ?? env.RAILWAY_ENVIRONMENT_ID,
+          authType: options.authType,
+        },
+      };
     case "superserve":
       return { name, config: superserveConfig(options) };
     case "tenki":
@@ -105,7 +184,9 @@ function resolve(name: string, options: ConnectionOptions): Connection | null {
     case "vercel":
       return { name, config: vercelConfig(options) };
     default:
-      return null;
+      throw Object.assign(new Error("No connection model for this provider"), {
+        code: "unmodelled",
+      });
   }
 }
 
@@ -126,6 +207,12 @@ function byName(connection: Connection): Partial<Connections> {
       return { freestyle: connection.config };
     case "instabox":
       return { instabox: connection.config };
+    case "local":
+      return { local: connection.config };
+    case "modal":
+      return { modal: connection.config };
+    case "railway":
+      return { railway: connection.config };
     case "superserve":
       return { superserve: connection.config };
     case "tenki":
@@ -145,10 +232,11 @@ function byName(connection: Connection): Partial<Connections> {
 type Binding =
   | {
       readonly kind: "resolved";
-      readonly configs: Partial<Connections>;
-      readonly fingerprint: string;
+      readonly connection: Connection;
+      /** The fingerprint's input from the options and environment at bind time. */
+      readonly configured: readonly (string | FieldList)[];
     }
-  | { readonly kind: "own" }
+  | { readonly kind: "in-process"; readonly fingerprint: string }
   | { readonly kind: "failed"; readonly reason: string };
 
 const bindings = new WeakMap<Provider, Binding>();
@@ -168,6 +256,12 @@ function reasonOf(cause: unknown): string {
  * kept and reported by every read through this instance.
  */
 export function bindConnection<P extends Provider>(provider: P, options: FactoryOptions): P {
+  if (inProcess.has(provider.name)) {
+    bindings.set(provider, { kind: "in-process", fingerprint: hash([provider.name]) });
+
+    return provider;
+  }
+
   const parsed = connectionOptions.safeParse(options);
 
   if (!parsed.success) {
@@ -178,12 +272,7 @@ export function bindConnection<P extends Provider>(provider: P, options: Factory
 
   try {
     const connection = resolve(provider.name, parsed.data);
-    bindings.set(
-      provider,
-      connection
-        ? { kind: "resolved", configs: byName(connection), fingerprint: fingerprint(connection) }
-        : { kind: "own" },
-    );
+    bindings.set(provider, { kind: "resolved", connection, configured: configured(connection) });
   } catch (error) {
     bindings.set(provider, { kind: "failed", reason: reasonOf(error) });
   }
@@ -204,7 +293,7 @@ export function connectionOf<N extends Connected>(provider: Provider, name: N): 
 
   if (binding.kind === "failed") throw new Error(`Native lookup connection: ${binding.reason}`);
 
-  const config = binding.kind === "resolved" ? binding.configs[name] : undefined;
+  const config = binding.kind === "resolved" ? byName(binding.connection)[name] : undefined;
 
   if (config === undefined) throw new Error("Native lookup connection belongs to another provider");
 
@@ -213,10 +302,14 @@ export function connectionOf<N extends Connected>(provider: Provider, name: N): 
 
 /** The part of Modal's SDK that resolves a connection; hand-typed from modal 0.11.1. */
 export interface ModalModule {
-  ModalClient: new (params: { tokenId?: string; tokenSecret?: string; environment?: string }) => {
-    readonly profile?: unknown;
-    close(): void;
-  };
+  ModalClient: new (params: ModalClientParams) => { readonly profile?: unknown; close(): void };
+}
+
+/** The `ModalClient` params `modal()` sets from its options; the SDK resolves the rest. */
+export interface ModalClientParams {
+  tokenId?: string;
+  tokenSecret?: string;
+  environment?: string;
 }
 
 const sdkPackage = new URL("../../packages/sdk/package.json", import.meta.url);
@@ -276,16 +369,36 @@ const connectionFields = z.record(z.string(), z.string().optional());
 
 /**
  * What a connection takes from the environment through the provider's own SDK, where
- * `resolveConfig` leaves the field unset: Boxd's and Tenki's endpoints, Vercel's OIDC token.
+ * `resolveConfig` leaves the field unset: Boxd's and Tenki's endpoints, Boxd's region, Railway's
+ * endpoints, Vercel's OIDC token. Modal's are read through its SDK (`modalProfileOf`).
  */
 function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields> {
   const env = process.env;
 
   switch (connection.name) {
     case "boxd":
+      // The adapter has no region option: the SDK routes machine calls to BOXD_REGION, else the
+      // account's home cluster.
       return connection.config.baseURL === undefined
-        ? { BOXD_BASE_URL: env.BOXD_BASE_URL, BOXD_API_URL: env.BOXD_API_URL }
-        : {};
+        ? {
+            BOXD_BASE_URL: env.BOXD_BASE_URL,
+            BOXD_API_URL: env.BOXD_API_URL,
+            BOXD_REGION: env.BOXD_REGION,
+          }
+        : { BOXD_REGION: env.BOXD_REGION };
+    case "railway": {
+      // Railway's SDK takes its endpoints from the environment, and its token from RAILWAY_TOKEN
+      // when the adapter passes none.
+      const fields: z.infer<typeof connectionFields> = {
+        RAILWAY_GRAPHQL_ENDPOINT: env.RAILWAY_GRAPHQL_ENDPOINT,
+        RAILWAY_TCP_PROXY_WS_ENDPOINT: env.RAILWAY_TCP_PROXY_WS_ENDPOINT,
+      };
+
+      if (connection.config.token === undefined) fields.RAILWAY_TOKEN = env.RAILWAY_TOKEN;
+
+      return fields;
+    }
+
     case "tenki":
       return connection.config.baseUrl === undefined
         ? { TENKI_API_ENDPOINT: env.TENKI_API_ENDPOINT, TENKI_API_URL: env.TENKI_API_URL }
@@ -298,80 +411,181 @@ function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields
 }
 
 /** A connection's set fields, sorted by name. */
-function setFields(fields: z.infer<typeof connectionFields>): [string, string][] {
+type FieldList = [string, string][];
+
+function setFields(fields: z.infer<typeof connectionFields>): FieldList {
   return Object.entries(fields)
     .filter((field): field is [string, string] => field[1] !== undefined)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
+/** The first 16 hex characters of a SHA-256 over the serialized input. */
+function hash(input: readonly (string | FieldList)[]): string {
+  return createHash("sha256").update(JSON.stringify(input)).digest("hex").slice(0, 16);
+}
+
 /**
- * The fingerprint of a whole resolved connection: provider, endpoints, scope and credentials,
- * with what the provider's SDK reads from the environment itself. It identifies the connection
- * without holding any of it, so the run's journal can keep it and a reap can tell whether its
- * environment rebuilds the same connection. Fields are sorted and unset ones dropped, so equal
- * connections hash alike whatever order `resolveConfig` built them in.
+ * The fingerprint's input that the options and environment decide, taken at bind time: provider,
+ * endpoints, scope and credentials, with what the provider's SDK reads from the environment
+ * itself. Fields are sorted and unset ones dropped, so equal connections hash alike whatever
+ * order `resolveConfig` built them in.
  */
-function fingerprint(connection: Connection): string {
-  const serialized = JSON.stringify([
+function configured(connection: Connection): readonly (string | FieldList)[] {
+  return [
     connection.name,
     setFields(connectionFields.parse(connection.config)),
     setFields(sdkEnvironment(connection)),
-  ]);
-
-  return createHash("sha256").update(serialized).digest("hex").slice(0, 16);
+  ];
 }
 
-/** This instance's connection fingerprint for the run's journal, or null when it has none. */
-export function fingerprintOf(provider: Provider): string | null {
+/** What a Modal client resolved its connection to, as `ModalClient` keeps it (`client.profile`). */
+const modalProfile = z.object({
+  serverUrl: z.string(),
+  tokenId: z.string().optional(),
+  tokenSecret: z.string().optional(),
+  environment: z.string().optional(),
+  oauthRefreshToken: z.string().optional(),
+  oauthClientId: z.string().optional(),
+  oauthClientSecret: z.string().optional(),
+  oauthJwtKey: z.string().optional(),
+});
+
+/**
+ * The connection Modal's SDK resolves for these params, by its own rules: each param, else its
+ * environment variable, else the profile `MODAL_PROFILE` names (or the active one) in the file
+ * `MODAL_CONFIG_PATH` names (or `~/.modal.toml`). Constructing the client makes no request.
+ */
+async function modalProfileOf(config: ModalConfig) {
+  const { ModalClient } = await connectionProbes.loadModal();
+  // As the adapter builds its client: unset fields stay unset, so the SDK resolves them.
+  const params: ModalClientParams = {};
+
+  if (config.tokenId !== undefined) params.tokenId = config.tokenId;
+
+  if (config.tokenSecret !== undefined) params.tokenSecret = config.tokenSecret;
+
+  if (config.environment !== undefined) params.environment = config.environment;
+  const client = new ModalClient(params);
+
+  try {
+    return modalProfile.parse(client.profile);
+  } finally {
+    client.close();
+  }
+}
+
+/** How long a fingerprint waits for Docker's `/info`. */
+const dockerInfoTimeoutMs = 5_000;
+
+/**
+ * What identifies a connection beyond its configuration, read when the fingerprint is taken:
+ * for local, the ID of the daemon behind the socket, so a socket path that now leads to another
+ * daemon is told apart; for Modal, the connection its SDK resolved from the environment and the
+ * profile file. `unknown` when that read fails, which leaves the connection unidentified.
+ */
+type Identity =
+  | { readonly kind: "none" }
+  | { readonly kind: "known"; readonly fields: FieldList }
+  | { readonly kind: "unknown"; readonly reason: string };
+
+async function identity(connection: Connection): Promise<Identity> {
+  switch (connection.name) {
+    case "local":
+      try {
+        const id = await connectionProbes.dockerDaemonId(
+          connection.config.socketPath,
+          dockerInfoTimeoutMs,
+        );
+
+        return { kind: "known", fields: [["daemonId", id]] };
+      } catch {
+        return {
+          kind: "unknown",
+          reason: "the Docker daemon did not answer /info, so it cannot be told from another",
+        };
+      }
+
+    case "modal":
+      try {
+        return { kind: "known", fields: setFields(await modalProfileOf(connection.config)) };
+      } catch {
+        return { kind: "unknown", reason: "Modal's client did not resolve a connection" };
+      }
+
+    default:
+      return { kind: "none" };
+  }
+}
+
+type Fingerprint =
+  | { readonly kind: "known"; readonly value: string }
+  | { readonly kind: "unknown"; readonly reason: string };
+
+/**
+ * The fingerprint of a whole connection: its configuration from bind time and, where it has one,
+ * its identity read now. It identifies the connection without holding any of it, so the run's
+ * journal can keep it and a reap can tell whether its environment reaches the same connection.
+ */
+async function fingerprintNow(
+  binding: Extract<Binding, { kind: "resolved" }>,
+): Promise<Fingerprint> {
+  const live = await identity(binding.connection);
+
+  if (live.kind === "unknown") return live;
+  const input = live.kind === "known" ? [...binding.configured, live.fields] : binding.configured;
+
+  return { kind: "known", value: hash(input) };
+}
+
+/**
+ * This instance's connection fingerprint for the run's journal, or null when it has none: it was
+ * never bound, its connection failed to resolve, or its identity could not be read.
+ */
+export async function fingerprintOf(provider: Provider): Promise<string | null> {
   const binding = bindings.get(provider);
 
-  return binding?.kind === "resolved" ? binding.fingerprint : null;
-}
+  if (binding === undefined || binding.kind === "failed") return null;
 
-const connectedNames = {
-  baseten: true,
-  boat: true,
-  boxd: true,
-  daytona: true,
-  e2b: true,
-  freestyle: true,
-  instabox: true,
-  superserve: true,
-  tenki: true,
-  upstash: true,
-  vercel: true,
-} satisfies Record<Connected, true>;
+  if (binding.kind === "in-process") return binding.fingerprint;
+  const current = await fingerprintNow(binding);
+
+  return current.kind === "known" ? current.value : null;
+}
 
 /**
  * Whether a reap may read through `provider` for a run that journaled `journaled` as its
- * connection fingerprint. A connected provider passes only when this instance resolved the very
- * connection the run used: any other endpoint, account, team or project would answer 404 for the
- * run's live sandboxes. The refusal says why without any connection value.
+ * connection fingerprint. It passes only when this instance reaches the very connection the run
+ * used: any other endpoint, account, team, project, Docker daemon or Modal profile would answer
+ * 404 for the run's live sandboxes. An in-process provider has one connection, so a journal that
+ * lacks its fingerprint (a truncated one) still passes, but another fingerprint does not. The
+ * refusal says why without any connection value.
  */
-export function reapConnection(
+export async function reapConnection(
   provider: Provider,
   journaled: string | undefined,
-): { readonly kind: "same" } | { readonly kind: "differs"; readonly reason: string } {
-  const binding = bindings.get(provider);
+): Promise<{ readonly kind: "same" } | { readonly kind: "differs"; readonly reason: string }> {
+  const differs = {
+    kind: "differs",
+    reason:
+      "connection fingerprint differs from the run's: this environment's endpoint, credentials, scope or daemon are not the ones the run used",
+  } as const;
 
-  if (
-    binding?.kind === "own" ||
-    (binding === undefined && !Object.hasOwn(connectedNames, provider.name))
-  )
-    return { kind: "same" };
+  const binding = bindings.get(provider);
 
   if (binding === undefined) return { kind: "differs", reason: "adapter instance not bound" };
 
   if (binding.kind === "failed") return { kind: "differs", reason: binding.reason };
 
+  if (binding.kind === "in-process")
+    return journaled === undefined || journaled === binding.fingerprint
+      ? { kind: "same" }
+      : differs;
+
   if (journaled === undefined)
     return { kind: "differs", reason: "the run's journal has no connection fingerprint for it" };
+  const current = await fingerprintNow(binding);
 
-  return binding.fingerprint === journaled
-    ? { kind: "same" }
-    : {
-        kind: "differs",
-        reason:
-          "connection fingerprint differs from the run's: this environment's endpoint, credentials or scope are not the ones the run used",
-      };
+  if (current.kind === "unknown") return { kind: "differs", reason: current.reason };
+
+  return current.value === journaled ? { kind: "same" } : differs;
 }

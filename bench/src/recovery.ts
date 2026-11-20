@@ -131,7 +131,7 @@ export async function reapRun(
 
     // Before any request: an adapter on another endpoint, account or scope reads the run's live
     // sandboxes as missing, which would be recorded as absence.
-    const connection = reapConnection(p.provider, journal?.connectionFingerprints[p.name]);
+    const connection = await reapConnection(p.provider, journal?.connectionFingerprints[p.name]);
 
     if (connection.kind === "differs") {
       process.stderr.write(

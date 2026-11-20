@@ -15,7 +15,13 @@ import { parseV2 } from "../src/v2-config.js";
 import { runV2 } from "../src/v2-runner.js";
 import { writeV2 } from "../src/v2-report.js";
 import { loadProvider, type FactoryOptions } from "../src/providers.js";
-import { bindConnection, fingerprintOf } from "../src/connections.js";
+import {
+  bindConnection,
+  connectionProbes,
+  fingerprintOf,
+  type ModalClientParams,
+} from "../src/connections.js";
+import { fakeDocker } from "./docker-fake.js";
 import { bound, fakeNativeModules } from "./native-fakes.js";
 
 const id = "fixture";
@@ -27,6 +33,8 @@ const providerEnv = [
   "BOAT_API_BASE",
   "BOXD_API_KEY",
   "BOXD_BASE_URL",
+  "BOXD_API_URL",
+  "BOXD_REGION",
   "DAYTONA_API_KEY",
   "DAYTONA_API_URL",
   "DAYTONA_SERVER_URL",
@@ -45,12 +53,25 @@ const providerEnv = [
   "TENKI_API_KEY",
   "TENKI_AUTH_TOKEN",
   "TENKI_API_ENDPOINT",
+  "TENKI_API_URL",
   "UPSTASH_BOX_API_KEY",
   "UPSTASH_BOX_BASE_URL",
   "VERCEL_TOKEN",
   "VERCEL_TEAM_ID",
   "VERCEL_PROJECT_ID",
   "VERCEL_OIDC_TOKEN",
+  "DOCKER_HOST",
+  "MODAL_PROFILE",
+  "MODAL_CONFIG_PATH",
+  "MODAL_TOKEN_ID",
+  "MODAL_TOKEN_SECRET",
+  "MODAL_ENVIRONMENT",
+  "MODAL_SERVER_URL",
+  "RAILWAY_API_TOKEN",
+  "RAILWAY_TOKEN",
+  "RAILWAY_ENVIRONMENT_ID",
+  "RAILWAY_GRAPHQL_ENDPOINT",
+  "RAILWAY_TCP_PROXY_WS_ENDPOINT",
 ];
 
 beforeEach(() => {
@@ -125,8 +146,8 @@ describe("a connection fingerprint names the whole connection without holding an
       apiKey: "live-key",
     });
 
-    expect(fingerprintOf(run)).toMatch(/^[0-9a-f]{16}$/);
-    expect(fingerprintOf(again)).toBe(fingerprintOf(run));
+    expect(await fingerprintOf(run)).toMatch(/^[0-9a-f]{16}$/);
+    expect(await fingerprintOf(again)).toBe(await fingerprintOf(run));
   });
 
   it.each([
@@ -137,7 +158,7 @@ describe("a connection fingerprint names the whole connection without holding an
     const run = await load("daytona", options);
     const other = await load("daytona", { ...options, ...change });
 
-    expect(fingerprintOf(other)).not.toBe(fingerprintOf(run));
+    expect(await fingerprintOf(other)).not.toBe(await fingerprintOf(run));
   });
 
   it("changes when only the environment does (E2B_API_URL)", async () => {
@@ -145,7 +166,7 @@ describe("a connection fingerprint names the whole connection without holding an
     const run = await load("e2b", {});
 
     vi.stubEnv("E2B_API_URL", "https://elsewhere.invalid");
-    expect(fingerprintOf(await load("e2b", {}))).not.toBe(fingerprintOf(run));
+    expect(await fingerprintOf(await load("e2b", {}))).not.toBe(await fingerprintOf(run));
   });
 
   // Where `resolveConfig` leaves a field to the provider's SDK, the SDK reads the environment.
@@ -155,7 +176,7 @@ describe("a connection fingerprint names the whole connection without holding an
     ["tenki", "TENKI_API_ENDPOINT", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["tenki", "TENKI_API_URL", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["vercel", "VERCEL_OIDC_TOKEN", {}, "other-oidc-token"],
-  ])("%s changes when %s, which its SDK reads itself, does", (name, variable, env, value) => {
+  ])("%s changes when %s, which its SDK reads itself, does", async (name, variable, env, value) => {
     for (const [key, set] of Object.entries(env)) vi.stubEnv(key, set);
     vi.stubEnv("VERCEL_OIDC_TOKEN", "run-oidc-token");
 
@@ -164,12 +185,16 @@ describe("a connection fingerprint names the whole connection without holding an
     vi.stubEnv(variable, value);
     const other = bound({ ...memory(), name });
 
-    expect(fingerprintOf(run)).toMatch(/^[0-9a-f]{16}$/);
-    expect(fingerprintOf(other)).not.toBe(fingerprintOf(run));
+    expect(await fingerprintOf(run)).toMatch(/^[0-9a-f]{16}$/);
+    expect(await fingerprintOf(other)).not.toBe(await fingerprintOf(run));
   });
 
-  it("is null for an adapter that resolves its own connection", () => {
-    expect(fingerprintOf(bound(memory()))).toBeNull();
+  it("is a constant of its name for an in-process adapter, which has no connection to choose", async () => {
+    const fingerprint = await fingerprintOf(bound(memory()));
+
+    expect(fingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(await fingerprintOf(bound(memory()))).toBe(fingerprint);
+    expect(await fingerprintOf(bound({ ...memory(), name: "agentos" }))).not.toBe(fingerprint);
   });
 });
 
@@ -278,6 +303,11 @@ const canaryOptions = {
   target: "canary-target",
   teamId: "t-canary-team",
   token: "v-canary-token",
+  tokenId: "ak-canary-modal-id",
+  tokenSecret: "as-canary-modal-secret",
+  environment: "e-canary-modal-env",
+  environmentId: "r-canary-railway-env",
+  authType: "a-canary-auth-type",
 } satisfies FactoryOptions;
 
 const connected = [
@@ -288,6 +318,9 @@ const connected = [
   "e2b",
   "freestyle",
   "instabox",
+  "local",
+  "modal",
+  "railway",
   "superserve",
   "tenki",
   "upstash",
@@ -298,6 +331,22 @@ it("a run's journal and reports hold no credential or endpoint text, for every c
   // Hermetic: every raw request answers 404 and no native SDK loads, so lookups stay unavailable.
   vi.stubGlobal("fetch", async () => Response.json({}, { status: 404 }));
   fakeNativeModules({});
+  // Modal's client echoes the canary tokens and Environment into the profile it resolves.
+  vi.spyOn(connectionProbes, "loadModal").mockResolvedValue({
+    ModalClient: class {
+      readonly profile: ModalClientParams & { serverUrl: string };
+
+      constructor(params: ModalClientParams) {
+        this.profile = { serverUrl: "https://canary-modal.invalid:443", ...params };
+      }
+
+      close() {}
+    },
+  });
+  // The local adapter's socket and daemon ID carry canaries too.
+  const socketDir = await mkdtemp(join(tmpdir(), "bench-socket-canary-"));
+  const docker = await fakeDocker("daemon-canary-id", join(socketDir, "canary.sock"));
+  const options = { ...canaryOptions, dockerHost: docker.host };
 
   const out = await mkdtemp(join(tmpdir(), "bench-journal-canaries-"));
 
@@ -325,7 +374,7 @@ it("a run's journal and reports hold no credential or endpoint text, for every c
         name,
         cloud: false,
         region: null,
-        provider: bound({ ...memory(), name }, canaryOptions),
+        provider: bound({ ...memory(), name }, options),
       })),
       config,
       (r) => writeV2(r, out),
@@ -345,6 +394,8 @@ it("a run's journal and reports hold no credential or endpoint text, for every c
       expect(value).toMatch(/^[0-9a-f]{16}$/);
   } finally {
     await rm(out, { recursive: true, force: true });
+    await docker.close();
+    await rm(socketDir, { recursive: true, force: true });
   }
 }, 60_000);
 

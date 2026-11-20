@@ -10,6 +10,7 @@ import { parseV2 } from "../src/v2-config.js";
 import { writeV2 } from "../src/v2-report.js";
 import { reapRun } from "../src/recovery.js";
 import { DeletionWork, deadline } from "../src/timing.js";
+import { bound } from "./native-fakes.js";
 
 const dirs: string[] = [];
 
@@ -70,7 +71,7 @@ it.each(["terminal", "not-found", "unavailable"] as const)(
     });
 
     const report = await runV2(
-      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
       cfg,
       (r) => writeV2(r, cfg.out),
     );
@@ -128,7 +129,7 @@ it.each(["not-found", "unavailable"] as const)(
     });
     expect(
       await reapRun(
-        [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+        [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
         cfg,
         (s) => s,
       ),
@@ -176,7 +177,7 @@ it.each([false, true])(
     const provider = { ...backing, destroy };
 
     const loaded = [
-      { kind: "ready", name: "memory", cloud: false, region: null, provider },
+      { kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) },
     ] satisfies Parameters<typeof reapRun>[0];
 
     if (reap) {
@@ -229,7 +230,7 @@ it("resolves an absent resource even when its native delete promise never settle
   const provider = { ...backing, destroy };
 
   const report = await runV2(
-    [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+    [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
     cfg,
     (r) => writeV2(r, cfg.out),
   );
@@ -265,7 +266,7 @@ it("does not publish lookup latency as destroy latency when no delete request wa
   };
 
   const report = await runV2(
-    [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+    [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
     cfg,
     (r) => writeV2(r, cfg.out),
   );

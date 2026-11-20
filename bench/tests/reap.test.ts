@@ -67,7 +67,7 @@ test("bench reap skips legacy missing metadata, recovers native-labelled orphans
       resolve(directory, "ownership.json"),
       JSON.stringify({
         runId: "reap-43",
-        connectionFingerprints: { freestyle: fingerprintOf(provider) },
+        connectionFingerprints: { freestyle: await fingerprintOf(provider) },
         resources: [],
       }),
     );
@@ -115,7 +115,7 @@ test("bench reap fails on native listing auth errors", async () => {
       resolve(directory, "ownership.json"),
       JSON.stringify({
         runId: "reap-43",
-        connectionFingerprints: { freestyle: fingerprintOf(loaded.provider) },
+        connectionFingerprints: { freestyle: await fingerprintOf(loaded.provider) },
         resources: [],
       }),
     );
@@ -142,8 +142,8 @@ test("bench reap fails on native listing auth errors", async () => {
 
 test("reap recovers exactly labelled resources even when the journal is truncated", async () => {
   const directory = await mkdtemp(resolve("reap-test-"));
-  // An adapter that resolves its own connection has no fingerprint to check.
-  const provider = memory();
+  // An in-process adapter has one connection, so a journal that lost its fingerprint still passes.
+  const provider = bound(memory());
   const own = await createSandbox(provider, { labels: { "sandbox-bench-run": "corrupt-run" } });
   const other = await createSandbox(provider, { labels: { "sandbox-bench-run": "other" } });
 

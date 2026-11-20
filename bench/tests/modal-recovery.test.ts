@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,13 +21,38 @@ import {
   journalAppSchema,
   type PendingSandbox,
 } from "../src/modal-apps.js";
+import { connectionProbes, fingerprintOf } from "../src/connections.js";
 import { destroyTimings } from "../src/providers.js";
 import { reapRun } from "../src/recovery.js";
 import { parseV2 } from "../src/v2-config.js";
 import { runV2 } from "../src/v2-runner.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, fakeNativeModules } from "./native-fakes.js";
 
 const dirs: string[] = [];
+
+// Modal's client as the connection fingerprint reads it: one fixed profile, no request.
+beforeEach(() => {
+  vi.spyOn(connectionProbes, "loadModal").mockResolvedValue({
+    ModalClient: class {
+      readonly profile = {
+        serverUrl: "https://api.modal.invalid:443",
+        tokenId: "ak-recovery",
+        tokenSecret: "as-recovery",
+      };
+
+      close() {}
+    },
+  });
+});
+
+/** The fingerprint every adapter of this file journals: they all resolve the profile above. */
+async function modalFingerprint() {
+  const fingerprint = await fingerprintOf(bound({ ...memory(), name: "modal" }));
+
+  if (fingerprint === null) throw new Error("Modal fingerprint unavailable");
+
+  return fingerprint;
+}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -114,7 +139,8 @@ function modalCloud() {
       },
     };
 
-    return adapter;
+    // Bound as `loadProvider` binds it, so a reap checks its connection fingerprint.
+    return bound(adapter);
   }
 
   return { backing, appOf, existing, prepared, process };
@@ -224,6 +250,7 @@ describe("per-attempt Modal Apps", () => {
       join(out, "ownership.json"),
       JSON.stringify({
         runId: run,
+        connectionFingerprints: { modal: await modalFingerprint() },
         resources: [{ provider: "modal", id: box.id, kind: "sandbox", parent: null }],
         apps: [
           { provider: "modal", name: "sandbox-bench-x", appId: "ap-x", sandboxes: [box.id] },
@@ -865,6 +892,7 @@ describe("lost creates and pending restores", () => {
       join(out, "ownership.json"),
       JSON.stringify({
         runId: run,
+        connectionFingerprints: { modal: await modalFingerprint() },
         resources: [],
         apps: [
           {
@@ -909,6 +937,7 @@ describe("lost creates and pending restores", () => {
       join(stuckOut, "ownership.json"),
       JSON.stringify({
         runId: stuckRun,
+        connectionFingerprints: { modal: await modalFingerprint() },
         resources: [],
         apps: [{ provider: "modal", name: stuckApp, appId: `ap-${stuckApp}`, sandboxes: [] }],
       }),
@@ -943,6 +972,7 @@ describe("lost creates and pending restores", () => {
       join(out, "ownership.json"),
       JSON.stringify({
         runId: run,
+        connectionFingerprints: { modal: await modalFingerprint() },
         resources: [],
         apps: [
           {
