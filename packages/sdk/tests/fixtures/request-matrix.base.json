@@ -1,0 +1,4440 @@
+{
+  "baseten: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "new baseten.SandboxClient",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "teamId": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "new baseten.SandboxClient.list()",
+        "args": [{}]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "unavailable",
+          "message": "Baseten request failed: the service is down or unreachable. Check Baseten and retry."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Not an SDK sandbox. Check Baseten and retry."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "new baseten.SandboxClient.getInfo()",
+        "args": [
+          {
+            "name": "sbx-fixture"
+          }
+        ]
+      },
+      {
+        "sdk": "new baseten.SandboxClient.getInfo().url.toJSON()",
+        "args": ["url"]
+      },
+      {
+        "sdk": "new baseten.SandboxClient.get()",
+        "args": [
+          {
+            "info": {
+              "url": "<fake>"
+            }
+          }
+        ]
+      },
+      {
+        "sdk": "new baseten.SandboxClient.get().previews.list()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "unavailable",
+          "message": "Baseten request failed: the service is down or unreachable. Check Baseten and retry."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the sandbox first. Check Baseten and retry."
+        }
+      }
+    ]
+  },
+  "baseten: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "new baseten.SandboxClient",
+        "args": [
+          {
+            "apiKey": "<optionKey>",
+            "teamId": "team-option"
+          }
+        ]
+      },
+      {
+        "sdk": "new baseten.SandboxClient.list()",
+        "args": [{}]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "unavailable",
+          "message": "Baseten request failed: the service is down or unreachable. Check Baseten and retry."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Not an SDK sandbox. Check Baseten and retry."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "new baseten.SandboxClient.getInfo()",
+        "args": [
+          {
+            "name": "sbx-fixture"
+          }
+        ]
+      },
+      {
+        "sdk": "new baseten.SandboxClient.getInfo().url.toJSON()",
+        "args": ["url"]
+      },
+      {
+        "sdk": "new baseten.SandboxClient.get()",
+        "args": [
+          {
+            "info": {
+              "url": "<fake>"
+            }
+          }
+        ]
+      },
+      {
+        "sdk": "new baseten.SandboxClient.get().previews.list()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "unavailable",
+          "message": "Baseten request failed: the service is down or unreachable. Check Baseten and retry."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the sandbox first. Check Baseten and retry."
+        }
+      }
+    ]
+  },
+  "baseten: no key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Baseten API key is missing. Authentication is required. Set BASETEN_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Not an SDK sandbox. Check Baseten and retry."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Baseten API key is missing. Authentication is required. Set BASETEN_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the sandbox first. Check Baseten and retry."
+        }
+      }
+    ]
+  },
+  "boat: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://boat.dev/api/v1/sandboxes?limit=200",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Boat GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://boat.dev/api/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Boat GET /sandboxes/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://boat.dev/api/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-ascii-confirm-delete": "sbx-fixture"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<envKey>",
+            "basePath": "https://boat.dev/api/v1"
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<envKey>",
+            "basePath": "https://boat.dev/api/v1"
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.get.apply()",
+        "args": [
+          "<fake>",
+          [
+            {
+              "sandboxId": "sbx-fixture"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "boat: env base with slashes": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://boat.invalid/api/v1/sandboxes?limit=200",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Boat GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://boat.invalid/api/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Boat GET /sandboxes/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://boat.invalid/api/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-ascii-confirm-delete": "sbx-fixture"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<envKey>",
+            "basePath": "https://boat.invalid/api/v1//"
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<envKey>",
+            "basePath": "https://boat.invalid/api/v1//"
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.get.apply()",
+        "args": [
+          "<fake>",
+          [
+            {
+              "sandboxId": "sbx-fixture"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "boat: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/v1/sandboxes?limit=200",
+        "headers": {
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Boat GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Boat GET /sandboxes/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://option.invalid/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-ascii-confirm-delete": "sbx-fixture"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<optionKey>",
+            "basePath": "https://option.invalid/v1//"
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<optionKey>",
+            "basePath": "https://option.invalid/v1//"
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.get.apply()",
+        "args": [
+          "<fake>",
+          [
+            {
+              "sandboxId": "sbx-fixture"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "boat: apiUrl alias": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://alias.invalid/v1/sandboxes?limit=200",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Boat GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://alias.invalid/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Boat GET /sandboxes/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://alias.invalid/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-ascii-confirm-delete": "sbx-fixture"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<envKey>",
+            "basePath": "https://alias.invalid/v1/"
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<envKey>",
+            "basePath": "https://alias.invalid/v1/"
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.get.apply()",
+        "args": [
+          "<fake>",
+          [
+            {
+              "sandboxId": "sbx-fixture"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "boat: no key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Boat API key is missing. Authentication is required. Set BOAT_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Boat API key is missing. Authentication is required. Set BOAT_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Boat API key is missing. Authentication is required. Set BOAT_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Boat API key is missing. Authentication is required. Set BOAT_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Boat API key is missing. Authentication is required. Set BOAT_API_KEY or pass apiKey."
+        }
+      }
+    ]
+  },
+  "sandboxer: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://sandboxer.com/api/v1/sandboxes?limit=200",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandboxer GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://sandboxer.com/api/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandboxer GET /sandboxes/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://sandboxer.com/api/v1/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-ascii-confirm-delete": "sbx-fixture",
+          "x-sandboxer-confirm-delete": "sbx-fixture"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<envKey>",
+            "basePath": "https://sandboxer.com/api/v1",
+            "middleware": [
+              {
+                "pre": "<function pre>"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<envKey>",
+            "basePath": "https://sandboxer.com/api/v1",
+            "middleware": [
+              {
+                "pre": "<function pre>"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.get.apply()",
+        "args": [
+          "<fake>",
+          [
+            {
+              "sandboxId": "sbx-fixture"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "sandboxer: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/sbx/sandboxes?limit=200",
+        "headers": {
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandboxer GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/sbx/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandboxer GET /sandboxes/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://option.invalid/sbx/sandboxes/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-ascii-confirm-delete": "sbx-fixture",
+          "x-sandboxer-confirm-delete": "sbx-fixture"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<optionKey>",
+            "basePath": "https://option.invalid/sbx//",
+            "middleware": [
+              {
+                "pre": "<function pre>"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "new sdk.Configuration",
+        "args": [
+          {
+            "accessToken": "<optionKey>",
+            "basePath": "https://option.invalid/sbx//",
+            "middleware": [
+              {
+                "pre": "<function pre>"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "sdk": "new sdk.Configuration.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi",
+        "args": ["<fake>"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "new sdk.BoatApi.get.apply()",
+        "args": [
+          "<fake>",
+          [
+            {
+              "sandboxId": "sbx-fixture"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "boxd: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "new boxd.Boxd",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseURL": "<undefined>",
+            "maxRetries": 0,
+            "timeout": 30000
+          }
+        ]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.list()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "boxd request failed: TypeError: {} is not iterable. Check boxd configuration and retry."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get().name.startsWith()",
+        "args": ["sbxsdk-"]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get().name.split()",
+        "args": ["-"]
+      },
+      {
+        "sdk": "boxd transfers",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseURL": "<undefined>",
+            "maxRetries": 0,
+            "timeout": 30000
+          }
+        ]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get().id.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "boxd transfers.download()",
+        "args": ["<fake>", "/var/lib/sandbox-sdk/metadata.json"]
+      },
+      {
+        "sdk": "boxd transfers.releaseIdle()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "boxd request failed: TypeError: TextDecoder.decode expects an ArrayBuffer or TypedArray. Check boxd configuration and retry."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.delete()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "boxd transfers.closeMachine()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "boxd transfers.releaseIdle()",
+        "args": []
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the machine first. Check boxd configuration and retry."
+        }
+      }
+    ]
+  },
+  "boxd: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "new boxd.Boxd",
+        "args": [
+          {
+            "apiKey": "<optionKey>",
+            "baseURL": "https://option.invalid/boxd/",
+            "maxRetries": 0,
+            "timeout": 30000
+          }
+        ]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.list()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "boxd request failed: TypeError: {} is not iterable. Check boxd configuration and retry."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get().name.startsWith()",
+        "args": ["sbxsdk-"]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get().name.split()",
+        "args": ["-"]
+      },
+      {
+        "sdk": "boxd transfers",
+        "args": [
+          {
+            "apiKey": "<optionKey>",
+            "baseURL": "https://option.invalid/boxd/",
+            "maxRetries": 0,
+            "timeout": 30000
+          }
+        ]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get().id.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "boxd transfers.download()",
+        "args": ["<fake>", "/var/lib/sandbox-sdk/metadata.json"]
+      },
+      {
+        "sdk": "boxd transfers.releaseIdle()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "boxd request failed: TypeError: TextDecoder.decode expects an ArrayBuffer or TypedArray. Check boxd configuration and retry."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.delete()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "boxd transfers.closeMachine()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "boxd transfers.releaseIdle()",
+        "args": []
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the machine first. Check boxd configuration and retry."
+        }
+      }
+    ]
+  },
+  "boxd: baseURL alias": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "new boxd.Boxd",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseURL": "https://alias.invalid/boxd",
+            "maxRetries": 0,
+            "timeout": 30000
+          }
+        ]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.list()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "boxd request failed: TypeError: {} is not iterable. Check boxd configuration and retry."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get().name.startsWith()",
+        "args": ["sbxsdk-"]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get().name.split()",
+        "args": ["-"]
+      },
+      {
+        "sdk": "boxd transfers",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseURL": "https://alias.invalid/boxd",
+            "maxRetries": 0,
+            "timeout": 30000
+          }
+        ]
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.get().id.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "boxd transfers.download()",
+        "args": ["<fake>", "/var/lib/sandbox-sdk/metadata.json"]
+      },
+      {
+        "sdk": "boxd transfers.releaseIdle()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "boxd request failed: TypeError: TextDecoder.decode expects an ArrayBuffer or TypedArray. Check boxd configuration and retry."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "new boxd.Boxd.machines.delete()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "boxd transfers.closeMachine()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "boxd transfers.releaseIdle()",
+        "args": []
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the machine first. Check boxd configuration and retry."
+        }
+      }
+    ]
+  },
+  "boxd: no key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "boxd API key is missing. Authentication is required. Set BOXD_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "boxd API key is missing. Authentication is required. Set BOXD_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "boxd API key is missing. Authentication is required. Set BOXD_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the machine first. Check boxd configuration and retry."
+        }
+      }
+    ]
+  },
+  "daytona: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.daytona.io/api/sandbox?labels=%7B%22sandbox-sdk%22%3A%221%22%7D",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.daytona.io/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://app.daytona.io/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Daytona",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "apiUrl": "https://app.daytona.io/api",
+            "target": "us"
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "daytona: env URL with slashes": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://daytona.invalid/live/sandbox?labels=%7B%22sandbox-sdk%22%3A%221%22%7D",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://daytona.invalid/live/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://daytona.invalid/live/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Daytona",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "apiUrl": "https://daytona.invalid/live///",
+            "target": "us"
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "daytona: server URL and target": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://server.invalid/api/sandbox?labels=%7B%22sandbox-sdk%22%3A%221%22%7D",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://server.invalid/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://server.invalid/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Daytona",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "apiUrl": "https://server.invalid/api/",
+            "target": "eu"
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "daytona: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/api/sandbox?labels=%7B%22sandbox-sdk%22%3A%221%22%7D",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://option.invalid/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Daytona",
+        "args": [
+          {
+            "apiKey": "<optionKey>",
+            "apiUrl": "https://option.invalid/api//",
+            "target": "us"
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "daytona: apiUrl alias": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://alias.invalid/api/sandbox?labels=%7B%22sandbox-sdk%22%3A%221%22%7D",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://alias.invalid/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://alias.invalid/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Daytona",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "apiUrl": "https://alias.invalid/api",
+            "target": "us"
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "daytona: jwt": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.daytona.io/api/sandbox?labels=%7B%22sandbox-sdk%22%3A%221%22%7D",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <jwt>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-daytona-organization-id": "org-env"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.daytona.io/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <jwt>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-daytona-organization-id": "org-env"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://app.daytona.io/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <jwt>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-daytona-organization-id": "org-env"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Daytona",
+        "args": [
+          {
+            "apiUrl": "https://app.daytona.io/api",
+            "jwtToken": "<jwt>",
+            "organizationId": "org-env",
+            "target": "us"
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "daytona: jwt option over env key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.daytona.io/api/sandbox?labels=%7B%22sandbox-sdk%22%3A%221%22%7D",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <jwt>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-daytona-organization-id": "org-option"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.daytona.io/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <jwt>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-daytona-organization-id": "org-option"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Daytona GET /sandbox/{sandboxId} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://app.daytona.io/api/sandbox/sbx-fixture",
+        "headers": {
+          "accept": "application/json",
+          "authorization": "Bearer <jwt>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-daytona-organization-id": "org-option"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Daytona",
+        "args": [
+          {
+            "apiUrl": "https://app.daytona.io/api",
+            "jwtToken": "<jwt>",
+            "organizationId": "org-option",
+            "target": "us"
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "daytona: jwt without org": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Daytona organization is missing. JWT authentication needs an organization ID. Set DAYTONA_ORGANIZATION_ID or pass organizationId."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Daytona organization is missing. JWT authentication needs an organization ID. Set DAYTONA_ORGANIZATION_ID or pass organizationId."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Daytona organization is missing. JWT authentication needs an organization ID. Set DAYTONA_ORGANIZATION_ID or pass organizationId."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Daytona organization is missing. JWT authentication needs an organization ID. Set DAYTONA_ORGANIZATION_ID or pass organizationId."
+        }
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "daytona: no key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Daytona API key is missing. Authentication is required. Set DAYTONA_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "e2b: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.e2b.app/v2/sandboxes?metadata=sandbox-sdk%3D1&state=running%2Cpaused",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /v2/sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.e2b.app/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /sandboxes/{id} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api.e2b.app/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.E2B",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "domain": "e2b.app",
+            "requestTimeoutMs": 60000
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox client is detached. There is no cached native object. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "e2b: env domain": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.domain.invalid/v2/sandboxes?metadata=sandbox-sdk%3D1&state=running%2Cpaused",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /v2/sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.domain.invalid/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /sandboxes/{id} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api.domain.invalid/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.E2B",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "domain": "domain.invalid",
+            "requestTimeoutMs": 60000
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox client is detached. There is no cached native object. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "e2b: env API URL with slash": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.e2b.invalid/v2/sandboxes?metadata=sandbox-sdk%3D1&state=running%2Cpaused",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /v2/sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.e2b.invalid/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /sandboxes/{id} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api.e2b.invalid/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.E2B",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "domain": "e2b.app",
+            "requestTimeoutMs": 60000
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox client is detached. There is no cached native object. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "e2b: debug": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.remote.invalid/v2/sandboxes?metadata=sandbox-sdk%3D1&state=running%2Cpaused",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /v2/sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.remote.invalid/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /sandboxes/{id} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api.remote.invalid/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.E2B",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "domain": "remote.invalid",
+            "requestTimeoutMs": 60000
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox client is detached. There is no cached native object. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "e2b: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.option.invalid/v2/sandboxes?metadata=sandbox-sdk%3D1&state=running%2Cpaused",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<optionKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /v2/sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.option.invalid/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<optionKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "E2B GET /sandboxes/{id} failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api.option.invalid/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<optionKey>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.E2B",
+        "args": [
+          {
+            "apiKey": "<optionKey>",
+            "domain": "option.invalid",
+            "requestTimeoutMs": 60000
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox client is detached. There is no cached native object. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "e2b: no key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox client is detached. There is no cached native object. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "freestyle: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.freestyle.sh/v5/vms?limit=100&offset=0",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-freestyle-background-after-secs": "5"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Freestyle request failed: the sandbox does not exist. Check Freestyle configuration and retry."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.freestyle.sh/v5/vms/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-freestyle-background-after-secs": "5"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Freestyle request failed: the sandbox does not exist. Check Freestyle configuration and retry."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api.freestyle.sh/v5/vms/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <envKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-freestyle-background-after-secs": "5"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Freestyle",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "https://api.freestyle.sh"
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the VM first. Check Freestyle configuration and retry."
+        }
+      }
+    ]
+  },
+  "freestyle: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/fs/v5/vms?limit=100&offset=0",
+        "headers": {
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-freestyle-background-after-secs": "5"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Freestyle request failed: the sandbox does not exist. Check Freestyle configuration and retry."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/fs/v5/vms/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-freestyle-background-after-secs": "5"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Freestyle request failed: the sandbox does not exist. Check Freestyle configuration and retry."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://option.invalid/fs/v5/vms/sbx-fixture",
+        "headers": {
+          "authorization": "Bearer <optionKey>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-freestyle-background-after-secs": "5"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "sdk": "new sdk.Freestyle",
+        "args": [
+          {
+            "apiKey": "<optionKey>",
+            "baseUrl": "https://option.invalid/fs//"
+          }
+        ]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the VM first. Check Freestyle configuration and retry."
+        }
+      }
+    ]
+  },
+  "freestyle: no key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Freestyle API key is missing. Authentication is required. Set FREESTYLE_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the VM first. Check Freestyle configuration and retry."
+        }
+      }
+    ]
+  },
+  "instabox: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.instabox.sh/v1/machines?metadata=sandbox-sdk%3A1&limit=200",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Instabox list failed: the sandbox does not exist"
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.instabox.sh/v1/machines/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Instabox connect failed: the sandbox does not exist"
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api.instabox.sh/v1/machines/sbx-fixture",
+        "headers": {
+          "idempotency-key": "<uuid>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>",
+          "x-confirm-delete": "sbx-fixture"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "instabox: env URL with slashes": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://instabox.invalid/v1/machines?metadata=sandbox-sdk%3A1&limit=200",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Instabox list failed: the sandbox does not exist"
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://instabox.invalid/v1/machines/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Instabox connect failed: the sandbox does not exist"
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://instabox.invalid/v1/machines/sbx-fixture",
+        "headers": {
+          "idempotency-key": "<uuid>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>",
+          "x-confirm-delete": "sbx-fixture"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "instabox: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/ib/ib/v1/machines?metadata=sandbox-sdk%3A1&limit=200",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<optionKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Instabox list failed: the sandbox does not exist"
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/ib/v1/machines/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<optionKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Instabox connect failed: the sandbox does not exist"
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://option.invalid/ib/v1/machines/sbx-fixture",
+        "headers": {
+          "idempotency-key": "<uuid>",
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<optionKey>",
+          "x-confirm-delete": "sbx-fixture"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "superserve: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api.superserve.ai/sandboxes?metadata.sandbox-sdk=1",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "POST",
+        "url": "https://api.superserve.ai/sandboxes/sbx-fixture/activate",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve POST /sandboxes/{sandboxId}/activate failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api.superserve.ai/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "sdk.Sandbox.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "sdk.Sandbox.connect.apply()",
+        "args": [
+          "<fake>",
+          [
+            "sbx-fixture",
+            {
+              "apiKey": "<envKey>",
+              "baseUrl": "<undefined>"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "superserve: region key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api-usw.superserve.ai/sandboxes?metadata.sandbox-sdk=1",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<superserveUsw>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "POST",
+        "url": "https://api-usw.superserve.ai/sandboxes/sbx-fixture/activate",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<superserveUsw>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve POST /sandboxes/{sandboxId}/activate failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api-usw.superserve.ai/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<superserveUsw>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "sdk.Sandbox.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "sdk.Sandbox.connect.apply()",
+        "args": [
+          "<fake>",
+          [
+            "sbx-fixture",
+            {
+              "apiKey": "<superserveUsw>",
+              "baseUrl": "<undefined>"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "superserve: env base with slashes": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://ss.invalid/sandboxes?metadata.sandbox-sdk=1",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "POST",
+        "url": "https://ss.invalid/sandboxes/sbx-fixture/activate",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve POST /sandboxes/{sandboxId}/activate failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://ss.invalid/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<envKey>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "sdk.Sandbox.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "sdk.Sandbox.connect.apply()",
+        "args": [
+          "<fake>",
+          [
+            "sbx-fixture",
+            {
+              "apiKey": "<envKey>",
+              "baseUrl": "<undefined>"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "superserve: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/ss/sandboxes?metadata.sandbox-sdk=1",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<optionKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "POST",
+        "url": "https://option.invalid/ss/sandboxes/sbx-fixture/activate",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<optionKey>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve POST /sandboxes/{sandboxId}/activate failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://option.invalid/ss/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<optionKey>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "sdk.Sandbox.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "sdk.Sandbox.connect.apply()",
+        "args": [
+          "<fake>",
+          [
+            "sbx-fixture",
+            {
+              "apiKey": "<optionKey>",
+              "baseUrl": "https://option.invalid/ss/"
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "superserve: blank base option": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://api-usw.superserve.ai/sandboxes?metadata.sandbox-sdk=1",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<superserveUsw>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve GET /sandboxes failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "POST",
+        "url": "https://api-usw.superserve.ai/sandboxes/sbx-fixture/activate",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<superserveUsw>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Superserve POST /sandboxes/{sandboxId}/activate failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "DELETE",
+        "url": "https://api-usw.superserve.ai/sandboxes/sbx-fixture",
+        "headers": {
+          "user-agent": "sandbox-sdk/<version>",
+          "x-api-key": "<superserveUsw>"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "sdk": "sdk.Sandbox.toJSON()",
+        "args": ["0"]
+      },
+      {
+        "sdk": "sdk.Sandbox.connect.apply()",
+        "args": [
+          "<fake>",
+          [
+            "sbx-fixture",
+            {
+              "apiKey": "<superserveUsw>",
+              "baseUrl": "  "
+            }
+          ]
+        ]
+      },
+      {
+        "result": "ok"
+      }
+    ]
+  },
+  "tenki: env key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox",
+        "args": [
+          {
+            "authToken": "<envKey>",
+            "baseUrl": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list()",
+        "args": ["<undefined>"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list().filter()",
+        "args": ["<function >"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list().filter().flatMap()",
+        "args": ["<function >"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.valueOf()",
+        "args": []
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.toString()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Luxor request failed: TypeError: No default value. Check credentials, quotas, and session state."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.valueOf()",
+        "args": []
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.toString()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Luxor request failed: TypeError: No default value. Check credentials, quotas, and session state."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Session is detached; connect first. Luxor could not honor the request. Check the provider options."
+        }
+      }
+    ]
+  },
+  "tenki: auth token wins": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox",
+        "args": [
+          {
+            "authToken": "<envToken>",
+            "baseUrl": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list()",
+        "args": ["<undefined>"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list().filter()",
+        "args": ["<function >"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list().filter().flatMap()",
+        "args": ["<function >"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.valueOf()",
+        "args": []
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.toString()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Luxor request failed: TypeError: No default value. Check credentials, quotas, and session state."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.valueOf()",
+        "args": []
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.toString()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Luxor request failed: TypeError: No default value. Check credentials, quotas, and session state."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Session is detached; connect first. Luxor could not honor the request. Check the provider options."
+        }
+      }
+    ]
+  },
+  "tenki: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox",
+        "args": [
+          {
+            "authToken": "<optionKey>",
+            "baseUrl": "https://option.invalid/tenki"
+          }
+        ]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list()",
+        "args": ["<undefined>"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list().filter()",
+        "args": ["<function >"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list().filter().flatMap()",
+        "args": ["<function >"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.valueOf()",
+        "args": []
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.toString()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Luxor request failed: TypeError: No default value. Check credentials, quotas, and session state."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.valueOf()",
+        "args": []
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.toString()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Luxor request failed: TypeError: No default value. Check credentials, quotas, and session state."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Session is detached; connect first. Luxor could not honor the request. Check the provider options."
+        }
+      }
+    ]
+  },
+  "tenki: authToken option": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox",
+        "args": [
+          {
+            "authToken": "<optionToken>",
+            "baseUrl": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list()",
+        "args": ["<undefined>"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list().filter()",
+        "args": ["<function >"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.list().filter().flatMap()",
+        "args": ["<function >"]
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.valueOf()",
+        "args": []
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.toString()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Luxor request failed: TypeError: No default value. Check credentials, quotas, and session state."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get()",
+        "args": ["sbx-fixture"]
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.valueOf()",
+        "args": []
+      },
+      {
+        "sdk": "new tenki.TenkiSandbox.get().metadata.sandbox-sdk-created-at.toString()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Luxor request failed: TypeError: No default value. Check credentials, quotas, and session state."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Session is detached; connect first. Luxor could not honor the request. Check the provider options."
+        }
+      }
+    ]
+  },
+  "tenki: no key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Luxor API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Luxor API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Luxor API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Session is detached; connect first. Luxor could not honor the request. Check the provider options."
+        }
+      }
+    ]
+  },
+  "upstash: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "upstash.Box.list()",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "<undefined>",
+            "enableTelemetry": "<undefined>",
+            "label": "sandbox-sdk"
+          }
+        ]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Upstash Box list failed: TypeError: {} is not iterable. Check credentials, limits, and sandbox state."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "upstash.Box.list()",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "<undefined>",
+            "enableTelemetry": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "upstash.Box.list().find()",
+        "args": ["<function >"]
+      },
+      {
+        "sdk": "upstash.Box.get()",
+        "args": [
+          "sbx-fixture",
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "<undefined>",
+            "enableTelemetry": "<undefined>",
+            "timeout": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "upstash.Box.get().exec.command()",
+        "args": [
+          "if [ -n \"$SANDBOX_SDK_UPSTASH_METADATA\" ]; then printf %s \"$SANDBOX_SDK_UPSTASH_METADATA\"; else cat '/tmp/.sandbox-sdk/upstash.json'; fi"
+        ]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "SDK metadata was not found"
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "upstash.Box.get().delete()",
+        "args": []
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No native object is cached. Connect first."
+        }
+      }
+    ]
+  },
+  "upstash: env URL with slashes": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "upstash.Box.list()",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "<undefined>",
+            "enableTelemetry": "<undefined>",
+            "label": "sandbox-sdk"
+          }
+        ]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Upstash Box list failed: TypeError: {} is not iterable. Check credentials, limits, and sandbox state."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "upstash.Box.list()",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "<undefined>",
+            "enableTelemetry": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "upstash.Box.list().find()",
+        "args": ["<function >"]
+      },
+      {
+        "sdk": "upstash.Box.get()",
+        "args": [
+          "sbx-fixture",
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "<undefined>",
+            "enableTelemetry": "<undefined>",
+            "timeout": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "upstash.Box.get().exec.command()",
+        "args": [
+          "if [ -n \"$SANDBOX_SDK_UPSTASH_METADATA\" ]; then printf %s \"$SANDBOX_SDK_UPSTASH_METADATA\"; else cat '/tmp/.sandbox-sdk/upstash.json'; fi"
+        ]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "SDK metadata was not found"
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "upstash.Box.get().delete()",
+        "args": []
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No native object is cached. Connect first."
+        }
+      }
+    ]
+  },
+  "upstash: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "upstash.Box.list()",
+        "args": [
+          {
+            "apiKey": "<optionKey>",
+            "baseUrl": "https://option.invalid/tenant//",
+            "enableTelemetry": "<undefined>",
+            "label": "sandbox-sdk"
+          }
+        ]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Upstash Box list failed: TypeError: {} is not iterable. Check credentials, limits, and sandbox state."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "upstash.Box.list()",
+        "args": [
+          {
+            "apiKey": "<optionKey>",
+            "baseUrl": "https://option.invalid/tenant//",
+            "enableTelemetry": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "upstash.Box.list().find()",
+        "args": ["<function >"]
+      },
+      {
+        "sdk": "upstash.Box.get()",
+        "args": [
+          "sbx-fixture",
+          {
+            "apiKey": "<optionKey>",
+            "baseUrl": "https://option.invalid/tenant//",
+            "enableTelemetry": "<undefined>",
+            "timeout": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "upstash.Box.get().exec.command()",
+        "args": [
+          "if [ -n \"$SANDBOX_SDK_UPSTASH_METADATA\" ]; then printf %s \"$SANDBOX_SDK_UPSTASH_METADATA\"; else cat '/tmp/.sandbox-sdk/upstash.json'; fi"
+        ]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "SDK metadata was not found"
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "upstash.Box.get().delete()",
+        "args": []
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No native object is cached. Connect first."
+        }
+      }
+    ]
+  },
+  "upstash: ephemeral": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "sdk": "upstash.Box.list()",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "https://option.invalid/eph/",
+            "enableTelemetry": "<undefined>",
+            "label": "sandbox-sdk"
+          }
+        ]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "provider",
+          "message": "Upstash Box list failed: TypeError: {} is not iterable. Check credentials, limits, and sandbox state."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "sdk": "upstash.Box.list()",
+        "args": [
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "https://option.invalid/eph/",
+            "enableTelemetry": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "upstash.Box.list().find()",
+        "args": ["<function >"]
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "unsupported",
+          "message": "Box sbx-fixture is a durable Box. Connect with upstash({ ephemeral: false })."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "sdk": "upstash.Box.get()",
+        "args": [
+          "sbx-fixture",
+          {
+            "apiKey": "<envKey>",
+            "baseUrl": "https://option.invalid/eph/",
+            "enableTelemetry": "<undefined>",
+            "timeout": "<undefined>"
+          }
+        ]
+      },
+      {
+        "sdk": "upstash.Box.get().delete()",
+        "args": []
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No native object is cached. Connect first."
+        }
+      }
+    ]
+  },
+  "upstash: no key": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Upstash Box API key is missing. Authentication is required. Set UPSTASH_BOX_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Upstash Box API key is missing. Authentication is required. Set UPSTASH_BOX_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Upstash Box API key is missing. Authentication is required. Set UPSTASH_BOX_API_KEY or pass apiKey."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not connected. No native object is cached. Connect first."
+        }
+      }
+    ]
+  },
+  "vercel: env token": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://vercel.com/api/v2/sandboxes?teamId=team_env&project=prj_env&tags=sandbox-sdk%3A1",
+        "headers": {
+          "authorization": "Bearer <envToken>",
+          "content-type": "application/json",
+          "user-agent": "vercel/sandbox/3.8.0 (<runtime>)"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Vercel request failed: the sandbox does not exist. Check credentials, resource limits, and the sandbox state before retrying."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://vercel.com/api/v2/sandboxes/sbx-fixture?teamId=team_env&projectId=prj_env&resume=false",
+        "headers": {
+          "authorization": "Bearer <envToken>",
+          "content-type": "application/json",
+          "user-agent": "vercel/sandbox/3.8.0 (<runtime>)"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Vercel request failed: the sandbox does not exist. Check credentials, resource limits, and the sandbox state before retrying."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://vercel.com/api/v2/sandboxes/sbx-fixture?teamId=team_env&projectId=prj_env&resume=false",
+        "headers": {
+          "authorization": "Bearer <envToken>",
+          "content-type": "application/json",
+          "user-agent": "vercel/sandbox/3.8.0 (<runtime>)"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not attached. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "vercel: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://vercel.com/api/v2/sandboxes?teamId=team_option&project=prj_option&tags=sandbox-sdk%3A1",
+        "headers": {
+          "authorization": "Bearer <optionToken>",
+          "content-type": "application/json",
+          "user-agent": "vercel/sandbox/3.8.0 (<runtime>)"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Vercel request failed: the sandbox does not exist. Check credentials, resource limits, and the sandbox state before retrying."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://vercel.com/api/v2/sandboxes/sbx-fixture?teamId=team_option&projectId=prj_option&resume=false",
+        "headers": {
+          "authorization": "Bearer <optionToken>",
+          "content-type": "application/json",
+          "user-agent": "vercel/sandbox/3.8.0 (<runtime>)"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Vercel request failed: the sandbox does not exist. Check credentials, resource limits, and the sandbox state before retrying."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://vercel.com/api/v2/sandboxes/sbx-fixture?teamId=team_option&projectId=prj_option&resume=false",
+        "headers": {
+          "authorization": "Bearer <optionToken>",
+          "content-type": "application/json",
+          "user-agent": "vercel/sandbox/3.8.0 (<runtime>)"
+        }
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not attached. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "vercel: token without team": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Vercel credentials are incomplete. Token authentication requires teamId and projectId. Set VERCEL_TEAM_ID and VERCEL_PROJECT_ID."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Vercel credentials are incomplete. Token authentication requires teamId and projectId. Set VERCEL_TEAM_ID and VERCEL_PROJECT_ID."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Vercel credentials are incomplete. Token authentication requires teamId and projectId. Set VERCEL_TEAM_ID and VERCEL_PROJECT_ID."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not attached. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  },
+  "vercel: no credentials": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Vercel request failed: the credentials are missing or were rejected. Check credentials, resource limits, and the sandbox state before retrying."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Vercel request failed: the credentials are missing or were rejected. Check credentials, resource limits, and the sandbox state before retrying."
+        }
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Vercel request failed: the credentials are missing or were rejected. Check credentials, resource limits, and the sandbox state before retrying."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Sandbox is not attached. No local native object exists. Connect the sandbox first."
+        }
+      }
+    ]
+  }
+}
