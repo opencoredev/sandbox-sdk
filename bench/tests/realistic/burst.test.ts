@@ -1,23 +1,42 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { SandboxError } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { runAttempt } from "../../src/realistic/attempt.js";
-import { buildExport, roundSchedule, soloMedians } from "../../src/realistic/burst-cli.js";
+import {
+  buildExport,
+  burstCommand,
+  preloadArtifacts,
+  requiredArtifacts,
+  roundSchedule,
+  runProviderRounds,
+  soloMedians,
+  type ProviderRounds,
+  type RoundLineInput,
+  type ScheduledRound,
+} from "../../src/realistic/burst-cli.js";
 import {
   accountRefusal,
+  billableLifetimeMs,
+  roundSpend,
   runPool,
   runRound,
   spendGuard,
   summarizeProvider,
   taskResult,
+  type BurstTag,
+  type Leftover,
   type RoundPlan,
+  type RoundReport,
+  type StoredRecord,
 } from "../../src/realistic/burst.js";
 import { ProviderTrace, systemClock } from "../../src/realistic/gaps.js";
 import type { HarnessManifest } from "../../src/realistic/manifest.js";
 import { attemptRecordSchema, type AttemptRecord } from "../../src/realistic/record.js";
 import { attributionFor, emptyRecord, type SlotProvider } from "../../src/realistic/slots.js";
+import { sha256Hex } from "../../src/realistic/steps.js";
 import { buildFixture, type Fixture } from "./fixture.js";
 
 let fixture: Fixture;
@@ -168,7 +187,7 @@ describe("a round", () => {
     // Nobody starts before the slowest setup is done, and all start within a few ms of each other.
     expect(Math.min(...starts)).toBeGreaterThanOrEqual(Math.max(...ready));
     expect(Math.max(...starts) - Math.min(...starts)).toBeLessThan(30);
-    expect(report.allDoneAt - report.startedAt).toBeGreaterThanOrEqual(300);
+    expect((report.allDoneAt ?? 0) - report.startedAt).toBeGreaterThanOrEqual(300);
     expect(records.map((r) => r.slot.id).sort()).toEqual([
       "r2-t0",
       "r2-t1",
@@ -228,7 +247,9 @@ describe("a round", () => {
     expect(report.before.ids).toEqual([foreign.id]);
     expect(report.ownBefore).toEqual([]);
     expect([...(report.after.ids ?? [])].sort()).toEqual([foreign.id, leaked].sort());
-    expect(report.leftovers).toEqual([{ id: leaked, destroyed: true, goneAfter: true }]);
+    expect(report.leftovers).toEqual([
+      { id: leaked, destroyed: true, goneAfter: true, confirmedAt: expect.any(Number) },
+    ]);
     expect((await provider.list({})).map((s) => s.id)).toEqual([foreign.id]);
     expect(created.size).toBe(5);
 
@@ -434,8 +455,8 @@ describe("task results", () => {
 
 describe("a provider's row", () => {
   const rounds = [
-    { round: 1, startedAt: 0, allDoneAt: 120_500 },
-    { round: 2, startedAt: 500_000, allDoneAt: 610_000 },
+    { round: 1, size: 3, startedAt: 0, allDoneAt: 120_500 },
+    { round: 2, size: 2, startedAt: 500_000, allDoneAt: 610_000 },
   ];
 
   it("takes the median over completed tasks and compares it with the solo median", () => {
@@ -495,11 +516,19 @@ describe("a provider's row", () => {
     const mixed = summarizeProvider({
       provider: "e2b",
       tasks: byBatch([done({ round: 1, task: 0, wallS: 100 }), refused(1, 1)]),
-      rounds: rounds.slice(0, 1),
+      rounds: [{ round: 1, size: 2, startedAt: 0, allDoneAt: 120_500 }],
       solo: { kind: "published", medianWallS: 50 },
     });
 
-    expect(mixed).toMatchObject({ status: "ran", attempts: 1, completed: 1, slowdown: 2 });
+    // Half the round was refused, so it did not run 2 at once: no slowdown is claimed for it.
+    expect(mixed).toMatchObject({
+      status: "ran",
+      attempts: 1,
+      completed: 1,
+      medianWallS: 100,
+      slowdown: null,
+      burstRounds: [{ round: 1, size: 2, admitted: 1, allDoneS: 120.5 }],
+    });
 
     const none = summarizeProvider({
       provider: "e2b",
@@ -537,11 +566,15 @@ describe("a provider's row", () => {
       completed: 0,
       attempts: 0,
       roundAllDoneS: [],
+      burstRounds: [],
+      skippedBurstRounds: [],
+      harnessFailures: [],
       solo: null,
       soloMedianWallS: 92.8,
       soloMedianUploadS: null,
       slowdown: null,
       slowdownWithoutUpload: null,
+      slowdownWithheld: "No burst round ran",
     });
   });
 
@@ -567,8 +600,8 @@ describe("a provider's row", () => {
       provider: "e2b",
       tasks: [burst(1, 0, 120, 20), burst(1, 1, 130, 30), burst(2, 0, 110, 10)],
       rounds: [
-        { round: 1, startedAt: 0, allDoneAt: 131_000 },
-        { round: 2, startedAt: 500_000, allDoneAt: 611_000 },
+        { round: 1, size: 2, startedAt: 0, allDoneAt: 131_000 },
+        { round: 2, size: 1, startedAt: 500_000, allDoneAt: 611_000 },
       ],
       solo: { kind: "same-day", tasks: [control(2, 104, 4), control(1, 96, 6)] },
     });
@@ -921,6 +954,751 @@ describe("the site data file", () => {
         status: "not-run",
         reason: "10 vCPU",
         soloMedianWallS: 92.8,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/** A memory provider whose create, destroy or both are replaced. */
+function provider(
+  change: (inner: ReturnType<typeof memory>) => Partial<ReturnType<typeof memory>>,
+): ReturnType<typeof memory> {
+  const inner = memory();
+
+  return { ...inner, ...change(inner) };
+}
+
+const quota = () =>
+  new SandboxError("Instabox create failed: a provider limit stopped the request", {
+    code: "quota",
+    provider: "instabox",
+    retryable: true,
+  });
+
+/** A record tagged as a round writes it, for summary and export tests. */
+function tagged(record: AttemptRecord, tag: Partial<BurstTag> = {}): StoredRecord {
+  const burst: BurstTag = {
+    role: "burst",
+    round: record.batch,
+    createError: null,
+    harness: null,
+    ...tag,
+  };
+
+  return Object.assign(record, { burst });
+}
+
+describe("create errors", () => {
+  it("count a refusal as an account limit by the SDK's code, not the message's words", () => {
+    const refused = (createError: BurstTag["createError"], detail: string) =>
+      taskResult(
+        tagged(
+          done({
+            round: 1,
+            task: 0,
+            wallS: 0.3,
+            created: false,
+            completion: { kind: "incomplete", reason: "create-failed", detail },
+          }),
+          { createError },
+        ),
+      ).failure?.stage;
+
+    // Instabox's HTTP 429 quota_exceeded: no limit words in the message, but the SDK's quota code.
+    expect(
+      refused(
+        { code: "quota", sandboxId: null },
+        "Instabox create failed: a provider limit stopped the request",
+      ),
+    ).toBe("account-limit");
+    // Limit words in a message the SDK coded as a provider failure: a create failure.
+    expect(
+      refused({ code: "provider", sandboxId: null }, "HTTP 429: rate limit exceeded upstream"),
+    ).toBe("create");
+    // A quota failure that names a sandbox was admitted first: a create failure, not a refusal.
+    expect(
+      refused({ code: "quota", sandboxId: "sbx-1" }, "Instabox operation op-1 failed: quota"),
+    ).toBe("create");
+  });
+
+  it("are recorded with their code, and a refused round admits none", async () => {
+    const records: AttemptRecord[] = [];
+
+    const report = await runRound(
+      round(
+        {
+          size: 2,
+          entry: entry({
+            provider: provider(() => ({
+              create: async () => {
+                throw quota();
+              },
+            })),
+          }),
+        },
+        records,
+      ),
+    );
+
+    expect(report.records.map((r) => r.burst.createError)).toEqual([
+      { code: "quota", sandboxId: null },
+      { code: "quota", sandboxId: null },
+    ]);
+    expect(report.records.every((r) => taskResult(r).failure?.stage === "account-limit")).toBe(
+      true,
+    );
+    expect(report.admitted).toBe(0);
+    // A refusal allocated nothing: the round is resolved.
+    expect(report.unresolved).toEqual([]);
+    expect(report.allDoneAt).not.toBeNull();
+  });
+
+  it("keep a sandbox the error names as this run's, and delete it by ID", async () => {
+    const records: AttemptRecord[] = [];
+    const created = new Set<string>();
+    const noted: string[] = [];
+    let allocated = "";
+
+    // Beam's case: the container exists, unlabeled, when the create fails as outcome_unknown.
+    const beam = provider((inner) => ({
+      create: async () => {
+        allocated = (await inner.create({ labels: {} })).id;
+        throw new SandboxError("Beam create failed: the request may or may not have happened", {
+          code: "outcome_unknown",
+          provider: "beam",
+          sandboxId: allocated,
+        });
+      },
+    }));
+
+    const report = await runRound(
+      round(
+        {
+          size: 1,
+          entry: entry({ provider: beam }),
+          created,
+          onSandbox: async (id) => {
+            noted.push(id);
+          },
+        },
+        records,
+      ),
+    );
+
+    const [record] = report.records;
+
+    expect(record?.burst.createError).toEqual({ code: "outcome_unknown", sandboxId: allocated });
+    expect(record?.sandboxIds).toEqual([allocated]);
+    expect(record?.deletionConfirmed).toBe(false);
+    expect(created.has(allocated)).toBe(true);
+    expect(noted).toEqual([allocated]);
+    expect(report.leftovers).toMatchObject([{ id: allocated, destroyed: true, goneAfter: true }]);
+    expect(await beam.list({})).toEqual([]);
+    // Recovered by the cleanup, so the round ends when the cleanup confirmed it gone.
+    expect(report.unresolved).toEqual([]);
+    expect(report.allDoneAt).toBe(report.leftovers[0]?.confirmedAt);
+  });
+
+  it("leave the round unresolved when an unknown outcome names no sandbox", async () => {
+    const records: AttemptRecord[] = [];
+
+    const lost = provider(() => ({
+      create: async () => {
+        throw new SandboxError("create timed out", { code: "outcome_unknown", provider: "beam" });
+      },
+    }));
+
+    const report = await runRound(round({ size: 1, entry: entry({ provider: lost }) }, records));
+
+    expect(report.records[0]?.deletionConfirmed).toBe(false);
+    expect(report.unresolved).toEqual([report.records[0]?.attemptId]);
+    expect(report.allDoneAt).toBeNull();
+  });
+});
+
+describe("a round's end", () => {
+  it("is when the cleanup confirmed a recovered sandbox gone, not when its task ended", async () => {
+    const records: AttemptRecord[] = [];
+
+    // Deletion takes 30 ms, so the cleanup's confirmation comes well after the task's end.
+    const slow = provider((inner) => ({
+      destroy: async (id) => {
+        await sleep(30);
+        await inner.destroy(id);
+      },
+    }));
+
+    const leaky = scripted((task) => ({ leak: task === 1 }), []);
+
+    const report = await runRound(
+      round(
+        {
+          size: 2,
+          entry: entry({ provider: slow }),
+          // The record ends when the attempt returns, as runAttempt's does.
+          attempt: async (plan, environment) => {
+            const outcome = await leaky(plan, environment);
+            outcome.record.endedAt = Date.now();
+
+            return outcome;
+          },
+        },
+        records,
+      ),
+    );
+
+    const leaked = records.find((r) => r.slot.index === 1);
+    const confirmedAt = report.leftovers[0]?.confirmedAt ?? null;
+
+    expect(confirmedAt).not.toBeNull();
+    expect(confirmedAt ?? 0).toBeGreaterThanOrEqual((leaked?.endedAt ?? Infinity) + 30);
+    expect(report.allDoneAt).toBe(confirmedAt);
+  });
+
+  it("is unknown while a sandbox could not be deleted, and a stalled deletion is not waited on", async () => {
+    const records: AttemptRecord[] = [];
+    const stuck = provider(() => ({ destroy: () => new Promise<never>(() => {}) }));
+
+    const report = await runRound(
+      round(
+        {
+          size: 2,
+          entry: entry({ provider: stuck }),
+          destroyTimeoutMs: 50,
+          attempt: scripted(() => ({ leak: true }), []),
+        },
+        records,
+      ),
+    );
+
+    expect(report.leftovers.map((l) => l.destroyed)).toEqual([false, false]);
+    expect(report.unresolved).toHaveLength(2);
+    expect(report.allDoneAt).toBeNull();
+  }, 5_000);
+});
+
+describe("our side", () => {
+  it("does not wait past the deadline for a per-task setup that ignores its abort", async () => {
+    const records: AttemptRecord[] = [];
+    const starts: number[] = [];
+
+    const stalled = entry({
+      beforeAttempt: async (attemptId) => {
+        // Task 1's App lookup never returns and never looks at the signal.
+        if (attemptId.includes("-t1-")) await new Promise<never>(() => {});
+
+        return {
+          labels: {},
+          created: async () => {},
+          failed: async () => {},
+          destroyed: async () => {},
+        };
+      },
+    });
+
+    const report = await runRound(
+      round(
+        {
+          size: 2,
+          entry: stalled,
+          manifest: withSlotTimeout(fixture.manifest, 100),
+          attempt: scripted(() => ({}), starts),
+        },
+        records,
+      ),
+    );
+
+    expect(starts).toHaveLength(1);
+    expect(report.records[1]?.burst.harness).toMatchObject({ stage: "setup" });
+    expect(report.records[1]?.sandboxIds).toEqual([]);
+  }, 5_000);
+
+  it("is a harness failure, apart from the provider's attempts", async () => {
+    const records: AttemptRecord[] = [];
+    const memoryProvider = memory();
+    let journaled = 0;
+
+    // A local App-journal write fails before any create; a sandbox journal write fails after one.
+    const journal = entry({
+      provider: memoryProvider,
+      beforeAttempt: async (attemptId) => {
+        if (attemptId.includes("-t0-")) throw new Error("ENOSPC: apps.jsonl");
+
+        return {
+          labels: {},
+          created: async () => {},
+          failed: async () => {},
+          destroyed: async () => {},
+        };
+      },
+    });
+
+    const report = await runRound(
+      round(
+        {
+          size: 3,
+          entry: journal,
+          onSandbox: async () => {
+            journaled += 1;
+
+            if (journaled === 1) throw new Error("ENOSPC: notes.jsonl");
+          },
+          attempt: scripted(() => ({}), []),
+        },
+        records,
+      ),
+    );
+
+    expect(report.records.map((r) => r.burst.harness?.stage ?? "provider").sort()).toEqual([
+      "journal",
+      "provider",
+      "setup",
+    ]);
+    expect(report.admitted).toBe(1);
+    // The sandbox whose journal write failed was still deleted.
+    expect(await memoryProvider.list({})).toEqual([]);
+    expect(report.unresolved).toEqual([]);
+
+    const row = summarizeProvider({
+      provider: "e2b",
+      tasks: report.records.map((record) => ({ round: 1, record })),
+      rounds: [{ round: 1, size: 3, startedAt: report.startedAt, allDoneAt: report.allDoneAt }],
+      solo: { kind: "published", medianWallS: 50 },
+    });
+
+    expect(row).toMatchObject({ status: "ran", attempts: 1, completed: 1 });
+    expect(row.tasks).toHaveLength(1);
+    expect(row.harnessFailures.map((h) => [h.role, h.round, h.stage]).sort()).toEqual([
+      ["burst", 1, "journal"],
+      ["burst", 1, "setup"],
+    ]);
+    // Two of 3 tasks never ran on the provider, so the round did not run 3 at once.
+    expect(row.slowdown).toBeNull();
+  });
+
+  it("writing a record that fails still cleans up the round, then fails it", async () => {
+    const memoryProvider = memory();
+
+    await expect(
+      runRound({
+        ...round({ entry: entry({ provider: memoryProvider }), size: 2 }, []),
+        attempt: scripted((task) => ({ leak: task === 1 }), []),
+        onRecord: async () => {
+          throw new Error("ENOSPC: attempts.jsonl");
+        },
+      }),
+    ).rejects.toThrow(/Writing 2 attempt record/);
+    expect(await memoryProvider.list({})).toEqual([]);
+  });
+});
+
+describe("a partly admitted burst", () => {
+  it("gets no slowdown unless some round had every task admitted", () => {
+    const task = (round: number, index: number, refused: boolean) =>
+      tagged(
+        done({
+          round,
+          task: index,
+          wallS: refused ? 0.2 : 100 + index,
+          created: !refused,
+          completion: refused
+            ? { kind: "incomplete", reason: "create-failed", detail: "Instabox create failed" }
+            : { kind: "completed" },
+        }),
+        { createError: refused ? { code: "quota", sandboxId: null } : null },
+      );
+
+    // Size 5, four creates refused: 1 task ran, alone in effect.
+    const partial = Array.from({ length: 5 }, (_, i) => task(1, i, i > 0));
+
+    const row = summarizeProvider({
+      provider: "instabox",
+      tasks: byBatch(partial),
+      rounds: [{ round: 1, size: 5, startedAt: 0, allDoneAt: 101_000 }],
+      solo: { kind: "published", medianWallS: 50 },
+    });
+
+    expect(row).toMatchObject({
+      status: "ran",
+      attempts: 1,
+      medianWallS: 100,
+      burstRounds: [{ round: 1, size: 5, admitted: 1, allDoneS: 101 }],
+      slowdown: null,
+      slowdownWithoutUpload: null,
+      slowdownWithheld: "No burst round had all 5 of its tasks admitted",
+    });
+
+    // A second round admitted in full: the slowdown is given.
+    const full = Array.from({ length: 5 }, (_, i) => task(2, i, false));
+
+    const both = summarizeProvider({
+      provider: "instabox",
+      tasks: byBatch([...partial, ...full]),
+      rounds: [
+        { round: 1, size: 5, startedAt: 0, allDoneAt: 101_000 },
+        { round: 2, size: 5, startedAt: 500_000, allDoneAt: 610_000 },
+      ],
+      solo: { kind: "published", medianWallS: 50 },
+    });
+
+    // Completed: 100 (round 1) and 100 to 104 (round 2), median 101.5, over 50.
+    expect(both).toMatchObject({ slowdownWithheld: null, slowdown: 2.03 });
+  });
+});
+
+describe("round spend", () => {
+  const leftover = (id: string, confirmedAt: number): Leftover => ({
+    id,
+    destroyed: true,
+    goneAfter: true,
+    confirmedAt,
+  });
+
+  it("charges an unresolved task its whole reservation and a recovered one until it was confirmed gone", () => {
+    // $1 per second of sandbox.
+    const price = (_: StoredRecord, ms: number) => ms / 1000;
+    const finished = tagged(done({ round: 1, task: 0, wallS: 100 }));
+    const leaked = tagged(done({ round: 1, task: 1, wallS: 100 }));
+    leaked.deletionConfirmed = false;
+    const lost = tagged(done({ round: 1, task: 2, wallS: 100 }));
+    lost.deletionConfirmed = false;
+
+    const spend = (records: StoredRecord[], leftovers: Leftover[]) =>
+      roundSpend({ records, leftovers, perTaskUSD: 1_000, price });
+
+    expect(spend([finished], [])).toBe(100.5);
+    // Its record ended at 101.5 s; the cleanup confirmed it gone 300 s after the start.
+    expect(spend([leaked], [leftover("sbx-1-1", 301_000)])).toBe(300);
+    // Nothing confirmed its deletion: it may bill to its lifetime.
+    expect(spend([lost], [])).toBe(1_000);
+  });
+
+  it("reserves through the longest billable lifetime, so settlements stay under the ceiling", () => {
+    // $1 per minute; a 30-minute slot. The old reservation was the slot alone ($30 a task).
+    const perMinute = (ms: number) => ms / 60_000;
+    const perTask = perMinute(billableLifetimeMs(30 * 60_000));
+
+    expect(perTask).toBe(45);
+
+    // Two 1-task rounds fit a $90 ceiling; each task ran the slot, the grace and the cleanup.
+    const guard = spendGuard(90);
+
+    expect(guard.reserve(perTask)).toBe(true);
+    expect(guard.reserve(perTask)).toBe(true);
+
+    const record = tagged(done({ round: 1, task: 0, wallS: 30 * 60 + 150 + 120 + 60 }));
+
+    const spent = roundSpend({
+      records: [record],
+      leftovers: [],
+      perTaskUSD: perTask,
+      price: (_, ms) => perMinute(ms),
+    });
+
+    expect(spent).toBeLessThanOrEqual(perTask);
+    guard.settle({ reservedUSD: perTask, spentUSD: spent });
+    guard.settle({ reservedUSD: perTask, spentUSD: spent });
+    expect(guard.state().spentUSD).toBeLessThanOrEqual(90);
+  });
+});
+
+/** A provider's rounds with a fake round runner, writing into memory. */
+function rounds({
+  capUSD,
+  perTaskUSD,
+  control,
+  round: run,
+}: {
+  capUSD: number;
+  perTaskUSD: number;
+  control: boolean;
+  round: ProviderRounds["runRound"];
+}) {
+  const lines: RoundLineInput[] = [];
+  const notes: { kind: string }[] = [];
+  const notRun: string[] = [];
+  const guard = spendGuard(capUSD);
+
+  const plan: ProviderRounds = {
+    name: "e2b",
+    schedule: roundSchedule({ rounds: 2, size: 2, control }),
+    guard,
+    perTaskUSD,
+    price: () => 0.01,
+    runRound: run,
+    writeRound: async (line) => {
+      lines.push(line);
+    },
+    notRun: async (reason) => {
+      notRun.push(reason);
+    },
+    note: async (entry) => {
+      notes.push(entry);
+    },
+    say: () => {},
+    sleep: async () => {},
+  };
+
+  return { plan, lines, notes, notRun, guard };
+}
+
+const emptyListing = { at: 0, ids: [], runIds: [], error: null };
+
+const report = (step: ScheduledRound): RoundReport => ({
+  provider: "e2b",
+  round: step.round,
+  role: step.role,
+  batch: 1,
+  size: step.size,
+  startedAt: 0,
+  allDoneAt: 1_000,
+  admitted: step.size,
+  unresolved: [],
+  before: emptyListing,
+  after: emptyListing,
+  ownBefore: [],
+  leftovers: [],
+  records: [],
+});
+
+describe("a provider's rounds", () => {
+  it("keep a failed round's whole reservation and skip the burst rounds after it", async () => {
+    const run = rounds({
+      capUSD: 100,
+      perTaskUSD: 5,
+      control: false,
+      round: async () => {
+        throw new Error("Writing 2 attempt record(s) failed: ENOSPC");
+      },
+    });
+
+    await runProviderRounds(run.plan);
+
+    // Two tasks ran and may have billed: their $10 stays spent, not $0.
+    expect(run.guard.state()).toMatchObject({ spentUSD: 10, reservedUSD: 0 });
+    expect(run.lines).toEqual([
+      expect.objectContaining({ kind: "skipped", role: "burst", round: 2 }),
+    ]);
+  });
+
+  it("are not run when the ceiling fits a control round but not the first burst", async () => {
+    // A control task reserves $7, a burst round of 2 $14; the ceiling is $12.
+    const run = rounds({ capUSD: 12, perTaskUSD: 7, control: true, round: async (s) => report(s) });
+
+    await runProviderRounds(run.plan);
+
+    expect(
+      run.lines.map((l) => [l.kind, "role" in l ? l.role : null, "round" in l ? l.round : null]),
+    ).toEqual([
+      ["round", "control", 1],
+      ["skipped", "burst", 1],
+      ["skipped", "burst", 2],
+    ]);
+    expect(run.notRun).toHaveLength(1);
+    expect(run.notRun[0]).toMatch(/^spend ceiling/);
+  });
+});
+
+describe("the output folder", () => {
+  it("is refused when it already holds a run, and nothing in it is replaced", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-used-"));
+
+    try {
+      const runJson = JSON.stringify({ id: "earlier" });
+      await writeFile(join(dir, "run.json"), runJson);
+      await writeFile(join(dir, "attempts.jsonl"), "");
+      const solo = join(dir, "solo.json");
+      await writeFile(solo, JSON.stringify({ rows: [] }));
+
+      await expect(
+        burstCommand([
+          "--out",
+          dir,
+          "--run",
+          "later",
+          "--providers",
+          "e2b",
+          "--solo",
+          solo,
+          "--manifest",
+          join(dir, "no-such-manifest.json"),
+        ]),
+      ).rejects.toThrow(/already holds a run \(run\.json, attempts\.jsonl\)/);
+      expect(await readFile(join(dir, "run.json"), "utf8")).toBe(runJson);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("local artifacts", () => {
+  it("are read and checked before any round, and a missing or corrupt one stops the run", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-artifacts-"));
+
+    try {
+      const good = new TextEncoder().encode("toolchain bytes");
+      const bad = new TextEncoder().encode("cache bytes");
+      await writeFile(join(dir, "toolchain.tar"), good);
+      await writeFile(join(dir, "cache.tar"), bad);
+      const goodSha = sha256Hex(good);
+      const badSha = sha256Hex(new TextEncoder().encode("what the manifest froze"));
+
+      await expect(
+        preloadArtifacts({
+          required: new Map([
+            [goodSha, "toolchain"],
+            ["0".repeat(64), "patch A"],
+          ]),
+          found: new Map([[goodSha, join(dir, "toolchain.tar")]]),
+        }),
+      ).rejects.toThrow(/Local artifacts missing: patch A/);
+
+      await expect(
+        preloadArtifacts({
+          required: new Map([[badSha, "cache"]]),
+          found: new Map([[badSha, join(dir, "cache.tar")]]),
+        }),
+      ).rejects.toThrow(/has hash/);
+
+      const source = await preloadArtifacts({
+        required: new Map([[goodSha, "toolchain"]]),
+        found: new Map([[goodSha, join(dir, "toolchain.tar")]]),
+      });
+
+      // Read once, before the run: a task's upload no longer touches the disk.
+      await rm(join(dir, "toolchain.tar"));
+      expect(new TextDecoder().decode(await source.read(goodSha))).toBe("toolchain bytes");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("required for Fix and test are its toolchain, cache and patches for every architecture", () => {
+    const required = requiredArtifacts(fixture.manifest, "fix-and-test");
+    const profile = fixture.manifest.profiles["fix-and-test"];
+
+    for (const patch of Object.values(profile?.patches ?? {}))
+      expect(required.has(patch.sha256)).toBe(true);
+    expect([...required.values()].some((name) => name.includes("toolchain"))).toBe(true);
+  });
+});
+
+describe("the site data file, from tagged records", () => {
+  it("places a control task by its record when its round line was never written, and lists skipped rounds", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rtb-export-tagged-"));
+
+    try {
+      await writeFile(
+        join(dir, "run.json"),
+        JSON.stringify({
+          id: "rtb-test",
+          sdkCommit: "abc1234",
+          startedAt: "2026-11-19T10:00:00.000Z",
+          endedAt: "2026-11-19T11:00:00.000Z",
+          location: "Boca Raton, FL (evo-1)",
+          size: 2,
+          rounds: 2,
+          track: "same-machine",
+          profile: "fix-and-test",
+          providers: ["e2b", "vercel"],
+          budgetUSD: 10,
+          mode: "one-provider-at-a-time",
+          control: true,
+        }),
+      );
+
+      const listing = { at: 0, ids: [], runIds: [], error: null };
+
+      const line = (
+        provider: string,
+        role: string,
+        round: number,
+        size: number,
+        ids: string[],
+      ) => ({
+        kind: "round",
+        provider,
+        round,
+        role,
+        size,
+        startedAt: 1_000_000 * round,
+        allDoneAt: 1_000_000 * round + 131_000,
+        admitted: size,
+        before: listing,
+        after: listing,
+        ownBefore: [],
+        leftovers: [],
+        attemptIds: ids,
+      });
+
+      await writeFile(
+        join(dir, "rounds.jsonl"),
+        [
+          line("e2b", "control", 1, 1, ["rtb-test-c1-t0-e2b"]),
+          line("e2b", "burst", 1, 2, ["rtb-test-r1-t0-e2b", "rtb-test-r1-t1-e2b"]),
+          // Control round 2's record was written; the process stopped before its round line.
+          { kind: "skipped", provider: "e2b", role: "burst", round: 2, reason: "round-error" },
+          // vercel: the ceiling fit its control round but not its first burst.
+          line("vercel", "control", 1, 1, ["rtb-test-c1-t0-vercel"]),
+          { kind: "skipped", provider: "vercel", role: "burst", round: 1, reason: "spend ceiling" },
+          { kind: "skipped", provider: "vercel", role: "burst", round: 2, reason: "spend ceiling" },
+          { kind: "not-run", provider: "vercel", reason: "spend ceiling: $9 spent" },
+        ]
+          .map((l) => JSON.stringify(l))
+          .join("\n") + "\n",
+      );
+
+      const control = (round: number, batch: number, wallS: number, provider = "e2b") => {
+        const record = done({
+          round: batch,
+          task: 0,
+          wallS,
+          attemptId: `rtb-test-c${round}-t0-${provider}`,
+        });
+
+        record.provider = provider;
+
+        return tagged(record, { role: "control", round });
+      };
+
+      await writeFile(
+        join(dir, "attempts.jsonl"),
+        [
+          control(1, 1, 100),
+          tagged(done({ round: 2, task: 0, wallS: 120, attemptId: "rtb-test-r1-t0-e2b" }), {
+            round: 1,
+          }),
+          tagged(done({ round: 2, task: 1, wallS: 130, attemptId: "rtb-test-r1-t1-e2b" }), {
+            round: 1,
+          }),
+          // Batch 3 in run order: an untagged record there would read as burst round 3.
+          control(2, 3, 110),
+          control(1, 1, 90, "vercel"),
+        ]
+          .map((r) => JSON.stringify(r))
+          .join("\n") + "\n",
+      );
+
+      const data = await buildExport([dir], new Map());
+      const [e2b, vercel] = data.providers;
+
+      expect(e2b).toMatchObject({
+        status: "ran",
+        attempts: 2,
+        medianWallS: 125,
+        solo: { completed: 2, attempts: 2 },
+        soloMedianWallS: 105,
+        skippedBurstRounds: [2],
+      });
+      expect(e2b?.tasks.map((t) => t.round)).toEqual([1, 1]);
+      expect(vercel).toMatchObject({
+        status: "not-run",
+        reason: "spend ceiling: $9 spent",
+        attempts: 0,
+        skippedBurstRounds: [1, 2],
+        solo: { completed: 1 },
       });
     } finally {
       await rm(dir, { recursive: true, force: true });

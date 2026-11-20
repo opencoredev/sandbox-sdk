@@ -18,23 +18,31 @@
  * under `--budget-usd`.
  */
 import { execFileSync } from "node:child_process";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { isMissingFile } from "../files.js";
 import { sanitize } from "../v2-runner.js";
+import { appJournalFile, stopJournalFile } from "./apps.js";
 import {
   accountRefusal,
+  billableLifetimeMs,
   isAccountLimit,
+  roundRoleSchema,
+  roundSpend,
   runPool,
   runRound,
   spendGuard,
+  storedRecordSchema,
   summarizeProvider,
   uploadSeconds,
+  within,
   type ProviderBurst,
   type RoundReport,
   type RoundRole,
   type RoundTask,
+  type StoredRecord,
 } from "./burst.js";
 import {
   artifactPaths,
@@ -48,8 +56,8 @@ import {
 } from "./cli.js";
 import { harnessManifestFromFrozen } from "./frozen.js";
 import { systemClock } from "./gaps.js";
-import { fileArtifacts } from "./prepare.js";
-import { attemptRecordSchema, type AttemptRecord } from "./record.js";
+import type { HarnessManifest } from "./manifest.js";
+import { fileArtifacts, type ArtifactSource } from "./prepare.js";
 import { providerRegion } from "../providers.js";
 import { providerSetup, provisionedFor, provisionedOf, type ProviderSetup } from "./setup.js";
 import type { SlotProvider } from "./slots.js";
@@ -82,8 +90,6 @@ const listingSchema = z.object({
   error: z.string().nullable(),
 });
 
-const roundRoleSchema = z.enum(["control", "burst"]) satisfies z.ZodType<RoundRole>;
-
 const roundLineSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("round"),
@@ -93,19 +99,42 @@ const roundLineSchema = z.discriminatedUnion("kind", [
     role: roundRoleSchema.default("burst"),
     size: z.number().int(),
     startedAt: z.number(),
-    allDoneAt: z.number(),
+    /** null when a sandbox of the round was left unresolved; always a number in older files. */
+    allDoneAt: z.number().nullable(),
+    /** Tasks the provider admitted; absent in older files, where it is counted from the records. */
+    admitted: z.number().int().nonnegative().optional(),
+    /** Attempt IDs whose sandbox may still exist after the round's cleanup. */
+    unresolved: z.array(z.string()).default([]),
     before: listingSchema,
     after: listingSchema,
     ownBefore: z.array(z.string()).readonly(),
     leftovers: z
-      .array(z.object({ id: z.string(), destroyed: z.boolean(), goneAfter: z.boolean() }))
+      .array(
+        z.object({
+          id: z.string(),
+          destroyed: z.boolean(),
+          goneAfter: z.boolean(),
+          confirmedAt: z.number().nullable().default(null),
+        }),
+      )
       .readonly(),
     attemptIds: z.array(z.string()),
   }),
   z.object({ kind: z.literal("not-run"), provider: z.string(), reason: z.string() }),
+  /** A scheduled round that did not run (the spend ceiling, an earlier round's failure). */
+  z.object({
+    kind: z.literal("skipped"),
+    provider: z.string(),
+    role: roundRoleSchema,
+    round: z.number().int(),
+    reason: z.string(),
+  }),
 ]);
 
 type RoundLine = z.infer<typeof roundLineSchema>;
+
+/** A rounds.jsonl line as written; defaults fill in when it is read. */
+export type RoundLineInput = z.input<typeof roundLineSchema>;
 
 /** How providers were scheduled: one at a time, or several at once (`--parallel` above 1). */
 const runModeSchema = z.enum(["one-provider-at-a-time", "parallel"]);
@@ -181,17 +210,6 @@ const positiveInt = (name: string, value: string) => {
   return parsed;
 };
 
-/** List-price estimate of what a finished task cost (EUR counted at 2x, as the headline guard). */
-function taskSpend(setup: ProviderSetup, record: AttemptRecord) {
-  if (record.sandboxIds.length === 0) return 0;
-
-  const size =
-    provisionedOf(setup, "same-machine", record) ??
-    provisionedFor(setup, "same-machine", record.profile);
-
-  return attemptBudget(setup, "same-machine", record.endedAt - record.startedAt, size);
-}
-
 function sdkCommit(): string {
   const pinned = process.env.BENCH_COLLECTION_COMMIT?.trim();
 
@@ -199,6 +217,250 @@ function sdkCommit(): string {
 
   return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 }
+
+/** Files a burst run writes into its `--out` folder. A folder holding any of them is a used one. */
+const runArtifacts = [
+  "run.json",
+  "attempts.jsonl",
+  "rounds.jsonl",
+  "notes.jsonl",
+  appJournalFile,
+  stopJournalFile,
+  "realtask-burst.json",
+];
+
+/**
+ * Refuses an `--out` folder that already holds a run: attempts and rounds are appended while
+ * run.json is replaced, so a second run there would mix with the first. Separate runs go in
+ * separate folders and are merged with burst-summary.
+ */
+export async function assertFreshOutput(out: string): Promise<void> {
+  let names: string[];
+
+  try {
+    names = await readdir(out);
+  } catch (error) {
+    if (isMissingFile(error)) return;
+    throw error;
+  }
+
+  const present = runArtifacts.filter((name) => names.includes(name));
+
+  if (present.length)
+    throw new Error(
+      `${out} already holds a run (${present.join(", ")}); give each run its own --out folder and merge folders with burst-summary`,
+    );
+}
+
+/** Every artifact a profile's tasks read, by sha256, with a name for messages. */
+export function requiredArtifacts(
+  manifest: HarnessManifest,
+  profileName: string,
+): Map<string, string> {
+  const profile = manifest.profiles[profileName];
+
+  if (!profile) throw new Error(`The manifest has no ${profileName} profile`);
+  const toolchain = manifest.toolchains[profile.toolchain.node];
+
+  if (!toolchain) throw new Error(`The manifest has no ${profile.toolchain.node} toolchain`);
+  const required = new Map<string, string>();
+
+  // The sandbox's architecture is known only once it exists, so every architecture is required.
+  for (const [arch, artifact] of Object.entries(toolchain.tarballs))
+    if (artifact) required.set(artifact.sha256, `${profile.toolchain.node} toolchain (${arch})`);
+
+  for (const [arch, artifact] of Object.entries(profile.dependencyCache?.archives ?? {}))
+    if (artifact) required.set(artifact.sha256, `${profileName} dependency cache (${arch})`);
+
+  for (const [name, patch] of Object.entries(profile.patches))
+    required.set(patch.sha256, `${profileName} patch ${name}`);
+
+  for (const step of profile.steps)
+    if (step.op.kind === "write") required.set(step.op.blob, `${profileName} step ${step.id} blob`);
+
+  return required;
+}
+
+/**
+ * Reads and hash-checks every required artifact before any round, so no task's timed upload
+ * includes reading local files, and a missing or corrupt file stops the run before anything is
+ * created instead of failing tasks as if the provider had.
+ */
+export async function preloadArtifacts({
+  required,
+  found,
+}: {
+  required: ReadonlyMap<string, string>;
+  found: ReadonlyMap<string, string>;
+}): Promise<ArtifactSource> {
+  const missing = [...required].flatMap(([sha, name]) => (found.has(sha) ? [] : [name]));
+
+  if (missing.length) throw new Error(`Local artifacts missing: ${missing.join(", ")}`);
+  const files = fileArtifacts(found);
+  const loaded = new Map<string, Uint8Array>();
+
+  for (const sha of required.keys()) loaded.set(sha, await files.read(sha));
+
+  return {
+    read: async (sha) => {
+      const data = loaded.get(sha);
+
+      if (!data) throw new Error(`Artifact ${sha} was not preloaded`);
+
+      return data;
+    },
+  };
+}
+
+export type SpendGuard = ReturnType<typeof spendGuard>;
+
+/** One provider's rounds, with everything that touches a provider or a file passed in. */
+export interface ProviderRounds {
+  readonly name: string;
+  readonly schedule: readonly ScheduledRound[];
+  readonly guard: SpendGuard;
+  /** What one task reserves: list price through its longest billable lifetime. */
+  readonly perTaskUSD: number;
+  /** A task's list price for `ms` of its sandbox. */
+  price(record: StoredRecord, ms: number): number;
+  runRound(step: ScheduledRound, batch: number): Promise<RoundReport>;
+  writeRound(line: RoundLineInput): Promise<void>;
+  notRun(reason: string): Promise<void>;
+  note(entry: RunNote): Promise<void>;
+  say(text: string): void;
+  /** How long to wait while other providers' rounds hold the reservation. */
+  sleep(ms: number): Promise<void>;
+}
+
+/**
+ * Runs a provider's schedule under the spend guard. A round reserves every task's longest billable
+ * lifetime and settles to its estimate, keeping the share of any task whose sandbox is unresolved;
+ * a round that throws keeps its whole reservation. Burst rounds that do not run are written as
+ * skipped, and a provider whose first burst round never ran is not run, whatever control ran.
+ */
+export async function runProviderRounds(run: ProviderRounds): Promise<void> {
+  const { name, guard } = run;
+  let burstRan = false;
+
+  const skipRest = async (from: number, reason: string) => {
+    for (const step of run.schedule.slice(from))
+      if (step.role === "burst")
+        await run.writeRound({
+          kind: "skipped",
+          provider: name,
+          role: step.role,
+          round: step.round,
+          reason: sanitize(reason),
+        });
+  };
+
+  for (const [index, step] of run.schedule.entries()) {
+    const { role, round } = step;
+    const label = role === "control" ? `control round ${round}` : `round ${round}`;
+    const reserve = step.size * run.perTaskUSD;
+
+    // Other providers' rounds in flight may hold the reservation: wait for them to settle.
+    let reserved = guard.reserve(reserve);
+
+    while (!reserved && guard.couldFit(reserve)) {
+      await run.sleep(5_000);
+      reserved = guard.reserve(reserve);
+    }
+
+    if (!reserved) {
+      const state = guard.state();
+      await run.note({ kind: "budget-stop", provider: name, round, role, ...state, reserve });
+
+      const reason = `spend ceiling: $${state.spentUSD.toFixed(2)} spent and $${state.reservedUSD.toFixed(2)} reserved, a round reserves $${reserve.toFixed(2)}, ceiling $${state.capUSD}`;
+
+      await skipRest(index, reason);
+
+      if (!burstRan) await run.notRun(reason);
+      else run.say(`${name}: ${label} skipped at the spend ceiling`);
+
+      return;
+    }
+
+    run.say(`${name}: ${label}, ${step.size} task${step.size === 1 ? "" : "s"}`);
+    let report: RoundReport;
+
+    try {
+      report = await run.runRound(step, index + 1);
+    } catch (error) {
+      // Its sandboxes may have run, and some may still exist: it keeps its whole reservation.
+      guard.settle({ reservedUSD: reserve, spentUSD: reserve });
+      await run.note({
+        kind: "round-error",
+        provider: name,
+        round,
+        role,
+        error: sanitize(error instanceof Error ? error.message : String(error)),
+      });
+      await skipRest(index + 1, `${label} failed before it finished`);
+      run.say(`${name}: ${label} failed before its tasks finished; see notes`);
+
+      return;
+    }
+
+    if (role === "burst") burstRan = true;
+
+    guard.settle({
+      reservedUSD: reserve,
+      spentUSD: roundSpend({
+        records: report.records,
+        leftovers: report.leftovers,
+        perTaskUSD: run.perTaskUSD,
+        price: run.price,
+      }),
+    });
+
+    await run.writeRound({
+      kind: "round",
+      provider: name,
+      round,
+      role,
+      size: step.size,
+      startedAt: report.startedAt,
+      allDoneAt: report.allDoneAt,
+      admitted: report.admitted,
+      unresolved: [...report.unresolved],
+      before: report.before,
+      after: report.after,
+      ownBefore: report.ownBefore,
+      leftovers: report.leftovers,
+      attemptIds: report.records.map((r) => r.attemptId),
+    });
+
+    for (const record of report.records)
+      run.say(
+        `  ${name} ${record.slot.id}: ${record.burst.harness ? `our side: ${record.burst.harness.detail.slice(0, 160)}` : record.completion.kind === "completed" ? "completed" : `${record.completion.reason}: ${record.completion.detail.slice(0, 160)}`} (${Math.round((record.endedAt - record.startedAt) / 1000)} s, upload ${uploadSeconds(record)?.toFixed(1) ?? "n/a"} s)`,
+      );
+
+    const allDone =
+      report.allDoneAt === null
+        ? `not all done: ${report.unresolved.length} unresolved`
+        : `all done in ${Math.round((report.allDoneAt - report.startedAt) / 1000)} s`;
+
+    run.say(
+      `${name}: ${label} ${allDone}; ${report.admitted}/${step.size} admitted; leftovers ${report.leftovers.length}; est. spent $${guard.state().spentUSD.toFixed(2)}`,
+    );
+
+    // Every create refused by an account limit: another round would be refused too.
+    if (report.records.length > 0 && report.records.every(isAccountLimit)) {
+      const reason = `account limit: every create of ${label} was refused`;
+
+      run.say(`${name}: every create was refused by an account limit; no more rounds`);
+      await skipRest(index + 1, reason);
+
+      if (!burstRan) await run.notRun(reason);
+
+      return;
+    }
+  }
+}
+
+/** How long the final sweep may take; past it the run fails and says so. */
+const sweepTimeoutMs = 15 * 60_000;
 
 export async function burstCommand(args: string[]) {
   const { values } = parseArgs({
@@ -237,6 +499,26 @@ export async function burstCommand(args: string[]) {
   const guard = spendGuard(Number(values["budget-usd"]));
   const runId = values.run;
   const out = resolve(values.out);
+
+  // Before anything is written: a used folder is refused, and every artifact is read and checked.
+  await assertFreshOutput(out);
+  const frozenJson = await readFile(values.manifest, "utf8");
+  const manifest = harnessManifestFromFrozen(frozenJson);
+  const manifestSha256 = sha256Hex(frozenJson);
+  const profile = manifest.profiles[profileName];
+
+  if (!profile) throw new Error(`The manifest has no ${profileName} profile`);
+  const slotMs = profile.slotTimeoutMs;
+
+  const { found } = await artifactPaths(manifest, values["artifact-dir"] ?? defaultArtifactDirs);
+
+  const source = await preloadArtifacts({
+    required: requiredArtifacts(manifest, profileName),
+    found,
+  });
+
+  const blobs = { get: (sha: string) => source.read(sha) };
+
   await mkdir(join(out, "outputs"), { recursive: true });
   const attemptsPath = join(out, "attempts.jsonl");
   const roundsPath = join(out, "rounds.jsonl");
@@ -245,7 +527,7 @@ export async function burstCommand(args: string[]) {
   const note = (entry: RunNote) =>
     appendFile(notesPath, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n");
 
-  const writeRound = (line: RoundLine) =>
+  const writeRound = (line: RoundLineInput) =>
     appendFile(roundsPath, JSON.stringify(roundLineSchema.parse(line)) + "\n");
 
   const say = (text: string) =>
@@ -284,25 +566,6 @@ export async function burstCommand(args: string[]) {
   for (const setup of setups) regions[setup.adapter] = providerRegion(setup.adapter, process.env);
   await writeFile(join(out, regionsFile), JSON.stringify(regions, null, 2) + "\n");
 
-  const frozenJson = await readFile(values.manifest, "utf8");
-  const manifest = harnessManifestFromFrozen(frozenJson);
-  const manifestSha256 = sha256Hex(frozenJson);
-  const profile = manifest.profiles[profileName];
-
-  if (!profile) throw new Error(`The manifest has no ${profileName} profile`);
-  const slotMs = profile.slotTimeoutMs;
-
-  const { wanted, found } = await artifactPaths(
-    manifest,
-    values["artifact-dir"] ?? defaultArtifactDirs,
-  );
-
-  const missing = [...wanted].flatMap(([sha, name]) => (found.has(sha) ? [] : [name]));
-
-  if (missing.length) await note({ kind: "missing-artifacts", files: missing });
-  const source = fileArtifacts(found);
-  const blobs = { get: (sha: string) => source.read(sha) };
-
   const notRun = async (provider: string, reason: string) => {
     await writeRound({ kind: "not-run", provider, reason: sanitize(reason) });
     say(`${provider}: not run: ${reason}`);
@@ -333,6 +596,8 @@ export async function burstCommand(args: string[]) {
     else loaded.push({ setup, entry: result.entry });
   }
 
+  const schedule = roundSchedule({ rounds, size, control: values.control });
+
   try {
     await runPool({
       items: loaded,
@@ -340,58 +605,21 @@ export async function burstCommand(args: string[]) {
       account: ({ setup }) => setup.adapter,
       run: async ({ setup, entry }) => {
         const created = new Set<string>();
-        let ranAny = false;
+        const provisioned = provisionedFor(setup, track, profileName);
 
-        for (const [index, step] of roundSchedule({
-          rounds,
-          size,
-          control: values.control,
-        }).entries()) {
-          const { role, round } = step;
-          const label = role === "control" ? `control round ${round}` : `round ${round}`;
-
-          const reserve =
-            step.size *
-            attemptBudget(setup, track, slotMs, provisionedFor(setup, track, profileName));
-
-          // Other providers' rounds in flight may hold the reservation: wait for them to settle.
-          let reserved = guard.reserve(reserve);
-
-          while (!reserved && guard.couldFit(reserve)) {
-            await systemClock.sleep(5_000);
-            reserved = guard.reserve(reserve);
-          }
-
-          if (!reserved) {
-            const state = guard.state();
-            await note({
-              kind: "budget-stop",
-              provider: setup.name,
-              round,
-              role,
-              ...state,
-              reserve,
-            });
-
-            if (!ranAny)
-              await notRun(
-                setup.name,
-                `spend ceiling: $${state.spentUSD.toFixed(2)} spent and $${state.reservedUSD.toFixed(2)} reserved, a round reserves $${reserve.toFixed(2)}, ceiling $${state.capUSD}`,
-              );
-            else say(`${setup.name}: ${label} skipped at the spend ceiling`);
-
-            return;
-          }
-
-          say(`${setup.name}: ${label}, ${step.size} task${step.size === 1 ? "" : "s"}`);
-          let report: RoundReport;
-
-          try {
-            report = await runRound({
+        await runProviderRounds({
+          name: setup.name,
+          schedule,
+          guard,
+          perTaskUSD: attemptBudget(setup, track, billableLifetimeMs(slotMs), provisioned),
+          price: (record, ms) =>
+            attemptBudget(setup, track, ms, provisionedOf(setup, track, record) ?? provisioned),
+          runRound: (step, batch) =>
+            runRound({
               runId,
-              round,
-              role,
-              batch: index + 1,
+              round: step.round,
+              role: step.role,
+              batch,
               size: step.size,
               manifest,
               manifestSha256,
@@ -404,72 +632,41 @@ export async function burstCommand(args: string[]) {
               outputDir: join(out, "outputs"),
               created,
               onRecord: (record) => appendFile(attemptsPath, JSON.stringify(record) + "\n"),
-              onSandbox: (id) => note({ kind: "sandbox", provider: setup.name, id, round }),
-            });
-          } catch (error) {
-            guard.settle({ reservedUSD: reserve, spentUSD: 0 });
-            await note({
-              kind: "round-error",
-              provider: setup.name,
-              round,
-              role,
-              error: sanitize(error instanceof Error ? error.message : String(error)),
-            });
-            say(`${setup.name}: ${label} failed before its tasks finished; see notes`);
-
-            return;
-          }
-
-          ranAny = true;
-          const spent = report.records.reduce((sum, r) => sum + taskSpend(setup, r), 0);
-          guard.settle({ reservedUSD: reserve, spentUSD: spent });
-
-          await writeRound({
-            kind: "round",
-            provider: setup.name,
-            round,
-            role,
-            size: step.size,
-            startedAt: report.startedAt,
-            allDoneAt: report.allDoneAt,
-            before: report.before,
-            after: report.after,
-            ownBefore: report.ownBefore,
-            leftovers: report.leftovers,
-            attemptIds: report.records.map((r) => r.attemptId),
-          });
-
-          for (const record of report.records)
-            say(
-              `  ${setup.name} ${record.slot.id}: ${record.completion.kind === "completed" ? "completed" : `${record.completion.reason}: ${record.completion.detail.slice(0, 160)}`} (${Math.round((record.endedAt - record.startedAt) / 1000)} s, upload ${uploadSeconds(record)?.toFixed(1) ?? "n/a"} s)`,
-            );
-          say(
-            `${setup.name}: ${label} all done in ${Math.round((report.allDoneAt - report.startedAt) / 1000)} s; leftovers ${report.leftovers.length}; est. spent $${guard.state().spentUSD.toFixed(2)}`,
-          );
-
-          // Every create refused by an account limit: another round would be refused too.
-          if (report.records.every(isAccountLimit)) {
-            say(`${setup.name}: every create was refused by an account limit; no more rounds`);
-
-            return;
-          }
-        }
+              onSandbox: (id) =>
+                note({ kind: "sandbox", provider: setup.name, id, round: step.round }),
+            }),
+          writeRound,
+          notRun: (reason) => notRun(setup.name, reason),
+          note,
+          say,
+          sleep: (ms) => systemClock.sleep(ms),
+        });
       },
     });
   } finally {
-    // Always: nothing this run made is left running, whatever stopped it.
-    const swept = await sweepProviders(
-      runId,
-      loaded.map((l) => l.entry),
-      note,
-      out,
+    // Always: nothing this run made is left running, whatever stopped it. Bounded, so a stalled
+    // App lookup or listing cannot hold the process open; past the bound the run fails.
+    const swept = await within(
+      sweepProviders(
+        runId,
+        loaded.map((l) => l.entry),
+        note,
+        out,
+      ),
+      sweepTimeoutMs,
     );
 
-    await note({ kind: "sweep-result", ...swept });
-
-    if (swept.failed || swept.undeleted || swept.unchecked) {
-      process.stderr.write(`Sweep left something; see ${notesPath}\n`);
+    if (swept === null) {
+      await note({ kind: "sweep-timeout", afterMs: sweepTimeoutMs });
+      process.stderr.write(`The final sweep did not finish in time; see ${notesPath}\n`);
       process.exitCode = 1;
+    } else {
+      await note({ kind: "sweep-result", ...swept });
+
+      if (swept.failed || swept.undeleted || swept.unchecked) {
+        process.stderr.write(`Sweep left something; see ${notesPath}\n`);
+        process.exitCode = 1;
+      }
     }
 
     await writeFile(
@@ -543,7 +740,7 @@ export async function buildExport(
 ): Promise<BurstExport> {
   const byProvider = new Map<
     string,
-    { info: RunInfo; lines: RoundLine[]; records: AttemptRecord[] }
+    { info: RunInfo; lines: RoundLine[]; records: StoredRecord[] }
   >();
 
   let first: RunInfo | null = null;
@@ -557,13 +754,17 @@ export async function buildExport(
       );
     first ??= info;
     const lines = await readLines(join(dir, "rounds.jsonl"), roundLineSchema);
-    const records = await readLines(join(dir, "attempts.jsonl"), attemptRecordSchema);
 
-    for (const provider of new Set(lines.map((l) => l.provider)))
+    const records = (await readLines(join(dir, "attempts.jsonl"), storedRecordSchema)).filter(
+      (r) => r.runId === info.id,
+    );
+
+    // A provider whose only trace is its records (stopped before any round line) is kept too.
+    for (const provider of new Set([...lines, ...records].map((l) => l.provider)))
       byProvider.set(provider, {
         info,
         lines: lines.filter((l) => l.provider === provider),
-        records: records.filter((r) => r.provider === provider && r.runId === info.id),
+        records: records.filter((r) => r.provider === provider),
       });
   }
 
@@ -578,18 +779,26 @@ export async function buildExport(
     const found = byProvider.get(provider);
 
     if (!found) return [];
-    const skipped = found.lines.find((l) => l.kind === "not-run");
+    const notRunLine = found.lines.find((l) => l.kind === "not-run");
     const rounds = found.lines.flatMap((l) => (l.kind === "round" ? [l] : []));
+    const burstRounds = rounds.filter((l) => l.role === "burst");
+
+    const skipped = found.lines.flatMap((l) =>
+      l.kind === "skipped" && l.role === "burst" ? [l.round] : [],
+    );
+
     const placed = new Map<string, { role: RoundRole; round: number }>();
 
     for (const line of rounds)
       for (const id of line.attemptIds) placed.set(id, { role: line.role, round: line.round });
 
-    // A record no round line names (its round stopped before the line was written) is a burst
-    // task of the round its batch says, as before control rounds existed.
+    // A record says its role and round. An older one is placed by the round line that names it,
+    // or, with none (its round stopped before the line was written), as a burst task of the round
+    // its batch says, as before control rounds existed.
     const tasks = (role: RoundRole): RoundTask[] =>
       found.records.flatMap((record) => {
-        const at = placed.get(record.attemptId) ?? { role: "burst", round: record.batch };
+        const at = record.burst ??
+          placed.get(record.attemptId) ?? { role: "burst", round: record.batch };
 
         return at.role === role ? [{ round: at.round, record }] : [];
       });
@@ -598,11 +807,16 @@ export async function buildExport(
       summarizeProvider({
         provider,
         tasks: tasks("burst"),
-        rounds: rounds.filter((l) => l.role === "burst"),
+        rounds: burstRounds,
+        skipped,
         solo: found.info.control
           ? { kind: "same-day", tasks: tasks("control") }
           : { kind: "published", medianWallS: solo.get(provider) ?? null },
-        notRun: skipped?.kind === "not-run" && rounds.length === 0 ? skipped.reason : undefined,
+        // A provider stopped before its first burst round is not run, whatever control ran.
+        notRun:
+          notRunLine?.kind === "not-run" && burstRounds.length === 0
+            ? notRunLine.reason
+            : undefined,
         redact: sanitize,
       }),
     ];
@@ -649,13 +863,20 @@ export function summaryMarkdown(data: BurstExport, spentUSD: number | null): str
     const failures = [
       ...(p.solo?.tasks ?? []).map((t) => ({ t, tag: `c${t.round}` })),
       ...p.tasks.map((t) => ({ t, tag: `r${t.round}` })),
-    ].flatMap(({ t, tag }) =>
-      t.failure ? [`${tag} ${t.failure.stage}: ${t.failure.reason.slice(0, 120)}`] : [],
-    );
+    ]
+      .flatMap(({ t, tag }) =>
+        t.failure ? [`${tag} ${t.failure.stage}: ${t.failure.reason.slice(0, 120)}`] : [],
+      )
+      .concat(
+        p.harnessFailures.map(
+          (h) =>
+            `${h.role === "control" ? "c" : "r"}${h.round} our side (${h.stage}): ${h.reason.slice(0, 120)}`,
+        ),
+      );
 
     const solo = p.solo ? ` (${p.solo.completed}/${p.solo.attempts})` : " (published)";
 
-    return `| ${p.provider} | ${p.status === "ran" ? "ran" : `not run: ${p.reason}`} | ${s(p.medianWallS)} | ${s(p.soloMedianWallS)}${solo} | ${x(p.slowdown)} | ${x(p.slowdownWithoutUpload)} | ${s(p.medianUploadS)} / ${s(p.soloMedianUploadS)} | ${p.completed}/${p.attempts} | ${p.roundAllDoneS.map((v) => v.toFixed(0)).join(", ") || "n/a"} | ${failures.join("; ").replaceAll("|", "/") || "none"} |`;
+    return `| ${p.provider} | ${p.status === "ran" ? "ran" : `not run: ${p.reason}`} | ${s(p.medianWallS)} | ${s(p.soloMedianWallS)}${solo} | ${p.slowdownWithheld ? `withheld: ${p.slowdownWithheld}` : x(p.slowdown)} | ${x(p.slowdownWithoutUpload)} | ${s(p.medianUploadS)} / ${s(p.soloMedianUploadS)} | ${p.completed}/${p.attempts} | ${p.roundAllDoneS.map((v) => v.toFixed(0)).join(", ") || "n/a"} | ${failures.join("; ").replaceAll("|", "/") || "none"} |`;
   });
 
   return [
