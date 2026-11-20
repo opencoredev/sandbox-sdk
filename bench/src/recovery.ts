@@ -16,6 +16,7 @@ import {
   snapshotProvenanceSchema,
 } from "./ownership.js";
 import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
+import { savedConnectionSchema, type SavedConnection } from "./connections.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
@@ -54,6 +55,7 @@ export async function reapRun(
 
   let journal: {
     runId: string;
+    connections: Record<string, SavedConnection>;
     resources: z.infer<typeof resource>[];
     apps: JournalApp[];
   } | null = null;
@@ -62,6 +64,8 @@ export async function reapRun(
     journal = z
       .object({
         runId: z.string(),
+        // Kept as read, so every rewrite of the journal still lets a later reap rebuild adapters.
+        connections: z.record(z.string(), savedConnectionSchema).default({}),
         resources: z.array(resource),
         // Older journals have no Apps: every sandbox is in the adapter's default App.
         apps: z.array(journalAppSchema).default([]),
@@ -206,7 +210,7 @@ export async function reapRun(
         pendingOwned.add(item.id);
         candidates.add(item.id);
         reconciled = reconcileDiscovered(journaled, p.name, item) || reconciled;
-        journal ??= { runId: config.run, resources: [], apps: [] };
+        journal ??= { runId: config.run, connections: {}, resources: [], apps: [] };
 
         if (
           !journal.resources.some(
@@ -238,7 +242,7 @@ export async function reapRun(
 
       try {
         if (reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
-          journal ??= { runId: config.run, resources: [], apps: [] };
+          journal ??= { runId: config.run, connections: {}, resources: [], apps: [] };
 
           if (
             !journal.resources.some(
@@ -306,7 +310,7 @@ export async function reapRun(
           throw new Error("Snapshot-source provenance mismatch");
 
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, entry.id),
+          snapshotsFromSource(p.name, p.provider, entry.id),
         )) {
           const item = {
             provider: p.name,

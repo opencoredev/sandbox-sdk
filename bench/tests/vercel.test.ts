@@ -14,7 +14,7 @@ import { estimateCost, priceAtSize } from "../src/pricing.js";
 import { providerDefaults } from "../src/providers.js";
 import { providerSetup } from "../src/realistic/setup.js";
 import { snapshotMetadata } from "../src/snapshots.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, fakeNativeModules } from "./native-fakes.js";
 
 /** Vercel's SDK throws an APIError that carries the HTTP Response. */
 const notFound = () =>
@@ -141,7 +141,7 @@ it("treats Vercel's 404 as absence and a readable sandbox as present", async () 
     },
   });
 
-  const provider = { ...memory(), name: "vercel" };
+  const provider = bound({ ...memory(), name: "vercel" });
   expect(await lookupSandbox(provider, "gone", 1000)).toMatchObject({ result: "not-found" });
   expect(await lookupSandbox(provider, "here", 1000)).toMatchObject({
     result: "present",
@@ -167,7 +167,7 @@ it("reads a deleted Vercel snapshot as gone", async () => {
     },
   });
 
-  const provider = { ...memory(), name: "vercel" };
+  const provider = bound({ ...memory(), name: "vercel" });
   expect(await snapshotMetadata.inspect("vercel", provider, "sbx-1", "snap_1")).toEqual({
     exists: true,
   });

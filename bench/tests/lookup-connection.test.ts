@@ -395,7 +395,7 @@ describe("lookups use the explicit options the adapter was built with, not the e
 
     expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
     expect(get.mock.calls).toEqual([
-      [id, { apiKey: "live-key", baseUrl: "https://live.invalid/up" }],
+      [id, { apiKey: "live-key", baseUrl: "https://live.invalid/up/" }],
     ]);
     expect(await inspectSnapshot("upstash", adapter, "source", id)).toEqual({
       exists: true,

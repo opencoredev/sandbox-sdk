@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { spawnSync } from "node:child_process";
 import { lookupError, lookupSandbox } from "../src/existence.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, fakeNativeModules } from "./native-fakes.js";
 
 const native = vi.hoisted(() => ({ get: vi.fn(), status: vi.fn() }));
 
@@ -86,7 +86,7 @@ it.each(["TERMINATED", "deleted", "destroyed", "PAUSED", "TERMINATING", "FAILED"
   async (state) => {
     vi.stubEnv("TENKI_API_KEY", "offline");
     native.get.mockResolvedValue({ id: "target", state });
-    const result = await lookupSandbox({ ...memory(), name: "tenki" }, "target", 100);
+    const result = await lookupSandbox(bound({ ...memory(), name: "tenki" }), "target", 100);
     expect(native.get).toHaveBeenCalledWith("target");
     expect(result).toMatchObject({
       result: ["TERMINATED", "deleted", "destroyed"].includes(state) ? "terminal" : "present",
@@ -98,7 +98,7 @@ it.each(["TERMINATED", "deleted", "destroyed", "PAUSED", "TERMINATING", "FAILED"
 it("does not accept a terminal state returned for a different ID", async () => {
   vi.stubEnv("TENKI_API_KEY", "offline");
   native.get.mockResolvedValue({ id: "foreign", state: "TERMINATED" });
-  expect((await lookupSandbox({ ...memory(), name: "tenki" }, "target", 100)).result).toBe(
+  expect((await lookupSandbox(bound({ ...memory(), name: "tenki" }), "target", 100)).result).toBe(
     "unavailable",
   );
 });
@@ -108,20 +108,20 @@ it("Upstash uses exact native get/status and preserves definitive404, not transi
   vi.stubEnv("UPSTASH_BOX_BASE_URL", undefined);
   native.get.mockResolvedValue({ id: "target", getStatus: native.status });
   native.status.mockResolvedValue({ status: "deleted" });
-  expect((await lookupSandbox({ ...memory(), name: "upstash" }, "target", 100)).result).toBe(
+  expect((await lookupSandbox(bound({ ...memory(), name: "upstash" }), "target", 100)).result).toBe(
     "terminal",
   );
-  // With the adapter's key and endpoint, from its resolver.
+  // With the adapter's key and endpoint; @upstash/box drops the one trailing slash.
   expect(native.get).toHaveBeenCalledWith("target", {
     apiKey: "offline",
-    baseUrl: "https://us-east-1.box.upstash.com",
+    baseUrl: "https://us-east-1.box.upstash.com/",
   });
   native.get.mockRejectedValue(Object.assign(new Error("native"), { statusCode: 404 }));
-  expect((await lookupSandbox({ ...memory(), name: "upstash" }, "target", 100)).result).toBe(
+  expect((await lookupSandbox(bound({ ...memory(), name: "upstash" }), "target", 100)).result).toBe(
     "not-found",
   );
   native.get.mockRejectedValue(Object.assign(new Error("not found"), { statusCode: 500 }));
-  expect((await lookupSandbox({ ...memory(), name: "upstash" }, "target", 100)).result).toBe(
+  expect((await lookupSandbox(bound({ ...memory(), name: "upstash" }), "target", 100)).result).toBe(
     "unavailable",
   );
 });
@@ -130,7 +130,7 @@ it("does not resolve an Upstash lookup that returns a different box ID", async (
   vi.stubEnv("UPSTASH_BOX_API_KEY", "offline");
   native.get.mockResolvedValue({ id: "foreign", getStatus: native.status });
   native.status.mockResolvedValue({ status: "deleted" });
-  expect((await lookupSandbox({ ...memory(), name: "upstash" }, "target", 100)).result).toBe(
+  expect((await lookupSandbox(bound({ ...memory(), name: "upstash" }), "target", 100)).result).toBe(
     "unavailable",
   );
   expect(native.status).not.toHaveBeenCalled();
@@ -144,9 +144,9 @@ it("Superserve performs GET, never its activating connect path", async () => {
     .mockResolvedValue(new Response(JSON.stringify({ id: "target", status: "deleted" })));
 
   vi.stubGlobal("fetch", fetcher);
-  expect((await lookupSandbox({ ...memory(), name: "superserve" }, "target", 100)).result).toBe(
-    "terminal",
-  );
+  expect(
+    (await lookupSandbox(bound({ ...memory(), name: "superserve" }), "target", 100)).result,
+  ).toBe("terminal");
   expect(fetcher).toHaveBeenCalledWith(
     "https://api.superserve.ai/sandboxes/target",
     expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -205,7 +205,9 @@ it.each(["e2b", "daytona", "boxd", "freestyle", "boat"])(
         },
       },
     });
-    expect((await lookupSandbox({ ...memory(), name }, "target", 100)).result).toBe("terminal");
+    expect((await lookupSandbox(bound({ ...memory(), name }), "target", 100)).result).toBe(
+      "terminal",
+    );
     expect(native.get).toHaveBeenCalledTimes(1);
   },
 );
@@ -222,13 +224,13 @@ it("accepts E2B's actual native SandboxNotFoundError type, never a name or messa
     },
   });
   native.get.mockRejectedValue(new NativeNotFound());
-  expect((await lookupSandbox({ ...memory(), name: "e2b" }, "target", 100)).result).toBe(
+  expect((await lookupSandbox(bound({ ...memory(), name: "e2b" }), "target", 100)).result).toBe(
     "not-found",
   );
   native.get.mockRejectedValue(
     Object.assign(new Error("not found"), { name: "SandboxNotFoundError" }),
   );
-  expect((await lookupSandbox({ ...memory(), name: "e2b" }, "target", 100)).result).toBe(
+  expect((await lookupSandbox(bound({ ...memory(), name: "e2b" }), "target", 100)).result).toBe(
     "unavailable",
   );
 });
@@ -247,10 +249,12 @@ it("loads all eight installed native SDKs with Bun's import conditions and no ne
 
 it("uses the installed Daytona sandbox API without toolbox hydration", () => {
   const moduleURL = new URL("../src/existence.ts", import.meta.url).href;
+  const connectionsURL = new URL("../src/connections.ts", import.meta.url).href;
 
   const source = `import assert from "node:assert/strict";
  globalThis.fetch=async()=>{throw new Error("Network forbidden")};
  const {lookupSandbox,nativeModules}=await import(${JSON.stringify(moduleURL)});
+ const {bindConnection}=await import(${JSON.stringify(connectionsURL)});
  const mod=await nativeModules.load("@daytonaio/sdk"), load=nativeModules.load;
  let calls=[], status=200, returnedId="target";
  class OfflineDaytona extends mod.Daytona {
@@ -261,7 +265,7 @@ it("uses the installed Daytona sandbox API without toolbox hydration", () => {
  }
  nativeModules.load=async name=>name==="@daytonaio/sdk"?{...mod,Daytona:OfflineDaytona}:load(name);
  process.env.DAYTONA_API_KEY="offline";
- const provider={name:"daytona"};
+ const provider=bindConnection({name:"daytona"},{});
  assert.equal((await lookupSandbox(provider,"target",1000)).result,"present");
  assert.deepEqual(calls,["target"]);
  for(const [http,result] of [[404,"not-found"],[401,"unavailable"],[403,"unavailable"],[500,"unavailable"]]){
@@ -276,10 +280,12 @@ it("uses the installed Daytona sandbox API without toolbox hydration", () => {
 
 it("recognizes installed boxd NotFoundError grpcCode5 without accepting auth, quota, transport or forged errors", () => {
   const moduleURL = new URL("../src/existence.ts", import.meta.url).href;
+  const connectionsURL = new URL("../src/connections.ts", import.meta.url).href;
 
   const source = `import assert from "node:assert/strict";
  globalThis.fetch=async()=>{throw new Error("Network forbidden")};
  const {lookupError,lookupSandbox,nativeModules}=await import(${JSON.stringify(moduleURL)});
+ const {bindConnection}=await import(${JSON.stringify(connectionsURL)});
  const mod=await nativeModules.load("@boxd-sh/sdk"), load=nativeModules.load;
  let failure=new mod.NotFoundError("missing",5);
  class OfflineBoxd extends mod.Boxd {
@@ -287,10 +293,11 @@ it("recognizes installed boxd NotFoundError grpcCode5 without accepting auth, qu
  }
  nativeModules.load=async name=>name==="@boxd-sh/sdk"?{...mod,Boxd:OfflineBoxd}:load(name);
  process.env.BOXD_API_KEY="offline";
+ const boxd=bindConnection({name:"boxd"},{});
  assert.equal(lookupError(failure,"boxd","get").result,"not-found");
  assert.deepEqual(Object.keys(lookupError(failure,"boxd","get")).sort(),["checkedAt","method","nativeCode","result"]);
  assert.equal(lookupError(failure,"boxd","get").nativeCode,"5");
- assert.equal((await lookupSandbox({name:"boxd"},"target",1000)).result,"not-found");
+ assert.equal((await lookupSandbox(boxd,"target",1000)).result,"not-found");
  for(const error of [new mod.AuthenticationError("auth",16),new mod.PermissionDeniedError("denied",7),
   new mod.RateLimitError("quota",8),new mod.APIConnectionError("transport",14),new mod.APIStatusError("unknown",2),
   new mod.NotFoundError("wrong code",14),Object.assign(new Error("forged"),{name:"NotFoundError",grpcCode:5}),
@@ -298,7 +305,7 @@ it("recognizes installed boxd NotFoundError grpcCode5 without accepting auth, qu
   Object.assign(new mod.APIConnectionError("contradictory HTTP",14),{status:404})]){
   failure=error;
   assert.equal(lookupError(error,"boxd","get").result,"unavailable");
-  assert.equal((await lookupSandbox({name:"boxd"},"target",1000)).result,"unavailable");
+  assert.equal((await lookupSandbox(boxd,"target",1000)).result,"unavailable");
  }
  assert.equal(lookupError(new mod.NotFoundError("wrong provider",5),"upstash","get").result,"unavailable");`;
 

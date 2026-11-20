@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 import { lifetimeOptions } from "./lifetime.js";
 import { createAppByLabel } from "./modal-apps.js";
+import { bindConnection } from "./connections.js";
 
 const templateKeys = new Map([
   ["e2b", "template"],
@@ -264,8 +265,7 @@ export async function loadProvider(
   if (!factory.success)
     return { kind: "skipped", name, note: `Entry point does not export ${name}()` };
 
-  // Factory failures are real configuration errors, not missing-provider skips.
-  const provider = await factory.data({
+  const options = {
     ...providerDefaults(name),
     ...templateOptions(name, config?.template[name]),
     ...productOptions(name, config?.product[name]),
@@ -274,9 +274,14 @@ export async function loadProvider(
     ...appOptions(name),
     ...regionOptions(name, region),
     ...config?.factory,
-  });
+  };
+
+  // Factory failures are real configuration errors, not missing-provider skips.
+  const provider = await factory.data(options);
 
   assertProvider(provider);
+  // Reads, snapshots and cleanup reach this instance's sandboxes through the same connection.
+  bindConnection(provider, options);
 
   return {
     kind: "ready",

@@ -20,7 +20,7 @@ import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 import { BillingHttpError, collectProvider, vercelMeter } from "../src/billing/providers.js";
 import { lookupSandbox } from "../src/existence.js";
 import { inspectSnapshot, snapshotCleaner } from "../src/snapshots.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, fakeNativeModules } from "./native-fakes.js";
 
 const id = "fixture";
 
@@ -121,7 +121,7 @@ it("Boat: a trailing slash on BOAT_API_BASE still reads the live sandbox", async
       : [404, {}],
   );
 
-  const adapter = boat();
+  const adapter = bound(boat());
   await adapter.api.request("GET", `/sandboxes/${id}`);
   expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(rows.map((row) => row.url)).toEqual([
@@ -143,7 +143,7 @@ it("Daytona: a trailing slash on DAYTONA_API_URL still reads the live sandbox an
   vi.stubEnv("DAYTONA_API_KEY", "fixture");
   vi.stubEnv("DAYTONA_API_URL", `${server.base}/api/`);
 
-  const adapter = daytona();
+  const adapter = bound(daytona());
   expect((await adapter.connect(id)).id).toBe(id);
   expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(await inspectSnapshot("daytona", adapter, "source", id)).toEqual({
@@ -240,7 +240,7 @@ it("Vercel: lookups, snapshots and meters use the adapter's explicit token scope
   vi.stubEnv("VERCEL_OIDC_TOKEN", otherOidcToken());
   vercelApi();
 
-  const adapter = vercel();
+  const adapter = bound(vercel());
   expect((await adapter.connect(id)).state).toBe("running");
   expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(await inspectSnapshot("vercel", adapter, id, id)).toEqual({ exists: true });
@@ -318,7 +318,7 @@ it("Tenki: lookups use TENKI_AUTH_TOKEN before TENKI_API_KEY, as the adapter doe
   vi.stubEnv("TENKI_AUTH_TOKEN", "tk_live_fixture");
   vi.stubEnv("TENKI_API_KEY", "tk_other_fixture");
 
-  const adapter = tenki();
+  const adapter = bound(tenki());
   expect((await adapter.list({})).map((box) => box.id)).toContain(id);
   expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(await inspectSnapshot("tenki", adapter, "source", id)).toEqual({
@@ -364,7 +364,7 @@ it("E2B: E2B_DEBUG does not move the lookup to localhost while the adapter uses 
     },
   });
 
-  const adapter = e2b();
+  const adapter = bound(e2b());
   await adapter.api.request("GET", `/sandboxes/${id}`);
   expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
   expect(rows.map((row) => row.url)).toEqual([
@@ -382,7 +382,7 @@ it("Instabox: snapshot read and delete drop a trailing slash like the adapter", 
       : [404, {}],
   );
 
-  const adapter = instabox();
+  const adapter = bound(instabox());
   expect(await inspectSnapshot("instabox", adapter, "source", id)).toEqual({
     exists: true,
     sourceId: "source",
@@ -438,6 +438,37 @@ it("Instabox: billing reads the machine through the adapter's base URL", async (
   expect(seen).toEqual([`/v1/machines/${id}`, `/v1/machines/${id}/usage`]);
 });
 
+it("Instabox: billing takes its endpoint from the same environment as its key", async () => {
+  vi.stubEnv("INSTABOX_API_URL", "https://process.invalid");
+
+  const seen: string[] = [];
+
+  await collectProvider(
+    "instabox",
+    [
+      {
+        provider: "instabox",
+        id,
+        startedAt: "2026-11-18T10:00:00.000Z",
+        finishedAt: "2026-11-18T10:05:00.000Z",
+        confirmedStopAt: null,
+        app: null,
+        scenarios: new Set(["sandbox-lifetime"]),
+      },
+    ],
+    { INSTABOX_API_KEY: "injected-key", INSTABOX_API_URL: "https://injected.invalid/" },
+    async (request, headers) => {
+      seen.push(`${new URL(request).origin} ${headers["X-API-Key"]}`);
+      throw new BillingHttpError(404);
+    },
+  );
+
+  expect(seen).toEqual([
+    "https://injected.invalid injected-key",
+    "https://injected.invalid injected-key",
+  ]);
+});
+
 it("Upstash: the snapshot listing drops a trailing slash like the adapter", async () => {
   vi.stubEnv("UPSTASH_BOX_API_KEY", "fixture");
   vi.stubEnv("UPSTASH_BOX_BASE_URL", "https://upstash.fixture/");
@@ -447,7 +478,7 @@ it("Upstash: the snapshot listing drops a trailing slash like the adapter", asyn
       : [404, {}],
   );
 
-  expect(await inspectSnapshot("upstash", upstash(), "source", id)).toEqual({
+  expect(await inspectSnapshot("upstash", bound(upstash()), "source", id)).toEqual({
     exists: true,
     sourceId: "source",
   });
@@ -462,7 +493,7 @@ it("Superserve: snapshot reads drop a trailing slash like the adapter", async ()
       : [404, { error: { code: "not_found", message: "Not found" } }],
   );
 
-  const adapter = superserve();
+  const adapter = bound(superserve());
   await adapter.api.request("GET", `/snapshots/${id}`);
   expect(await inspectSnapshot("superserve", adapter, "source", id)).toEqual({
     exists: true,

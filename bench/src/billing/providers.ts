@@ -3,8 +3,8 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
-import { resolveConfig as instaboxConfig } from "@opencoredev/sandbox-sdk/instabox";
 import { resolveConfig as vercelConfig } from "@opencoredev/sandbox-sdk/vercel";
+import { endpoint } from "../connections.js";
 import type { Json } from "../json.js";
 import { pricing } from "../pricing.js";
 import type { OwnedSandbox } from "./input.js";
@@ -1154,9 +1154,9 @@ export async function collectProvider(
           : unavailable("Event pagination limit; history incomplete");
       } else if (provider === "instabox") {
         const headers = { "X-API-Key": key ?? "" };
-        // The adapter's base URL, without trailing slashes: `//v1/machines/<id>` can answer 404 for a
-        // live machine, which would mark its still-accruing usage final.
-        const base = instaboxConfig({ apiKey: key }).baseUrl;
+        // From the same environment as the key, without trailing slashes as the adapter joins it:
+        // `//v1/machines/<id>` can answer 404 for a live machine, marking its accruing usage final.
+        const base = endpoint(env.INSTABOX_API_URL ?? "https://api.instabox.sh");
 
         // Deletion first: a machine already gone (404) when its usage is read has a final meter.
         const deleted = await transport(`${base}/v1/machines/${id}`, headers).then(

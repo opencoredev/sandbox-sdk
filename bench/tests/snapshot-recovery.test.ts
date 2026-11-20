@@ -6,7 +6,7 @@ import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
 import * as snapshots from "../src/snapshots.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, fakeNativeModules } from "./native-fakes.js";
 import { reapRun } from "../src/recovery.js";
 import { parseV2 } from "../src/v2-config.js";
 
@@ -168,12 +168,16 @@ it.each(["e2b", "daytona", "boxd", "tenki", "freestyle", "superserve"])(
       sandboxId: "source",
     });
 
-    const provider = {
-      ...memory(),
-      native: () => {
-        throw new Error("parent gone");
+    const provider = bound(
+      {
+        ...memory(),
+        name,
+        native: () => {
+          throw new Error("parent gone");
+        },
       },
-    };
+      { apiKey: "test-key" },
+    );
 
     const page = {
       hasNext: false,
@@ -228,7 +232,9 @@ it("does not mistake a missing E2B list entry for definitive absence", async () 
       SandboxNotFoundError: class extends Error {},
     },
   });
-  await expect(snapshots.inspectSnapshot("e2b", memory(), "source", "snapshot")).rejects.toThrow(
+  const provider = bound({ ...memory(), name: "e2b" }, { apiKey: "test-key" });
+
+  await expect(snapshots.inspectSnapshot("e2b", provider, "source", "snapshot")).rejects.toThrow(
     "absence unproven",
   );
 });
@@ -237,7 +243,8 @@ it.each([true, false])(
   "reap handles a gone parent with recorded provenance=%s",
   async (recorded) => {
     const out = await directory();
-    const provider = memory();
+    // Named e2b and bound like the adapter, so the production cleaner has its connection.
+    const provider = bound({ ...memory(), name: "e2b" }, { apiKey: "test-key" });
     const remove = vi.fn().mockResolvedValue(undefined);
 
     const inspect = vi
@@ -302,13 +309,17 @@ it("reap removes a restored sandbox, then its proven snapshot, then the source",
   const source = await createSandbox(backing, { labels: { "sandbox-bench-run": "snapshot-run" } });
   const restore = await createSandbox(backing, { labels: { "sandbox-bench-run": "snapshot-run" } });
 
-  const provider = {
-    ...backing,
-    destroy: async (id: string) => {
-      events.push(id === source.id ? "source" : "restore");
-      await backing.destroy(id);
+  const provider = bound(
+    {
+      ...backing,
+      name: "e2b",
+      destroy: async (id: string) => {
+        events.push(id === source.id ? "source" : "restore");
+        await backing.destroy(id);
+      },
     },
-  };
+    { apiKey: "test-key" },
+  );
 
   vi.spyOn(snapshots.snapshotMetadata, "inspect").mockResolvedValue({
     exists: true,

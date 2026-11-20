@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { cpuOverlap } from "../src/cpu.js";
 import { lookupSandbox } from "../src/existence.js";
+import { bound } from "./native-fakes.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -39,7 +40,7 @@ it("a Superserve lookup goes to the control plane of the key's region, as the SD
     .mockResolvedValue(new Response(JSON.stringify({ id: "target", status: "running" })));
 
   vi.stubGlobal("fetch", fetcher);
-  await lookupSandbox({ ...memory(), name: "superserve" }, "target", 100);
+  await lookupSandbox(bound({ ...memory(), name: "superserve" }), "target", 100);
   expect(fetcher.mock.calls[0]?.[0]).toBe("https://api-usw.superserve.ai/sandboxes/target");
 });
 
@@ -52,7 +53,7 @@ it("an explicit SUPERSERVE_BASE_URL still wins over the key's region", async () 
     .mockResolvedValue(new Response(JSON.stringify({ id: "target", status: "running" })));
 
   vi.stubGlobal("fetch", fetcher);
-  await lookupSandbox({ ...memory(), name: "superserve" }, "target", 100);
+  await lookupSandbox(bound({ ...memory(), name: "superserve" }), "target", 100);
   expect(fetcher.mock.calls[0]?.[0]).toBe("https://api-staging.superserve.ai/sandboxes/target");
 });
 
@@ -67,8 +68,8 @@ it("a trailing slash on a base URL override doesn't change the lookup path, as i
     .mockResolvedValue(new Response(JSON.stringify({ id: "target", status: "running" })));
 
   vi.stubGlobal("fetch", fetcher);
-  await lookupSandbox({ ...memory(), name: "superserve" }, "target", 100);
-  await lookupSandbox({ ...memory(), name: "instabox" }, "target", 100);
+  await lookupSandbox(bound({ ...memory(), name: "superserve" }), "target", 100);
+  await lookupSandbox(bound({ ...memory(), name: "instabox" }), "target", 100);
   expect(fetcher.mock.calls.map((call) => call[0])).toEqual([
     "https://api-usw.superserve.ai/sandboxes/target",
     "https://api.instabox.sh/v1/machines/target",

@@ -111,6 +111,7 @@ import {
 } from "./snapshots.js";
 import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
+import { savedConnectionOf, type SavedConnection } from "./connections.js";
 import { captureVercelMeter } from "./billing/providers.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import { failureOutcome } from "./failure.js";
@@ -552,9 +553,24 @@ export async function runV2(
 
   let journal = Promise.resolve();
 
+  // Where each adapter connects, without credentials, so `reap` rebuilds the same adapters: an
+  // explicit endpoint, region or scope would otherwise be lost, and recovery would read elsewhere.
+  const connections: Record<string, SavedConnection> = {};
+
+  for (const p of loaded) {
+    const saved = p.kind === "ready" ? savedConnectionOf(p.provider) : null;
+
+    if (saved) connections[p.name] = saved;
+  }
+
   function persist() {
     const data = JSON.stringify(
-      { runId: config.run, resources: [...owned.values()], apps: [...apps.values()] },
+      {
+        runId: config.run,
+        connections,
+        resources: [...owned.values()],
+        apps: [...apps.values()],
+      },
       null,
       2,
     );
@@ -2374,7 +2390,7 @@ export async function runV2(
             await deadline(timeout, async (signal) => {
               for (;;) {
                 if (signal.aborted) throw new Error("Snapshot source recovery deadline expired");
-                const snapshots = await snapshotsFromSource(p.name, source.id);
+                const snapshots = await snapshotsFromSource(p.name, p.provider, source.id);
 
                 if (!snapshots.length) break;
 
@@ -3000,7 +3016,7 @@ export async function runV2(
         const sourceCleaner = await snapshotCleaner(p.name, p.provider, item.id);
 
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, item.id),
+          snapshotsFromSource(p.name, p.provider, item.id),
         )) {
           owned.set(`${p.name}/snapshot/${snapshot.id}`, {
             provider: p.name,

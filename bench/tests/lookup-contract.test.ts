@@ -24,7 +24,7 @@ import { upstash } from "@opencoredev/sandbox-sdk/upstash";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
 import type { Json } from "../src/json.js";
 import { lookupSandbox } from "../src/existence.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, fakeNativeModules } from "./native-fakes.js";
 
 const id = "fixture";
 
@@ -139,7 +139,7 @@ function recordFetch(
 }
 
 /** A provider with this name whose other members are inert: the lookup only reads `name`. */
-const named = (name: string): Provider => ({ ...memory(), name });
+const named = (name: string): Provider => bound({ ...memory(), name });
 
 /** The first argument of a fake native constructor's or method's `index`-th call. */
 const argument = (mock: { mock: { calls: unknown[][] } }, position = 0) =>
@@ -315,7 +315,7 @@ function wireCases(
       await read().catch(() => undefined);
       const [own] = targets;
       expect(own).toBeDefined();
-      expect((await lookupSandbox(make(), id, budget)).result).toBe("present");
+      expect((await lookupSandbox(bound(make()), id, budget)).result).toBe("present");
       expect(targets.at(-1)).toEqual(own);
     });
   });
@@ -443,7 +443,7 @@ describe("Vercel", () => {
   ])("%s", async (_, env) => {
     setEnv(env);
     const targets = recordFetch(`/api/v2/sandboxes/${id}`, () => sandbox, ["teamId", "projectId"]);
-    const adapter = vercel();
+    const adapter = bound(vercel());
     await adapter.connect(id);
     const [own] = targets;
     expect(own?.scope).toHaveProperty("teamId");
@@ -536,7 +536,7 @@ describe("Tenki", () => {
   ])("%s", async (_, env) => {
     await using server = await tenkiServer();
     setEnv(env(server.endpoint));
-    const adapter = tenki();
+    const adapter = bound(tenki());
     await adapter.list({});
     expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
     // Both reached this server (the endpoint), with the same token.
