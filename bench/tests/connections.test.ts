@@ -3,7 +3,7 @@
  * read through the environment, and a reap rebuilds the run's endpoint, region and scope from the
  * run's journal with credentials from the environment.
  */
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +22,7 @@ import {
   savedConnections,
   savedOptions,
 } from "../src/connections.js";
-import { bound } from "./native-fakes.js";
+import { bound, fakeNativeModules } from "./native-fakes.js";
 
 const id = "fixture";
 const budget = 10_000;
@@ -309,4 +309,299 @@ it("a run saves each adapter's endpoint and scope in its journal, never its key"
   } finally {
     await rm(out, { recursive: true, force: true });
   }
+});
+
+/** Every file under `dir`, recursively, with its text. */
+async function filesUnder(dir: string): Promise<{ path: string; text: string }[]> {
+  const entries = await readdir(dir, { withFileTypes: true, recursive: true });
+
+  return Promise.all(
+    entries
+      .filter((entry) => entry.isFile())
+      .map(async (entry) => {
+        const path = join(entry.parentPath, entry.name);
+
+        return { path, text: await readFile(path, "utf8") };
+      }),
+  );
+}
+
+/**
+ * Canaries in every place a connection can carry a secret: the key fields, and an endpoint's
+ * userinfo, host, path and query. None of them may reach a journal or report.
+ */
+const canaryEndpoint =
+  "https://u-canary-user:p-canary-pass@canary-host.invalid/p-canary-path/?q=canary-query";
+
+const canaryOptions = {
+  apiKey: "k-canary-key",
+  apiUrl: canaryEndpoint,
+  authToken: "t-canary-auth",
+  baseURL: canaryEndpoint,
+  baseUrl: canaryEndpoint,
+  domain: "canary-domain.invalid",
+  jwtToken: "j-canary-jwt",
+  organizationId: "o-canary-org",
+  projectId: "p-canary-project",
+  target: "canary-target",
+  teamId: "t-canary-team",
+  token: "v-canary-token",
+} satisfies FactoryOptions;
+
+const connected = [
+  "baseten",
+  "boat",
+  "boxd",
+  "daytona",
+  "e2b",
+  "freestyle",
+  "instabox",
+  "superserve",
+  "tenki",
+  "upstash",
+  "vercel",
+] as const;
+
+it("a run's journal and reports hold no credential or endpoint text, for every connected provider", async () => {
+  // Hermetic: every raw request answers 404 and no native SDK loads, so lookups stay unavailable.
+  vi.stubGlobal("fetch", async () => Response.json({}, { status: 404 }));
+  fakeNativeModules({});
+
+  const out = await mkdtemp(join(tmpdir(), "bench-journal-canaries-"));
+
+  try {
+    const config = parseV2([
+      "--providers",
+      connected.join(","),
+      "--run",
+      "journal-run",
+      "--runs",
+      "1",
+      "--scenarios",
+      "command",
+      "--bursts",
+      "",
+      "--timeout-ms",
+      "2000",
+      "--out",
+      out,
+    ]);
+
+    await runV2(
+      connected.map((name) => ({
+        kind: "ready" as const,
+        name,
+        cloud: false,
+        region: null,
+        provider: bound({ ...memory(), name }, canaryOptions),
+      })),
+      config,
+      (r) => writeV2(r, out),
+    );
+
+    const files = await filesUnder(out);
+
+    expect(files.map((file) => file.path)).toContain(join(out, "ownership.json"));
+    expect(files.filter((file) => /canary/i.test(file.text)).map((file) => file.path)).toEqual([]);
+
+    // Each connection is journaled as a 16-hex fingerprint under its provider's name, nothing else.
+    const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+
+    expect(Object.keys(journal.fingerprints).sort()).toEqual([...connected]);
+    for (const value of Object.values(journal.fingerprints))
+      expect(value).toMatch(/^[0-9a-f]{16}$/);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+}, 60_000);
+
+describe("bench reap acts only through the connection the run used", () => {
+  const argv = process.argv;
+  const exitCode = process.exitCode;
+
+  afterEach(() => {
+    process.argv = argv;
+    process.exitCode = exitCode;
+  });
+
+  /** E2B answers getInfo for `live` with the run's key only; any other key reads it as missing. */
+  function e2bAccount(live: Set<string>) {
+    const calls: string[] = [];
+
+    class SandboxNotFoundError extends Error {}
+
+    fakeNativeModules({
+      e2b: {
+        Sandbox: {
+          getInfo: async (sandboxId: string, options: { apiKey: string }) => {
+            calls.push(sandboxId);
+
+            if (options.apiKey === "run-key" && live.has(sandboxId))
+              return { sandboxId, state: "running" };
+            throw new SandboxNotFoundError("not found");
+          },
+          listSnapshots: () => ({ hasNext: false, nextItems: async () => [] }),
+          deleteSnapshot: vi.fn(),
+        },
+        SandboxNotFoundError,
+      },
+    });
+
+    return calls;
+  }
+
+  /** A run whose delete failed, so its sandbox stays journaled, under E2B_API_KEY=run-key. */
+  async function crashedRun(out: string) {
+    vi.stubEnv("E2B_API_KEY", "run-key");
+    const backing = memory();
+    const provider = bound({
+      ...backing,
+      name: "e2b",
+      destroy: async () => {
+        throw new Error("delete refused");
+      },
+    });
+
+    await runV2(
+      [{ kind: "ready", name: "e2b", cloud: false, region: null, provider }],
+      parseV2([
+        "--providers",
+        "e2b",
+        "--run",
+        "fp-run",
+        "--runs",
+        "1",
+        "--scenarios",
+        "command",
+        "--bursts",
+        "",
+        "--timeout-ms",
+        "2000",
+        "--out",
+        out,
+      ]),
+      (r) => writeV2(r, out),
+    );
+
+    const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+    const ids: string[] = journal.resources
+      .filter(
+        (r: { provider: string; kind: string }) => r.provider === "e2b" && r.kind === "sandbox",
+      )
+      .map((r: { id: string }) => r.id);
+
+    if (ids.length === 0) throw new Error("The run left no journaled sandbox");
+
+    return ids;
+  }
+
+  async function reap(out: string) {
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    process.argv = [
+      "bun",
+      "bench",
+      "reap",
+      "--providers",
+      "e2b",
+      "--run",
+      "fp-run",
+      "--timeout-ms",
+      "2000",
+      "--out",
+      out,
+    ];
+    process.exitCode = 0;
+
+    const { main } = await import("../src/cli.js");
+    let failure: unknown = null;
+
+    try {
+      // The adapter as `loadProvider` builds it: options from the reap's config, keys from the env.
+      await main(async (name, _env, _importer, config) => ({
+        kind: "ready",
+        name,
+        cloud: false,
+        region: null,
+        provider: bound({ ...memory(), name }, config?.factory ?? {}),
+      }));
+    } catch (error) {
+      failure = error;
+    }
+
+    const text = stderr.mock.calls.map((call) => String(call[0])).join("");
+    stderr.mockRestore();
+
+    return { stderr: text, exitCode: process.exitCode, failure };
+  }
+
+  it("with the same endpoint but another account's key, makes no request and keeps the entry", async () => {
+    const out = await mkdtemp(join(tmpdir(), "bench-reap-fingerprint-"));
+
+    try {
+      const ids = await crashedRun(out);
+      const calls = e2bAccount(new Set(ids));
+
+      vi.stubEnv("E2B_API_KEY", "other-key");
+      const result = await reap(out);
+      const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+
+      expect(result.failure).toBeNull();
+      // The sandbox is still running under the run's key: its entry must stay.
+      expect(journal.resources.map((r: { id: string }) => r.id)).toEqual(
+        expect.arrayContaining(ids),
+      );
+      expect(calls).toEqual([]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("SKIP e2b:");
+      expect(result.stderr).toContain("fingerprint");
+      expect(result.stderr).not.toMatch(/run-key|other-key/);
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("with the run's own environment, reads through it and resolves a sandbox that is gone", async () => {
+    const out = await mkdtemp(join(tmpdir(), "bench-reap-fingerprint-"));
+
+    try {
+      const ids = await crashedRun(out);
+      const calls = e2bAccount(new Set());
+
+      const result = await reap(out);
+      const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+
+      expect(result.failure).toBeNull();
+      expect(result.stderr).not.toContain("SKIP e2b");
+      expect(calls).toEqual(expect.arrayContaining(ids));
+      expect(journal.resources.filter((r: { kind: string }) => r.kind === "sandbox")).toEqual([]);
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("refuses a journal from before fingerprints, which kept endpoint text", async () => {
+    const out = await mkdtemp(join(tmpdir(), "bench-reap-legacy-"));
+
+    try {
+      vi.stubEnv("E2B_API_KEY", "run-key");
+      const calls = e2bAccount(new Set(["sb-1"]));
+
+      await writeFile(
+        join(out, "ownership.json"),
+        JSON.stringify({
+          runId: "fp-run",
+          connections: { e2b: { domain: "e2b.app", apiUrl: "https://api.e2b.app" } },
+          resources: [{ provider: "e2b", id: "sb-1", kind: "sandbox", parent: null }],
+        }),
+      );
+      const result = await reap(out);
+
+      expect(calls).toEqual([]);
+      expect(String(result.failure)).toContain("endpoint text");
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  });
 });
