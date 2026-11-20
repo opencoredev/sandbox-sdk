@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { runAttempt, type AttemptPlan } from "../../src/realistic/attempt.js";
 import { systemClock } from "../../src/realistic/gaps.js";
 import { attemptRecordSchema } from "../../src/realistic/record.js";
+import { providerSetup, provisionedOf } from "../../src/realistic/setup.js";
 import { buildFixture, type Fixture } from "./fixture.js";
 import { hostProvider, type HostProvider } from "./host-provider.js";
 
@@ -46,9 +47,12 @@ const environment = (signal = new AbortController().signal) => ({
 
 describe("fix-and-test attempt on the host provider", () => {
   it("prepares from hash-checked tarballs, installs offline, and completes from the frozen checks", async () => {
-    const { record } = await runAttempt(plan(), environment());
-    attemptRecordSchema.parse(JSON.parse(JSON.stringify(record)));
+    // A disk size no track uses, so the record can only have it from the plan.
+    const { record } = await runAttempt(plan({ diskGiB: 13 }), environment());
+    const saved = attemptRecordSchema.parse(JSON.parse(JSON.stringify(record)));
 
+    expect(saved.diskGiB).toBe(13);
+    expect(provisionedOf(providerSetup("tenki"), "same-machine", saved)?.diskGiB).toBe(13);
     expect(record.completion).toEqual({ kind: "completed" });
     expect(record.deletionConfirmed).toBe(true);
     expect(record.sandboxIds).toHaveLength(1);

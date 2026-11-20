@@ -63,6 +63,14 @@ function superserveConnection(provider: Provider) {
   return { apiKey, baseUrl: endpoint(baseUrl) };
 }
 
+/**
+ * Providers whose snapshots the bench cannot delete. Their snapshot scenarios are skipped: a run
+ * would leave every snapshot it made behind, and no cleaner can honestly report one removed.
+ */
+export const undeletableSnapshots: ReadonlyMap<string, string> = new Map([
+  ["beam", "Beam has no API to delete a memory snapshot"],
+]);
+
 export async function snapshotCleaner(
   name: string,
   provider: Provider,

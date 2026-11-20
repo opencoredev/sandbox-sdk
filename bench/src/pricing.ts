@@ -181,6 +181,20 @@ export const pricing: PriceTable = {
     notes:
       "Published Sandboxes runtime rates ($0.0655/vCPU-hour, $0.0211/GB RAM-hour), priced on the allocation. Billing increment and minimum not stated; one-second estimate. Free promotional period excluded. Realistic build runs mount an 8 GiB volume (fix-and-test mounts none), priced at $0.16/GB-month for the sandbox's lifetime. Snapshots and stored images not used.",
   },
+  beam: {
+    ...base,
+    // Sandboxes bill CPU and memory per millisecond while running, at the workspace's CPU tier.
+    // New workspaces default to Performance (dedicated vCPUs); the bench's workspace is on it.
+    // Sandbox disk is not billed.
+    cpuSecond: 0.05 / 3600,
+    memoryGiBSecond: 0.01 / 3600,
+    diskGiBSecond: 0,
+    incrementSeconds: 0.001,
+    retrieved: "2026-11-18",
+    source: "https://www.beam.cloud/pricing",
+    notes:
+      "Published Sandboxes rates on the Performance tier, the default ($0.05/vCPU-hour, $0.01/GiB RAM-hour), priced on the allocation and billed per millisecond while running (2026-11-18). Shared ($0.011, $0.0055) and Spot ($0.0063, $0.00135) tiers are cheaper and not used. Disk not billed. The snapshot tests did not run: Beam has no API to delete a memory snapshot. Credits excluded.",
+  },
   tenki: {
     ...base,
     cpuSecond: 0.000014,
@@ -292,6 +306,8 @@ export const defaultCompute: ComputeTable = {
   vercel: { cpu: 2, memoryGiB: 4 },
   baseten: { cpu: 2, memoryGiB: 4 },
   instabox: { cpu: 4, memoryGiB: 8 },
+  // Beam's TypeScript SDK default: 1 CPU, 128 MiB.
+  beam: { cpu: 1, memoryGiB: 0.125 },
 };
 
 export function estimateCost(

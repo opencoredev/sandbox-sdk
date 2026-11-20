@@ -280,7 +280,7 @@ for (const row of rows) {
   // Dummy credentials get each adapter past its config checks; the absent peer fails before any network call.
   const probe = `const m = await import(${JSON.stringify(row.spec)}); const { createSandbox } = await import(${JSON.stringify(pkg.name)});
 if (typeof m[${JSON.stringify(factory)}] !== "function") { console.log("no factory"); process.exit(0); }
-const dummy = { apiKey: "x", token: "x", teamId: "x", projectId: "x" };
+const dummy = { apiKey: "x", token: "x", teamId: "x", projectId: "x", workspaceId: "x" };
 try { await createSandbox(m[${JSON.stringify(factory)}](dummy)); console.log("created"); } catch (error) { console.log(error.code, error.message); }`;
 
   const used = sh("node", ["--input-type=module", "-e", probe], {

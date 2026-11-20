@@ -227,6 +227,54 @@ describe("slot execution", () => {
     });
   });
 
+  it("starts an abandoned attempt's record after its App lookup", async () => {
+    const records: AttemptRecord[] = [];
+
+    const quick = {
+      ...fixture.manifest,
+      profiles: {
+        "fix-and-test": { ...fixture.manifest.profiles["fix-and-test"]!, slotTimeoutMs: 150 },
+      },
+    };
+
+    const stubborn: typeof runAttempt = async (plan, environment) => {
+      await environment.onSandbox?.(plan.provider.name, "stuck-2");
+      await sleep(5_000);
+
+      throw new Error("never seen");
+    };
+
+    await runBatch(
+      batch(
+        {
+          manifest: quick,
+          slots: slots.slice(0, 1),
+          providers: [
+            provider("e2b", {
+              // A lookup that finishes inside the slot: our side, so the record starts after it.
+              beforeAttempt: async () => {
+                await sleep(80);
+
+                return {
+                  labels: {},
+                  created: async () => {},
+                  failed: async () => {},
+                  destroyed: async () => {},
+                };
+              },
+            }),
+          ],
+          timeoutGraceMs: 100,
+          attempt: stubborn,
+        },
+        records,
+      ),
+    );
+
+    expect(records[0]).toMatchObject({ completion: { reason: "slot-timeout" } });
+    expect(records[0]!.startOffsetMs).toBeGreaterThanOrEqual(70);
+  });
+
   it("keeps the entry's volume on a failed attempt's record, so it is still priced", async () => {
     const records: AttemptRecord[] = [];
 
@@ -252,6 +300,49 @@ describe("slot execution", () => {
       volumeGiB: 8,
       completion: { kind: "incomplete", reason: "error" },
     });
+  });
+
+  it("records the entry's disk and run time on an attempt that fails after create, so it is priced", async () => {
+    const records: AttemptRecord[] = [];
+
+    const failing: typeof runAttempt = async (plan, environment) => {
+      await environment.onSandbox?.(plan.provider.name, "made-1");
+      await new Promise((done) => setTimeout(done, 50));
+
+      throw new Error("failed after create");
+    };
+
+    await runBatch(
+      batch(
+        {
+          slots: slots.slice(0, 1),
+          providers: [
+            provider("e2b", {
+              diskGiB: 13,
+              // A slow App lookup before the attempt: our side, so not priced.
+              beforeAttempt: async () => {
+                await new Promise((done) => setTimeout(done, 300));
+
+                return {
+                  labels: {},
+                  created: async () => {},
+                  failed: async () => {},
+                  destroyed: async () => {},
+                };
+              },
+            }),
+          ],
+          attempt: failing,
+        },
+        records,
+      ),
+    );
+
+    expect(records[0]).toMatchObject({ sandboxIds: ["made-1"], diskGiB: 13 });
+    // The record spans the attempt, which made the sandbox, and not the App lookup before it.
+    const ran = records[0]!.endedAt - records[0]!.startedAt;
+    expect(ran).toBeGreaterThanOrEqual(40);
+    expect(ran).toBeLessThan(250);
   });
 
   it("voids a window whose listing is only SDK-scoped", async () => {

@@ -370,6 +370,11 @@ function isDaytonaSandboxApi(api: unknown): api is DaytonaSandboxApi {
  */
 const modalKey = "MODAL_TOKEN_SECRET";
 
+/** Beam's gateway container listing, as the existence check reads it. */
+const beamContainers = z.object({
+  containers: z.array(z.object({ containerId: z.string(), status: z.string() })),
+});
+
 const nativeInfo = z.object({
   id: z.string().optional(),
   Id: z.string().optional(),
@@ -454,6 +459,25 @@ export async function lookupSandbox(
           const info = await client.getInfo({ name: id, callOptions: { signal } });
 
           return { id: info.name, status: info.status };
+        }
+
+        case "beam": {
+          // Beam lists pending and running containers only; a stopped one leaves the list.
+          const response = await fetch("https://app.beam.cloud/api/v1/gateway/containers", {
+            headers: { Authorization: `Bearer ${process.env.BEAM_TOKEN ?? ""}` },
+            signal,
+          });
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          const found = beamContainers
+            .parse(await response.json())
+            .containers.find((c) => c.containerId === id);
+
+          if (!found) throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+
+          return { id: found.containerId, status: found.status };
         }
 
         case "boxd": {

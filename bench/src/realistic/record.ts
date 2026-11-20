@@ -34,6 +34,8 @@ export const variantSchema = z.enum([
   "prepared",
   "state-check",
   "live-registry",
+  /** Several copies started together on one provider ("Real tasks at once", burst.ts). */
+  "concurrent",
 ]);
 
 export type Variant = z.infer<typeof variantSchema>;
@@ -190,6 +192,11 @@ export const attemptRecordSchema = z.object({
    * disk; 0 when it mounted none. Absent only on records from before the field (provisionedOf).
    */
   volumeGiB: z.number().nonnegative().optional(),
+  /**
+   * GiB of the sandbox's own disk as its track's setup provisioned it, without `volumeGiB`. Absent
+   * only on records from before the field, which ran with the disk of their time (provisionedOf).
+   */
+  diskGiB: z.number().nonnegative().optional(),
   startedAt: z.number(),
   endedAt: z.number(),
   /** Create request time minus the slot's start: the published start offset. */

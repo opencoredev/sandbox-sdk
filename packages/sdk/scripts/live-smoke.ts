@@ -67,6 +67,10 @@ const registry = {
     env: [["BASETEN_API_KEY"]],
     load: async () => (await import("../src/providers/baseten/index.js")).baseten(),
   },
+  beam: {
+    env: [["BEAM_TOKEN"], ["BEAM_WORKSPACE_ID"]],
+    load: async () => (await import("../src/providers/beam/index.js")).beam(),
+  },
   instabox: {
     env: [["INSTABOX_API_KEY"]],
     load: async () => (await import("../src/providers/instabox/index.js")).instabox(),

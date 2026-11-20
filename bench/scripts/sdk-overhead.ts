@@ -69,6 +69,7 @@ const nativePackages = {
   superserve: "@superserve/sdk",
   baseten: "@basetenlabs/sandbox",
   instabox: "@insforge/instabox-sdk",
+  beam: "@beamcloud/beam-js",
 } as const;
 
 /** A provider this script can measure. */
@@ -344,6 +345,36 @@ const providers = {
       },
     };
   },
+  async beam() {
+    const m: typeof import("@opencoredev/sandbox-sdk/beam") = await import(
+      moduleUrl("providers/beam/index.js")
+    );
+
+    const provider = m.beam();
+    const native = await beamNative();
+
+    // The floor is the official SDK's instance for the adapter's container, connected once. Exec
+    // waits inline, as the adapter does, so a fast command needs no status polling.
+    return {
+      provider,
+      floor: (id) => {
+        const instance = once(() => native.Sandbox.connect(provider.native(id).containerId));
+
+        return {
+          exec: async (command = "true") => {
+            const code = await (
+              await (await instance()).exec(["sh", "-c", command], { wait: true })
+            ).wait();
+
+            if (code !== 0) throw new Error(`exit ${code}`);
+          },
+          write: async (path, data) => {
+            await (await instance()).fs.writeBytes(path, data);
+          },
+        };
+      },
+    };
+  },
 } satisfies Record<ProviderName, () => Promise<Loaded>>;
 
 interface NativeBox {
@@ -356,11 +387,54 @@ interface NativeBox {
 /** Native clients reused across raw creates, as the adapters reuse theirs. */
 interface NativeClients {
   baseten?: BasetenClient;
+  /** One configuration for every native Beam create, so Beam prepares its stub once, as the adapter does. */
+  beam?: InstanceType<typeof import("@beamcloud/beam-js").Sandbox>;
   boxd?: Boxd;
   tenki?: TenkiSandbox;
 }
 
 const nativeClients: NativeClients = {};
+
+/** `@beamcloud/beam-js` with this run's credentials. It keeps one global configuration. */
+const beamNative = once(async () => {
+  const m: typeof import("@beamcloud/beam-js") = await import(nativeUrl("@beamcloud/beam-js"));
+
+  m.beamOpts.token = process.env.BEAM_TOKEN ?? "";
+  m.beamOpts.workspaceId = process.env.BEAM_WORKSPACE_ID ?? "";
+
+  return m;
+});
+
+/**
+ * beam-js prints create progress on stdout, which this script's Markdown report also uses, and logs
+ * raw HTTP errors, Authorization header included, with console.error. While a native create runs,
+ * log is dropped and warn/error pass only text, with the token removed.
+ */
+async function quietly<T>(action: () => Promise<T>): Promise<T> {
+  const original = { log: console.log, warn: console.warn, error: console.error };
+  const token = process.env.BEAM_TOKEN ?? "";
+
+  const scrub = (args: unknown[]) =>
+    args.map((arg) => {
+      const text = z.string().safeParse(arg);
+
+      if (!text.success) return "[omitted]";
+
+      return token.length >= 8 ? text.data.split(token).join("[redacted]") : text.data;
+    });
+
+  console.log = () => {};
+
+  console.warn = (...args: unknown[]) => original.warn(...scrub(args));
+
+  console.error = (...args: unknown[]) => original.error(...scrub(args));
+
+  try {
+    return await action();
+  } finally {
+    Object.assign(console, original);
+  }
+}
 
 // Modules resolve from the selected SDK build, not from the harness checkout.
 async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): Promise<NativeBox> {
@@ -650,6 +724,56 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
         }
       },
     };
+  }
+
+  if (name === "beam") {
+    const m = await beamNative();
+
+    // Beam keeps no labels; the stub name carries the run ID. Same defaults as the adapter:
+    // node:22-bookworm, Beam's 1 CPU / 128 MiB, a 10-minute lifetime.
+    const template = (nativeClients.beam ??= new m.Sandbox({
+      name: `${runId}-native`,
+      cpu: 1,
+      memory: 128,
+      image: new m.Image({ baseImage: "node:22-bookworm" }),
+      keepWarmSeconds: 600,
+    }));
+
+    // Allocate without waiting, so the ID is admitted for cleanup before anything else can fail;
+    // the connect that beam-js's default create does follows, inside this create's timing.
+    const allocated = await quietly(() => template.create({ waitForReady: false }));
+    const id = allocated.containerId;
+
+    const raw = {
+      id,
+      exec: async () => {
+        const code = await (await instance.exec(["true"], { wait: true })).wait();
+
+        if (code !== 0) throw new Error(`exit ${code}`);
+      },
+      destroy: async () => {
+        await m.Sandbox.terminate(id);
+      },
+      exists: async () => {
+        const response = await fetch("https://app.beam.cloud/api/v1/gateway/containers", {
+          headers: { Authorization: `Bearer ${process.env.BEAM_TOKEN ?? ""}` },
+        });
+
+        if (!response.ok) throw new Error(`Beam container list failed: HTTP ${response.status}`);
+
+        const body = z
+          .object({ containers: z.array(z.object({ containerId: z.string() })) })
+          .parse(await response.json());
+
+        return body.containers.some((c) => c.containerId === id);
+      },
+    };
+
+    admit(raw);
+
+    const instance = await m.Sandbox.connect(id);
+
+    return raw;
   }
 
   throw new Error(`Unknown provider ${name}`);

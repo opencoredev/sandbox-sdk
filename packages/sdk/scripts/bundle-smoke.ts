@@ -7,8 +7,8 @@
 // failure is a SandboxError. A TypeError such as "m is not a constructor" fails the provider.
 // Each bundle runs from its own directory, with no node_modules in reach, like a deploy.
 // Also checked: boxd file transfers in every format (they used to resolve a file through
-// import.meta.url), the hint an ESM bundle without the banner gets, and that the error mappers
-// still recognize native errors once a minifier has renamed every class.
+// import.meta.url), Beam's create, the hint an ESM bundle without the banner gets, and that the
+// error mappers still recognize native errors once a minifier has renamed every class.
 //
 //   bun scripts/bundle-smoke.ts                         build, then check every provider offline
 //   SKIP_BUILD=1 bun scripts/bundle-smoke.ts            reuse dist
@@ -46,8 +46,14 @@ const fakes = {
   freestyle: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   superserve: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   baseten: `{ apiKey: "smoke-key" }`,
+  beam: `{ token: "smoke-token", workspaceId: "smoke-workspace", requestTimeoutMs: 5000 }`,
   instabox: `{ apiKey: "ibk_smoke", requestTimeoutMs: 5000 }`,
 };
+
+// Beam's create probe gets a gateway port of its own, and counts only connections to it, so a late
+// request from an earlier provider's probe cannot pass for beam-js reaching the network.
+const beamCreatePort = 45931;
+const beamCreate = `{ token: "smoke-token", workspaceId: "smoke-workspace", requestTimeoutMs: 5000, gatewayUrl: "https://127.0.0.1:${beamCreatePort}" }`;
 
 // Providers without an optional peer SDK, or whose peer never touches the network.
 const skipped = {
@@ -86,12 +92,16 @@ if (process.env.SKIP_BUILD !== "1") {
   }
 }
 
-// Runs inside the bundle. Every connection attempt is counted and fails like a refused port.
+// Runs inside the bundle. Every connection attempt is counted, with its port, and fails like a
+// refused port. net.connect passes its arguments normalized into an array.
 const blocker = `
 import net from "node:net";
 let attempts = 0;
-net.Socket.prototype.connect = function () {
+const ports = [];
+const portOf = args => { const first = Array.isArray(args[0]) ? args[0][0] : args[0]; return Number(typeof first === "object" && first !== null ? first.port : first); };
+net.Socket.prototype.connect = function (...args) {
   attempts++;
+  ports.push(portOf(args));
   process.nextTick(() => this.destroy(Object.assign(new Error("connect ECONNREFUSED (bundle smoke blocks the network)"), { code: "ECONNREFUSED" })));
   return this;
 };
@@ -102,6 +112,14 @@ async function probe(name, factory) {
   const outcome = await Promise.race([listSandboxes(factory()).then(() => ({ ok: true }), error => ({ error })), timeout]);
   console.log(JSON.stringify({ name, attempts, timedOut: outcome.timedOut === true, sandboxError: outcome.error instanceof SandboxError, code: outcome.error?.code, text: outcome.error === undefined ? "" : text(outcome.error) }));
 }
+// Beam lists over fetch and creates through its peer: only a create reaches the peer's Sandbox.
+// Only connections to the provider's own gateway port count.
+async function createProbe(name, provider, port) {
+  ports.length = 0;
+  const outcome = await createSandbox(provider).then(() => ({ ok: true }), error => ({ error }));
+  const reached = ports.filter(p => p === port).length;
+  console.log(JSON.stringify({ name, attempts: reached, timedOut: false, sandboxError: outcome.error instanceof SandboxError, code: outcome.error?.code, text: outcome.error === undefined ? "" : text(outcome.error) }));
+}
 // boxd moves file bytes with its fetch client; reading through the adapter reaches it without a sandbox.
 async function transferProbe(name, provider) {
   attempts = 0;
@@ -111,7 +129,7 @@ async function transferProbe(name, provider) {
 `;
 
 const imports = [
-  `import { listSandboxes, SandboxError } from "@opencoredev/sandbox-sdk";`,
+  `import { createSandbox, listSandboxes, SandboxError } from "@opencoredev/sandbox-sdk";`,
   ...Object.keys(fakes).map(
     (name) => `import { ${name} } from "@opencoredev/sandbox-sdk/${name}";`,
   ),
@@ -122,9 +140,10 @@ const probes = [
     ([name, options]) => `await probe(${JSON.stringify(name)}, () => ${name}(${options}));`,
   ),
   `await transferProbe("boxd files", boxd(${fakes.boxd}));`,
+  `await createProbe("beam create", beam(${beamCreate}), ${beamCreatePort});`,
 ];
 
-const rowNames = [...Object.keys(fakes), "boxd files"];
+const rowNames = [...Object.keys(fakes), "boxd files", "beam create"];
 const esm = [imports, blocker, ...probes].join("\n");
 
 // cjs output has no top-level await, so the same probes run in an async IIFE.
@@ -136,7 +155,7 @@ const requireBanner = {
 
 // Peers that load a Node builtin through require, which an ESM bundle without the banner cannot do.
 // They must fail with a SandboxError that names the cause and the fix, not a generic provider error.
-const needsRequire = ["vercel", "modal", "tenki", "boxd", "boxd files"];
+const needsRequire = ["vercel", "modal", "tenki", "boxd", "boxd files", "beam create"];
 
 const formats: { label: string; options: BuildOptions; source: string; noBanner?: true }[] = [
   {
