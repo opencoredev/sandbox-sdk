@@ -21,6 +21,8 @@ const hex = /^[0-9a-f]{16}$/;
 
 /** Everything a provider's connection reads from the environment, cleared for each test. */
 const connectionEnv = [
+  "BEAM_TOKEN",
+  "BEAM_WORKSPACE_ID",
   "DOCKER_HOST",
   "MODAL_PROFILE",
   "MODAL_CONFIG_PATH",
@@ -241,6 +243,43 @@ describe("boxd's fingerprint covers the region its SDK routes machine calls to",
   });
 });
 
+describe("Beam's fingerprint covers its token, workspace and gateway", () => {
+  const beam = (factory: FactoryOptions = {}) => bound({ ...memory(), name: "beam" }, factory);
+
+  it("is the same for the options and the environment naming one connection", async () => {
+    vi.stubEnv("BEAM_TOKEN", "live-token");
+    vi.stubEnv("BEAM_WORKSPACE_ID", "ws-live");
+    const fromEnv = await fingerprintOf(beam());
+
+    vi.stubEnv("BEAM_TOKEN", "other-token");
+    vi.stubEnv("BEAM_WORKSPACE_ID", "ws-other");
+
+    expect(fromEnv).toMatch(hex);
+    expect(await fingerprintOf(beam({ token: "live-token", workspaceId: "ws-live" }))).toBe(
+      fromEnv,
+    );
+  });
+
+  it.each([
+    ["token", { token: "other-token" }],
+    ["workspace", { workspaceId: "ws-other" }],
+    ["gateway", { gatewayUrl: "https://gateway.invalid" }],
+  ])("changes with the %s", async (_field, change) => {
+    vi.stubEnv("BEAM_TOKEN", "live-token");
+    vi.stubEnv("BEAM_WORKSPACE_ID", "ws-live");
+    const run = await fingerprintOf(beam());
+
+    expect(await fingerprintOf(beam(change))).not.toBe(run);
+  });
+
+  it("has no fingerprint, and reap refuses, without a workspace ID, as the adapter refuses", async () => {
+    vi.stubEnv("BEAM_TOKEN", "live-token");
+
+    expect(await fingerprintOf(beam())).toBeNull();
+    expect(await reapConnection(beam(), "0123456789abcdef")).toMatchObject({ kind: "differs" });
+  });
+});
+
 describe("the local adapter's fingerprint covers its socket and the daemon behind it", () => {
   it("resolves the socket as the adapter does: the dockerHost option, then DOCKER_HOST", async () => {
     const a = await fakeDocker("daemon-a");
@@ -277,6 +316,8 @@ describe("no provider the bench builds skips the fingerprint check", () => {
 
     for (const key of [
       "BASETEN_API_KEY",
+      "BEAM_TOKEN",
+      "BEAM_WORKSPACE_ID",
       "BOAT_API_KEY",
       "BOXD_API_KEY",
       "DAYTONA_API_KEY",

@@ -2,6 +2,10 @@
 // records every request and provider-SDK call for a matrix of options and environments; this
 // tree's recording must equal the one made from `base`, the commit before `resolveConfig`.
 //
+// `base` is main as merged in (#74): the same adapter source as the first base, 7884776, plus the
+// Beam adapter and a version bump, so it covers Beam too. Its recording of every other provider
+// equals 7884776's entry for entry.
+//
 // The recording of `base` is kept in fixtures/request-matrix.base.json, so a shallow clone checks
 // it too. Where git has `base`, the test also records it afresh, so the file cannot drift. After a
 // provider SDK upgrade, regenerate the file from `base`, never from this tree:
@@ -16,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 
-const base = "788477654e06dad556c8e970d8383edad523e7fa";
+const base = "b23a99bcbb6cae8ca088f6b78d94ec310446df20";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const fixture = join(root, "tests", "fixtures", "request-matrix.base.json");
 

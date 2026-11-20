@@ -463,8 +463,11 @@ export async function lookupSandbox(
 
         case "beam": {
           // Beam lists pending and running containers only; a stopped one leaves the list.
-          const response = await fetch("https://app.beam.cloud/api/v1/gateway/containers", {
-            headers: { Authorization: `Bearer ${process.env.BEAM_TOKEN ?? ""}` },
+          // On this adapter instance's gateway and token, as its own container list.
+          const { token, gatewayUrl } = connectionOf(provider, "beam");
+
+          const response = await fetch(`${endpoint(gatewayUrl)}/api/v1/gateway/containers`, {
+            headers: { Authorization: `Bearer ${token}` },
             signal,
           });
 

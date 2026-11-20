@@ -2,6 +2,7 @@
 // requests go to and the credential they carry. It reads options and the environment and changes
 // neither. `request-parity.test.ts` proves the adapters themselves did not change.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { beam, resolveConfig as beamConfig } from "../src/providers/beam/index.js";
 import { boat, resolveConfig as boatConfig } from "../src/providers/boat/index.js";
 import { daytona, resolveConfig as daytonaConfig } from "../src/providers/daytona/index.js";
 import { e2b, resolveConfig as e2bConfig } from "../src/providers/e2b/index.js";
@@ -16,6 +17,8 @@ import { upstash, resolveConfig as upstashConfig } from "../src/providers/upstas
 import { resolveConfig as vercelConfig } from "../src/providers/vercel/index.js";
 
 const variables = [
+  "BEAM_TOKEN",
+  "BEAM_WORKSPACE_ID",
   "BOAT_API_KEY",
   "BOAT_API_BASE",
   "DAYTONA_API_KEY",
@@ -113,6 +116,51 @@ describe("resolveConfig is where and as whom the adapter's own requests go", () 
     });
     expect(sent[0]?.url.startsWith(`${config.apiUrl}/sandboxes/sbx-1`)).toBe(true);
     expect(sent[0]?.headers.get("x-api-key")).toBe("option-key");
+  });
+
+  test("Beam: explicit options win over the environment, on the adapter's gateway", async () => {
+    vi.stubEnv("BEAM_TOKEN", "env-token");
+    vi.stubEnv("BEAM_WORKSPACE_ID", "ws-env");
+
+    const options = {
+      token: " option-token ",
+      workspaceId: "ws-option",
+      gatewayUrl: "https://option.invalid/beam//",
+    };
+
+    const sent = capture();
+
+    await beam(options)
+      .connect("ctr-1")
+      .catch(() => {});
+
+    const config = beamConfig(options);
+
+    expect(config).toEqual({
+      token: "option-token",
+      workspaceId: "ws-option",
+      gatewayUrl: "https://option.invalid/beam//",
+    });
+    expect(sent[0]?.url).toBe(joined(config.gatewayUrl, "/api/v1/gateway/containers"));
+    expect(sent[0]?.headers.get("authorization")).toBe("Bearer option-token");
+  });
+
+  test("Beam: the environment and the default gateway", async () => {
+    vi.stubEnv("BEAM_TOKEN", "env-token");
+    vi.stubEnv("BEAM_WORKSPACE_ID", "ws-env");
+    const sent = capture();
+
+    await beam()
+      .connect("ctr-1")
+      .catch(() => {});
+
+    expect(beamConfig()).toEqual({
+      token: "env-token",
+      workspaceId: "ws-env",
+      gatewayUrl: "https://app.beam.cloud",
+    });
+    expect(sent[0]?.url).toBe("https://app.beam.cloud/api/v1/gateway/containers");
+    expect(sent[0]?.headers.get("authorization")).toBe("Bearer env-token");
   });
 
   test("Boat, Freestyle, Instabox, Superserve and Upstash agree with their requests", async () => {
@@ -215,5 +263,15 @@ describe("resolveConfig reads and changes nothing else", () => {
 
   test("a missing key is auth, as in the adapter", () => {
     expect(() => boatConfig({})).toThrow(expect.objectContaining({ code: "auth" }));
+  });
+
+  test("Beam needs both a token and a workspace ID, as the adapter does", async () => {
+    vi.stubEnv("BEAM_WORKSPACE_ID", "ws-env");
+    expect(() => beamConfig()).toThrow(expect.objectContaining({ code: "auth" }));
+    await expect(beam().list({})).rejects.toMatchObject({ code: "auth" });
+    vi.stubEnv("BEAM_TOKEN", "env-token");
+    vi.stubEnv("BEAM_WORKSPACE_ID", "  ");
+    expect(() => beamConfig()).toThrow(expect.objectContaining({ code: "auth" }));
+    await expect(beam().list({})).rejects.toMatchObject({ code: "auth" });
   });
 });

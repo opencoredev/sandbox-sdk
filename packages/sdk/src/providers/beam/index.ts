@@ -7,7 +7,16 @@ import {
   type BeamProvider,
 } from "./provider.js";
 
-export type { BeamNative, BeamOptions, BeamPlane, BeamProvider } from "./provider.js";
+export { resolveConfig } from "./provider.js";
+
+export type {
+  BeamConfig,
+  BeamConnection,
+  BeamNative,
+  BeamOptions,
+  BeamPlane,
+  BeamProvider,
+} from "./provider.js";
 
 /**
  * beam-js keeps one global configuration and caches its HTTP client, with the first token, gateway

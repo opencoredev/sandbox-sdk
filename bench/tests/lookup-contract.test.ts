@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { resolveConfig as basetenConfig } from "@opencoredev/sandbox-sdk/baseten";
+import { beam } from "@opencoredev/sandbox-sdk/beam";
 import { boat } from "@opencoredev/sandbox-sdk/boat";
 import { resolveConfig as boxdConfig } from "@opencoredev/sandbox-sdk/boxd";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
@@ -43,6 +44,8 @@ type Env = Record<string, string>;
 /** Every variable the matrix sets, cleared first so the developer's environment cannot leak in. */
 const providerEnv = [
   "BASETEN_API_KEY",
+  "BEAM_TOKEN",
+  "BEAM_WORKSPACE_ID",
   "BOAT_API_KEY",
   "BOAT_API_BASE",
   "BOXD_API_KEY",
@@ -358,6 +361,21 @@ wireCases(
     ["override", { INSTABOX_API_KEY: "k1", INSTABOX_API_URL: "https://ib.fixture" }],
     ["override with slashes", { INSTABOX_API_KEY: "k1", INSTABOX_API_URL: "https://ib.fixture//" }],
     ["key with surrounding spaces", { INSTABOX_API_KEY: " k1 " }],
+  ],
+);
+
+wireCases(
+  "Beam",
+  async () => {
+    // The adapter finds a container in the gateway's listing, as the lookup does.
+    await beam().connect(id);
+  },
+  () => beam(),
+  "/api/v1/gateway/containers",
+  { containers: [{ containerId: id, stubId: "stub", status: "RUNNING" }] },
+  [
+    ["default gateway", { BEAM_TOKEN: "t1", BEAM_WORKSPACE_ID: "ws1" }],
+    ["token with surrounding spaces", { BEAM_TOKEN: " t1 ", BEAM_WORKSPACE_ID: "ws1" }],
   ],
 );
 

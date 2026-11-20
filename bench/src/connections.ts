@@ -7,6 +7,7 @@ import {
   resolveConfig as basetenConfig,
   type BasetenConfig,
 } from "@opencoredev/sandbox-sdk/baseten";
+import { resolveConfig as beamConfig, type BeamConfig } from "@opencoredev/sandbox-sdk/beam";
 import { resolveConfig as boatConfig, type BoatConfig } from "@opencoredev/sandbox-sdk/boat";
 import { resolveConfig as boxdConfig, type BoxdConfig } from "@opencoredev/sandbox-sdk/boxd";
 import {
@@ -43,6 +44,7 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  */
 export interface Connections {
   baseten: BasetenConfig;
+  beam: BeamConfig;
   boat: BoatConfig;
   boxd: BoxdConfig;
   daytona: DaytonaConfig;
@@ -100,6 +102,7 @@ const connectionOptions = z.object({
   domain: z.string().optional(),
   environment: z.string().optional(),
   environmentId: z.string().optional(),
+  gatewayUrl: z.string().optional(),
   jwtToken: z.string().optional(),
   organizationId: z.string().optional(),
   projectId: z.string().optional(),
@@ -108,6 +111,7 @@ const connectionOptions = z.object({
   token: z.string().optional(),
   tokenId: z.string().optional(),
   tokenSecret: z.string().optional(),
+  workspaceId: z.string().optional(),
 });
 
 export type ConnectionOptions = z.infer<typeof connectionOptions>;
@@ -143,6 +147,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
   switch (name) {
     case "baseten":
       return { name, config: basetenConfig(options) };
+    case "beam":
+      return { name, config: beamConfig(options) };
     case "boat":
       return { name, config: boatConfig(options) };
     case "boxd":
@@ -195,6 +201,8 @@ function byName(connection: Connection): Partial<Connections> {
   switch (connection.name) {
     case "baseten":
       return { baseten: connection.config };
+    case "beam":
+      return { beam: connection.config };
     case "boat":
       return { boat: connection.config };
     case "boxd":
@@ -443,6 +451,7 @@ const modalProfile = z.object({
   serverUrl: z.string(),
   tokenId: z.string().optional(),
   tokenSecret: z.string().optional(),
+  workspaceId: z.string().optional(),
   environment: z.string().optional(),
   oauthRefreshToken: z.string().optional(),
   oauthClientId: z.string().optional(),

@@ -297,6 +297,7 @@ const canaryOptions = {
   baseURL: canaryEndpoint,
   baseUrl: canaryEndpoint,
   domain: "canary-domain.invalid",
+  gatewayUrl: canaryEndpoint,
   jwtToken: "j-canary-jwt",
   organizationId: "o-canary-org",
   projectId: "p-canary-project",
@@ -308,10 +309,12 @@ const canaryOptions = {
   environment: "e-canary-modal-env",
   environmentId: "r-canary-railway-env",
   authType: "a-canary-auth-type",
+  workspaceId: "w-canary-workspace",
 } satisfies FactoryOptions;
 
 const connected = [
   "baseten",
+  "beam",
   "boat",
   "boxd",
   "daytona",

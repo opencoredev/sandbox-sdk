@@ -369,6 +369,494 @@
       }
     ]
   },
+  "beam: env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.beam.cloud/api/v1/gateway/containers",
+        "headers": {
+          "authorization": "Bearer <envToken>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam GET /containers failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.beam.cloud/api/v1/gateway/containers",
+        "headers": {
+          "authorization": "Bearer <envToken>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam GET /containers failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "create"
+      },
+      {
+        "sdk": "beam.template()",
+        "args": [
+          {
+            "cpu": 1,
+            "image": "node:22-bookworm",
+            "keepWarmSeconds": 3600,
+            "memoryMb": 128
+          }
+        ]
+      },
+      {
+        "sdk": "beam.configure()",
+        "args": [
+          {
+            "gatewayUrl": "https://app.beam.cloud",
+            "requestTimeoutMs": 30000,
+            "token": "<envToken>",
+            "workspaceId": "ws-env"
+          }
+        ]
+      },
+      {
+        "sdk": "beam.template().create()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "outcome_unknown",
+          "message": "Sandbox creation outcome is unknown: Beam named no container, and a sandbox may be left running until its 3600 s lifetime ends"
+        }
+      },
+      {
+        "step": "create from snapshot"
+      },
+      {
+        "fetch": "POST",
+        "url": "https://app.beam.cloud/api/v1/gateway/pods",
+        "headers": {
+          "authorization": "Bearer <envToken>",
+          "content-type": "application/json",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam POST /pods failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "snapshot"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.beam.cloud/api/v1/gateway/containers",
+        "headers": {
+          "authorization": "Bearer <envToken>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam GET /containers failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "deleteSnapshot",
+        "result": "<not supported>"
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "POST",
+        "url": "https://app.beam.cloud/api/v1/gateway/containers/sbx-fixture/stop",
+        "headers": {
+          "authorization": "Bearer <envToken>",
+          "content-type": "application/json",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "fetch": "GET",
+        "url": "https://app.beam.cloud/api/v1/gateway/containers",
+        "headers": {
+          "authorization": "Bearer <envToken>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam GET /containers failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the sandbox first. Check Beam and retry."
+        }
+      }
+    ]
+  },
+  "beam: options over env": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/beam/api/v1/gateway/containers",
+        "headers": {
+          "authorization": "Bearer <optionToken>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam GET /containers failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/beam/api/v1/gateway/containers",
+        "headers": {
+          "authorization": "Bearer <optionToken>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam GET /containers failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "create"
+      },
+      {
+        "sdk": "beam.template()",
+        "args": [
+          {
+            "cpu": 1,
+            "image": "node:22-bookworm",
+            "keepWarmSeconds": 3600,
+            "memoryMb": 128
+          }
+        ]
+      },
+      {
+        "sdk": "beam.configure()",
+        "args": [
+          {
+            "gatewayUrl": "https://option.invalid/beam//",
+            "requestTimeoutMs": 30000,
+            "token": "<optionToken>",
+            "workspaceId": "ws-option"
+          }
+        ]
+      },
+      {
+        "sdk": "beam.template().create()",
+        "args": []
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "outcome_unknown",
+          "message": "Sandbox creation outcome is unknown: Beam named no container, and a sandbox may be left running until its 3600 s lifetime ends"
+        }
+      },
+      {
+        "step": "create from snapshot"
+      },
+      {
+        "fetch": "POST",
+        "url": "https://option.invalid/beam/api/v1/gateway/pods",
+        "headers": {
+          "authorization": "Bearer <optionToken>",
+          "content-type": "application/json",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam POST /pods failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "snapshot"
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/beam/api/v1/gateway/containers",
+        "headers": {
+          "authorization": "Bearer <optionToken>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam GET /containers failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "deleteSnapshot",
+        "result": "<not supported>"
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "fetch": "POST",
+        "url": "https://option.invalid/beam/api/v1/gateway/containers/sbx-fixture/stop",
+        "headers": {
+          "authorization": "Bearer <optionToken>",
+          "content-type": "application/json",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "fetch": "GET",
+        "url": "https://option.invalid/beam/api/v1/gateway/containers",
+        "headers": {
+          "authorization": "Bearer <optionToken>",
+          "user-agent": "sandbox-sdk/<version>"
+        }
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Beam GET /containers failed (HTTP 404 not_found)."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the sandbox first. Check Beam and retry."
+        }
+      }
+    ]
+  },
+  "beam: blank workspace": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam workspace ID is missing. Set BEAM_WORKSPACE_ID or pass workspaceId."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam workspace ID is missing. Set BEAM_WORKSPACE_ID or pass workspaceId."
+        }
+      },
+      {
+        "step": "create"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam workspace ID is missing. Set BEAM_WORKSPACE_ID or pass workspaceId."
+        }
+      },
+      {
+        "step": "create from snapshot"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam workspace ID is missing. Set BEAM_WORKSPACE_ID or pass workspaceId."
+        }
+      },
+      {
+        "step": "snapshot"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam workspace ID is missing. Set BEAM_WORKSPACE_ID or pass workspaceId."
+        }
+      },
+      {
+        "step": "deleteSnapshot",
+        "result": "<not supported>"
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam workspace ID is missing. Set BEAM_WORKSPACE_ID or pass workspaceId."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the sandbox first. Check Beam and retry."
+        }
+      }
+    ]
+  },
+  "beam: no token": {
+    "events": [
+      {
+        "step": "list"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam token is missing. Authentication is required. Set BEAM_TOKEN or pass token."
+        }
+      },
+      {
+        "step": "connect"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam token is missing. Authentication is required. Set BEAM_TOKEN or pass token."
+        }
+      },
+      {
+        "step": "create"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam token is missing. Authentication is required. Set BEAM_TOKEN or pass token."
+        }
+      },
+      {
+        "step": "create from snapshot"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam token is missing. Authentication is required. Set BEAM_TOKEN or pass token."
+        }
+      },
+      {
+        "step": "snapshot"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam token is missing. Authentication is required. Set BEAM_TOKEN or pass token."
+        }
+      },
+      {
+        "step": "deleteSnapshot",
+        "result": "<not supported>"
+      },
+      {
+        "step": "destroy"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "auth",
+          "message": "Beam token is missing. Authentication is required. Set BEAM_TOKEN or pass token."
+        }
+      },
+      {
+        "step": "api.sdk"
+      },
+      {
+        "result": "ok"
+      },
+      {
+        "step": "native.sdk"
+      },
+      {
+        "error": {
+          "name": "SandboxError",
+          "code": "not_found",
+          "message": "Connect the sandbox first. Check Beam and retry."
+        }
+      }
+    ]
+  },
   "boat: env": {
     "events": [
       {

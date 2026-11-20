@@ -9,6 +9,7 @@ import { createServer as createH2Server, type ServerHttp2Session } from "node:ht
 import { ConnectionConfig, type ConnectionOpts } from "e2b";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { beam } from "@opencoredev/sandbox-sdk/beam";
 import { boat } from "@opencoredev/sandbox-sdk/boat";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
 import { e2b } from "@opencoredev/sandbox-sdk/e2b";
@@ -37,6 +38,8 @@ const rows: Row[] = [];
 
 /** Every variable a case sets, cleared first so the developer's own environment cannot leak in. */
 const providerEnv = [
+  "BEAM_TOKEN",
+  "BEAM_WORKSPACE_ID",
   "BOAT_API_KEY",
   "BOAT_API_BASE",
   "DAYTONA_API_KEY",
@@ -111,6 +114,32 @@ async function httpServer(respond: (request: IncomingMessage) => [number, unknow
     },
   };
 }
+
+it("Beam: a trailing slash on the gateway URL still reads the live container", async () => {
+  vi.stubEnv("BEAM_TOKEN", "fixture-token");
+  vi.stubEnv("BEAM_WORKSPACE_ID", "ws-fixture");
+  stubFetch((url, _method, headers) =>
+    url.pathname === "/api/v1/gateway/containers" &&
+    headers.get("authorization") === "Bearer fixture-token"
+      ? [200, { containers: [{ containerId: id, stubId: "stub", status: "RUNNING" }] }]
+      : [404, {}],
+  );
+
+  const options = { gatewayUrl: "https://beam.fixture/" };
+  const adapter = bound(beam(options), options);
+  expect(await lookupSandbox(adapter, id, budget)).toMatchObject({
+    result: "present",
+    nativeState: "RUNNING",
+  });
+  // The adapter's own first read of the container is the same request.
+  await adapter.connect(id).catch(() => {});
+  expect(rows[1]).toEqual(rows[0]);
+  expect(rows[0]).toEqual({
+    method: "GET",
+    url: "https://beam.fixture/api/v1/gateway/containers",
+    status: 200,
+  });
+});
 
 it("Boat: a trailing slash on BOAT_API_BASE still reads the live sandbox", async () => {
   vi.stubEnv("BOAT_API_KEY", "fixture");

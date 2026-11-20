@@ -209,6 +209,8 @@ Object.assign(tls, { connect: refuse("tls.connect") });
 
 const variables = [
   "BASETEN_API_KEY",
+  "BEAM_TOKEN",
+  "BEAM_WORKSPACE_ID",
   "BOAT_API_KEY",
   "BOAT_API_BASE",
   "BOXD_API_KEY",
@@ -263,6 +265,29 @@ const cases: Case[] = [
     options: { apiKey: secrets.optionKey, teamId: "team-option" },
   },
   { provider: "baseten", name: "no key", env: {}, options: {} },
+  {
+    provider: "beam",
+    name: "env",
+    env: { BEAM_TOKEN: secrets.envToken, BEAM_WORKSPACE_ID: "ws-env" },
+    options: {},
+  },
+  {
+    provider: "beam",
+    name: "options over env",
+    env: { BEAM_TOKEN: secrets.envToken, BEAM_WORKSPACE_ID: "ws-env" },
+    options: {
+      token: secrets.optionToken,
+      workspaceId: "ws-option",
+      gatewayUrl: "https://option.invalid/beam//",
+    },
+  },
+  {
+    provider: "beam",
+    name: "blank workspace",
+    env: { BEAM_TOKEN: secrets.envToken, BEAM_WORKSPACE_ID: "  " },
+    options: {},
+  },
+  { provider: "beam", name: "no token", env: { BEAM_WORKSPACE_ID: "ws-env" }, options: {} },
   { provider: "boat", name: "env", env: { BOAT_API_KEY: secrets.envKey }, options: {} },
   {
     provider: "boat",
@@ -560,6 +585,12 @@ async function factory(provider: string): Promise<Factory> {
       const { createBasetenProvider } = await import(at("providers/baseten/provider.ts"));
 
       return (options) => adapterOf(createBasetenProvider(options, fakeModule));
+    }
+
+    case "beam": {
+      const { createBeamProvider } = await import(at("providers/beam/provider.ts"));
+
+      return (options) => adapterOf(createBeamProvider(options, fakeModule));
     }
 
     case "boxd": {

@@ -20,6 +20,8 @@ const budget = 10_000;
 
 const providerEnv = [
   "BASETEN_API_KEY",
+  "BEAM_TOKEN",
+  "BEAM_WORKSPACE_ID",
   "BOAT_API_KEY",
   "BOAT_API_BASE",
   "BOXD_API_KEY",
@@ -77,6 +79,8 @@ async function load(name: string, factory: FactoryOptions): Promise<Provider> {
 function otherEnvironment() {
   const other = {
     BASETEN_API_KEY: "other-key",
+    BEAM_TOKEN: "other-token",
+    BEAM_WORKSPACE_ID: "ws-other",
     BOAT_API_KEY: "other-key",
     BOAT_API_BASE: "https://other.invalid/boat",
     BOXD_API_KEY: "other-key",
@@ -438,5 +442,31 @@ describe("lookups use the explicit options the adapter was built with, not the e
     });
     expect((await lookupSandbox(superserve, id, budget)).result).toBe("present");
     expect(seen.every((row) => row.endsWith(" 200"))).toBe(true);
+  });
+
+  it("Beam: explicit gateway and token on its container listing", async () => {
+    otherEnvironment();
+
+    const seen = stubFetch((url, headers) => {
+      if (
+        headers.get("authorization") === "Bearer live-token" &&
+        url.href === "https://live.invalid/beam/api/v1/gateway/containers"
+      )
+        return [200, { containers: [{ containerId: id, status: "RUNNING" }] }];
+
+      return [404, {}];
+    });
+
+    const beam = await load("beam", {
+      token: "live-token",
+      workspaceId: "ws-live",
+      gatewayUrl: "https://live.invalid/beam//",
+    });
+
+    expect(await lookupSandbox(beam, id, budget)).toMatchObject({
+      result: "present",
+      nativeState: "RUNNING",
+    });
+    expect(seen).toEqual(["https://live.invalid/beam/api/v1/gateway/containers 200"]);
   });
 });
