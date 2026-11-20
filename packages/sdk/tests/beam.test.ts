@@ -1,10 +1,18 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { SandboxError } from "../src/errors.js";
+import { createGateway } from "../src/providers/beam/api.js";
+import { beamError } from "../src/providers/beam/errors.js";
 import {
   createBeamProvider,
+  pieceCommand,
   type BeamModule,
   type BeamTemplateConfig,
 } from "../src/providers/beam/provider.js";
+import { userAgent } from "../src/version.js";
 
 /** A gateway fake: containers by ID, each with a file map. Routes match beam-js 1.1.6. */
 interface FakeContainer {
@@ -17,7 +25,10 @@ function fakeBeam() {
   const containers = new Map<string, FakeContainer>();
 
   const creates: BeamTemplateConfig[] = [];
+  const configures: number[] = [];
   const stops: string[] = [];
+  const agents: (string | null)[] = [];
+  let createGate: Promise<void> | undefined;
   let stopRefusals = 0;
   let uploadRefusals = 0;
   let createFailure: Error | undefined;
@@ -41,6 +52,8 @@ function fakeBeam() {
   const fetchFake: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     const path = url.pathname.replace("/api/v1/gateway", "");
+
+    agents.push(new Headers(init?.headers).get("user-agent"));
     const body = init?.body ? JSON.parse(String(init.body)) : {};
 
     if (path === "/containers")
@@ -127,9 +140,15 @@ function fakeBeam() {
   };
 
   const module: BeamModule = {
-    configure() {},
+    configure(settings) {
+      configures.push(settings.requestTimeoutMs);
+    },
     template: (config) => ({
       async create() {
+        // beam-js prints progress while it builds and allocates.
+        console.log("Building image...");
+        await createGate;
+
         // beam-js logs a failed request whole, Authorization header included, before it throws.
         if (createFailure) {
           console.error("Build failed: Bearer secret-token-123", createFailure);
@@ -146,8 +165,14 @@ function fakeBeam() {
   return {
     containers,
     creates,
+    configures,
     stops,
+    agents,
+    fetch: fetchFake,
     add,
+    holdCreates: (gate: Promise<void> | undefined) => {
+      createGate = gate;
+    },
     refuseStops: (n: number) => {
       stopRefusals = n;
     },
@@ -387,5 +412,173 @@ describe("beam adapter", () => {
 
     beam.failCreates(new Error("Failed to prepare runtime: image build failed"));
     await expect(provider.create({ labels: {} })).rejects.toMatchObject({ code: "provider" });
+  });
+
+  test("every gateway request names the SDK", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider();
+    const box = await provider.create({ labels: {} });
+
+    await provider.list({});
+    await provider.native(box.id).request("GET", "/pods/{containerId}/connect");
+
+    expect(beam.agents.length).toBeGreaterThan(3);
+    expect(new Set(beam.agents)).toEqual(new Set([userAgent]));
+  });
+
+  test("native is the gateway, bound to the container, with its IDs", async () => {
+    const beam = fakeBeam();
+    const seen: { url: string; authorization: string | null }[] = [];
+
+    const provider = beam.provider({
+      token: "native-token-1234",
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push({
+          url: String(input),
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+
+        return beam.fetch(input, init);
+      },
+    });
+
+    const box = await provider.create({ labels: {} });
+    const native = provider.native(box.id);
+
+    expect(native.containerId).toBe(box.id);
+    expect(native.stubId).toMatch(/^0b4e1a7c-/);
+    expect(native.sandboxId).toBe(box.id);
+    await expect(
+      native.request("POST", "/pods/{containerId}/connect", { body: {} }),
+    ).resolves.toEqual({
+      ok: true,
+    });
+    expect(seen.at(-1)).toEqual({
+      url: `https://app.beam.cloud/api/v1/gateway/pods/${encodeURIComponent(box.id)}/connect`,
+      authorization: "Bearer native-token-1234",
+    });
+  });
+
+  test("a snapshot whose answer is lost is outcome_unknown, not a retryable failure", async () => {
+    const beam = fakeBeam();
+    let answer: "drop" | "504" | "no-id" = "drop";
+
+    const provider = beam.provider({
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/snapshot-memory")) {
+          // Beam made the snapshot; the answer never arrives intact.
+          if (answer === "drop") throw new TypeError("fetch failed");
+
+          if (answer === "504") return new Response("", { status: 504 });
+
+          return Response.json({ ok: true });
+        }
+
+        return beam.fetch(input, init);
+      },
+    });
+
+    const box = await provider.create({ labels: {} });
+
+    for (const next of ["drop", "504", "no-id"] as const) {
+      answer = next;
+      await expect(provider.snapshot?.(box.id)).rejects.toMatchObject({
+        code: "outcome_unknown",
+        sandboxId: box.id,
+      });
+    }
+  });
+
+  test("a lost read keeps its retryable code", async () => {
+    const beam = fakeBeam();
+
+    const provider = beam.provider({
+      fetch: async () => {
+        throw new TypeError("fetch failed");
+      },
+    });
+
+    await expect(provider.list({})).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  test("a download over the gateway's message cap answered with ok:false moves in pieces", async () => {
+    const gateway = createGateway({
+      token: "t",
+      url: "https://app.beam.cloud",
+      requestTimeoutMs: 5000,
+      fetch: async () =>
+        Response.json({
+          ok: false,
+          errorMsg:
+            "Failed to download file: rpc error: code = ResourceExhausted desc = grpc: received message larger than max (10485760 vs. 4194304)",
+        }),
+    });
+
+    const error = await gateway.download("sandbox-x", "/workspace/big.bin").catch((e) => e);
+
+    expect(beamError(error).code).toBe("quota");
+  });
+
+  test.skipIf(spawnSync("python3", ["--version"]).status !== 0)(
+    "a piece is copied aside even when its scratch directory does not exist yet",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "beam-piece-"));
+
+      try {
+        const source = join(dir, "source.bin");
+        const piece = join(dir, "scratch", "nested", "piece");
+
+        writeFileSync(source, "0123456789");
+
+        const run = spawnSync("sh", ["-c", pieceCommand(source, piece, 2, 5)], {
+          encoding: "utf8",
+          timeout: 10_000,
+        });
+
+        expect(run.stderr).toBe("");
+        expect(readFileSync(piece, "utf8")).toBe("23456");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("fresh creates pass requestTimeoutMs to beam-js and re-check its configuration each time", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider({ requestTimeoutMs: 4321 });
+
+    await provider.create({ labels: {} });
+    await provider.create({ labels: {}, size: "small" });
+
+    expect(beam.configures).toEqual([4321, 4321]);
+  });
+
+  test("console output from outside a create passes through while beam-js's is filtered", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    let release = () => {};
+
+    try {
+      beam.holdCreates(new Promise<void>((resolve) => (release = resolve)));
+      const creating = provider.create({ labels: {} });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Another request in the same process logs while the create is still running.
+      const detail = new Error("unrelated failure");
+
+      console.log("unrelated", { id: 1 });
+      console.error("unrelated error", detail);
+      release();
+      await creating;
+
+      expect(log.mock.calls).toEqual([["unrelated", { id: 1 }]]);
+      expect(error.mock.calls).toEqual([["unrelated error", detail]]);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
   });
 });

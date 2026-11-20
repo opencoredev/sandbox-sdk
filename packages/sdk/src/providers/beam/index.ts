@@ -7,7 +7,7 @@ import {
   type BeamProvider,
 } from "./provider.js";
 
-export type { BeamNative, BeamOptions, BeamProvider } from "./provider.js";
+export type { BeamNative, BeamOptions, BeamPlane, BeamProvider } from "./provider.js";
 
 /**
  * beam-js keeps one global configuration and caches its HTTP client, with the first token and
@@ -47,7 +47,10 @@ async function load(): Promise<BeamModule> {
           "One process can use one Beam token, workspace and gateway: @beamcloud/beam-js keeps one global client",
           "invalid_argument",
         );
+
       configured = value;
+      // Read when beam-js first makes its client; its image builds keep their own 10 minutes.
+      m.beamOpts.timeout = settings.requestTimeoutMs;
       m.beamOpts.token = settings.token;
       m.beamOpts.workspaceId = settings.workspaceId;
       m.beamOpts.gatewayUrl = settings.gatewayUrl;

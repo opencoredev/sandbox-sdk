@@ -8,11 +8,15 @@ export function failure(message: string, code: ErrorCode = "provider", sandboxId
   );
 }
 
-/** A Beam gateway answer that said `ok: false`, or an HTTP failure. Keeps no response text. */
+/**
+ * A Beam gateway answer that said `ok: false`, or an HTTP failure. Keeps no response text.
+ * `unknown`: a write whose answer was lost and may have taken effect. `too_large`: a download over
+ * the gateway's message cap.
+ */
 export class BeamGatewayError extends Error {
   constructor(
     readonly status: number | undefined,
-    readonly kind: "http" | "refused" | "missing" | "malformed",
+    readonly kind: "http" | "refused" | "missing" | "malformed" | "unknown" | "too_large",
   ) {
     super(status === undefined ? `Beam gateway ${kind}` : `Beam gateway HTTP ${status}`);
     this.name = "BeamGatewayError";
@@ -36,18 +40,24 @@ export function beamError(cause: unknown, sandboxId?: string): SandboxError {
   const status = httpStatus(cause);
   const name = cause instanceof Error ? cause.name : undefined;
 
+  const kind = cause instanceof BeamGatewayError ? cause.kind : undefined;
+
   const code: ErrorCode =
-    cause instanceof BeamGatewayError && cause.kind === "missing"
+    kind === "missing"
       ? "not_found"
-      : status !== undefined
-        ? statusCode(status)
-        : name === "AbortError" || name === "CanceledError"
-          ? "aborted"
-          : name === "TimeoutError"
-            ? "timeout"
-            : cause instanceof TypeError
-              ? "unavailable"
-              : "provider";
+      : kind === "unknown"
+        ? "outcome_unknown"
+        : kind === "too_large"
+          ? "quota"
+          : status !== undefined
+            ? statusCode(status)
+            : name === "AbortError" || name === "CanceledError"
+              ? "aborted"
+              : name === "TimeoutError"
+                ? "timeout"
+                : cause instanceof TypeError
+                  ? "unavailable"
+                  : "provider";
 
   // Beam's error messages can echo paths and commands, so only the name and status survive.
   const kept = describeNative(cause, {
@@ -77,7 +87,8 @@ export function maybeSent(cause: unknown) {
   if (cause instanceof TypeError) return true;
 
   // An answer that said ok but named no container, or that could not be read.
-  if (cause instanceof BeamGatewayError && cause.kind === "malformed") return true;
+  if (cause instanceof BeamGatewayError && ["malformed", "unknown"].includes(cause.kind))
+    return true;
 
   // beam-js's message when the allocation answer had no `ok` it could read (a body it could not
   // parse arrives as text). Beam's refusals carry their own errorMsg; one that came with an empty

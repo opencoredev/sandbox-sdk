@@ -1,4 +1,7 @@
 /** Verified against @beamcloud/beam-js 1.1.6 and Beam's gateway on 2026-11-18. */
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHttpClient } from "../../http.js";
+import { createNativeApi, type NativeApi } from "../../native.js";
 import type { CreateInput, Labels, Provider, SandboxInfo } from "../../provider.js";
 import { files, python, type Guest } from "../../shared/guest.js";
 import { isNumber, isObject, isString, isStringRecord } from "../../shared/narrow.js";
@@ -21,13 +24,24 @@ export interface BeamOptions {
   keepWarmSeconds?: number;
   /** Gateway URL. Default: `https://app.beam.cloud`. */
   gatewayUrl?: string;
-  /** Per gateway request. Default: 30 s. */
+  /**
+   * Per gateway request. Default: 30 s. beam-js's own create requests follow it too, except image
+   * builds, which beam-js gives 10 minutes. beam-js keeps one client per process, made with the
+   * timeout of the provider whose create first uses it.
+   */
   requestTimeoutMs?: number;
   /** For tests. */
   fetch?: typeof fetch;
 }
 
-export interface BeamNative {
+/** The gateway's routes under `/api/v1/gateway`, such as `/pods/{containerId}/exec`. */
+export type BeamPlane = "gateway";
+
+/**
+ * `box.native`: Beam's gateway with this adapter's token, bound to the container (the
+ * `{containerId}` placeholder fills itself), and the container's IDs.
+ */
+export interface BeamNative extends NativeApi<BeamPlane> {
   containerId: string;
   stubId: string;
 }
@@ -60,8 +74,16 @@ export interface BeamTemplateConfig {
 
 /** What the adapter needs from `@beamcloud/beam-js` (see index.ts), or a test fixture. */
 export interface BeamModule {
-  /** Sets beam-js's one global configuration, read when its HTTP client is first made. */
-  configure(settings: { token: string; workspaceId: string; gatewayUrl: string }): void;
+  /**
+   * Sets beam-js's one global configuration, read when its HTTP client is first made, after
+   * checking it was not set up for another account. Called before every fresh create.
+   */
+  configure(settings: {
+    token: string;
+    workspaceId: string;
+    gatewayUrl: string;
+    requestTimeoutMs: number;
+  }): void;
   template(config: BeamTemplateConfig): BeamTemplate;
 }
 
@@ -143,17 +165,24 @@ const downloadPieceBytes = 3 * 1024 * 1024;
 // Prints the size of argv[1].
 const sizeProgram = "import os,sys; print(os.path.getsize(sys.argv[1]))";
 
-// Copies argv[4] bytes of argv[1] from offset argv[3] into a new file argv[2].
+// Copies argv[4] bytes of argv[1] from offset argv[3] into a new file argv[2], making its directory.
 const pieceProgram =
-  "import sys; f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[3])); open(sys.argv[2],'wb').write(f.read(int(sys.argv[4])))";
+  "import os,sys; os.makedirs(os.path.dirname(sys.argv[2]),exist_ok=True); f=open(sys.argv[1],'rb'); f.seek(int(sys.argv[3])); open(sys.argv[2],'wb').write(f.read(int(sys.argv[4])))";
+
+/** @internal The guest command that copies one piece of a file aside for download. */
+export const pieceCommand = (path: string, piece: string, offset: number, length: number) =>
+  python(pieceProgram, path, piece, String(offset), String(length));
 
 /**
  * `@beamcloud/beam-js` prints build and create progress with console.log and logs raw HTTP errors,
- * which carry the request's Authorization header, with console.error. While a create runs, log and
- * info are dropped, and warn and error pass only text with the token removed: an error object
- * becomes its name. Counted, so overlapping creates restore the console once.
+ * which carry the request's Authorization header, with console.error. While a create runs, console
+ * calls made inside it are filtered: log and info are dropped, and warn and error pass only text
+ * with the token removed (an error object becomes its name). Calls from anywhere else in the
+ * process pass through unchanged. Counted, so overlapping creates restore the console once.
  */
 let quiet = 0;
+
+const inCreate = new AsyncLocalStorage<true>();
 
 let saved: Pick<typeof console, "log" | "info" | "warn" | "error"> | undefined;
 
@@ -188,17 +217,24 @@ async function silently<T>(token: string, action: () => Promise<T>): Promise<T> 
     };
 
     saved = original;
-    console.log = () => {};
 
-    console.info = () => {};
+    console.log = (...args: unknown[]) => {
+      if (!inCreate.getStore()) original.log(...args);
+    };
 
-    console.warn = (...args: unknown[]) => original.warn(...scrubbed(args));
+    console.info = (...args: unknown[]) => {
+      if (!inCreate.getStore()) original.info(...args);
+    };
 
-    console.error = (...args: unknown[]) => original.error(...scrubbed(args));
+    console.warn = (...args: unknown[]) =>
+      inCreate.getStore() ? original.warn(...scrubbed(args)) : original.warn(...args);
+
+    console.error = (...args: unknown[]) =>
+      inCreate.getStore() ? original.error(...scrubbed(args)) : original.error(...args);
   }
 
   try {
-    return await action();
+    return await inCreate.run(true, action);
   } finally {
     if (--quiet === 0 && saved) {
       Object.assign(console, saved);
@@ -215,6 +251,8 @@ export function createBeamProvider(
   const token = options.token ?? process.env.BEAM_TOKEN;
   const workspaceId = options.workspaceId ?? process.env.BEAM_WORKSPACE_ID;
   const gatewayUrl = options.gatewayUrl ?? "https://app.beam.cloud";
+
+  const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
 
   let gateway: BeamGateway | undefined;
   let module: Promise<BeamModule> | undefined;
@@ -244,18 +282,38 @@ export function createBeamProvider(
       token: credentials().token,
       url: gatewayUrl,
       fetch: options.fetch ?? fetch,
-      requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
+      requestTimeoutMs,
     }));
   }
 
+  /** `box.native`'s transport: the gateway, with the SDK's retries, error mapping and redaction. */
+  const http = createHttpClient<BeamPlane>({
+    provider: "beam",
+    label: "Beam",
+    planes: {
+      gateway: {
+        baseUrl: gatewayUrl.replace(/\/+$/, "") + "/api/v1/gateway",
+        auth: () => ({ Authorization: `Bearer ${credentials().token}` }),
+      },
+    },
+    defaultPlane: "gateway",
+    fetch: options.fetch,
+    timeoutMs: requestTimeoutMs,
+    secrets: () => [token],
+    authHint: "Set BEAM_TOKEN to a valid Beam token.",
+  });
+
+  const natives = new Map<string, BeamNative>();
+
+  /** beam-js, with its global configuration checked against this provider's before each use. */
   async function sdk(): Promise<BeamModule> {
     const { token: t, workspaceId: w } = credentials();
+    const m = await (module ??= load());
 
-    return (module ??= load().then((m) => {
-      m.configure({ token: t, workspaceId: w, gatewayUrl });
+    // Code using beam-js directly can change its token or reset its client at any time.
+    m.configure({ token: t, workspaceId: w, gatewayUrl, requestTimeoutMs });
 
-      return m;
-    }));
+    return m;
   }
 
   async function safe<T>(id: string | undefined, action: () => Promise<T>): Promise<T> {
@@ -369,7 +427,7 @@ export function createBeamProvider(
       for (let offset = 0; offset < size; offset += downloadPieceBytes) {
         const length = Math.min(downloadPieceBytes, size - offset);
 
-        await shell(id, python(pieceProgram, path, piece, String(offset), String(length)), 60_000);
+        await shell(id, pieceCommand(path, piece, offset, length), 60_000);
 
         const bytes = await api().download(id, piece);
 
@@ -628,8 +686,18 @@ export function createBeamProvider(
       const stubId = stubs.get(id) ?? containerPattern.exec(id)?.[1];
 
       if (!stubId) throw failure("Connect the sandbox first", "not_found", id);
+      let value = natives.get(id);
 
-      return { containerId: id, stubId };
+      if (value?.stubId !== stubId) {
+        value = {
+          ...createNativeApi<BeamPlane>({ http, placeholder: "containerId", sandboxId: id }),
+          containerId: id,
+          stubId,
+        };
+        natives.set(id, value);
+      }
+
+      return value;
     },
   };
 

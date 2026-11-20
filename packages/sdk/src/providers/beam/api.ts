@@ -5,6 +5,7 @@
  */
 import type { JsonObject, JsonValue } from "../../shared/json.js";
 import { isNumber, isString } from "../../shared/narrow.js";
+import { userAgent } from "../../version.js";
 import { BeamGatewayError } from "./errors.js";
 
 export interface BeamContainer {
@@ -57,6 +58,10 @@ export interface GatewayOptions {
 // Beam's own message for a container that is gone or never existed, on exec and connect.
 const missing = /^Failed to connect to sandbox$/;
 
+// gRPC's refusal of a message over its 4 MiB cap. Measured as HTTP 429 on 2026-11-18; matched in an
+// `ok: false` body too, so a download over the cap still moves in pieces if the gateway wraps it.
+const tooLarge = /ResourceExhausted|larger than max/i;
+
 const record = (value: JsonValue | undefined): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -93,48 +98,81 @@ function accepted(value: JsonValue): JsonObject {
 export function createGateway(options: GatewayOptions): BeamGateway {
   const base = options.url.replace(/\/+$/, "") + "/api/v1/gateway";
 
-  async function call(
-    method: "GET" | "POST" | "PATCH",
-    path: string,
-    body?: JsonObject,
-    signal?: AbortSignal,
-  ): Promise<JsonValue> {
+  /**
+   * One gateway request. A `mutation` whose answer is lost (a dropped connection, the deadline, a
+   * 504, a body that cannot be read) may have taken effect, so it fails as `unknown`; only the
+   * caller's own abort stays an abort. Only restore, exec and snapshot are mutations here: the
+   * other writes (connect, stop, kill, upload, expose, ttl) leave the same state when repeated.
+   */
+  async function call(request: {
+    method: "GET" | "POST" | "PATCH";
+    path: string;
+    body?: JsonObject;
+    signal?: AbortSignal;
+    mutation?: boolean;
+  }): Promise<JsonValue> {
+    const { method, path, body, signal, mutation = false } = request;
     const deadline = AbortSignal.timeout(options.requestTimeoutMs);
+    let response: Response;
 
-    const response = await options.fetch(base + path, {
-      method,
-      headers: {
-        Authorization: `Bearer ${options.token}`,
-        "Content-Type": "application/json",
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
-    });
+    try {
+      response = await options.fetch(base + path, {
+        method,
+        headers: {
+          Authorization: `Bearer ${options.token}`,
+          "Content-Type": "application/json",
+          "User-Agent": userAgent,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+      });
+    } catch (error) {
+      if (mutation && !signal?.aborted) throw new BeamGatewayError(undefined, "unknown");
+      throw error;
+    }
 
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
-      throw new BeamGatewayError(response.status, "http");
+
+      throw new BeamGatewayError(
+        response.status,
+        mutation && response.status === 504 ? "unknown" : "http",
+      );
     }
 
-    const parsed: JsonValue = JSON.parse(await response.text());
+    try {
+      const parsed: JsonValue = JSON.parse(await response.text());
 
-    return parsed;
+      return parsed;
+    } catch (error) {
+      if (mutation && !signal?.aborted) throw new BeamGatewayError(undefined, "unknown");
+      throw error;
+    }
   }
 
   const pod = (id: string) => `/pods/${encodeURIComponent(id)}`;
 
   return {
     async containers(signal) {
-      const value = accepted(await call("GET", "/containers", undefined, signal));
+      const value = accepted(await call({ method: "GET", path: "/containers", signal }));
       const list = Array.isArray(value.containers) ? value.containers : [];
 
       return list.flatMap((entry) => container(entry) ?? []);
     },
     async connect(id, signal) {
-      accepted(await call("POST", `${pod(id)}/connect`, {}, signal));
+      accepted(await call({ method: "POST", path: `${pod(id)}/connect`, body: {}, signal }));
     },
     async restore(checkpointId, signal) {
-      const value = accepted(await call("POST", "/pods", { checkpointId }, signal));
+      const value = accepted(
+        await call({
+          method: "POST",
+          path: "/pods",
+          body: { checkpointId },
+          signal,
+          mutation: true,
+        }),
+      );
+
       const containerId = text(value.containerId);
 
       // Accepted without naming the container: it may exist, so this is not a refusal.
@@ -143,13 +181,25 @@ export function createGateway(options: GatewayOptions): BeamGateway {
       return { containerId, stubId: text(value.stubId) ?? "" };
     },
     async stop(id) {
-      accepted(await call("POST", `/containers/${encodeURIComponent(id)}/stop`, {}));
+      accepted(
+        await call({
+          method: "POST",
+          path: `/containers/${encodeURIComponent(id)}/stop`,
+          body: {},
+        }),
+      );
     },
     async exec(id, command, signal) {
       // `wait` makes the gateway hold the request briefly and answer inline when the process
       // finishes in that window (about half a second, measured 2026-11-18).
       const value = accepted(
-        await call("POST", `${pod(id)}/exec`, { command, wait: true }, signal),
+        await call({
+          method: "POST",
+          path: `${pod(id)}/exec`,
+          body: { command, wait: true },
+          signal,
+          mutation: true,
+        }),
       );
 
       const pid = count(value.pid);
@@ -165,43 +215,53 @@ export function createGateway(options: GatewayOptions): BeamGateway {
       };
     },
     async status(id, pid, signal) {
-      const value = accepted(await call("GET", `${pod(id)}/status?pid=${pid}`, undefined, signal));
+      const value = accepted(
+        await call({ method: "GET", path: `${pod(id)}/status?pid=${pid}`, signal }),
+      );
 
       return count(value.exitCode) ?? -1;
     },
     async stdout(id, pid, signal) {
-      const value = accepted(await call("GET", `${pod(id)}/stdout?pid=${pid}`, undefined, signal));
+      const value = accepted(
+        await call({ method: "GET", path: `${pod(id)}/stdout?pid=${pid}`, signal }),
+      );
 
       return text(value.stdout) ?? "";
     },
     async kill(id, pid) {
-      accepted(await call("POST", `${pod(id)}/kill`, { pid }));
+      accepted(await call({ method: "POST", path: `${pod(id)}/kill`, body: { pid } }));
     },
     async upload(id, path, data, mode) {
       accepted(
-        await call("POST", `${pod(id)}/files/upload`, {
-          containerPath: path,
-          mode,
-          data: Buffer.from(data).toString("base64"),
+        await call({
+          method: "POST",
+          path: `${pod(id)}/files/upload`,
+          body: { containerPath: path, mode, data: Buffer.from(data).toString("base64") },
         }),
       );
     },
     async download(id, path) {
-      const value = await call("GET", `${pod(id)}/files/download/${encodeURIComponent(path)}`);
+      const value = await call({
+        method: "GET",
+        path: `${pod(id)}/files/download/${encodeURIComponent(path)}`,
+      });
 
       // Only a missing path is a missing file; anything else is the gateway's failure.
-      if (
-        record(value) &&
-        value.ok !== true &&
-        /no such file or directory/.test(text(value.errorMsg) ?? "")
-      )
-        return undefined;
+      if (record(value) && value.ok !== true) {
+        const message = text(value.errorMsg) ?? "";
+
+        if (/no such file or directory/.test(message)) return undefined;
+
+        if (tooLarge.test(message)) throw new BeamGatewayError(undefined, "too_large");
+      }
 
       return new Uint8Array(Buffer.from(text(accepted(value).data) ?? "", "base64"));
     },
     async expose(id, stubId, port) {
       const url = text(
-        accepted(await call("POST", `${pod(id)}/ports/expose`, { stubId, port })).url,
+        accepted(
+          await call({ method: "POST", path: `${pod(id)}/ports/expose`, body: { stubId, port } }),
+        ).url,
       );
 
       if (!url) throw new BeamGatewayError(undefined, "refused");
@@ -210,16 +270,24 @@ export function createGateway(options: GatewayOptions): BeamGateway {
     },
     async snapshot(id, stubId) {
       const checkpoint = text(
-        accepted(await call("POST", `${pod(id)}/snapshot-memory`, { stubId })).checkpointId,
+        accepted(
+          await call({
+            method: "POST",
+            path: `${pod(id)}/snapshot-memory`,
+            body: { stubId },
+            mutation: true,
+          }),
+        ).checkpointId,
       );
 
-      if (!checkpoint) throw new BeamGatewayError(undefined, "refused");
+      // Accepted without naming the snapshot: it may exist, so this is not a refusal.
+      if (!checkpoint) throw new BeamGatewayError(undefined, "unknown");
 
       return checkpoint;
     },
     async ttl(id, seconds) {
       // beam-js 1.1.6 updates the lifetime with PATCH.
-      accepted(await call("PATCH", `${pod(id)}/ttl`, { ttl: seconds }));
+      accepted(await call({ method: "PATCH", path: `${pod(id)}/ttl`, body: { ttl: seconds } }));
     },
   };
 }
