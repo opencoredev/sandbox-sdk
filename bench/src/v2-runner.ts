@@ -9,6 +9,7 @@ import {
 import type { CreateInput, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { cpus, loadavg } from "node:os";
 import { readFile, mkdir } from "node:fs/promises";
+import { setTimeout as wait } from "node:timers/promises";
 import { journalFiles } from "./files.js";
 import { resolve, join } from "node:path";
 import { z } from "zod";
@@ -47,8 +48,8 @@ import {
   type SurvivalPlan,
 } from "./scenarios.js";
 import {
-  clockStepToleranceMs,
   cpuOverlap,
+  cpuPhaseEvidence,
   cpuWork,
   maxStepsPerSecond,
   overlapThreshold,
@@ -56,8 +57,9 @@ import {
   runStagedCpuProbe,
   stageCpuProbe,
   throughputSpread,
+  type CpuMemberTiming,
+  type CpuRun,
   type CpuWork,
-  type Interval,
   type StagedCpuProbe,
 } from "./cpu.js";
 import {
@@ -188,7 +190,7 @@ interface CohortRun {
    * Each member's successful CPU workload (cpu-burst): when its exec returned (`performance.now()`,
    * taken before any report write), its phases on the host clock, and that clock's uncertainty.
    */
-  cpu: { returnedAt: number; single: Interval; all: Interval; clockUncertaintyMs: number }[];
+  cpu: (CpuMemberTiming & { returnedAt: number })[];
   /** Each member's window verdict (survival). */
   verdicts: SurvivalVerdict["kind"][];
 }
@@ -399,7 +401,7 @@ export async function runV2(
       "Network: 25,000,000 bytes from speed.cloudflare.com including TLS; mean of five TCP connects to 1.1.1.1:443. Egress geography, CDN caches, shared host load and provider caches are uncontrolled.",
       "Costs are estimates, not invoices; marginal usage only, excludes subscriptions/credits/transfer/persistent snapshot retention. Cost per scenario allocates its measured duration; sandbox-lifetime records include setup and idle time and must not be summed with scenario allocations. Upstash/boxd allocated-resource estimates are upper bounds. Modal is priced on its requested allocation, never the guest view: exact when sized (request = limit), a lower bound on the default track (0.125 CPU / 128 MiB minimum request; billed burst usage above it is not counted), with Modal's region multiplier for a pinned region. Unknown resources yield null, never zero. Pricing retrieval dates are recorded per provider; EUR and USD remain separate with no cross-currency ranking.",
       "Budget admission reserves timeout × scenario count at observed or conservative default resources. Dollar budgets are estimates, not account spend caps; boxd uses conservative 2 USD/EUR for budget only. Failed/unknown creations count toward sandbox budget.",
-      "Reported budget spend prices every sandbox from its iteration's start until its deletion was confirmed. Cleanup time past a reserve cannot be bounded: a sandbox still there when its reserve runs out is deleted by the run's final sweep and priced until then, and one still live at return is listed in budgets as an open liability priced only to the return. An estimate over the dollar cap says so in the budget's stop note.",
+      "Reported budget spend prices every sandbox from its iteration's start until it was first observed gone: an exact native lookup found it absent or terminal. A delete acknowledgment is not a stop; after one, the harness looks the sandbox up every 0.1-1 s for up to the step timeout (at most 30 s), and once more after every provider's final sweep. Cleanup time past a reserve cannot be bounded: a sandbox still there when its reserve runs out is deleted by the run's final sweep and priced until it is seen gone. One never observed gone (including any on a provider with no exact lookup) is listed in budgets as an open liability, and every provider's budget is priced to one cutoff taken after all sweeps, just before the report is saved. An estimate over the dollar cap says so in the budget's stop note.",
     ],
   };
 
@@ -410,7 +412,7 @@ export async function runV2(
 
   if (config.scenarios.includes("cpu-burst"))
     report.methodology.push(
-      `CPU burst: K sandboxes created at once; each stages its probe, then once every member is ready (or failed) all dispatch the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's exec return (timestamped before any report write) and is a sample only when all K complete. Overlap: each member's phases are placed on the host clock using the guest clock offset read at staging; the guest clock is read again after the run. Each member's throughput rows record that offset change (clockDriftMs) and an uncertainty of the change plus both reads' half round trips; publication excludes a cohort as clock-unstable when any member's clock moved more than ${clockStepToleranceMs} ms, and recomputes the overlap from the members' rows. The aggregate records start skew and the share of a median phase during which every member ran it, and flags the cohort when the unrounded worst case falls below ${overlapThreshold}. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.`,
+      `CPU burst: K sandboxes created at once; each stages its probe, then once every member is ready (or failed) all dispatch the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's exec return (timestamped before any report write) and is a sample only when all K complete. Overlap is proven from the host clock, never a guest wall clock: each member's throughput rows record its exec on the host clock (exec, from just before dispatch to its return) and each phase's length on the guest's own monotonic timer. A member ran single and then all-core inside its exec, so its single phase started no later than return - all - single and ended no earlier than dispatch + single (all-core: return - all and dispatch + single + all). The span from the latest such start to the earliest such end across members is a lower bound on the time every member ran that phase together, whatever any guest clock did; the aggregate records it per phase (provenMs, and provenFraction of the median member's phase), flags the cohort unless both fractions are at least ${overlapThreshold}, and marks it inconsistent when a member's phases are longer than its exec. Publication recomputes this from the members' rows. clockDriftMs, the change in a guest clock's offset from the host between a read at staging and one after the run, is recorded as a diagnostic and gates nothing. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.`,
     );
 
   if (config.scenarios.includes("survival"))
@@ -469,8 +471,57 @@ export async function runV2(
    */
   const leftForReap = new Set<string>();
 
-  /** When each sandbox's deletion (or absence) was confirmed, by `provider/id`. */
+  /**
+   * When each sandbox was first observed gone, by `provider/id`: an exact lookup found it absent
+   * or terminal. A delete acknowledgment is never a stop; until a lookup sees the sandbox gone it
+   * is an open liability.
+   */
   const gone = new Map<string, number>();
+
+  /** Watches started by acknowledged deletes, each looking until its sandbox is observed gone. */
+  const watches = new Map<string, Promise<void>>();
+  const stopWatching = new AbortController();
+
+  /** One exact lookup; records the sandbox gone, at the lookup's return, if it found it absent. */
+  async function observeGone(p: ReadyProvider, id: string, timeoutMs: number) {
+    const key = `${p.name}/${id}`;
+
+    if (gone.has(key)) return true;
+    const evidence = await lookupSandbox(p.provider, id, Math.max(1, timeoutMs));
+
+    if (!isAbsent(evidence)) return false;
+
+    if (!gone.has(key)) gone.set(key, performance.now());
+
+    return true;
+  }
+
+  /**
+   * After a delete is acknowledged, look the sandbox up at once and then every 0.1-1 s until it
+   * is observed gone, for as long as the final sweep's listing wait (the step timeout, at most
+   * 30 s). Runs beside the iteration, so it changes no timing. A sandbox still unseen when the
+   * watch ends is looked up once more before the run prices its budgets.
+   */
+  function watchGone(p: ReadyProvider, id: string) {
+    const key = `${p.name}/${id}`;
+
+    if (gone.has(key) || watches.has(key)) return;
+    const end = performance.now() + Math.min(config["timeout-ms"], 30_000);
+
+    const watch = (async () => {
+      for (let delay = 0; ; delay = Math.min(1000, Math.max(100, delay * 2))) {
+        if (delay > 0) await wait(delay, undefined, { signal: stopWatching.signal });
+
+        const left = end - performance.now();
+
+        if (left <= 0 || (await observeGone(p, id, Math.min(config["timeout-ms"], left)))) return;
+      }
+    })()
+      .catch(() => {})
+      .finally(() => watches.delete(key));
+
+    watches.set(key, watch);
+  }
 
   /**
    * What each sandbox's iteration charged the budget for it: from `since` to `chargedUntil`,
@@ -566,7 +617,8 @@ export async function runV2(
       id,
       evidence,
     );
-    gone.set(`${p.name}/${id}`, performance.now());
+
+    if (!gone.has(`${p.name}/${id}`)) gone.set(`${p.name}/${id}`, performance.now());
     restores.mark(p.name, id, "destroyed");
     owned.delete(`${p.name}/${id}`);
     await persist();
@@ -701,7 +753,8 @@ export async function runV2(
           measurement?.clock.finish();
         }
 
-        gone.set(`${loaded.name}/${id}`, performance.now());
+        // Acknowledged, not yet observed gone: the stop time is the first lookup that finds it so.
+        watchGone(loaded, id);
         restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
 
@@ -1399,19 +1452,13 @@ export async function runV2(
       active: Sandbox,
       scenario: string,
       staging: Promise<StagedCpuProbe>,
-      onReturn: (ran: Awaited<ReturnType<typeof runStagedCpuProbe>>) => void = () => {},
+      onReturn: (ran: CpuRun) => void = () => {},
     ) {
       const probe = await measure(scenario, async (signal) => {
         const ran = await runStagedCpuProbe(active, await staging, timeout, signal);
         onReturn(ran);
 
-        return {
-          ...ran.result,
-          seed: ran.result.probe.seed,
-          guest: ran.guest,
-          clockUncertaintyMs: ran.clockUncertaintyMs,
-          clockDriftMs: ran.clockDriftMs,
-        };
+        return { ...ran.result, seed: ran.result.probe.seed, ran };
       });
 
       const source = probe.sample;
@@ -1434,12 +1481,9 @@ export async function runV2(
                 work: { segments: probe.result.probe.segments, steps: probe.result.probe.steps },
                 seed: probe.result.seed,
                 workers: phase === "single" ? 1 : probe.result.workers,
-                seconds: phase === "single" ? probe.result.singleSeconds : probe.result.allSeconds,
                 consistency: probe.result[phase],
                 guestVcpus: probe.result.guestVcpus,
-                guest: probe.result.guest[phase],
-                clockUncertaintyMs: probe.result.clockUncertaintyMs,
-                clockDriftMs: probe.result.clockDriftMs,
+                ...cpuPhaseEvidence(probe.result.ran, phase),
                 cpus: probe.result.probe.cpus,
                 python: probe.result.probe.python,
               }
@@ -1494,9 +1538,9 @@ export async function runV2(
             (ran) =>
               run.cpu.push({
                 returnedAt: ran.returnedAt,
-                single: ran.guest.single,
-                all: ran.guest.all,
-                clockUncertaintyMs: ran.clockUncertaintyMs,
+                exec: ran.exec,
+                singleSeconds: ran.result.singleSeconds,
+                allSeconds: ran.result.allSeconds,
               }),
           );
 
@@ -2556,11 +2600,8 @@ export async function runV2(
             ? Math.max(...run.cpu.map((m) => m.returnedAt)) - released
             : null;
 
-        // Whether the members' CPU phases overlapped, on the host clock (guest clocks corrected).
-        const overlap =
-          run.cpu.length >= 2
-            ? cpuOverlap(run.cpu, Math.max(...run.cpu.map((m) => m.clockUncertaintyMs)))
-            : null;
+        // Whether the members provably ran their CPU phases together, from the host clock alone.
+        const overlap = run.cpu.length >= 2 ? cpuOverlap(run.cpu) : null;
 
         const durationMs = allCompleteMs ?? performance.now() - timing.start;
         const note = `${single.length}/${k} completed the CPU workload; ${readyCount}/${k} ready; ${attempted} attempted (budgets may prevent admission)`;
@@ -2751,20 +2792,21 @@ export async function runV2(
       }
 
   /**
-   * Charge the budget for every sandbox's life past what its iteration charged: to its confirmed
-   * deletion, or, when it is still live, to now, listing it as an open liability. A sandbox no
-   * iteration claimed (found only by its label, or in review) is priced from the run's start. A
-   * total over the dollar cap is stated in the stop note.
+   * Charge the budget for every sandbox's life past what its iteration charged: to the first
+   * observation that it was gone, or, when it was never observed gone, to `cutoff`, listing it as
+   * an open liability. `cutoff` is one timestamp for every provider, taken after every sweep. A
+   * sandbox no iteration claimed (found only by its label, or in review) is priced from the run's
+   * start. A total over the dollar cap is stated in the stop note.
    */
   function priceBeyondCharges(
     p: ReadyProvider,
     swept: ReadonlySet<string>,
     remaining: ReadonlySet<string>,
+    cutoff: number,
   ) {
     const state = states.get(p.name);
 
     if (!state) return;
-    const now = performance.now();
     const requestedSize = config.size[p.name] ?? (p.name === "local" ? "medium" : null);
 
     const unclaimed: Charge = {
@@ -2784,16 +2826,16 @@ export async function runV2(
 
     const sandboxes = new Map([...charges].filter(([key]) => key.startsWith(`${p.name}/`)));
 
-    // Still live, or not proven gone: listed or journaled, or in review (its ownership or its
-    // deletion unresolved).
-    const live = new Set([
+    // Listed or journaled at the sweep, or in review (its ownership or its deletion unresolved):
+    // priced even when no iteration claimed it.
+    const unresolved = new Set([
       ...remaining,
       ...(report.cleanupReview ?? []).flatMap((r) =>
         r.provider === p.name && r.kind === "sandbox" ? [r.id] : [],
       ),
     ]);
 
-    for (const id of [...swept, ...live]) {
+    for (const id of [...swept, ...unresolved]) {
       const key = `${p.name}/${id}`;
       sandboxes.set(key, sandboxes.get(key) ?? unclaimed);
     }
@@ -2803,9 +2845,10 @@ export async function runV2(
 
     for (const [key, charge] of sandboxes) {
       const id = key.slice(p.name.length + 1);
-      const end = gone.get(key) ?? now;
+      const end = gone.get(key) ?? cutoff;
 
-      if (live.has(id)) open.push({ id, liveMs: Math.round(now - charge.since) });
+      // Never observed gone, whatever its delete returned: still a liability at the cutoff.
+      if (!gone.has(key)) open.push({ id, liveMs: Math.round(cutoff - charge.since) });
 
       if (end <= charge.chargedUntil) continue;
       const usd = charge.price(end - charge.chargedUntil);
@@ -2824,7 +2867,9 @@ export async function runV2(
       notes.push(`estimated USD ${state.estimatedUSD} is over the ${capUSD} cap`);
 
     if (open.length)
-      notes.push(`${open.length} sandbox(es) still live at return; their cost grows until reaped`);
+      notes.push(
+        `${open.length} sandbox(es) not observed gone at return; their cost grows until reaped`,
+      );
 
     const budget: ProviderBudget = {
       created: state.created,
@@ -2836,6 +2881,9 @@ export async function runV2(
     if (open.length) budget.openLiabilities = open;
     report.budgets[p.name] = budget;
   }
+
+  /** What each provider's final sweep found, priced once every sweep is done. */
+  const swept = new Map<string, { ids: Set<string>; remaining: Set<string> }>();
 
   for (const p of ready) {
     const errors: string[] = [];
@@ -3081,7 +3129,7 @@ export async function runV2(
       remaining: [...remaining],
       error: errors.length ? errors.join("; ") : null,
     });
-    priceBeyondCharges(p, ids, remaining);
+    swept.set(p.name, { ids, remaining });
   }
 
   for (const sample of report.samples) {
@@ -3140,11 +3188,40 @@ export async function runV2(
     Object.fromEntries(report.providers.map((p) => [p.name, p.configuredRegion])),
   );
   await persist();
-  await save();
   await journalFiles.writeFile(
     join(runDir, "samples.ndjson"),
     report.samples.map((s) => JSON.stringify(s) + "\n").join(""),
   );
+
+  // Each still-unseen deleted sandbox gets one more exact lookup, then every budget is priced to
+  // one cutoff: a sandbox one provider left live kept running while the others cleaned up.
+  // The watches stop here (a lookup in flight finishes); the round is bounded like the sweep's
+  // listing wait, and a sandbox it cannot see gone stays open.
+  stopWatching.abort();
+  await Promise.all(watches.values());
+  const lookupsEnd = performance.now() + Math.min(config["timeout-ms"], 30_000);
+
+  await Promise.all(
+    ready.map(async (p) => {
+      for (const key of charges.keys()) {
+        const left = Math.min(config["timeout-ms"], lookupsEnd - performance.now());
+
+        if (left <= 0) return;
+
+        if (key.startsWith(`${p.name}/`) && !gone.has(key))
+          await observeGone(p, key.slice(p.name.length + 1), left).catch(() => false);
+      }
+    }),
+  );
+  const cutoff = performance.now();
+
+  for (const p of ready) {
+    const sweep = swept.get(p.name);
+
+    if (sweep) priceBeyondCharges(p, sweep.ids, sweep.remaining, cutoff);
+  }
+
+  await save();
   process.off("SIGINT", requestStop);
   process.off("SIGTERM", requestStop);
 

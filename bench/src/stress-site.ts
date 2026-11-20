@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  classifyFailure,
   countedFailures,
   publicationTrack,
   type MergedSample,
@@ -8,7 +9,7 @@ import {
 import { parseCohortScenario } from "./scenarios.js";
 import { statistics } from "./stats.js";
 import { distribution } from "./v2-stats.js";
-import { clockStepToleranceMs, cpuOverlap, throughputSpread } from "./cpu.js";
+import { cpuOverlap, throughputSpread } from "./cpu.js";
 import { isStressRun, isStressSample, stressUnit } from "./suite.js";
 import {
   memberEvidence,
@@ -32,7 +33,6 @@ type StressInput = Pick<
   | "suite"
   | "scenario"
   | "outcome"
-  | "failureClass"
   | "details"
   | "sandboxId"
   | "sourceRunId"
@@ -61,12 +61,14 @@ const cpuAggregateSchema = z.object({
   work: z.object({ segments: z.number().int().positive(), steps: z.number().int().positive() }),
 });
 
-/** What a cpu-burst member's throughput row records about where its phase ran (v2-runner). */
+/**
+ * What a cpu-burst member's throughput row records about when its phase could have run
+ * (`cpuPhaseEvidence`): its exec on the host clock and the phase's guest timer length. Rows from
+ * before the exec was recorded do not parse, and their cohort is invalid evidence.
+ */
 const cpuPhaseSchema = z.object({
-  guest: z.tuple([finite, finite]),
-  clockUncertaintyMs: finite.nonnegative(),
-  /** Missing on rows from before it was recorded: such a cohort is clock-unstable. */
-  clockDriftMs: finite.optional(),
+  exec: z.tuple([finite, finite]).refine(([start, end]) => end >= start),
+  seconds: finite.positive(),
 });
 
 const parsed = <T>(schema: z.ZodType<T>, rows: readonly StressInput[]) =>
@@ -102,16 +104,18 @@ const allocation = (s: Pick<StressInput, "requestedSize" | "template">) => ({
   template: s.template ?? null,
 });
 
-/** Failures by the harness's taxonomy: account limits and client errors are not the provider's. */
+/**
+ * Failures by the harness's taxonomy: account limits and client errors are not the provider's.
+ * Each class is recomputed from the row's raw outcome by `classifyFailure`, the rule merge uses;
+ * the row's stored `failureClass` is never read, so editing it cannot move a published rate.
+ */
 function failureClasses(rows: readonly StressInput[]) {
-  const failures = countedFailures(rows);
+  const classes = countedFailures(rows).map((s) => classifyFailure(s));
 
   return {
-    accountLimit: failures.filter((s) => s.failureClass === "provider-account-limit").length,
-    clientNetwork: failures.filter((s) => s.failureClass === "client-third-party").length,
-    provider: failures.filter(
-      (s) => s.failureClass === "provider-operation" || s.failureClass === null,
-    ).length,
+    accountLimit: classes.filter((c) => c === "provider-account-limit").length,
+    clientNetwork: classes.filter((c) => c === "client-third-party").length,
+    provider: classes.filter((c) => c === "provider-operation" || c === null).length,
   };
 }
 
@@ -262,13 +266,14 @@ const incomplete = (units: readonly CohortUnit[]) => {
 };
 
 /** Why a complete cpu-burst cohort is left out of the K-way spread. */
-type CpuExclusion = "clock-unstable" | "low-overlap" | "invalid-evidence";
+type CpuExclusion = "low-overlap" | "invalid-evidence";
 
 /**
- * Whether a complete cpu-burst cohort's members ran their CPU phases together, recomputed from
- * the members' own rows; the aggregate's stored overlap is never read. A member whose guest clock
- * moved more than `clockStepToleranceMs` between its two reads (or that recorded no drift) makes
- * the cohort clock-unstable; otherwise the members' phases must overlap by the threshold.
+ * Whether a complete cpu-burst cohort's members provably ran their CPU phases together,
+ * recomputed from the members' own rows by `cpuOverlap` (host exec windows and guest timer
+ * lengths, never guest wall clocks); the aggregate's stored overlap is never read. A member
+ * whose rows are missing, unreadable, from two different execs, or whose phases are longer than
+ * its exec makes the cohort invalid evidence; otherwise the proven overlap must reach the threshold.
  */
 function cpuCohort(u: CohortUnit) {
   const phases = (name: "cpu-single" | "cpu-all") =>
@@ -286,26 +291,20 @@ function cpuCohort(u: CohortUnit) {
   const single = phases("cpu-single");
   const all = phases("cpu-all");
 
+  // Both rows of a member come from one exec, so they must record the same window.
   const members = single.flatMap((s, i) => {
     const a = all[i];
 
-    return s && a ? [{ single: s, all: a }] : [];
+    return s && a && s.exec[0] === a.exec[0] && s.exec[1] === a.exec[1]
+      ? [{ exec: s.exec, singleSeconds: s.seconds, allSeconds: a.seconds }]
+      : [];
   });
 
   if (members.length !== u.k) return { exclusion: "invalid-evidence" as const, overlap: null };
+  const overlap = cpuOverlap(members);
 
-  const unstable = members.some((m) =>
-    [m.single.clockDriftMs, m.all.clockDriftMs].some(
-      (d) => d === undefined || Math.abs(d) > clockStepToleranceMs,
-    ),
-  );
-
-  if (unstable) return { exclusion: "clock-unstable" as const, overlap: null };
-
-  const overlap = cpuOverlap(
-    members.map((m) => ({ single: m.single.guest, all: m.all.guest })),
-    Math.max(...members.flatMap((m) => [m.single.clockUncertaintyMs, m.all.clockUncertaintyMs])),
-  );
+  if (overlap.kind === "inconsistent")
+    return { exclusion: "invalid-evidence" as const, overlap: null };
 
   return { exclusion: overlap.ok ? null : ("low-overlap" as const), overlap };
 }
@@ -338,11 +337,7 @@ function cpuBurst(units: readonly CohortUnit[]) {
 
     const within = statistics(withinCohort);
 
-    const skew = statistics(
-      judged.flatMap((j) =>
-        j.overlap ? [Math.max(j.overlap.single.startSkewMs, j.overlap.all.startSkewMs)] : [],
-      ),
-    );
+    const skew = statistics(judged.flatMap((j) => (j.overlap ? [j.overlap.dispatchSkewMs] : [])));
 
     return {
       provider: first?.provider ?? "",
@@ -352,7 +347,6 @@ function cpuBurst(units: readonly CohortUnit[]) {
       completeCohorts: finished.length,
       /** Complete cohorts left out of the K-way spread, by reason. */
       excluded: {
-        clockUnstable: excluded("clock-unstable"),
         lowOverlap: excluded("low-overlap"),
         invalidEvidence: excluded("invalid-evidence"),
       },
@@ -363,7 +357,7 @@ function cpuBurst(units: readonly CohortUnit[]) {
         completed: values(member(complete, "cpu")).length,
       },
       failures: failureClasses([...member(complete, "cold"), ...member(complete, "cpu")]),
-      /** From cohorts that all completed with steady clocks and overlapping CPU phases. */
+      /** From cohorts that all completed with a proven overlap of their CPU phases. */
       perSandbox: {
         cohorts: together.length,
         single: throughputSpread(values(member(together, "cpu-single"))),
@@ -372,7 +366,8 @@ function cpuBurst(units: readonly CohortUnit[]) {
       withinCohortMaxOverMin: within.count
         ? { p50: round(within.p50), max: round(within.max) }
         : null,
-      startSkewMs: skew.count ? { p50: round(skew.p50, 0), max: round(skew.max, 0) } : null,
+      /** How far apart a cohort's execs were dispatched, on the host clock. */
+      dispatchSkewMs: skew.count ? { p50: round(skew.p50, 0), max: round(skew.max, 0) } : null,
       allCompleteS: complete_.count
         ? { n: complete_.count, p50: round(complete_.p50), max: round(complete_.max) }
         : null,

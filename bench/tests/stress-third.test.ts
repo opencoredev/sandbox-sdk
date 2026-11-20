@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
-import { cpuOverlap, lcgChecksum, runStagedCpuProbe, stageCpuProbe } from "../src/cpu.js";
+import { lcgChecksum, runStagedCpuProbe, stageCpuProbe } from "../src/cpu.js";
 import type { LookupEvidence } from "../src/existence.js";
 import { mergeSources, readSource, type MergeSource } from "../src/merge.js";
 import { estimateCost } from "../src/pricing.js";
@@ -290,8 +290,8 @@ describe("P1.1: reported spend covers every sandbox until it is confirmed gone",
   }, 30_000);
 });
 
-describe("P1.2: a guest clock step excludes its CPU cohort", () => {
-  it("measures a +300 ms step between staging and run as uncertainty, not as overlap", async () => {
+describe("P1.2: a guest clock step is a diagnostic, never a placement", () => {
+  it("records a +300 ms step between staging and run as drift, and times the exec on the host", async () => {
     let stepMs = 0;
     const provider = memory();
 
@@ -350,16 +350,18 @@ describe("P1.2: a guest clock step excludes its CPU cohort", () => {
       const ran = await runStagedCpuProbe(box, staged, 5000);
 
       expect(ran.clockDriftMs).toBeGreaterThan(250);
-      expect(ran.clockUncertaintyMs).toBeGreaterThanOrEqual(Math.abs(ran.clockDriftMs));
-      expect(cpuOverlap([ran.guest, ran.guest], ran.clockUncertaintyMs).ok).toBe(false);
+      expect(ran.exec[1] - ran.exec[0]).toBeGreaterThanOrEqual(255);
     } finally {
       await box.destroy();
     }
   });
 });
 
-/** Build a two-member cpu-burst cohort's rows from a real source's cold row. */
-function cpuCohort(base: Row, drifts: readonly (number | undefined)[]) {
+/**
+ * Build a two-member cpu-burst cohort's rows from a real source's cold row. A member with a
+ * drift records its exec on the host clock; `"legacy"` is a row from before exec was recorded.
+ */
+function cpuCohort(base: Row, drifts: readonly (number | "legacy")[]) {
   const at = 1_795_146_433_000;
   const rate = 28_000_000;
   const work = { segments: 4, steps: 10_000_000 };
@@ -377,33 +379,37 @@ function cpuCohort(base: Row, drifts: readonly (number | undefined)[]) {
     details,
   });
 
-  const member = (iteration: number, drift: number | undefined) => {
+  const member = (iteration: number, drift: number | "legacy") => {
     const shared = {
       work,
       seed: 1,
-      seconds: 1.4,
       consistency: { minOverMedian: 1, lastOverFirst: 1 },
       guestVcpus: 2,
-      clockUncertaintyMs: 5,
       cpus: { visible: 2, affinity: 2, quota: null },
       python: "3.12",
     };
 
-    // A member from before drift was recorded has no clockDriftMs at all.
-    const recorded = drift === undefined ? shared : { ...shared, clockDriftMs: drift };
+    // Two phases of 1.4 s and 1.5 s inside a 2.95 s exec: at least 96% overlap, proven. A
+    // legacy row placed its phase by the guest clock instead.
+    const where = (guest: [number, number]) =>
+      drift === "legacy"
+        ? { guest, clockUncertaintyMs: 5 }
+        : { exec: [at, at + 2950], clockDriftMs: drift };
 
     return [
       row("cpu-burst-2/cold", iteration, 100, null),
       row("cpu-burst-2/cpu", iteration, 2900, null),
       row("cpu-burst-2/cpu-single", iteration, rate, {
-        ...recorded,
+        ...shared,
+        ...where([at, at + 1400]),
         workers: 1,
-        guest: [at, at + 1400],
+        seconds: 1.4,
       }),
       row("cpu-burst-2/cpu-all", iteration, rate * 2, {
-        ...recorded,
+        ...shared,
+        ...where([at + 1400, at + 2900]),
         workers: 2,
-        guest: [at + 1400, at + 2900],
+        seconds: 1.5,
       }),
     ];
   };
@@ -455,7 +461,7 @@ describe("P1.2 and P1.3: publication recomputes from raw evidence", () => {
     ]);
   }, 60_000);
 
-  const cpuRow = (drifts: readonly (number | undefined)[]) => {
+  const cpuRow = (drifts: readonly (number | "legacy")[]) => {
     const base = survival.samples.find((s) => s.scenario === "survival-2/cold");
 
     if (!base) throw new Error("fixture has no cold row");
@@ -469,18 +475,15 @@ describe("P1.2 and P1.3: publication recomputes from raw evidence", () => {
     expect(cpuRow([0, 3])?.perSandbox.cohorts).toBe(1);
   });
 
-  it("excludes a cohort whose guest clock stepped, as clock-unstable", () => {
-    const row = cpuRow([0, 300]);
-
-    expect(row?.perSandbox.cohorts).toBe(0);
-    expect(row?.excluded).toMatchObject({ clockUnstable: 1 });
+  it("publishes a cohort whose guest clock stepped: drift is a diagnostic", () => {
+    expect(cpuRow([0, 300])?.perSandbox.cohorts).toBe(1);
   });
 
-  it("excludes a cohort whose members recorded no clock drift", () => {
-    const row = cpuRow([undefined, undefined]);
+  it("excludes a cohort whose members recorded no exec window, as invalid evidence", () => {
+    const row = cpuRow(["legacy", "legacy"]);
 
     expect(row?.perSandbox.cohorts).toBe(0);
-    expect(row?.excluded).toMatchObject({ clockUnstable: 1 });
+    expect(row?.excluded).toMatchObject({ invalidEvidence: 1 });
   });
 
   /** A window row's stored details, loosely parsed so a test can rewrite any field. */

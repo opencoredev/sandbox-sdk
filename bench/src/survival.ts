@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DeadlineError, deadline } from "./timing.js";
-import { failureOutcome, type FailureOutcome } from "./failure.js";
+import { failureOutcome, failureSignal, type FailureOutcome } from "./failure.js";
 import { lookupSchema, type LookupEvidence } from "./existence.js";
 import type { SurvivalPlan } from "./scenarios.js";
 
@@ -119,20 +119,13 @@ export function deathReason(heartbeat: Heartbeat, firstBootId: string | null): D
   }
 }
 
-/** What a missed heartbeat's error proves: a provider failure, a typed quota refusal, or neither. */
+/**
+ * What a missed heartbeat's error proves: a provider failure, a typed quota refusal, or neither
+ * (see `failureSignal`: an HTTP status decides over the SDK code). A timed-out miss carries no
+ * error code, so it is never a quota refusal.
+ */
 export function missKind(failure: FailureOutcome): "provider" | "quota" | "unknown" {
-  const status = failure.cause?.httpStatus;
-
-  if (failure.code === "quota" || status === 429) return "quota";
-
-  if (
-    (status !== undefined && status >= 500) ||
-    failure.code === "provider" ||
-    failure.code === "unavailable"
-  )
-    return "provider";
-
-  return "unknown";
+  return failureSignal(failure);
 }
 
 /**
@@ -207,6 +200,11 @@ export interface WindowInput {
   sanitize: (text: string) => string;
   /** Tracks calls past their deadlines, so cleanup can wait for them to settle. */
   track: <T>(work: Promise<T>) => Promise<T>;
+}
+
+/** A heartbeat that had no answer within its deadline: no error code or status, by design. */
+function timeoutFailure(callMs: number): FailureOutcome {
+  return { kind: "failure", note: `Heartbeat had no reply within ${Math.round(callMs)} ms` };
 }
 
 /** Wait `ms`, or less if `signal` fires first. */
@@ -299,6 +297,9 @@ export async function heartbeatWindow(input: WindowInput) {
 
       const latencyMs = performance.now() - start - atMs;
       const lookupMs = Math.min(callMs, endBy - performance.now());
+      // Anything that arrives after the deadline is a timeout, whatever it says: a late refusal
+      // proves nothing about quota, however late the deadline's own timer fired.
+      const timedOut = error instanceof DeadlineError || latencyMs > callMs;
 
       const lookup =
         lookupMs > 0
@@ -309,8 +310,8 @@ export async function heartbeatWindow(input: WindowInput) {
         kind: "missed",
         atMs,
         latencyMs,
-        timedOut: error instanceof DeadlineError,
-        failure: failureOutcome(error, input.sanitize),
+        timedOut,
+        failure: timedOut ? timeoutFailure(callMs) : failureOutcome(error, input.sanitize),
         lookup,
       };
     }
@@ -464,12 +465,18 @@ export const windowEvidenceSchema = z.object({
 
 export type WindowEvidence = z.infer<typeof windowEvidenceSchema>;
 
-function expand(h: z.infer<typeof compactSchema>): Heartbeat {
+/**
+ * A recorded heartbeat as the verdict rules read it. A miss marked timed out, or whose reply came
+ * after `heartbeatTimeoutMs`, is a timeout: its recorded code and status are not read.
+ */
+function expand(h: z.infer<typeof compactSchema>, heartbeatTimeoutMs: number): Heartbeat {
   switch (h.kind) {
     case "ok":
     case "skipped":
       return h;
     case "missed": {
+      if (h.timedOut || h.latencyMs > heartbeatTimeoutMs)
+        return { ...h, timedOut: true, failure: timeoutFailure(heartbeatTimeoutMs) };
       const failure: FailureOutcome = { kind: "failure", note: h.note };
 
       if (h.code !== undefined) failure.code = h.code;
@@ -548,7 +555,10 @@ export function memberEvidence(
     if (h.latencyMs > heartbeatTimeoutMs) return { kind: "invalid", reason: "late-reply" };
   }
 
-  const verdict = classifyHeartbeats(heartbeats.map(expand), offsets.length);
+  const verdict = classifyHeartbeats(
+    heartbeats.map((h) => expand(h, heartbeatTimeoutMs)),
+    offsets.length,
+  );
 
   if (verdict.kind !== recorded.kind) return { kind: "invalid", reason: "verdict-mismatch" };
 

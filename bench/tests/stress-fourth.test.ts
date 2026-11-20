@@ -7,14 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSandbox, SandboxError } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
-import { lcgChecksum, runStagedCpuProbe, stageCpuProbe } from "../src/cpu.js";
+import { cpuPhaseEvidence, lcgChecksum, runStagedCpuProbe, stageCpuProbe } from "../src/cpu.js";
 import type { LookupEvidence } from "../src/existence.js";
-import {
-  classifyFailure,
-  mergeSources,
-  readSource,
-  type MergeSource,
-} from "../src/merge.js";
+import type { FailureOutcome } from "../src/failure.js";
+import { classifyFailure, mergeSources, readSource, type MergeSource } from "../src/merge.js";
 import { estimateCost } from "../src/pricing.js";
 import { stressData } from "../src/stress-site.js";
 import { heartbeatWindow, missKind } from "../src/survival.js";
@@ -38,9 +34,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const dirs: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(
-    dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })),
-  );
+  await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
 async function tempDir(name: string) {
@@ -64,8 +58,7 @@ function heartbeating() {
 }
 
 /** What one Boat sandbox costs for `ms`, at the fixed rate the harness prices it at. */
-const boatCost = (ms: number) =>
-  estimateCost("boat", ms, null, null) ?? Infinity;
+const boatCost = (ms: number) => estimateCost("boat", ms, null, null) ?? Infinity;
 
 /** One survival cohort of K=1 with a 1 s window, as the re-check ran it. */
 const survivalArgs = (run: string, out: string, providers: string) => [
@@ -135,9 +128,7 @@ describe("P1.1: a sandbox is priced until it is observed gone, not until its del
 
       expect(goneAt).toBeGreaterThan(createdAt);
       // The re-check reported $0.00003 for $0.00004 of runtime.
-      expect(budget?.estimatedUSD ?? 0).toBeGreaterThanOrEqual(
-        boatCost(goneAt - createdAt),
-      );
+      expect(budget?.estimatedUSD ?? 0).toBeGreaterThanOrEqual(boatCost(goneAt - createdAt));
     } finally {
       await settle;
 
@@ -170,8 +161,7 @@ describe("P1.2: every budget is priced to one cutoff after every provider's swee
     const localList = local.list.bind(local);
 
     local.list = async (labels) => {
-      if (Object.keys(labels ?? {}).join(",") === "sandbox-bench-run")
-        await sleep(1250);
+      if (Object.keys(labels ?? {}).join(",") === "sandbox-bench-run") await sleep(1250);
 
       return localList(labels);
     };
@@ -209,9 +199,7 @@ describe("P1.2: every budget is priced to one cutoff after every provider's swee
       expect((await boat.list({})).length).toBe(1);
       // The re-check priced the sandbox 2.5 s short of the return.
       expect(pricedBy - createdAt - liveMs).toBeLessThan(500);
-      expect(budget?.estimatedUSD ?? 0).toBeGreaterThanOrEqual(
-        boatCost(pricedBy - createdAt - 50),
-      );
+      expect(budget?.estimatedUSD ?? 0).toBeGreaterThanOrEqual(boatCost(pricedBy - createdAt - 50));
     } finally {
       for (const s of await boat.list({})) await destroy(s.id);
     }
@@ -287,9 +275,7 @@ describe("P2.3: CPU overlap is proven from the host clock, never from guest wall
       const phase = (start: number) => ({
         checksum: lcgChecksum(seed, work.segments * work.steps),
         seconds: phaseMs / 1000,
-        rates: Array<number>(work.segments).fill(
-          (work.segments * work.steps * 1000) / phaseMs,
-        ),
+        rates: Array<number>(work.segments).fill((work.segments * work.steps * 1000) / phaseMs),
         startedAt: (start + offset) / 1000,
         endedAt: (start + phaseMs + offset) / 1000,
       });
@@ -319,17 +305,10 @@ describe("P2.3: CPU overlap is proven from the host clock, never from guest wall
     });
 
     const box = await createSandbox(provider, {});
-    const staged = await stageCpuProbe(
-      box,
-      { work, seed: 5, workers: 1 },
-      10_000,
-    );
+    const staged = await stageCpuProbe(box, { work, seed: 5, workers: 1 }, 10_000);
 
     return { box, staged };
   }
-
-  /** What the runner records about a member's run, in each of its throughput rows. */
-  const recorded = z.record(z.string(), z.unknown());
 
   /** Run a cohort of members together and publish it. */
   async function cohort(
@@ -340,49 +319,30 @@ describe("P2.3: CPU overlap is proven from the host clock, never from guest wall
 
     try {
       const runs = await Promise.all(
-        members.map(({ box, staged }) =>
-          runStagedCpuProbe(box, staged, 10_000),
-        ),
+        members.map(({ box, staged }) => runStagedCpuProbe(box, staged, 10_000)),
       );
 
       const rows = runs.flatMap((ran, iteration) => {
-        const fields = recorded.parse(ran);
-
-        const phaseRow = (phase: "single" | "all"): Row => {
-          const guest = recorded.safeParse(fields.guest).data;
-
-          return {
-            ...structuredClone(base),
-            scenario: `cpu-burst-2/cpu-${phase}`,
-            iteration,
-            outcome: {
-              kind: "sample",
-              value:
-                phase === "single"
-                  ? ran.result.singleOpsPerSecond
-                  : ran.result.allOpsPerSecond,
-            },
-            details: {
-              work,
-              seed: 5,
-              workers: 1,
-              seconds:
-                phase === "single"
-                  ? ran.result.singleSeconds
-                  : ran.result.allSeconds,
-              consistency: ran.result[phase],
-              guestVcpus: 1,
-              cpus: { visible: 1, affinity: 1, quota: null },
-              python: "fixture",
-              ...(guest ? { guest: guest[phase] } : {}),
-              ...Object.fromEntries(
-                ["exec", "clockDriftMs", "clockUncertaintyMs"].flatMap((key) =>
-                  fields[key] === undefined ? [] : [[key, fields[key]]],
-                ),
-              ),
-            },
-          };
-        };
+        const phaseRow = (phase: "single" | "all"): Row => ({
+          ...structuredClone(base),
+          scenario: `cpu-burst-2/cpu-${phase}`,
+          iteration,
+          outcome: {
+            kind: "sample",
+            value: phase === "single" ? ran.result.singleOpsPerSecond : ran.result.allOpsPerSecond,
+          },
+          // What v2-runner's cpuScenario records for a phase.
+          details: {
+            work,
+            seed: 5,
+            workers: 1,
+            consistency: ran.result[phase],
+            guestVcpus: 1,
+            cpus: { visible: 1, affinity: 1, quota: null },
+            python: "fixture",
+            ...cpuPhaseEvidence(ran, phase),
+          },
+        });
 
         const plain = (scenario: string, value: number): Row => ({
           ...structuredClone(base),
@@ -416,9 +376,7 @@ describe("P2.3: CPU overlap is proven from the host clock, never from guest wall
       };
 
       const published = stressData(
-        mergeSources([
-          { ...survival, runId: "cpu-run", samples: [...rows, aggregate] },
-        ]),
+        mergeSources([{ ...survival, runId: "cpu-run", samples: [...rows, aggregate] }]),
         "default",
       ).cpuBurst[0]?.providers[0];
 
@@ -517,8 +475,7 @@ describe("P2.4: heartbeat evidence precedence", () => {
       expect(delayed).toBe(true);
       expect(miss).toMatchObject({ kind: "missed", timedOut: true });
 
-      if (result.verdict.kind !== "unresponsive")
-        throw new Error("expected unresponsive");
+      if (result.verdict.kind !== "unresponsive") throw new Error("expected unresponsive");
       expect(missKind(result.verdict.evidence.failure)).not.toBe("quota");
     } finally {
       late.mockRestore();
@@ -526,12 +483,13 @@ describe("P2.4: heartbeat evidence precedence", () => {
   });
 
   it("lets an HTTP status decide over the SDK code", () => {
-    const outcome = (code: string, httpStatus?: number) => ({
-      kind: "failure" as const,
-      note: "fixture",
-      code,
-      ...(httpStatus === undefined ? {} : { cause: { httpStatus } }),
-    });
+    const outcome = (code: string, httpStatus?: number) => {
+      const failure: FailureOutcome = { kind: "failure", note: "fixture", code };
+
+      if (httpStatus !== undefined) failure.cause = { httpStatus };
+
+      return failure;
+    };
 
     expect(missKind(outcome("quota", 507))).toBe("provider");
     expect(missKind(outcome("quota", 404))).toBe("unknown");
@@ -563,19 +521,22 @@ describe("P2.4 and P2.5: publication recomputes classes from raw evidence", () =
   }, 60_000);
 
   const published = (input: ReturnType<typeof mergeSources>) =>
-    stressData(input, "default").burstSurvival.find((g) => g.k === 2)
-      ?.providers[0];
+    stressData(input, "default").burstSurvival.find((g) => g.k === 2)?.providers[0];
 
   const heartbeats = z
     .object({ heartbeats: z.array(z.record(z.string(), z.unknown())) })
     .catchall(z.unknown());
 
   /** The export after `edit` rewrites the first member's window row as unresponsive at its end. */
-  function lastMiss(miss: Record<string, unknown>) {
+  function lastMiss(miss: {
+    latencyMs: number;
+    timedOut: boolean;
+    note: string;
+    httpStatus?: number;
+    code?: string;
+  }) {
     const changed = structuredClone(merged);
-    const window = changed.samples.find(
-      (s) => s.scenario === "survival-2/window",
-    );
+    const window = changed.samples.find((s) => s.scenario === "survival-2/window");
 
     if (!window) throw new Error("fixture has no window row");
     const details = heartbeats.parse(window.details);
@@ -635,18 +596,12 @@ describe("P2.4 and P2.5: publication recomputes classes from raw evidence", () =
   it("never reads a create failure's stored class", () => {
     const failCreate = (outcome: Row["outcome"], failureClass: string) => {
       const changed = structuredClone(merged);
-      const cold = changed.samples.find(
-        (s) => s.scenario === "survival-2/cold",
-      );
+      const cold = changed.samples.find((s) => s.scenario === "survival-2/cold");
 
       if (!cold) throw new Error("fixture has no cold row");
       cold.outcome = outcome;
       cold.failureClass = z
-        .enum([
-          "provider-operation",
-          "provider-account-limit",
-          "client-third-party",
-        ])
+        .enum(["provider-operation", "provider-account-limit", "client-third-party"])
         .parse(failureClass);
 
       return published(changed);
@@ -657,6 +612,7 @@ describe("P2.4 and P2.5: publication recomputes classes from raw evidence", () =
       note: "fixture raw provider failure",
       code: "provider",
     };
+
     const asProvider = failCreate(raw, "provider-operation");
     const asQuota = failCreate(raw, "provider-account-limit");
 

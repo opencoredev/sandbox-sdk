@@ -593,18 +593,17 @@ describe("P2.5 and P2.6: CPU probe timing", () => {
   });
 
   it("compares the overlap cutoff on unrounded values", () => {
-    const borderline = cpuOverlap(
-      [
-        { single: [0, 1000], all: [0, 1000] },
-        { single: [200.4, 1200.4], all: [200.4, 1200.4] },
-      ],
-      0,
-    );
+    // Single-core proven overlap 799.6 ms of a 1000 ms phase: 0.7996, which rounds to 0.8.
+    const borderline = cpuOverlap([
+      { exec: [0, 2000], singleSeconds: 1, allSeconds: 1 },
+      { exec: [200.4, 2200.4], singleSeconds: 1, allSeconds: 1 },
+    ]);
 
+    expect(borderline.kind === "bound" && borderline.single.provenFraction).toBe(0.8);
     expect(borderline.ok).toBe(false);
   });
 
-  it("folds a guest clock step between staging and run into the worst case", async () => {
+  it("ignores a guest clock stepped back onto another member's run", async () => {
     let stepMs = 0;
     const provider = memory();
 
@@ -663,18 +662,20 @@ describe("P2.5 and P2.6: CPU probe timing", () => {
       const staged = await stageCpuProbe(box, challenge, 5000);
       await sleep(25);
       // The second member's guest clock is stepped back onto the first's run: they ran apart.
-      stepMs = first.guest.single[0] - (performance.timeOrigin + performance.now());
+      stepMs = first.exec[0] - (performance.timeOrigin + performance.now());
       const second = await runStagedCpuProbe(box, staged, 5000);
 
-      expect(second.guest.single[0]).toBeLessThan(first.guest.single[1]);
+      // The guest's own timestamps now claim the two runs overlapped; the host clock says not.
+      expect(stepMs).toBeLessThan(-100);
 
       const overlap = cpuOverlap(
-        [first.guest, second.guest],
-        Math.max(first.clockUncertaintyMs, second.clockUncertaintyMs),
+        [first, second].map((ran) => ({
+          exec: ran.exec,
+          singleSeconds: ran.result.singleSeconds,
+          allSeconds: ran.result.allSeconds,
+        })),
       );
 
-      expect(Math.abs(stepMs)).toBeGreaterThan(100);
-      expect(second.clockUncertaintyMs).toBeGreaterThanOrEqual(Math.abs(stepMs) - 20);
       expect(overlap.ok).toBe(false);
     } finally {
       await box.destroy();

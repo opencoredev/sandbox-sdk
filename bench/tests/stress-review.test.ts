@@ -129,28 +129,29 @@ describe("finding 7: CPU burst overlap and segment consistency", () => {
   });
 
   it("flags a cohort whose members did not run their CPU phases together", () => {
-    const together = cpuOverlap(
-      [
-        { single: [0, 1000], all: [1000, 2000] },
-        { single: [10, 1010], all: [1010, 2010] },
-      ],
-      5,
-    );
+    // Each exec has 50 ms around its two 1 s phases: wherever they fell, they overlapped 94%.
+    const together = cpuOverlap([
+      { exec: [0, 2050], singleSeconds: 1, allSeconds: 1 },
+      { exec: [10, 2060], singleSeconds: 1, allSeconds: 1 },
+    ]);
 
     expect(together.ok).toBe(true);
-    expect(together.single.startSkewMs).toBe(10);
+    expect(together.kind === "bound" && together.dispatchSkewMs).toBe(10);
+    expect(together.kind === "bound" && together.single.provenFraction).toBe(0.94);
 
-    // The second member started its single-core phase after the first had finished it.
-    const apart = cpuOverlap(
-      [
-        { single: [0, 1000], all: [1000, 2000] },
-        { single: [1500, 2500], all: [2500, 3500] },
-      ],
-      5,
-    );
+    // The second member's exec began after the first could have finished its single-core phase.
+    const apart = cpuOverlap([
+      { exec: [0, 2050], singleSeconds: 1, allSeconds: 1 },
+      { exec: [1500, 3550], singleSeconds: 1, allSeconds: 1 },
+    ]);
 
     expect(apart.ok).toBe(false);
-    expect(apart.single.allRunningFraction).toBe(0);
+    expect(apart.kind === "bound" && apart.single.provenFraction).toBe(0);
+
+    // Phases longer than the exec that ran them contradict themselves.
+    expect(cpuOverlap([{ exec: [0, 1500], singleSeconds: 1, allSeconds: 1 }]).kind).toBe(
+      "inconsistent",
+    );
   });
 
   it("stages the probe and reads the guest clock before the work starts, and times its return", async () => {
@@ -218,7 +219,6 @@ describe("finding 7: CPU burst overlap and segment consistency", () => {
       const staged = await stageCpuProbe(box, challenge, 5000);
 
       expect(events).toEqual(["clock"]);
-      expect(staged.clockUncertaintyMs).toBeGreaterThanOrEqual(0);
 
       const before = performance.now();
       const ran = await runStagedCpuProbe(box, staged, 5000);
@@ -227,7 +227,7 @@ describe("finding 7: CPU burst overlap and segment consistency", () => {
       expect(events).toEqual(["clock", "run", "clock"]);
       expect(ran.returnedAt).toBeGreaterThan(before);
       expect(ran.returnedAt).toBeLessThanOrEqual(performance.now());
-      expect(ran.guest.single[1]).toBeGreaterThan(ran.guest.single[0]);
+      expect(ran.exec[1] - ran.exec[0]).toBeGreaterThanOrEqual(80);
       expect(ran.result.singleOpsPerSecond).toBeGreaterThan(0);
     } finally {
       await box.destroy();

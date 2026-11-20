@@ -281,16 +281,10 @@ export const hostEpochMs = () => performance.timeOrigin + performance.now();
 export interface StagedCpuProbe {
   challenge: CpuChallenge;
   command: string;
-  /** Guest clock minus host clock, estimated from one round trip. */
+  /** Guest clock minus host clock, estimated from one round trip. A diagnostic only. */
   clockOffsetMs: number;
-  /** Half that round trip: the offset is right to within this. */
-  clockUncertaintyMs: number;
 }
 
-/**
- * Stage a probe run: write probes/cpu.py into the guest and read the guest clock once, so the
- * only thing left after a cohort's common start is dispatching one short command.
- */
 /** One read of the guest clock: its offset from the host's, right to within half the round trip. */
 async function readGuestClock(box: Sandbox, path: string, timeoutMs: number, signal?: AbortSignal) {
   const before = hostEpochMs();
@@ -301,11 +295,15 @@ async function readGuestClock(box: Sandbox, path: string, timeoutMs: number, sig
   if (!Number.isFinite(guestMs) || guestMs <= 0)
     throw new Error(`CPU probe clock reply is not a time: ${JSON.stringify(reply.slice(0, 80))}`);
 
-  return { offsetMs: guestMs - (before + after) / 2, uncertaintyMs: (after - before) / 2 };
+  return guestMs - (before + after) / 2;
 }
 
 const probePath = (challenge: CpuChallenge) => `/tmp/bench-cpu-${challenge.seed.toString(16)}.py`;
 
+/**
+ * Stage a probe run: write probes/cpu.py into the guest and read the guest clock once, so the
+ * only thing left after a cohort's common start is dispatching one short command.
+ */
 export async function stageCpuProbe(
   box: Sandbox,
   challenge: CpuChallenge,
@@ -315,40 +313,26 @@ export async function stageCpuProbe(
   const script = await readFile(new URL("../probes/cpu.py", import.meta.url), "utf8");
   const path = probePath(challenge);
   await box.files.write(path, script);
-  const clock = await readGuestClock(box, path, timeoutMs, signal);
+  const clockOffsetMs = await readGuestClock(box, path, timeoutMs, signal);
   const { work, workers, seed } = challenge;
 
   return {
     challenge,
     command: `python3 ${path} run ${work.segments} ${work.steps} ${workers} ${seed}`,
-    clockOffsetMs: clock.offsetMs,
-    clockUncertaintyMs: clock.uncertaintyMs,
+    clockOffsetMs,
   };
 }
-
-/** Slack for the guest's timestamp resolution when comparing its clock with the host's. */
-const clockResolutionMs = 2;
 
 /** A [start, end] interval in host epoch milliseconds. */
 export type Interval = readonly [number, number];
 
 /**
- * The largest change in a guest clock's offset, between the reads before and after a probe run,
- * that a cohort may show and still be published. A larger change means the guest clock stepped
- * or drifted during the run: where its phases really fell on the host clock is unknown, so the
- * cohort is excluded as clock-unstable rather than modelled.
- */
-export const clockStepToleranceMs = 20;
-
-/**
  * Run a staged probe. `returnedAt` (`performance.now()`) is taken as soon as the exec returns,
- * before any checks or report writes; `guest` holds each phase's interval on the host clock,
- * placed with the offset read at staging.
+ * before any checks or report writes. `exec` is the exec on the host clock, from just before its
+ * dispatch to its return: the guest ran both phases inside it, whatever its own clock says.
  *
- * The guest clock is read again after the run. `clockDriftMs` is the offset change between the
- * two reads; publication refuses a cohort where it exceeds `clockStepToleranceMs`.
- * `clockUncertaintyMs` bounds the staged offset's error during the run by that change plus both
- * reads' own uncertainty, and the run is refused when its phases fall outside the exec even then.
+ * The guest clock is read again after the run. `clockDriftMs`, the change in its offset from the
+ * read at staging, is recorded as a diagnostic; nothing is placed or judged by the guest's clock.
  */
 export async function runStagedCpuProbe(
   box: Sandbox,
@@ -364,63 +348,101 @@ export async function runStagedCpuProbe(
   if (signal?.aborted) throw new Error("CPU probe aborted");
   const result = cpuResult(output, staged.challenge, (returnedAt - dispatchedAt) / 1000);
   const after = await readGuestClock(box, probePath(staged.challenge), timeoutMs, signal);
+  const exec: Interval = [dispatchedEpoch, dispatchedEpoch + (returnedAt - dispatchedAt)];
 
-  const onHost = (run: { startedAt: number; endedAt: number }): Interval => [
-    run.startedAt * 1000 - staged.clockOffsetMs,
-    run.endedAt * 1000 - staged.clockOffsetMs,
-  ];
-
-  const guest = { single: onHost(result.probe.single), all: onHost(result.probe.all) };
-  const returnedEpoch = dispatchedEpoch + (returnedAt - dispatchedAt);
-  const drift = after.offsetMs - staged.clockOffsetMs;
-
-  const uncertainty =
-    Math.abs(drift) + staged.clockUncertaintyMs + after.uncertaintyMs + clockResolutionMs;
-
-  if (guest.single[0] < dispatchedEpoch - uncertainty || guest.all[1] > returnedEpoch + uncertainty)
-    throw new Error("CPU probe timing is inconsistent: guest phases fall outside the exec");
-
-  return { result, returnedAt, guest, clockUncertaintyMs: uncertainty, clockDriftMs: drift };
+  return { result, returnedAt, exec, clockDriftMs: after - staged.clockOffsetMs };
 }
 
-/** A cohort's CPU phases count as run together when all members overlap this share of a phase. */
+export type CpuRun = Awaited<ReturnType<typeof runStagedCpuProbe>>;
+
+/** What a member's `cpu-single` or `cpu-all` row records about when its phase could have run. */
+export function cpuPhaseEvidence(ran: CpuRun, phase: "single" | "all") {
+  return {
+    exec: ran.exec,
+    seconds: phase === "single" ? ran.result.singleSeconds : ran.result.allSeconds,
+    clockDriftMs: ran.clockDriftMs,
+  };
+}
+
+/** A cohort's CPU phases count as run together when all members provably overlap this share of a phase. */
 export const overlapThreshold = 0.8;
 
-/**
- * How closely a cohort's members ran each phase together, on the host clock: the spread of their
- * start times, and the share of a typical (median) phase during which every member was running
- * it. The worst case narrows the common interval by each side's clock uncertainty; `ok` needs
- * the worst case at or above `overlapThreshold` for both phases.
- */
-export function cpuOverlap(
-  members: readonly { single: Interval; all: Interval }[],
-  clockUncertaintyMs: number,
-) {
-  const phase = (intervals: readonly Interval[]) => {
-    const starts = intervals.map(([s]) => s);
-    const ends = intervals.map(([, e]) => e);
-    const typical = median(intervals.map(([s, e]) => e - s)) ?? 0;
-    const common = Math.min(...ends) - Math.max(...starts);
+/** One member's timing evidence: its exec on the host clock and its phases' guest timer lengths. */
+export interface CpuMemberTiming {
+  exec: Interval;
+  singleSeconds: number;
+  allSeconds: number;
+}
 
-    const share = (ms: number) => (typical > 0 ? Math.max(0, ms) / typical : 0);
-    const worst = share(common - 2 * clockUncertaintyMs);
+/**
+ * A proven lower bound on how long every member of a cohort ran each phase at the same time,
+ * from the host clock and each guest's own monotonic phase timers, never a guest wall clock.
+ *
+ * Member i's exec ran from dispatch d to return r on the host clock, and it ran single (length
+ * s) and then all-core (length a) inside it, in that order. So its single phase started no later
+ * than r - a - s and ended no earlier than d + s; its all-core phase started no later than r - a
+ * and ended no earlier than d + s + a. Every member was running a phase at least from the latest
+ * of those latest starts to the earliest of those earliest ends, so that span (or zero) is the
+ * proven overlap, however each guest's clock stepped. `provenFraction` divides it by the median
+ * member's phase length; `ok` needs at least `overlapThreshold` for both phases.
+ *
+ * A member whose phases are longer than its exec has evidence that contradicts itself (its timer
+ * ran fast, or the reply is wrong): the cohort is `inconsistent` and nothing is bounded.
+ */
+export function cpuOverlap(members: readonly CpuMemberTiming[]) {
+  const timings = members.map((m) => ({
+    start: m.exec[0],
+    end: m.exec[1],
+    single: m.singleSeconds * 1000,
+    all: m.allSeconds * 1000,
+  }));
+
+  if (timings.some((t) => t.single + t.all > t.end - t.start))
+    return { kind: "inconsistent" as const, ok: false };
+
+  const bound = (
+    phase: readonly { latestStart: number; earliestEnd: number; length: number }[],
+  ) => {
+    const provenMs = Math.max(
+      0,
+      Math.min(...phase.map((p) => p.earliestEnd)) - Math.max(...phase.map((p) => p.latestStart)),
+    );
+
+    const typical = median(phase.map((p) => p.length)) ?? 0;
+    const fraction = typical > 0 ? provenMs / typical : 0;
 
     return {
-      startSkewMs: Math.round(Math.max(...starts) - Math.min(...starts)),
-      allRunningFraction: Number(share(common).toFixed(3)),
-      worstCaseFraction: Number(worst.toFixed(3)),
+      provenMs: Math.round(provenMs),
+      provenFraction: Number(fraction.toFixed(3)),
       // Compared before rounding, so 0.7996 is below a 0.8 cutoff.
-      ok: worst >= overlapThreshold,
+      ok: fraction >= overlapThreshold,
     };
   };
 
-  const single = phase(members.map((m) => m.single));
-  const all = phase(members.map((m) => m.all));
+  const single = bound(
+    timings.map((t) => ({
+      latestStart: t.end - t.all - t.single,
+      earliestEnd: t.start + t.single,
+      length: t.single,
+    })),
+  );
+
+  const all = bound(
+    timings.map((t) => ({
+      latestStart: t.end - t.all,
+      earliestEnd: t.start + t.single + t.all,
+      length: t.all,
+    })),
+  );
+
+  const starts = timings.map((t) => t.start);
 
   return {
+    kind: "bound" as const,
     single,
     all,
-    clockUncertaintyMs: Math.round(clockUncertaintyMs),
+    /** How far apart the members' execs were dispatched, on the host clock. */
+    dispatchSkewMs: Math.round(Math.max(...starts) - Math.min(...starts)),
     threshold: overlapThreshold,
     ok: single.ok && all.ok,
   };
