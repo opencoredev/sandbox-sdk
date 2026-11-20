@@ -37,6 +37,11 @@ export interface TrackSetup {
    * changed since. Unset: older records ran with today's disk.
    */
   readonly unrecordedDiskGiB?: number;
+  /**
+   * Runs made before records named their disk that are known to have run with another disk, by run
+   * ID. Checked before `unrecordedDiskGiB`.
+   */
+  readonly unrecordedDiskGiBByRun?: { readonly [runId: string]: number };
   /** Profiles the fit check found this size cannot complete, with FIT.md's reason. */
   readonly tooSmall: { readonly [profile: string]: string };
 }
@@ -60,6 +65,19 @@ export interface ProviderSetup {
 }
 
 const size = (cpu: number, memoryGiB: number, diskGiB: number) => ({ cpu, memoryGiB, diskGiB });
+
+/**
+ * Luxor and Superserve same-machine runs made with 20 GB disks before attempts recorded their disk:
+ * the 2026-11-18 disk reruns (49e053c, which df confirmed at 19.6 GiB) and the 2026-11-19 Real
+ * tasks at once runs (8fb5100). Both commits made the same change as this one.
+ */
+const twentyGbRuns = {
+  "rw-disk-smoke1": 20,
+  "rw-disk-head1": 20,
+  "rw-disk-ss2": 20,
+  "rtb1119-main1": 20,
+  "rtb1119-seq1": 20,
+} as const;
 
 const fit = {
   e2b: "FIT.md: 2 vCPU / 0.5 GiB is OOM-killed during install",
@@ -174,6 +192,7 @@ export const providerSetups: readonly ProviderSetup[] = [
         provisioned: size(4, 8, 20),
         // Luxor's 5 GB minimum until 2026-11-18.
         unrecordedDiskGiB: 5,
+        unrecordedDiskGiBByRun: twentyGbRuns,
         tooSmall: {},
       },
       default: { vcpu: 2, provisioned: size(2, 3.8, 5), tooSmall: { build: fit.tenkiBuild } },
@@ -194,6 +213,7 @@ export const providerSetups: readonly ProviderSetup[] = [
         provisioned: size(4, 8, 20),
         // sandbox-bench-node22-py311-4x8-pinned's 4 GiB until 2026-11-18.
         unrecordedDiskGiB: 4,
+        unrecordedDiskGiBByRun: twentyGbRuns,
         tooSmall: {},
       },
       default: {
@@ -330,13 +350,20 @@ export function provisionedAtMost(setup: ProviderSetup, track: TrackId): Provisi
 export function provisionedOf(
   setup: ProviderSetup,
   track: TrackId,
-  record: { readonly diskGiB?: number | undefined; readonly volumeGiB?: number | undefined },
+  record: {
+    readonly runId?: string;
+    readonly diskGiB?: number | undefined;
+    readonly volumeGiB?: number | undefined;
+  },
 ): ProvisionedSize | null {
   const config = setup.tracks[track];
 
+  const byRun =
+    record.runId === undefined ? undefined : config.unrecordedDiskGiBByRun?.[record.runId];
+
   const base = {
     ...config.provisioned,
-    diskGiB: record.diskGiB ?? config.unrecordedDiskGiB ?? config.provisioned.diskGiB,
+    diskGiB: record.diskGiB ?? byRun ?? config.unrecordedDiskGiB ?? config.provisioned.diskGiB,
   };
 
   if (record.volumeGiB !== undefined) return { ...base, diskGiB: base.diskGiB + record.volumeGiB };

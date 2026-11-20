@@ -458,6 +458,7 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
         );
 
         const invokedAt = clock.now();
+        let attemptStartedAt = invokedAt;
 
         try {
           // Outside the attempt's spans, so its create timing excludes the App lookup, but bounded by
@@ -486,6 +487,9 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
             attemptPlan.labels = app.labels;
           }
 
+          // A failed attempt's fallback record starts here, after the App lookup, as its own record would.
+          attemptStartedAt = clock.now();
+
           const outcome = await within(
             attempt(attemptPlan, environment).then(({ record: done }) => done),
             Math.max(0, deadline + graceMs - clock.now()),
@@ -513,9 +517,9 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
             error instanceof Error ? error.message : String(error),
           );
 
-          // The attempt ran from its invocation: a sandbox it made is priced from then, not for 0 s.
-          failed.startedAt = invokedAt;
-          failed.startOffsetMs = invokedAt - slotStartedAt;
+          // The attempt ran from when it was invoked: a sandbox it made is priced from then, not for 0 s.
+          failed.startedAt = attemptStartedAt;
+          failed.startOffsetMs = attemptStartedAt - slotStartedAt;
           failed.sandboxIds = created;
           failed.deletionConfirmed = created.length === 0;
           records.set(entry.name, failed);

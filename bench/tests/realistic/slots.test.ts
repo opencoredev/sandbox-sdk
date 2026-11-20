@@ -268,7 +268,22 @@ describe("slot execution", () => {
       batch(
         {
           slots: slots.slice(0, 1),
-          providers: [provider("e2b", { diskGiB: 13 })],
+          providers: [
+            provider("e2b", {
+              diskGiB: 13,
+              // A slow App lookup before the attempt: our side, so not priced.
+              beforeAttempt: async () => {
+                await new Promise((done) => setTimeout(done, 300));
+
+                return {
+                  labels: {},
+                  created: async () => {},
+                  failed: async () => {},
+                  destroyed: async () => {},
+                };
+              },
+            }),
+          ],
           attempt: failing,
         },
         records,
@@ -276,8 +291,10 @@ describe("slot execution", () => {
     );
 
     expect(records[0]).toMatchObject({ sandboxIds: ["made-1"], diskGiB: 13 });
-    // The sandbox existed while the attempt ran, so the record spans that time and is priced for it.
-    expect(records[0]!.endedAt - records[0]!.startedAt).toBeGreaterThanOrEqual(40);
+    // The record spans the attempt, which made the sandbox, and not the App lookup before it.
+    const ran = records[0]!.endedAt - records[0]!.startedAt;
+    expect(ran).toBeGreaterThanOrEqual(40);
+    expect(ran).toBeLessThan(250);
   });
 
   it("voids a window whose listing is only SDK-scoped", async () => {
