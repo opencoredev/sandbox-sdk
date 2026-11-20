@@ -50,6 +50,11 @@ const fakes = {
   instabox: `{ apiKey: "ibk_smoke", requestTimeoutMs: 5000 }`,
 };
 
+// Beam's create probe gets a gateway port of its own, and counts only connections to it, so a late
+// request from an earlier provider's probe cannot pass for beam-js reaching the network.
+const beamCreatePort = 45931;
+const beamCreate = `{ token: "smoke-token", workspaceId: "smoke-workspace", requestTimeoutMs: 5000, gatewayUrl: "https://127.0.0.1:${beamCreatePort}" }`;
+
 // Providers without an optional peer SDK, or whose peer never touches the network.
 const skipped = {
   local: "no optional peer; drives the Docker CLI",
@@ -87,12 +92,16 @@ if (process.env.SKIP_BUILD !== "1") {
   }
 }
 
-// Runs inside the bundle. Every connection attempt is counted and fails like a refused port.
+// Runs inside the bundle. Every connection attempt is counted, with its port, and fails like a
+// refused port. net.connect passes its arguments normalized into an array.
 const blocker = `
 import net from "node:net";
 let attempts = 0;
-net.Socket.prototype.connect = function () {
+const ports = [];
+const portOf = args => { const first = Array.isArray(args[0]) ? args[0][0] : args[0]; return Number(typeof first === "object" && first !== null ? first.port : first); };
+net.Socket.prototype.connect = function (...args) {
   attempts++;
+  ports.push(portOf(args));
   process.nextTick(() => this.destroy(Object.assign(new Error("connect ECONNREFUSED (bundle smoke blocks the network)"), { code: "ECONNREFUSED" })));
   return this;
 };
@@ -104,10 +113,12 @@ async function probe(name, factory) {
   console.log(JSON.stringify({ name, attempts, timedOut: outcome.timedOut === true, sandboxError: outcome.error instanceof SandboxError, code: outcome.error?.code, text: outcome.error === undefined ? "" : text(outcome.error) }));
 }
 // Beam lists over fetch and creates through its peer: only a create reaches the peer's Sandbox.
-async function createProbe(name, provider) {
-  attempts = 0;
+// Only connections to the provider's own gateway port count.
+async function createProbe(name, provider, port) {
+  ports.length = 0;
   const outcome = await createSandbox(provider).then(() => ({ ok: true }), error => ({ error }));
-  console.log(JSON.stringify({ name, attempts, timedOut: false, sandboxError: outcome.error instanceof SandboxError, code: outcome.error?.code, text: outcome.error === undefined ? "" : text(outcome.error) }));
+  const reached = ports.filter(p => p === port).length;
+  console.log(JSON.stringify({ name, attempts: reached, timedOut: false, sandboxError: outcome.error instanceof SandboxError, code: outcome.error?.code, text: outcome.error === undefined ? "" : text(outcome.error) }));
 }
 // boxd moves file bytes with its fetch client; reading through the adapter reaches it without a sandbox.
 async function transferProbe(name, provider) {
@@ -129,7 +140,7 @@ const probes = [
     ([name, options]) => `await probe(${JSON.stringify(name)}, () => ${name}(${options}));`,
   ),
   `await transferProbe("boxd files", boxd(${fakes.boxd}));`,
-  `await createProbe("beam create", beam(${fakes.beam}));`,
+  `await createProbe("beam create", beam(${beamCreate}), ${beamCreatePort});`,
 ];
 
 const rowNames = [...Object.keys(fakes), "boxd files", "beam create"];
