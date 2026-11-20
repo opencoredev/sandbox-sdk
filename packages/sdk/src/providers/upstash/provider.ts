@@ -271,6 +271,36 @@ const baseUrlOf = (config: { baseUrl?: string }) =>
     "https://us-east-1.box.upstash.com"
   ).replace(/\/$/, "");
 
+/** The options that choose where an Upstash adapter connects and as whom. */
+export type UpstashConnection = Pick<CommonOptions, "apiKey" | "baseUrl">;
+
+/** What an Upstash adapter sends its own requests with, in the shape `@upstash/box`'s options take. */
+export interface UpstashConfig {
+  readonly apiKey: string;
+  /** The API base URL with one trailing slash dropped, as the adapter's own requests use it. */
+  readonly baseUrl: string;
+}
+
+/**
+ * The key and base URL `upstash(options)` sends its own requests with, such as creates, read from
+ * `options` and the environment as the adapter reads them. Throws `auth` when the key is missing,
+ * as the adapter does. The adapter's `@upstash/box` calls get the `baseUrl` option as given, and the
+ * package resolves the rest. Pass this object to `@upstash/box` calls, such as
+ * `Box.get(id, resolveConfig())`, to reach where the adapter creates boxes.
+ * It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(options: UpstashConnection = {}): UpstashConfig {
+  const apiKey = options.apiKey ?? process.env.UPSTASH_BOX_API_KEY;
+
+  if (!apiKey)
+    throw new SandboxError(
+      "Upstash Box API key is missing. Authentication is required. Set UPSTASH_BOX_API_KEY or pass apiKey.",
+      { code: "auth", provider: "upstash" },
+    );
+
+  return { apiKey, baseUrl: baseUrlOf(options) };
+}
+
 /** Deletes a box, retrying transient failures briefly. True once Upstash confirms it is gone. */
 async function removeBox(baseUrl: string, headers: Record<string, string>, id: string) {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -327,13 +357,7 @@ export function createUpstashProvider<B extends UpstashBox, E extends UpstashEph
   };
 
   const connection = () => {
-    const apiKey = options.apiKey ?? process.env.UPSTASH_BOX_API_KEY;
-
-    if (!apiKey)
-      throw new SandboxError(
-        "Upstash Box API key is missing. Authentication is required. Set UPSTASH_BOX_API_KEY or pass apiKey.",
-        { code: "auth", provider: "upstash" },
-      );
+    const { apiKey } = resolveConfig(options);
     redactor.add([apiKey]);
 
     return { apiKey, baseUrl: options.baseUrl, enableTelemetry: options.enableTelemetry };

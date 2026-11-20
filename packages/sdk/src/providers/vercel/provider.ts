@@ -128,6 +128,42 @@ function decodeStats(text: string): FileInfo[] {
 // Files survive a session; processes do not. Invalidate inherited live records.
 const invalidate = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/runs; true`;
 
+/** The options that choose which Vercel team and project an adapter acts in, and as whom. */
+export type VercelConnection = Pick<VercelBaseOptions, "token" | "teamId" | "projectId">;
+
+/**
+ * What a Vercel adapter passes to every `@vercel/sandbox` call. With a token it names the team
+ * and project explicitly. With none it is empty, so the SDK resolves and refreshes the
+ * deployment's OIDC context itself; partial credentials would prevent that.
+ */
+export type VercelConfig =
+  | { readonly token: string; readonly teamId: string; readonly projectId: string }
+  | Record<string, never>;
+
+/**
+ * The credentials and scope `vercel(options)` uses, read from `options` and the environment as the
+ * adapter reads them: VERCEL_TOKEN with VERCEL_TEAM_ID and VERCEL_PROJECT_ID, else OIDC. Throws
+ * `auth` when a token lacks its team or project. Spread it into `@vercel/sandbox` calls, such as
+ * `Sandbox.get({ ...resolveConfig(), name })`: without it, a token user's OIDC token can point at
+ * another team and project, where the sandbox reads as missing.
+ * It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(options: VercelConnection = {}): VercelConfig {
+  const token = options.token ?? process.env.VERCEL_TOKEN;
+  const teamId = options.teamId ?? process.env.VERCEL_TEAM_ID;
+  const projectId = options.projectId ?? process.env.VERCEL_PROJECT_ID;
+
+  if (!token) return {};
+
+  if (!teamId || !projectId)
+    throw new SandboxError(
+      "Vercel credentials are incomplete. Token authentication requires teamId and projectId. Set VERCEL_TEAM_ID and VERCEL_PROJECT_ID.",
+      { code: "auth", provider: "vercel" },
+    );
+
+  return { token, teamId, projectId };
+}
+
 /** Internal injection point used by the offline SDK contract tests. */
 export function createVercelProvider<N extends NativeSandbox>(
   load: () => Promise<VercelClient<N>>,
@@ -174,28 +210,10 @@ export function createVercelProvider<N extends NativeSandbox>(
     }
   };
 
+  const credentials = () => resolveConfig(options);
+
   const api = () =>
     options.fetch === undefined ? credentials() : { ...credentials(), fetch: options.fetch };
-
-  function credentials() {
-    const token = options.token ?? process.env.VERCEL_TOKEN;
-    const teamId = options.teamId ?? process.env.VERCEL_TEAM_ID;
-    const projectId = options.projectId ?? process.env.VERCEL_PROJECT_ID;
-
-    if (token) {
-      if (!teamId || !projectId)
-        throw new SandboxError(
-          "Vercel credentials are incomplete. Token authentication requires teamId and projectId. Set VERCEL_TEAM_ID and VERCEL_PROJECT_ID.",
-          { code: "auth", provider: "vercel" },
-        );
-
-      return { token, teamId, projectId };
-    }
-
-    // Let the SDK resolve and refresh the deployment's OIDC context. Supplying
-    // partial credentials prevents that SDK path, so omit all three together.
-    return {};
-  }
 
   const clean = async (box: NativeSandbox, workspaceReady = false) => {
     const cmd = await box.runCommand({

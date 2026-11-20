@@ -11,6 +11,8 @@ it("fails the real CLI with explicit sandbox admission coverage evidence", async
     const run = spawnSync(
       "bun",
       [
+        "--preload",
+        "./tests/offline-preload.ts",
         "src/cli.ts",
         "--providers",
         "memory",
@@ -171,6 +173,8 @@ it("fails the CLI on cap-only missing coverage", async () => {
     const run = spawnSync(
       "bun",
       [
+        "--preload",
+        "./tests/offline-preload.ts",
         "src/cli.ts",
         "--providers",
         "memory",

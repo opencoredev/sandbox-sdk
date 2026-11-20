@@ -19,9 +19,10 @@ import { distribution, wilson } from "./v2-stats.js";
 import { publicationHtml, publicationMarkdown } from "./publication-report.js";
 
 import { costBillingSchema } from "./task-cost.js";
-import { failureOutcomeSchema } from "./failure.js";
+import { failureOutcomeSchema, failureSignal } from "./failure.js";
 import { isMissingFile } from "./files.js";
-import { sampleSuite, suiteFor } from "./suite.js";
+import { sampleSuite, suiteFor, suiteSchema } from "./suite.js";
+import { parseCohortScenario } from "./scenarios.js";
 
 const finite = z.number().finite();
 
@@ -113,7 +114,7 @@ const sourceSchema = z
 
 export type MergeSource = z.infer<typeof sourceSchema>;
 
-export type Suite = "main" | "snapshot" | "burst" | "cost";
+export type Suite = z.infer<typeof suiteSchema>;
 
 export type FailureClass = "provider-account-limit" | "client-third-party" | "provider-operation";
 
@@ -149,8 +150,13 @@ export function classifyFailure(
 ): FailureClass | null {
   if (sample.outcome.kind !== "failure") return null;
   const note = sample.outcome.note;
+  const cohort = parseCohortScenario(sample.scenario);
+  const stressCohort = cohort?.kind === "cpu-burst" || cohort?.kind === "survival";
 
-  if (sample.provider === "boat" && /reported quota/i.test(note)) return "provider-account-limit";
+  // The published Boat rule reads wording; the stress cohorts below need a typed signal, so a
+  // death proved by exact lifecycle evidence is never an account limit for its words.
+  if (sample.provider === "boat" && !stressCohort && /reported quota/i.test(note))
+    return "provider-account-limit";
 
   // Only this observed concurrent-create error is assigned to the likely account limit.
   // Other Daytona invalid_argument errors remain operation failures.
@@ -161,6 +167,16 @@ export function classifyFailure(
   )
     return "provider-account-limit";
 
+  // cpu-burst and survival cohorts (added after the publication runs) need a typed signal: HTTP
+  // 429, or SDK code quota with no HTTP status (`failureSignal`). Wording alone, other codes (such
+  // as Daytona's invalid_argument for a missing template) and other statuses stay the provider's.
+  if (
+    stressCohort &&
+    ["cold", "window"].includes(cohort.member) &&
+    failureSignal(sample.outcome) === "quota"
+  )
+    return "provider-account-limit";
+
   if (sample.scenario === "network-mbps" && /HTTP Error 429|Connection reset by peer/.test(note))
     return "client-third-party";
 
@@ -168,9 +184,11 @@ export function classifyFailure(
 }
 
 function namespace(sample: Sample) {
-  const burst = /^(burst-\d+)\/(.+)$/.exec(sample.scenario);
+  const cohort = parseCohortScenario(sample.scenario);
 
-  return burst ? `${burst[1]}/${burst[2] === "all-ready" ? "cohort" : "member"}` : "iteration";
+  return cohort
+    ? `${cohort.kind}-${cohort.k}/${cohort.aggregate ? "cohort" : "member"}`
+    : "iteration";
 }
 
 /** Delete scenarios, including a burst member's (`burst-10/destroy`). */
@@ -357,16 +375,21 @@ export function mergeSources(
     };
   });
 
-  // Cohort aggregates inherit classification from their failed creates, without changing outcomes.
+  // Cohort aggregates inherit classification from their failed members, without changing outcomes.
   for (const sample of samples) {
-    if (sample.outcome.kind !== "failure" || !sample.scenario.endsWith("/all-ready")) continue;
-    const k = Number(/^burst-(\d+)/.exec(sample.scenario)?.[1]);
+    const cohort = parseCohortScenario(sample.scenario);
+
+    if (sample.outcome.kind !== "failure" || !cohort?.aggregate) continue;
+    const { kind, k } = cohort;
+
+    // A readiness burst fails on its creates; a cpu-burst cohort on its creates or CPU workloads.
+    const members = kind === "burst" ? ["cold"] : ["cold", "cpu"];
 
     const failures = samples.filter(
       (s) =>
         s.sourceRunId === sample.sourceRunId &&
         s.provider === sample.provider &&
-        s.scenario === `burst-${k}/cold` &&
+        members.some((member) => s.scenario === `${kind}-${k}/${member}`) &&
         Math.floor(s.sourceIteration / k) === sample.sourceIteration &&
         s.outcome.kind === "failure",
     );
@@ -383,13 +406,15 @@ export function mergeSources(
 
   const selection = attemptPolicy
     ? selectAttempts(samples, attemptPolicy)
-    : { samples, removed: {}, removedByTrack: {} };
+    : { samples, removed: {}, removedByTrack: {}, stressRemoved: {} };
 
   return {
     attemptPolicy,
     selectionRemoved: selection.removed,
     /** selectionRemoved split by track, so each track's export can disclose its own. */
     selectionRemovedByTrack: selection.removedByTrack,
+    /** Stress rows (cpu-sustained, cpu-burst, survival) removed by whole unit, kept apart from selectionRemoved. */
+    stressSelectionRemoved: selection.stressRemoved,
     schemaVersion: "publication-merge-v1" as const,
     runId: "publication-final",
     bootstrapSeed: seed,
@@ -410,7 +435,7 @@ export function mergeSources(
       reliability:
         "Raw = successes / (successes + failures). Excluding limits/client = successes / (successes + provider-operation failures). Skipped and blocked rows are separate in both denominators. Aggregate rates count observations, including correlated/derived metrics, not unique sandbox reliability.",
       failureClass:
-        "Only failure rows classified: provider-account-limit (Boat quota; Daytona burst invalid_argument, likely concurrency; aggregates inherit); client-third-party (network-mbps HTTP 429 or resets); provider-operation (all remaining operation failures, cause may be unresolved).",
+        "Only failure rows classified: provider-account-limit (Boat quota wording outside the cpu-burst/survival cohorts; Daytona burst invalid_argument, likely concurrency; cpu-burst/survival creates and unresponsive heartbeat windows with HTTP 429, or SDK code quota and no HTTP status, and no proven death or provider failure; a heartbeat after its deadline is a timeout; aggregates inherit); client-third-party (network-mbps HTTP 429 or resets); provider-operation (all remaining operation failures, cause may be unresolved).",
       costs:
         "Use original-source sandbox-lifetime estimatedCost only, before attempt selection, including restored lifetime already charged there; do not sum scenario allocations. Unknown lifetime costs stay unknown. Native currency, no FX conversion. Recorded pricing per source retained; reportPricing captures the existing pricing code used for sandbox-hour and command-efficiency estimates; budgets.estimatedUSD is a harness guard, not spend.",
     },
@@ -541,7 +566,9 @@ export async function mergeCommand(args: string[]) {
   report.runId = basename(output);
 
   if (
-    report.samples.length + sum(Object.values(report.selectionRemoved)) !==
+    report.samples.length +
+      sum(Object.values(report.selectionRemoved)) +
+      sum(Object.values(report.stressSelectionRemoved)) !==
     report.inputSampleCount
   )
     throw new Error("Sample conservation failed");

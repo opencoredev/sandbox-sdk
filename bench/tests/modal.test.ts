@@ -294,6 +294,10 @@ it("gives Modal sandboxes a hard lifetime covering a whole iteration, or the con
   const defaults = parseV2(["--providers", "modal"]);
   // 180 s per scenario for 15 scenarios plus create, fingerprint, restore and destroy.
   expect(lifetimeOptions("modal", defaults)).toEqual({ timeoutMs: 180_000 * 19 });
+  // A cpu-sustained run (named, never by `all`) adds its probe step.
+  expect(
+    lifetimeOptions("modal", parseV2(["--scenarios", "cpu-sustained", "--bursts", ""])),
+  ).toEqual({ timeoutMs: 180_000 * 20 });
   expect(lifetimeOptions("modal", parseV2(["--lifetime-ms", "modal=7200000"]))).toEqual({
     timeoutMs: 7_200_000,
   });

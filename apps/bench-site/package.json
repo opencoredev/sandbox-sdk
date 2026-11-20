@@ -5,7 +5,7 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev",
-    "data": "bun run --cwd ../../bench bench site-data",
+    "data": "bun run --cwd ../../bench bench site-data --no-stress",
     "typecheck": "next typegen && tsc --noEmit",
     "lint": "oxlint src"
   },

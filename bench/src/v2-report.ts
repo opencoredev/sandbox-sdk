@@ -7,6 +7,9 @@ import { pricing } from "./pricing.js";
 
 const f = (v: number | null) => (v === null ? "unknown" : v.toPrecision(5));
 
+/** A stress cohort estimate: a cost, unknown, or skipped above the account cap. */
+const g = (v: number | null | "skipped") => (v === "skipped" ? v : f(v));
+
 const esc = (v: string) =>
   v
     .replaceAll("&", "&amp;")
@@ -135,6 +138,20 @@ export function markdownV2(r: ReportV2) {
     );
   rows.push(
     "",
+    "## Stress planning estimates",
+    "",
+    "CPU sustained as 30 dedicated iterations (create, fingerprint, probe, destroy); cpu-burst and survival at K=10 and K=25 with the configured number of cohorts, from the pilot's mean member lifetime at any K. Each sandbox is priced on its own (minimum billed time, rounding and creation fee apply per sandbox), then multiplied. unknown means the pilot did not run that suite; skipped means K exceeds the account cap, so that cohort is not collected. These are extrapolations, not quotes, and are not part of the totals above.",
+    "",
+    "| Provider | Currency | CPU sustained 30 | CPU burst 10 | CPU burst 25 | Survival 10 | Survival 25 | Total |",
+    "|---|---|---:|---:|---:|---:|---:|---:|",
+  );
+
+  for (const p of projectCosts(r))
+    rows.push(
+      `|${p.provider}|${p.currency}|${f(p.stress.cpuSustained30)}|${g(p.stress.cpuBurst10)}|${g(p.stress.cpuBurst25)}|${g(p.stress.survival10)}|${g(p.stress.survival25)}|${f(p.stress.total)}|`,
+    );
+  rows.push(
+    "",
     "## Client headroom",
     "",
     "Host CPU/load/network describe the harness host during each sample. High-load flag: normalized load >=1 or host busy fraction >=0.90. Network includes all host traffic; overlapping samples are not additive.",
@@ -161,10 +178,16 @@ export function markdownV2(r: ReportV2) {
 
   for (const p of r.providers) rows.push(`- ${p.name}: ${p.note}`);
 
-  for (const [provider, b] of Object.entries(r.budgets))
+  for (const [provider, b] of Object.entries(r.budgets)) {
     rows.push(
-      `- ${provider}: ${b.created} sandbox attempts, estimated budget USD ${f(b.estimatedUSD)}; ${b.stop ?? "budget not hit"}.`,
+      `- ${provider}: ${b.created} sandbox attempts, estimated budget USD ${f(b.estimatedUSD)}${b.capUSD === undefined ? "" : ` of a ${f(b.capUSD)} cap`}; ${b.stop ?? "budget not hit"}.`,
     );
+
+    for (const l of b.openLiabilities ?? [])
+      rows.push(
+        `- ${provider}: sandbox ${l.id} still live at return after ${Math.round(l.liveMs / 1000)} s; priced only to the return, it costs more until \`bun bench reap\` removes it.`,
+      );
+  }
 
   for (const c of r.cleanup)
     rows.push(

@@ -95,3 +95,48 @@ export class DeletionWork {
     }
   }
 }
+
+/** Releases every waiter together once `size` arrivals have been counted. */
+export class Barrier {
+  private arrived = 0;
+  private release = () => {};
+  private readonly gate = new Promise<void>((resolve) => {
+    this.release = resolve;
+  });
+  /** `performance.now()` when the last arrival released the barrier. */
+  releasedAt: number | null = null;
+  constructor(private readonly size: number) {}
+  arrive(): Promise<void> {
+    if (++this.arrived === this.size) {
+      this.releasedAt = performance.now();
+      this.release();
+    }
+
+    return this.gate;
+  }
+}
+
+/**
+ * One cohort member's two waits: `ready` once every member is created (or failed), `done` once
+ * every member has finished its work. Each counts this member once however often it is awaited,
+ * so a member that fails early can still arrive at both from its cleanup path.
+ */
+export class CohortGates {
+  private readyWait: Promise<void> | null = null;
+  private doneWait: Promise<void> | null = null;
+  constructor(
+    private readonly readyBarrier: Barrier,
+    private readonly doneBarrier: Barrier,
+  ) {}
+  ready() {
+    this.readyWait ??= this.readyBarrier.arrive();
+
+    return this.readyWait;
+  }
+  async done() {
+    await this.ready();
+    this.doneWait ??= this.doneBarrier.arrive();
+
+    return this.doneWait;
+  }
+}

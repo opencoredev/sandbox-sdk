@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,8 @@ import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
 import * as snapshots from "../src/snapshots.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, fakeNativeModules } from "./native-fakes.js";
+import { fingerprintOf } from "../src/connections.js";
 import { reapRun } from "../src/recovery.js";
 import { parseV2 } from "../src/v2-config.js";
 
@@ -20,7 +21,21 @@ const proof = (sourceId: string) =>
     verifiedAt: new Date().toISOString(),
   });
 
+// Native clients take their credentials from the adapters' resolvers, which require a key.
+beforeEach(() => {
+  for (const key of [
+    "E2B_API_KEY",
+    "DAYTONA_API_KEY",
+    "BOXD_API_KEY",
+    "TENKI_API_KEY",
+    "FREESTYLE_API_KEY",
+    "SUPERSERVE_API_KEY",
+  ])
+    vi.stubEnv(key, "offline");
+});
+
 afterEach(async () => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.useRealTimers();
   await Promise.all(dirs.splice(0).map((out) => rm(out, { recursive: true, force: true })));
@@ -154,12 +169,16 @@ it.each(["e2b", "daytona", "boxd", "tenki", "freestyle", "superserve"])(
       sandboxId: "source",
     });
 
-    const provider = {
-      ...memory(),
-      native: () => {
-        throw new Error("parent gone");
+    const provider = bound(
+      {
+        ...memory(),
+        name,
+        native: () => {
+          throw new Error("parent gone");
+        },
       },
-    };
+      { apiKey: "test-key" },
+    );
 
     const page = {
       hasNext: false,
@@ -214,7 +233,9 @@ it("does not mistake a missing E2B list entry for definitive absence", async () 
       SandboxNotFoundError: class extends Error {},
     },
   });
-  await expect(snapshots.inspectSnapshot("e2b", memory(), "source", "snapshot")).rejects.toThrow(
+  const provider = bound({ ...memory(), name: "e2b" }, { apiKey: "test-key" });
+
+  await expect(snapshots.inspectSnapshot("e2b", provider, "source", "snapshot")).rejects.toThrow(
     "absence unproven",
   );
 });
@@ -223,7 +244,8 @@ it.each([true, false])(
   "reap handles a gone parent with recorded provenance=%s",
   async (recorded) => {
     const out = await directory();
-    const provider = memory();
+    // Named e2b and bound like the adapter, so the production cleaner has its connection.
+    const provider = bound({ ...memory(), name: "e2b" }, { apiKey: "test-key" });
     const remove = vi.fn().mockResolvedValue(undefined);
 
     const inspect = vi
@@ -242,6 +264,8 @@ it.each([true, false])(
       join(out, "ownership.json"),
       JSON.stringify({
         runId: "snapshot-run",
+        // As the run journaled it: reap reads only through the connection the run used.
+        connectionFingerprints: { e2b: await fingerprintOf(provider) },
         resources: [
           {
             provider: "e2b",
@@ -288,13 +312,17 @@ it("reap removes a restored sandbox, then its proven snapshot, then the source",
   const source = await createSandbox(backing, { labels: { "sandbox-bench-run": "snapshot-run" } });
   const restore = await createSandbox(backing, { labels: { "sandbox-bench-run": "snapshot-run" } });
 
-  const provider = {
-    ...backing,
-    destroy: async (id: string) => {
-      events.push(id === source.id ? "source" : "restore");
-      await backing.destroy(id);
+  const provider = bound(
+    {
+      ...backing,
+      name: "e2b",
+      destroy: async (id: string) => {
+        events.push(id === source.id ? "source" : "restore");
+        await backing.destroy(id);
+      },
     },
-  };
+    { apiKey: "test-key" },
+  );
 
   vi.spyOn(snapshots.snapshotMetadata, "inspect").mockResolvedValue({
     exists: true,
@@ -319,6 +347,8 @@ it("reap removes a restored sandbox, then its proven snapshot, then the source",
     join(out, "ownership.json"),
     JSON.stringify({
       runId: "snapshot-run",
+      // As the run journaled it: reap reads only through the connection the run used.
+      connectionFingerprints: { e2b: await fingerprintOf(provider) },
       resources: [
         { provider: "e2b", id: source.id, kind: "sandbox", parent: null },
         { provider: "e2b", id: restore.id, kind: "sandbox", parent: null },
