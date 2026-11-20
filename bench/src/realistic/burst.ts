@@ -343,6 +343,12 @@ export interface RoundPlan {
   readonly created: Set<string>;
   /** Creates still in flight, shared across rounds so the final sweep can wait for them. */
   readonly openCreates?: Set<Promise<void>>;
+  /**
+   * Attempts whose create named its sandbox only after the task stopped waiting, so the saved
+   * record still says the allocation is unknown. The final sweep reads this before calling one
+   * unknown.
+   */
+  readonly namedLate?: Set<string>;
   readonly listTimeoutMs?: number;
   /** How long the cleanup waits for each deletion. Default 120 s, as an attempt's own. */
   readonly destroyTimeoutMs?: number;
@@ -607,7 +613,10 @@ export async function runRound(plan: RoundPlan): Promise<RoundReport> {
         owned: async (id) => {
           own(id);
 
-          if (closed) await journal(id);
+          if (closed) {
+            plan.namedLate?.add(base(task, 0).attemptId);
+            await journal(id);
+          }
         },
         open: plan.openCreates,
       });

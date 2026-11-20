@@ -632,6 +632,7 @@ export async function finalSweep({
   out,
   owned,
   openCreates,
+  namedLate = new Set<string>(),
   createWaitMs = openCreateWaitMs,
   providerDeadlineMs = sweepTimeoutMs,
   callTimeoutMs = 120_000,
@@ -643,6 +644,8 @@ export async function finalSweep({
   out: string;
   owned: ReadonlyMap<string, ReadonlySet<string>>;
   openCreates: ReadonlySet<Promise<void>>;
+  /** Attempts whose create named its sandbox after the record was written: owned and swept. */
+  namedLate?: ReadonlySet<string>;
   createWaitMs?: number;
   providerDeadlineMs?: number;
   /** Bound on each provider call, as sweepProviders defaults it. */
@@ -719,7 +722,7 @@ export async function finalSweep({
 
   try {
     const unknown = (await readLines(join(out, "attempts.jsonl"), storedRecordSchema)).filter(
-      (r) => r.runId === runId && allocationUnknown(r),
+      (r) => r.runId === runId && allocationUnknown(r) && !namedLate.has(r.attemptId),
     );
 
     if (unknown.length) {
@@ -901,6 +904,8 @@ export async function burstCommand(args: string[]) {
   const owned = new Map(loaded.map(({ setup }) => [setup.name, new Set<string>()]));
   // Creates still in flight, so the final sweep can wait for the sandboxes they name.
   const openCreates = new Set<Promise<void>>();
+  // Attempts whose create named a sandbox after their record was written.
+  const namedLate = new Set<string>();
 
   try {
     await runPool({
@@ -937,6 +942,7 @@ export async function burstCommand(args: string[]) {
               outputDir: join(out, "outputs"),
               created,
               openCreates,
+              namedLate,
               onRecord: (record) => appendFile(attemptsPath, JSON.stringify(record) + "\n"),
               onSandbox: (id) =>
                 note({ kind: "sandbox", provider: setup.name, id, round: step.round }),
@@ -959,6 +965,7 @@ export async function burstCommand(args: string[]) {
       out,
       owned,
       openCreates,
+      namedLate,
     });
 
     if (problems.length) {

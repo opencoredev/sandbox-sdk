@@ -1807,6 +1807,48 @@ describe("a create the SDK stopped waiting on", () => {
     expect(report.unresolved).toEqual([]);
   }, 5_000);
 
+  it("marks an attempt whose create named its sandbox only after the task stopped waiting", async () => {
+    const records: AttemptRecord[] = [];
+    const created = new Set<string>();
+    const openCreates = new Set<Promise<void>>();
+    const namedLate = new Set<string>();
+    let allocated = "";
+
+    // Answers well past the slot timeout plus the grace: the record is written first.
+    const slow = provider((inner) => ({
+      create: async (input) => {
+        await sleep(600);
+        const info = await inner.create(input);
+        allocated = info.id;
+
+        return info;
+      },
+    }));
+
+    const report = await runRound(
+      round(
+        {
+          size: 1,
+          entry: entry({ provider: slow }),
+          manifest: withSlotTimeout(fixture.manifest, 100),
+          timeoutGraceMs: 100,
+          created,
+          openCreates,
+          namedLate,
+        },
+        records,
+      ),
+    );
+
+    const [record] = report.records;
+
+    expect(record && allocationUnknown(record)).toBe(true);
+    await Promise.allSettled(openCreates);
+    expect(created.has(allocated)).toBe(true);
+    expect([...namedLate]).toEqual([record?.attemptId]);
+    await slow.destroy(allocated);
+  }, 5_000);
+
   it("owns a sandbox the create returned after the abort", async () => {
     const records: AttemptRecord[] = [];
     let allocated = "";
@@ -2507,6 +2549,19 @@ describe("the final sweep, per provider", () => {
       });
 
       expect(problems).toEqual([expect.stringContaining("rtb-final-r1-t0-boat")]);
+
+      // The same create, had it named its sandbox during the sweep's wait, is owned and swept.
+      expect(
+        await finalSweep({
+          runId: "rtb-final",
+          entries: [slot("boat", memory())],
+          note: async () => {},
+          out: dir,
+          owned: new Map(),
+          openCreates: new Set(),
+          namedLate: new Set(["rtb-final-r1-t0-boat"]),
+        }),
+      ).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
