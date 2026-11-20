@@ -90,6 +90,9 @@ describe("profile factory options", () => {
     expect(provisionedOf(luxor, "same-machine", { runId: "rw-disk-head1" })?.diskGiB).toBe(20);
     expect(provisionedOf(superserve, "same-machine", { runId: "rw-disk-ss2" })?.diskGiB).toBe(20);
     expect(provisionedOf(luxor, "same-machine", { runId: "rw-head1" })?.diskGiB).toBe(5);
+    // Only the provider that ran a listed run gets its disk, and the lookup is not an object key.
+    expect(provisionedOf(luxor, "same-machine", { runId: "rw-disk-ss2" })?.diskGiB).toBe(5);
+    expect(provisionedOf(luxor, "same-machine", { runId: "constructor" })?.diskGiB).toBe(5);
     // A track whose disk never changed prices an old record at today's size.
     expect(provisionedOf(luxor, "default", {})).toEqual(luxor.tracks.default.provisioned);
     // New attempts provision, and budget, the 20 GB disk.

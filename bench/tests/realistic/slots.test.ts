@@ -227,6 +227,54 @@ describe("slot execution", () => {
     });
   });
 
+  it("starts an abandoned attempt's record after its App lookup", async () => {
+    const records: AttemptRecord[] = [];
+
+    const quick = {
+      ...fixture.manifest,
+      profiles: {
+        "fix-and-test": { ...fixture.manifest.profiles["fix-and-test"]!, slotTimeoutMs: 150 },
+      },
+    };
+
+    const stubborn: typeof runAttempt = async (plan, environment) => {
+      await environment.onSandbox?.(plan.provider.name, "stuck-2");
+      await sleep(5_000);
+
+      throw new Error("never seen");
+    };
+
+    await runBatch(
+      batch(
+        {
+          manifest: quick,
+          slots: slots.slice(0, 1),
+          providers: [
+            provider("e2b", {
+              // A lookup that finishes inside the slot: our side, so the record starts after it.
+              beforeAttempt: async () => {
+                await sleep(80);
+
+                return {
+                  labels: {},
+                  created: async () => {},
+                  failed: async () => {},
+                  destroyed: async () => {},
+                };
+              },
+            }),
+          ],
+          timeoutGraceMs: 100,
+          attempt: stubborn,
+        },
+        records,
+      ),
+    );
+
+    expect(records[0]).toMatchObject({ completion: { reason: "slot-timeout" } });
+    expect(records[0]!.startOffsetMs).toBeGreaterThanOrEqual(70);
+  });
+
   it("keeps the entry's volume on a failed attempt's record, so it is still priced", async () => {
     const records: AttemptRecord[] = [];
 

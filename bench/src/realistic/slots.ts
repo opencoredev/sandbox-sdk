@@ -503,8 +503,8 @@ export async function runBatch(plan: BatchPlan): Promise<BatchReport> {
               "The attempt did not return within the slot timeout plus its grace; abandoned",
             );
 
-            abandoned.startedAt = invokedAt;
-            abandoned.startOffsetMs = invokedAt - slotStartedAt;
+            abandoned.startedAt = attemptStartedAt;
+            abandoned.startOffsetMs = attemptStartedAt - slotStartedAt;
             abandoned.sandboxIds = created;
             // Deletion is unconfirmed: the reserved-gap cleanup must remove these IDs.
             abandoned.deletionConfirmed = created.length === 0;
