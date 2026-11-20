@@ -34,6 +34,7 @@ import {
   accountCap,
   cohortAggregate,
   cohortBoundMs,
+  deleteAttemptMs,
   cohortOnly,
   isCohortKind,
   iterationBoundMs,
@@ -407,7 +408,7 @@ export async function runV2(
 
   if (config.scenarios.includes("cpu-burst"))
     report.methodology.push(
-      `CPU burst: K sandboxes created at once; each stages its probe, then once every member is ready (or failed) all dispatch the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's exec return (timestamped before any report write) and is a sample only when all K complete. Overlap: each member's phases are placed on the host clock using its guest clock offset (one round trip, uncertainty half of it); the aggregate records start skew and the share of a median phase during which every member ran it, and flags the cohort when the worst case falls below ${overlapThreshold}. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.`,
+      `CPU burst: K sandboxes created at once; each stages its probe, then once every member is ready (or failed) all dispatch the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's exec return (timestamped before any report write) and is a sample only when all K complete. Overlap: each member's phases are placed on the host clock using the guest clock offset read at staging; the guest clock is read again after the run, and the uncertainty is the largest offset error consistent with both reads (each within half its round trip) and the exec the host timed, so drift or a step widens it. The aggregate records start skew and the share of a median phase during which every member ran it, and flags the cohort when the unrounded worst case falls below ${overlapThreshold}. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.`,
     );
 
   if (config.scenarios.includes("survival"))
@@ -459,6 +460,12 @@ export async function runV2(
   // The durable journal records cleanup candidates; live labels authorize deletion.
   const unsafeProviders = new Set<string>();
   const deletions = new DeletionWork();
+  /**
+   * Sandboxes whose iteration's cleanup reserve ran out before a deletion was confirmed. They
+   * stay journaled for `bun bench reap`; this run touches them no more, so no sandbox is held
+   * past the reserve its admission charged.
+   */
+  const leftForReap = new Set<string>();
   const restores = new RestoreCleanup();
 
   const owned = new Map<
@@ -510,9 +517,25 @@ export async function runV2(
       });
   }
 
-  async function resolveAbsent(p: ReadyProvider, id: string) {
-    await deletions.wait(p.name, id, Math.min(config["timeout-ms"] / 2, 30_000));
-    const evidence = await lookupSandbox(p.provider, id, config["timeout-ms"]);
+  /** Milliseconds left before `endBy` (`performance.now()`), or unbounded without one. */
+  const leftUntil = (endBy: number | undefined) =>
+    endBy === undefined ? Infinity : endBy - performance.now();
+
+  async function resolveAbsent(p: ReadyProvider, id: string, endBy?: number) {
+    if (leftUntil(endBy) <= 0) return false;
+    await deletions.wait(
+      p.name,
+      id,
+      Math.min(config["timeout-ms"] / 2, 30_000, Math.max(0, leftUntil(endBy))),
+    );
+
+    if (leftUntil(endBy) <= 0) return false;
+
+    const evidence = await lookupSandbox(
+      p.provider,
+      id,
+      Math.min(config["timeout-ms"], leftUntil(endBy)),
+    );
 
     if (!isAbsent(evidence)) {
       for (const item of report.cleanupReview ?? [])
@@ -542,15 +565,48 @@ export async function runV2(
       if (entry.provider === p.name && entry.kind === "sandbox") await resolveAbsent(p, entry.id);
   }
 
+  /**
+   * The iteration's cleanup reserve ran out before a deletion was confirmed: leave the sandbox
+   * journaled for `bun bench reap`, stop admitting more on this provider, and say so.
+   */
+  function reserveExhausted(loaded: ReadyProvider, id: string) {
+    leftForReap.add(`${loaded.name}/${id}`);
+    review(
+      loaded.name,
+      id,
+      "Cleanup reserve exhausted before deletion was confirmed; left running and journaled for `bun bench reap`",
+    );
+
+    for (const item of report.cleanupReview ?? [])
+      if (item.provider === loaded.name && item.id === id && item.kind === "sandbox")
+        item.status = "unresolved";
+    const state = states.get(loaded.name);
+
+    if (state) state.stop ??= "Cleanup reserve exhausted; sandbox left for reap";
+
+    return new Error(`Cleanup reserve exhausted for ${id}; run bun bench reap`);
+  }
+
+  /**
+   * Verify ownership and delete, retrying a failed delete up to three times. With `endBy` (a
+   * stress sandbox's reserve, as `performance.now()`), an attempt starts only while a whole one
+   * (`deleteAttemptMs`) still fits and every wait is cut to the time left, so retries never hold
+   * the sandbox past what admission charged; a sandbox still there is left for `reap`.
+   */
   async function remove(
     loaded: ReadyProvider,
     id: string,
     measurement?: { clock: PhaseClock; phases: Record<string, number> },
+    endBy?: number,
   ) {
     if (restores.blocksSource(loaded.name, id))
       throw new Error("Restore cleanup unresolved; source retained");
 
+    const stepMs = () => Math.min(config["timeout-ms"], leftUntil(endBy));
+
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (leftUntil(endBy) < deleteAttemptMs(config["timeout-ms"]))
+        throw reserveExhausted(loaded, id);
       const verifyStart = performance.now();
       let verified: boolean;
 
@@ -561,8 +617,9 @@ export async function runV2(
             loaded.provider,
             id,
             config.run,
-            config["timeout-ms"],
-            config["ownership-visibility-ms"],
+            stepMs(),
+            config["ownership-visibility-ms"] &&
+              Math.min(config["ownership-visibility-ms"], stepMs()),
           ));
       } finally {
         if (measurement)
@@ -571,7 +628,10 @@ export async function runV2(
       }
 
       if (!verified) {
-        if (await resolveAbsent(loaded, id)) return;
+        if (await resolveAbsent(loaded, id, endBy)) return;
+
+        // Cut short by the reserve, verification proves nothing either way.
+        if (leftUntil(endBy) <= 0) throw reserveExhausted(loaded, id);
         restores.mark(loaded.name, id, "quarantined");
         review(
           loaded.name,
@@ -619,7 +679,7 @@ export async function runV2(
         }
 
         try {
-          await deadline(config["timeout-ms"], () =>
+          await deadline(stepMs(), () =>
             deletions.start(loaded.name, id, () => loaded.provider.destroy(id)),
           );
         } finally {
@@ -650,7 +710,9 @@ export async function runV2(
         return;
       } catch (e) {
         if (e instanceof DeadlineError) {
-          if (await resolveAbsent(loaded, id)) return;
+          if (await resolveAbsent(loaded, id, endBy)) return;
+
+          if (leftUntil(endBy) <= 0) throw reserveExhausted(loaded, id);
           review(loaded.name, id, "Deletion deadline expired; exact existence remains unresolved");
 
           for (const item of report.cleanupReview ?? [])
@@ -723,15 +785,35 @@ export async function runV2(
 
     const budgetMax = config["provider-max-sandboxes"][p.name] ?? config["max-sandboxes"];
     const dollarsMax = config["provider-max-dollars"][p.name] ?? config["max-dollars"];
+
+    // The longest this iteration may hold a sandbox. Admission charges a reserve for it, and
+    // cleanup ends by it (`cleanupEndBy`), so the charge never outgrows the reserve.
+    const boundMs = costSuite
+      ? timeout * 4
+      : cohort
+        ? cohortBoundMs(cohort.run.kind, timeout, survivalPlan)
+        : iterationBoundMs(timeout, config.scenarios);
+
+    // Stress sandboxes (cpu-burst and survival members, cpu-sustained iterations) reserve their
+    // cleanup steps; the publication suites keep their published cleanup unchanged.
+    const stress =
+      cohort?.run.kind === "cpu-burst" ||
+      cohort?.run.kind === "survival" ||
+      (!cohort && config.scenarios.includes("cpu-sustained"));
+
+    const cleanupEndBy = stress ? lifeStart + boundMs : undefined;
+
+    /** A cleanup wait: the step timeout, cut to what is left of a stress sandbox's reserve. */
+    const cleanupMs = () =>
+      cleanupEndBy === undefined
+        ? timeout
+        : Math.max(0, Math.min(timeout, cleanupEndBy - performance.now()));
+
     reserve = budgetUSD(
       p.name,
       estimateCost(
         p.name,
-        costSuite
-          ? timeout * 4
-          : cohort
-            ? cohortBoundMs(cohort.run.kind, timeout, survivalPlan)
-            : iterationBoundMs(timeout, config.scenarios),
+        boundMs,
         reservationResources(p.name, state.fp, allocation.requestedSize),
         p.region,
       ) ?? dollarsMax,
@@ -1109,7 +1191,7 @@ export async function runV2(
         scenario,
         async () => {
           try {
-            await remove(p, id, { clock, phases });
+            await remove(p, id, { clock, phases }, cleanupEndBy);
           } finally {
             // Modal: the row times a confirmed stop; these split it into the request and the stop.
             const timing = destroyTimings.get(`${p.name}/${id}`);
@@ -1129,6 +1211,9 @@ export async function runV2(
         },
         phases,
         clock,
+        null,
+        // A stress sandbox's retries run inside its remaining reserve, never on in the background.
+        cleanupEndBy === undefined ? timeout : Math.max(1, cleanupEndBy - performance.now()),
       );
     }
 
@@ -1138,6 +1223,8 @@ export async function runV2(
       phaseValues: Record<string, number> = {},
       clock?: PhaseClock,
       failureDetails: F | null = null,
+      /** The step's deadline, and the drain after a failure; a stress destroy runs to its reserve. */
+      limitMs = timeout,
     ) {
       const start = performance.now(),
         at = new Date().toISOString(),
@@ -1169,7 +1256,7 @@ export async function runV2(
       }
 
       try {
-        const result = await deadline(timeout, (signal) =>
+        const result = await deadline(limitMs, (signal) =>
           pending.track(action(AbortSignal.any([signal, stopping.signal]))),
         );
 
@@ -1222,7 +1309,7 @@ export async function runV2(
             dependencies.set(target, dependencies.get(scenario) ?? scenario);
         }
 
-        if (!(await pending.drain(timeout))) {
+        if (!(await pending.drain(Math.min(timeout, limitMs)))) {
           unsafe = true;
           unsafeProviders.add(p.name);
           state.stop = "Timed-out work did not drain; stopped for cleanup safety";
@@ -2163,14 +2250,14 @@ export async function runV2(
     } finally {
       await cohort?.gates.done();
 
-      if (!(await pending.drain(timeout))) {
+      if (!(await pending.drain(cleanupMs()))) {
         unsafeProviders.add(p.name);
         state.stop = "Pending work could not drain; no further sandboxes scheduled";
       }
 
       if (createEvidence.unverifiedSandboxId) {
         try {
-          await remove(p, createEvidence.unverifiedSandboxId);
+          await remove(p, createEvidence.unverifiedSandboxId, undefined, cleanupEndBy);
         } catch {
           /* Keep unresolved quarantine. */
         }
@@ -2185,7 +2272,7 @@ export async function runV2(
               (v.kind === "snapshot-source" && v.id === id)),
         );
 
-        if (!isSource) await measureDestroy("destroy", id);
+        if (!isSource && !leftForReap.has(`${p.name}/${id}`)) await measureDestroy("destroy", id);
       }
 
       for (const source of [...owned.values()].filter(
@@ -2262,6 +2349,7 @@ export async function runV2(
       for (const id of ids) {
         if (
           !owned.has(`${p.name}/${id}`) ||
+          leftForReap.has(`${p.name}/${id}`) ||
           restores.blocksSource(p.name, id) ||
           [...owned.values()].some(
             (v) =>
@@ -2274,7 +2362,7 @@ export async function runV2(
         await measureDestroy("destroy", id);
       }
 
-      if (!(await pending.drain(timeout))) {
+      if (!(await pending.drain(cleanupMs()))) {
         unsafeProviders.add(p.name);
         state.stop = "Cleanup could not drain";
       }
@@ -2606,10 +2694,18 @@ export async function runV2(
   // Cohorts are isolated from normal iterations and from each other. K is bounded by account limits.
   const kinds = costSuite ? [] : selectedCohorts(config.scenarios, config.bursts);
 
-  for (let cohortIndex = 0; cohortIndex < config["burst-cohorts"]; cohortIndex++)
+  // Cohort indices count per kind and K, so a K listed twice (`--bursts 1,1`) gives distinct cohorts.
+  const cohortIndices = new Map<string, number>();
+
+  for (let round = 0; round < config["burst-cohorts"]; round++)
     for (const kind of kinds)
-      for (const k of config.bursts)
+      for (const k of config.bursts) {
+        const key = `${kind}-${k}`;
+        const cohortIndex = cohortIndices.get(key) ?? 0;
+        cohortIndices.set(key, cohortIndex + 1);
+
         for (const p of ready) await runCohort(p, kind, k, cohortIndex);
+      }
 
   for (const p of ready) {
     const errors: string[] = [];
@@ -2668,7 +2764,7 @@ export async function runV2(
     );
 
     for (const id of ids)
-      if (!sourceIds.has(id)) {
+      if (!sourceIds.has(id) && !leftForReap.has(`${p.name}/${id}`)) {
         try {
           await remove(p, id);
         } catch (e) {

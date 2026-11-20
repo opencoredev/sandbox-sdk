@@ -18,7 +18,7 @@ import { statistics } from "./stats.js";
 import { distribution } from "./v2-stats.js";
 import type { Fingerprint } from "./fingerprint.js";
 import { stressData, type StressReport } from "./stress-site.js";
-import { isStressSample } from "./suite.js";
+import { isStressRun, isStressSample } from "./suite.js";
 
 // Compact, chart-ready view of a merged publication report for apps/bench-site.
 // Every number here is derived from results.json; the site never hard-codes measurements.
@@ -474,11 +474,15 @@ export function siteData(
   track: "default" | "same-spec" = "default",
   stressReport: StressReport | null = null,
 ) {
-  const stressRows = input.samples.filter(isStressSample);
+  // A stress run is refused by its plan, whatever rows selection left of it.
+  const stressRuns = new Set([
+    ...input.sources.filter(isStressRun).map((s) => s.runId),
+    ...input.samples.filter(isStressSample).map((s) => s.sourceRunId),
+  ]);
 
-  if (stressRows.length)
+  if (stressRuns.size)
     throw new Error(
-      `The publication report has ${stressRows.length} stress rows (runs ${[...new Set(stressRows.map((s) => s.sourceRunId))].join(", ")}): merge stress runs into their own report and pass it with --stress-report`,
+      `The publication report includes stress runs (${[...stressRuns].join(", ")}): merge stress runs into their own report and pass it with --stress-report`,
     );
 
   const disclosed = exclusions(input, track);
@@ -672,11 +676,18 @@ export async function siteDataCommand(args: string[]) {
     options: {
       track: { type: "string", default: "default" },
       report: { type: "string", default: "results/publication-final" },
-      // A merge of stress runs only (cpu-sustained, cpu-burst, survival); omitted, stress is empty.
+      // A merge of stress runs only (cpu-sustained, cpu-burst, survival). One of it or
+      // --no-stress is required, so the stress section is never emptied by omission.
       "stress-report": { type: "string" },
+      "no-stress": { type: "boolean", default: false },
       out: { type: "string", default: "../apps/bench-site/src/data/benchmark.json" },
     },
   });
+
+  if (values["no-stress"] === (values["stress-report"] !== undefined))
+    throw new Error(
+      "Pass exactly one of --stress-report DIR (a merge of stress runs) or --no-stress (publish an empty stress section)",
+    );
 
   // results.json is written by `bun bench merge`; its shape is PublicationReport by construction.
   const report: PublicationReport = JSON.parse(

@@ -223,7 +223,8 @@ describe("finding 7: CPU burst overlap and segment consistency", () => {
       const before = performance.now();
       const ran = await runStagedCpuProbe(box, staged, 5000);
 
-      expect(events).toEqual(["clock", "run"]);
+      // The clock is read again after the run, to measure any drift or step since staging.
+      expect(events).toEqual(["clock", "run", "clock"]);
       expect(ran.returnedAt).toBeGreaterThan(before);
       expect(ran.returnedAt).toBeLessThanOrEqual(performance.now());
       expect(ran.guest.single[1]).toBeGreaterThan(ran.guest.single[0]);
@@ -573,10 +574,25 @@ describe("findings 1, 2 and 4: publication", () => {
 
   it("2: a rate-limited heartbeat keeps its member's verdict", () => {
     const { cold, windows, aggregate } = rows();
+    const details = detailsObject.parse(windows[1]!.details);
+    const beats = z.array(detailsObject).parse(details.heartbeats);
     windows[1]!.outcome = { kind: "failure", code: "quota", note: "HTTP 429" };
+
+    // The last heartbeat was refused with a typed quota error, so the evidence shows the verdict.
     windows[1]!.details = {
-      ...detailsObject.parse(windows[1]!.details),
+      ...details,
       verdict: { kind: "unresponsive" },
+      heartbeats: [
+        ...beats.slice(0, -1),
+        {
+          ...beats.at(-1),
+          kind: "missed",
+          timedOut: false,
+          note: "HTTP 429",
+          code: "quota",
+          lookup: running,
+        },
+      ],
     };
     const stress = mergeSources([source([...cold, ...windows, aggregate])], [], 45, policy);
 

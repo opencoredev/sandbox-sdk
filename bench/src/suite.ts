@@ -1,36 +1,62 @@
 import { z } from "zod";
 import type { MergeSource } from "./merge.js";
-import { parseCohortScenario } from "./scenarios.js";
+import { cohortOnly, isStressSelection, parseCohortScenario } from "./scenarios.js";
 
 /** Suites keep their samples apart in summaries and attempt selection. */
-export const suiteSchema = z.enum(["main", "snapshot", "burst", "cost", "cpu-burst", "survival"]);
+export const suiteSchema = z.enum([
+  "main",
+  "snapshot",
+  "burst",
+  "cost",
+  "cpu-sustained",
+  "cpu-burst",
+  "survival",
+]);
 
 type Suite = z.infer<typeof suiteSchema>;
 
-/** The suite a source run belongs to, from its scenarios: cost, burst and snapshot runs by name, anything else main. */
+const stressSuiteNames: readonly Suite[] = ["cpu-sustained", "cpu-burst", "survival"];
+
+/**
+ * Whether a source run is a stress run, from its scenario plan: it named a stress suite. The plan
+ * decides, whatever rows a selection policy later keeps or removes.
+ */
+export function isStressRun(source: { config: { scenarios: readonly string[] } }) {
+  return isStressSelection(source.config.scenarios);
+}
+
+/**
+ * The suite a source run belongs to, from its scenarios: cost, readiness-burst, snapshot and
+ * stress runs by name, anything else main. Every row of a stress run is a stress row, so its
+ * ordinary rows (create, fingerprint, destroy, lifetime) take its stress suite.
+ */
 export function suiteFor(source: Pick<MergeSource, "config">): Suite {
-  if (source.config.scenarios.includes("cost")) return "cost";
+  const { scenarios } = source.config;
 
-  if (source.config.scenarios.includes("burst")) return "burst";
+  if (scenarios.includes("cost")) return "cost";
 
-  // A run that names only cpu-burst or survival collects nothing else.
-  for (const kind of ["cpu-burst", "survival"] as const)
-    if (source.config.scenarios.length === 1 && source.config.scenarios[0] === kind) return kind;
+  if (isStressRun(source))
+    return scenarios.includes("cpu-sustained")
+      ? "cpu-sustained"
+      : scenarios.includes("cpu-burst")
+        ? "cpu-burst"
+        : "survival";
 
-  if (source.config.scenarios.length === 1 && source.config.scenarios.includes("snapshot"))
-    return "snapshot";
+  // Only a run of cohorts alone is a burst run; `command,burst` runs normal iterations too.
+  if (scenarios.includes("burst") && cohortOnly(scenarios)) return "burst";
+
+  if (scenarios.length === 1 && scenarios.includes("snapshot")) return "snapshot";
 
   return "main";
 }
 
 /**
- * Rows of the stress suites, added after the publication runs: cpu-sustained in the main suite,
- * and the cpu-burst and survival cohorts. They are selected and published apart from the rest.
+ * Rows of the stress suites, selected and published apart from the rest: every row of a stress
+ * run, and any cpu-sustained row a run collected before stress runs were kept apart.
  */
 export function isStressSample(sample: { suite: Suite; scenario: string }) {
   return (
-    sample.suite === "cpu-burst" ||
-    sample.suite === "survival" ||
+    stressSuiteNames.includes(sample.suite) ||
     /^cpu-sustained(-single|-all)?$/.test(sample.scenario)
   );
 }

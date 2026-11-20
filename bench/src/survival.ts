@@ -1,6 +1,7 @@
+import { z } from "zod";
 import { DeadlineError, deadline } from "./timing.js";
 import { failureOutcome, type FailureOutcome } from "./failure.js";
-import type { LookupEvidence } from "./existence.js";
+import { lookupSchema, type LookupEvidence } from "./existence.js";
 import type { SurvivalPlan } from "./scenarios.js";
 
 /**
@@ -34,6 +35,11 @@ export function heartbeatOffsets(plan: SurvivalPlan): number[] {
   return offsets;
 }
 
+/** How late a timer may fire before its heartbeat no longer counts as sent on its slot. */
+export function graceMs(plan: SurvivalPlan) {
+  return Math.min(plan.intervalMs / 4, 250);
+}
+
 /** Native states that mean the sandbox is no longer running, whatever its record still says. */
 const deadStates = /^(exited|stopped|dead|error|errored|failed|killed|terminated|deleted)$/i;
 
@@ -54,10 +60,11 @@ export type SentHeartbeat =
 export type Heartbeat =
   | SentHeartbeat
   /**
-   * A slot that passed unsent and is never replayed late: `busy` while an earlier miss's call or
-   * lookup was still running, `deadline` when the member's deadline left no room for the call.
+   * A slot that passed unsent and is never replayed late: `busy` while an earlier call or lookup
+   * was still running, `deadline` when the member's deadline left no room for the call, `late`
+   * when the host's own timer woke past the slot's grace. Only `busy` counts against the provider.
    */
-  | { kind: "skipped"; atMs: number; reason: "busy" | "deadline" };
+  | { kind: "skipped"; atMs: number; reason: "busy" | "deadline" | "late" };
 
 export type DeathReason = "absent" | "dead-state" | "not-found" | "rebooted";
 
@@ -66,8 +73,9 @@ export type SurvivalVerdict =
   /** `evidence` is the heartbeat whose answer or lookup proved the death. */
   | { kind: "died"; atMs: number; reason: DeathReason; evidence: SentHeartbeat }
   /**
-   * `missed` counts unanswered slots, skipped ones included. `evidence` is the miss the verdict
-   * rests on: the first that was not a rate limit, else the first miss.
+   * `missed` counts unanswered slots, busy skips included. `evidence` is the miss the verdict
+   * rests on, by `missPrecedence`: the first proven provider failure, else the first typed quota
+   * refusal, else the first miss.
    */
   | {
       kind: "unresponsive";
@@ -109,6 +117,29 @@ export function deathReason(heartbeat: Heartbeat, firstBootId: string | null): D
   }
 }
 
+/** What a missed heartbeat's error proves: a provider failure, a typed quota refusal, or neither. */
+export function missKind(failure: FailureOutcome): "provider" | "quota" | "unknown" {
+  const status = failure.cause?.httpStatus;
+
+  if (failure.code === "quota" || status === 429) return "quota";
+
+  if (
+    (status !== undefined && status >= 500) ||
+    failure.code === "provider" ||
+    failure.code === "unavailable"
+  )
+    return "provider";
+
+  return "unknown";
+}
+
+/**
+ * Which miss decides an unresponsive verdict, strongest first. A proven death outranks all of
+ * them (see `classifyHeartbeats`); then a provider failure, then a typed quota refusal, then an
+ * error that proves neither. A member is an account limit only when no miss proved more.
+ */
+export const missPrecedence = ["provider", "quota", "unknown"] as const;
+
 /**
  * The verdict for one member's window. A death ends the window. Otherwise any missed or skipped
  * slot makes the member unresponsive, recovered or not. Survival needs every slot answered,
@@ -140,7 +171,10 @@ export function classifyHeartbeats(
       missed: missed.length + busy.length,
       firstMissAtMs: first.atMs,
       recovered: heartbeats.filter((h) => h.kind !== "skipped").at(-1)?.kind === "ok",
-      evidence: missed.find((h) => h.failure.code !== "quota") ?? first,
+      evidence:
+        missPrecedence
+          .map((kind) => missed.find((h) => missKind(h.failure) === kind))
+          .find((h) => h !== undefined) ?? first,
     };
 
   if (heartbeats.length === expected && heartbeats.every((h) => h.kind === "ok"))
@@ -199,7 +233,7 @@ export async function heartbeatWindow(input: WindowInput) {
   const offsets = heartbeatOffsets(plan);
   const callMs = Math.min(input.heartbeatTimeoutMs, plan.intervalMs);
   // Timers fire a little late; a slot sent within this grace still counts as on time.
-  const graceMs = Math.min(plan.intervalMs / 4, 250);
+  const grace = graceMs(plan);
   const start = performance.now();
   const heartbeats: Heartbeat[] = [];
   let firstBootId: string | null = null;
@@ -213,7 +247,7 @@ export async function heartbeatWindow(input: WindowInput) {
       break;
     }
 
-    if (performance.now() > due + graceMs) {
+    if (performance.now() > due + grace) {
       heartbeats.push({ kind: "skipped", atMs: offset, reason: "busy" });
       continue;
     }
@@ -229,6 +263,17 @@ export async function heartbeatWindow(input: WindowInput) {
     if (stop.aborted) {
       stopped = true;
       break;
+    }
+
+    // The timer may wake late: check again, so nothing is sent past the deadline or off its slot.
+    if (performance.now() + callMs > endBy) {
+      heartbeats.push({ kind: "skipped", atMs: offset, reason: "deadline" });
+      continue;
+    }
+
+    if (performance.now() > due + grace) {
+      heartbeats.push({ kind: "skipped", atMs: offset, reason: "late" });
+      continue;
     }
 
     const atMs = performance.now() - start;
@@ -332,7 +377,12 @@ export function survivalFailure(result: WindowResult, stage: string): FailureOut
 function compact(h: Heartbeat) {
   switch (h.kind) {
     case "ok":
-      return { kind: h.kind, atMs: Math.round(h.atMs), latencyMs: Math.round(h.latencyMs) };
+      return {
+        kind: h.kind,
+        atMs: Math.round(h.atMs),
+        latencyMs: Math.round(h.latencyMs),
+        bootId: h.bootId,
+      };
     case "skipped":
       return { kind: h.kind, atMs: Math.round(h.atMs), reason: h.reason };
     case "missed":
@@ -343,6 +393,7 @@ function compact(h: Heartbeat) {
         timedOut: h.timedOut,
         note: h.failure.note.slice(0, 300),
         code: h.failure.code,
+        httpStatus: h.failure.cause?.httpStatus,
         lookup: h.lookup,
       };
     default: {
@@ -368,4 +419,93 @@ export function heartbeatDetails(result: WindowResult) {
     skipped: result.heartbeats.filter((h) => h.kind === "skipped").length,
     heartbeats: result.heartbeats.map(compact),
   };
+}
+
+const compactSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("ok"),
+    atMs: z.number().finite().nonnegative(),
+    latencyMs: z.number().finite().nonnegative(),
+    bootId: z.string(),
+  }),
+  z.object({
+    kind: z.literal("skipped"),
+    atMs: z.number().finite().nonnegative(),
+    reason: z.enum(["busy", "deadline", "late"]),
+  }),
+  z.object({
+    kind: z.literal("missed"),
+    atMs: z.number().finite().nonnegative(),
+    latencyMs: z.number().finite().nonnegative(),
+    timedOut: z.boolean(),
+    note: z.string(),
+    code: z.string().optional(),
+    httpStatus: z.number().int().optional(),
+    lookup: lookupSchema.nullable(),
+  }),
+]);
+
+/** What a window row's details hold for publication to recompute its verdict. */
+export const windowEvidenceSchema = z.object({
+  plan: z.object({ windowMs: z.number().positive(), intervalMs: z.number().positive() }),
+  verdict: z.object({ kind: z.enum(["survived", "died", "unresponsive", "interrupted"]) }),
+  heartbeats: z.array(compactSchema),
+});
+
+export type WindowEvidence = z.infer<typeof windowEvidenceSchema>;
+
+function expand(h: z.infer<typeof compactSchema>): Heartbeat {
+  switch (h.kind) {
+    case "ok":
+    case "skipped":
+      return h;
+    case "missed": {
+      const failure: FailureOutcome = { kind: "failure", note: h.note };
+
+      if (h.code !== undefined) failure.code = h.code;
+
+      if (h.httpStatus !== undefined) failure.cause = { httpStatus: h.httpStatus };
+
+      return { ...h, failure };
+    }
+
+    default: {
+      const exhaustive: never = h;
+
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * A window row's verdict, recomputed from its recorded heartbeats and plan rather than trusted:
+ * every heartbeat must sit on its scheduled slot (sent no earlier, and no later than the grace),
+ * and the recomputed verdict must be the one the row recorded. Anything else is `invalid`.
+ */
+export function windowVerdict(
+  evidence: WindowEvidence,
+): { kind: "valid"; verdict: SurvivalVerdict["kind"] } | { kind: "invalid"; reason: string } {
+  const { plan, heartbeats } = evidence;
+  const offsets = heartbeatOffsets(plan);
+
+  if (heartbeats.length > offsets.length)
+    return { kind: "invalid", reason: "more heartbeats than slots" };
+
+  // Recorded times are rounded to the millisecond.
+  for (const [index, h] of heartbeats.entries()) {
+    const offset = offsets[index] ?? Infinity;
+
+    if (h.atMs < offset - 1 || (h.kind !== "skipped" && h.atMs > offset + graceMs(plan) + 1))
+      return { kind: "invalid", reason: `heartbeat ${index} off its ${offset} ms slot` };
+  }
+
+  const verdict = classifyHeartbeats(heartbeats.map(expand), offsets.length).kind;
+
+  if (verdict !== evidence.verdict.kind)
+    return {
+      kind: "invalid",
+      reason: `recorded ${evidence.verdict.kind}, evidence shows ${verdict}`,
+    };
+
+  return { kind: "valid", verdict };
 }

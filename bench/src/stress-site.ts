@@ -9,7 +9,8 @@ import { parseCohortScenario } from "./scenarios.js";
 import { statistics } from "./stats.js";
 import { distribution } from "./v2-stats.js";
 import { throughputSpread } from "./cpu.js";
-import { isStressSample, stressUnit } from "./suite.js";
+import { isStressRun, isStressSample, stressUnit } from "./suite.js";
+import { windowEvidenceSchema, windowVerdict } from "./survival.js";
 
 /**
  * The site's `stress` section: CPU sustained, CPU burst and burst survival, collected after the
@@ -46,13 +47,6 @@ const cpuDetailsSchema = z.object({
 });
 
 const survivalPlanSchema = z.object({ windowMs: finite.positive(), intervalMs: finite.positive() });
-
-/** What a survival member's window row holds (survival.ts heartbeatDetails, plus the plan). */
-const windowDetailsSchema = z.object({
-  verdict: z.object({
-    kind: z.enum(["survived", "died", "unresponsive", "interrupted"]),
-  }),
-});
 
 /** The plan a cohort aggregate records: the survival window, or the CPU work. */
 const survivalAggregateSchema = z.object({ plan: survivalPlanSchema });
@@ -137,6 +131,39 @@ function ratio(xs: readonly (number | null)[]) {
   return s.count ? { p50: round(s.p50), min: round(s.min) } : null;
 }
 
+/**
+ * What one cpu-sustained attempt came to, by its probe row: a probe blocked by a failed create or
+ * fingerprint counts as that row's failure, so a refusal stays visible as a failed attempt.
+ */
+function sustainedAttempts(probes: readonly StressInput[], samples: readonly StressInput[]) {
+  const blocker = (probe: StressInput) =>
+    probe.outcome.kind === "blocked"
+      ? samples.find(
+          (s) =>
+            probe.outcome.kind === "blocked" &&
+            s.sourceRunId === probe.sourceRunId &&
+            s.sourceIteration === probe.sourceIteration &&
+            s.provider === probe.provider &&
+            s.scenario === probe.outcome.blocked_by &&
+            s.outcome.kind === "failure",
+        )
+      : undefined;
+
+  const failed = probes.flatMap((probe) => {
+    if (probe.outcome.kind === "failure") return [probe];
+    const cause = blocker(probe);
+
+    return cause ? [cause] : [];
+  });
+
+  return {
+    successes: probes.filter((s) => s.outcome.kind === "sample").length,
+    failures: failureClasses(failed),
+    blocked: probes.filter((s) => s.outcome.kind === "blocked" && !blocker(s)).length,
+    skipped: probes.filter((s) => s.outcome.kind === "skipped").length,
+  };
+}
+
 /** cpu-sustained per provider and allocation. */
 function cpuSustained(samples: readonly StressInput[], seed: number) {
   const rows = samples.filter((s) => /^cpu-sustained(-single|-all)?$/.test(s.scenario));
@@ -174,12 +201,7 @@ function cpuSustained(samples: readonly StressInput[], seed: number) {
       },
       guestVcpus: counts(allDetails.map((d) => d.guestVcpus)),
       workers: counts(allDetails.map((d) => d.workers)),
-      attempts: {
-        successes: probe.filter((s) => s.outcome.kind === "sample").length,
-        failures: failureClasses(probe),
-        blocked: probe.filter((s) => s.outcome.kind === "blocked").length,
-        skipped: probe.filter((s) => s.outcome.kind === "skipped").length,
-      },
+      attempts: sustainedAttempts(probe, samples),
     };
   });
 }
@@ -300,7 +322,10 @@ function cpuBurst(units: readonly CohortUnit[]) {
   });
 }
 
-/** One survival member's verdict, from its create and window rows. */
+/**
+ * One survival member's verdict, from its create and window rows. The window's verdict is
+ * recomputed from its heartbeats and plan; evidence that does not bear it out is `invalid`.
+ */
 function survivalMember(cold: StressInput, window: StressInput | undefined) {
   if (cold.outcome.kind !== "sample") return "create-failed";
 
@@ -308,7 +333,12 @@ function survivalMember(cold: StressInput, window: StressInput | undefined) {
   if (!window || window.outcome.kind === "skipped" || window.outcome.kind === "blocked")
     return "interrupted";
 
-  return windowDetailsSchema.safeParse(window.details).data?.verdict.kind ?? "unknown";
+  const evidence = windowEvidenceSchema.safeParse(window.details);
+
+  if (!evidence.success) return "invalid";
+  const checked = windowVerdict(evidence.data);
+
+  return checked.kind === "valid" ? checked.verdict : "invalid";
 }
 
 function burstSurvival(units: readonly CohortUnit[]) {
@@ -323,27 +353,38 @@ function burstSurvival(units: readonly CohortUnit[]) {
     const cold = member(complete, "cold");
     const windows = member(complete, "window");
 
-    const verdicts = cold.map((c) =>
-      survivalMember(
-        c,
-        windows.find(
-          (w) => w.sourceRunId === c.sourceRunId && w.sourceIteration === c.sourceIteration,
-        ),
-      ),
+    const members = cold.map((c) => {
+      const window = windows.find(
+        (w) =>
+          w.sourceRunId === c.sourceRunId &&
+          w.provider === c.provider &&
+          w.sourceIteration === c.sourceIteration,
+      );
+
+      return { window, verdict: survivalMember(c, window) };
+    });
+
+    const verdict = (kind: (typeof members)[number]["verdict"]) =>
+      members.filter((m) => m.verdict === kind).length;
+
+    const createFailed = failureClasses(cold);
+
+    // Window failures of members whose evidence bears out their verdict.
+    const windowFailures = failureClasses(
+      members.flatMap((m) => (m.window && m.verdict !== "invalid" ? [m.window] : [])),
     );
 
-    const verdict = (kind: (typeof verdicts)[number]) => verdicts.filter((v) => v === kind).length;
-    const createFailed = failureClasses(cold);
-    const windowFailures = failureClasses(windows);
     const survived = verdict("survived");
 
     // Members the provider had a fair chance with: not refused by an account limit or a client
-    // error at create or during the window, and not cut short by our own interruption.
+    // error at create or during the window, not cut short by our own interruption, and with
+    // heartbeat evidence that bears out its verdict.
     const denominator =
       cold.length -
       createFailed.accountLimit -
       createFailed.clientNetwork -
       verdict("interrupted") -
+      verdict("invalid") -
       windowFailures.accountLimit -
       windowFailures.clientNetwork;
 
@@ -366,6 +407,8 @@ function burstSurvival(units: readonly CohortUnit[]) {
       unresponsive: verdict("unresponsive"),
       /** Members whose window the run cut short, counted once each and never against the provider. */
       interrupted: verdict("interrupted"),
+      /** Members whose heartbeat evidence does not bear out their recorded verdict: left out. */
+      invalidEvidence: verdict("invalid"),
       /** Heartbeat failures by class; account limits (rate-limited heartbeats) are not the provider's. */
       windowFailures,
       survivalRate: denominator > 0 ? round(survived / denominator, 4) : null,
@@ -392,6 +435,13 @@ export function stressData(report: StressReport | null, track: "default" | "same
       cpuBurst: [],
       burstSurvival: [],
     };
+
+  const others = report.sources.filter((s) => !isStressRun(s)).map((s) => s.runId);
+
+  if (others.length)
+    throw new Error(
+      `The stress report includes runs that are not stress runs (${others.join(", ")}): merge only cpu-sustained, cpu-burst and survival runs into it`,
+    );
 
   const r = publicationTrack({ ...report, summaries: [] }, track);
 

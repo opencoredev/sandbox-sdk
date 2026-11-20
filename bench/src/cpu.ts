@@ -230,9 +230,22 @@ export function cpuResult(output: string, challenge: CpuChallenge, hostSeconds: 
       `CPU probe all-core timing is inconsistent: wall clock ${(all.endedAt - all.startedAt).toPrecision(3)} s, timer ${all.wallSeconds.toPrecision(3)} s`,
     );
 
+  // Workers and their phase read the same guest clock; allow the same margin as the spans above.
   for (const w of all.workers)
-    if (w.seconds > all.wallSeconds * 1.05 + 0.02 || w.startedAt < all.startedAt - 0.05)
+    if (
+      w.seconds > all.wallSeconds * 1.05 + 0.02 ||
+      w.startedAt < all.startedAt - 0.05 ||
+      w.endedAt > all.endedAt + 0.05
+    )
       throw new Error("CPU probe timing is inconsistent: a worker ran outside the all-core phase");
+
+  // Each worker did the full work inside the phase, so the phase bounds every worker's rate too.
+  const perWorker = (work.segments * work.steps) / all.wallSeconds;
+
+  if (perWorker > maxStepsPerSecond)
+    throw new Error(
+      `CPU probe all-core phase claims a per-worker rate of ${perWorker.toExponential(2)} steps/s, above the ${maxStepsPerSecond.toExponential(0)} steps/s any CPython process reaches`,
+    );
 
   if (probe.single.endedAt > all.startedAt + 0.05)
     throw new Error(
@@ -278,15 +291,8 @@ export interface StagedCpuProbe {
  * Stage a probe run: write probes/cpu.py into the guest and read the guest clock once, so the
  * only thing left after a cohort's common start is dispatching one short command.
  */
-export async function stageCpuProbe(
-  box: Sandbox,
-  challenge: CpuChallenge,
-  timeoutMs: number,
-  signal?: AbortSignal,
-): Promise<StagedCpuProbe> {
-  const script = await readFile(new URL("../probes/cpu.py", import.meta.url), "utf8");
-  const path = `/tmp/bench-cpu-${challenge.seed.toString(16)}.py`;
-  await box.files.write(path, script);
+/** One read of the guest clock: its offset from the host's, right to within half the round trip. */
+async function readGuestClock(box: Sandbox, path: string, timeoutMs: number, signal?: AbortSignal) {
   const before = hostEpochMs();
   const reply = await command(box, `python3 ${path} clock`, timeoutMs, signal);
   const after = hostEpochMs();
@@ -294,22 +300,48 @@ export async function stageCpuProbe(
 
   if (!Number.isFinite(guestMs) || guestMs <= 0)
     throw new Error(`CPU probe clock reply is not a time: ${JSON.stringify(reply.slice(0, 80))}`);
+
+  return { offsetMs: guestMs - (before + after) / 2, uncertaintyMs: (after - before) / 2 };
+}
+
+const probePath = (challenge: CpuChallenge) => `/tmp/bench-cpu-${challenge.seed.toString(16)}.py`;
+
+export async function stageCpuProbe(
+  box: Sandbox,
+  challenge: CpuChallenge,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<StagedCpuProbe> {
+  const script = await readFile(new URL("../probes/cpu.py", import.meta.url), "utf8");
+  const path = probePath(challenge);
+  await box.files.write(path, script);
+  const clock = await readGuestClock(box, path, timeoutMs, signal);
   const { work, workers, seed } = challenge;
 
   return {
     challenge,
     command: `python3 ${path} run ${work.segments} ${work.steps} ${workers} ${seed}`,
-    clockOffsetMs: guestMs - (before + after) / 2,
-    clockUncertaintyMs: (after - before) / 2,
+    clockOffsetMs: clock.offsetMs,
+    clockUncertaintyMs: clock.uncertaintyMs,
   };
 }
+
+/** Slack for the guest's timestamp resolution when comparing its clock with the host's. */
+const clockResolutionMs = 2;
 
 /** A [start, end] interval in host epoch milliseconds. */
 export type Interval = readonly [number, number];
 
 /**
  * Run a staged probe. `returnedAt` (`performance.now()`) is taken as soon as the exec returns,
- * before any checks or report writes; `guest` holds each phase's interval on the host clock.
+ * before any checks or report writes; `guest` holds each phase's interval on the host clock,
+ * placed with the offset read at staging.
+ *
+ * The guest clock is read again after the run, so a drift or step since staging is measured,
+ * not assumed away. Under one step or a steady drift, the offset during the run lies between
+ * the two reads (each within its own uncertainty), and the run's phases must also fall inside
+ * the exec the host timed. `clockUncertaintyMs` is the largest error the staged offset can have
+ * under both constraints; the run is refused when they cannot both hold.
  */
 export async function runStagedCpuProbe(
   box: Sandbox,
@@ -324,6 +356,7 @@ export async function runStagedCpuProbe(
 
   if (signal?.aborted) throw new Error("CPU probe aborted");
   const result = cpuResult(output, staged.challenge, (returnedAt - dispatchedAt) / 1000);
+  const after = await readGuestClock(box, probePath(staged.challenge), timeoutMs, signal);
 
   const onHost = (run: { startedAt: number; endedAt: number }): Interval => [
     run.startedAt * 1000 - staged.clockOffsetMs,
@@ -331,14 +364,27 @@ export async function runStagedCpuProbe(
   ];
 
   const guest = { single: onHost(result.probe.single), all: onHost(result.probe.all) };
-  // The guest clock may drift or be stepped between staging and the run; allow a quarter second.
-  const slack = staged.clockUncertaintyMs + 250;
   const returnedEpoch = dispatchedEpoch + (returnedAt - dispatchedAt);
+  const drift = after.offsetMs - staged.clockOffsetMs;
 
-  if (guest.single[0] < dispatchedEpoch - slack || guest.all[1] > returnedEpoch + slack)
+  const readError = Math.max(staged.clockUncertaintyMs, after.uncertaintyMs) + clockResolutionMs;
+  // The staged offset's error during the run: between the two reads ...
+  const readsLow = Math.min(0, drift) - readError;
+  const readsHigh = Math.max(0, drift) + readError;
+  // ... and such that the phases, corrected by it, fall inside the exec (to the guest's resolution).
+  const low = Math.max(readsLow, guest.all[1] - returnedEpoch - clockResolutionMs);
+  const high = Math.min(readsHigh, guest.single[0] - dispatchedEpoch + clockResolutionMs);
+
+  if (low > high)
     throw new Error("CPU probe timing is inconsistent: guest phases fall outside the exec");
 
-  return { result, returnedAt, guest, clockUncertaintyMs: staged.clockUncertaintyMs };
+  return {
+    result,
+    returnedAt,
+    guest,
+    clockUncertaintyMs: Math.max(Math.abs(low), Math.abs(high)),
+    clockDriftMs: drift,
+  };
 }
 
 /** A cohort's CPU phases count as run together when all members overlap this share of a phase. */
@@ -360,13 +406,15 @@ export function cpuOverlap(
     const typical = median(intervals.map(([s, e]) => e - s)) ?? 0;
     const common = Math.min(...ends) - Math.max(...starts);
 
-    const share = (ms: number) =>
-      typical > 0 ? Number((Math.max(0, ms) / typical).toFixed(3)) : 0;
+    const share = (ms: number) => (typical > 0 ? Math.max(0, ms) / typical : 0);
+    const worst = share(common - 2 * clockUncertaintyMs);
 
     return {
       startSkewMs: Math.round(Math.max(...starts) - Math.min(...starts)),
-      allRunningFraction: share(common),
-      worstCaseFraction: share(common - 2 * clockUncertaintyMs),
+      allRunningFraction: Number(share(common).toFixed(3)),
+      worstCaseFraction: Number(worst.toFixed(3)),
+      // Compared before rounding, so 0.7996 is below a 0.8 cutoff.
+      ok: worst >= overlapThreshold,
     };
   };
 
@@ -378,7 +426,7 @@ export function cpuOverlap(
     all,
     clockUncertaintyMs: Math.round(clockUncertaintyMs),
     threshold: overlapThreshold,
-    ok: single.worstCaseFraction >= overlapThreshold && all.worstCaseFraction >= overlapThreshold,
+    ok: single.ok && all.ok,
   };
 }
 

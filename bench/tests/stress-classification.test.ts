@@ -74,7 +74,12 @@ describe("suites and scenario names", () => {
 
     expect(suiteFor(config(["survival"]))).toBe("survival");
     expect(suiteFor(config(["cpu-burst"]))).toBe("cpu-burst");
-    expect(suiteFor(config(["burst", "survival"]))).toBe("burst");
+    expect(suiteFor(config(["cpu-sustained"]))).toBe("cpu-sustained");
+    expect(suiteFor(config(["cpu-burst", "survival"]))).toBe("cpu-burst");
+    expect(suiteFor(config(["burst"]))).toBe("burst");
+    // A stress run is a stress run by its plan; a readiness burst beside main scenarios is main.
+    expect(suiteFor(config(["burst", "survival"]))).toBe("survival");
+    expect(suiteFor(config(["command", "burst"]))).toBe("main");
   });
 
   it("parses cohort scenarios and recognises their aggregates", () => {
@@ -107,7 +112,8 @@ describe("suites and scenario names", () => {
 describe("admission reserves", () => {
   it("keeps the old per-iteration bound unless cpu-sustained runs", () => {
     expect(iterationBoundMs(1000, ["command"])).toBe(19_000);
-    expect(iterationBoundMs(1000, ["all"])).toBe(20_000);
+    // `all` is the publication suite: cpu-sustained runs only when named.
+    expect(iterationBoundMs(1000, ["all"])).toBe(19_000);
     expect(iterationBoundMs(1000, ["cpu-sustained"])).toBe(20_000);
   });
 
@@ -115,9 +121,9 @@ describe("admission reserves", () => {
     const plan = { windowMs: 300_000, intervalMs: 15_000 };
 
     expect(cohortBoundMs("burst", 1000, plan)).toBe(2000);
-    // Create, fingerprint, staging, the probe, destroy.
-    expect(cohortBoundMs("cpu-burst", 1000, plan)).toBe(5000);
-    // Create and fingerprint, the window plus its last heartbeat and lookup, drain and destroy.
-    expect(cohortBoundMs("survival", 1000, plan)).toBe(2000 + 302_000 + 2000);
+    // Create, fingerprint, staging, the probe; drain, the ownership check and the delete.
+    expect(cohortBoundMs("cpu-burst", 1000, plan)).toBe(7000);
+    // Create and fingerprint, the window plus its last heartbeat and lookup, the cleanup steps.
+    expect(cohortBoundMs("survival", 1000, plan)).toBe(2000 + 302_000 + 3000);
   });
 });

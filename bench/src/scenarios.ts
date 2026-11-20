@@ -1,5 +1,5 @@
-/** The main suite's scenarios before cpu-sustained, in order. */
-const baseScenarioNames = [
+/** The main suite's scenarios, in order. `--scenarios all` selects every one. */
+export const scenarioNames = [
   "command",
   "files-1kb",
   "files-10mb",
@@ -17,12 +17,22 @@ const baseScenarioNames = [
   "pip-install",
 ];
 
-/** The main suite's scenarios, in order. `--scenarios all` selects every one. */
-export const scenarioNames = [...baseScenarioNames, "cpu-sustained"];
+/**
+ * The stress suites, added after the publication runs. They run only when named, never by `all`
+ * and never beside a publication scenario, so a run is a stress run by its plan alone.
+ */
+export const stressSuites = ["cpu-sustained", "cpu-burst", "survival"] as const;
 
-/** Whether `--scenarios` selects a main-suite scenario. */
+/** Whether `--scenarios` names a stress suite. */
+export function isStressSelection(selection: readonly string[]) {
+  return selection.some((name) => stressSuites.some((suite) => suite === name));
+}
+
+/** Whether `--scenarios` selects a scenario: by name, or a main-suite one by `all`. */
 export function selectsScenario(selection: readonly string[], scenario: string) {
-  return selection.includes("all") || selection.includes(scenario);
+  return (
+    selection.includes(scenario) || (selection.includes("all") && scenarioNames.includes(scenario))
+  );
 }
 
 /**
@@ -31,9 +41,9 @@ export function selectsScenario(selection: readonly string[], scenario: string) 
  * cpu-sustained adds its step only when selected, so runs without it reserve what they always did.
  */
 export function iterationBoundMs(timeoutMs: number, selection: readonly string[] = []): number {
-  const sustained = selectsScenario(selection, "cpu-sustained") ? 1 : 0;
+  const sustained = selection.includes("cpu-sustained") ? 1 : 0;
 
-  return timeoutMs * (baseScenarioNames.length + 4 + sustained);
+  return timeoutMs * (scenarioNames.length + 4 + sustained);
 }
 
 /**
@@ -85,21 +95,29 @@ export function windowBoundMs(plan: SurvivalPlan, timeoutMs: number) {
   return plan.windowMs + 2 * Math.min(timeoutMs, plan.intervalMs);
 }
 
-/** Steps after a cohort member's work: draining its tracked calls, then destroy. */
-const cleanupSteps = 2;
+/**
+ * Steps a stress sandbox's cleanup reserves after its work: draining its tracked calls, then one
+ * delete attempt (the live ownership check, then the delete). A retry starts only while a whole
+ * attempt still fits (`deleteAttemptMs`), so cleanup never runs past the reserve.
+ */
+export const cleanupSteps = 3;
+
+/** The longest one delete attempt can take: the ownership check, then the delete. */
+export const deleteAttemptMs = (timeoutMs: number) => 2 * timeoutMs;
 
 /**
  * The longest one cohort member can run, for its admission reserve and sandbox lifetime: create
  * and fingerprint each take up to the per-step timeout, then the kind's own work, then cleanup.
  * cpu-burst's work is staging the probe and running it; survival's is the heartbeat window, which
- * `survivalEndBy` holds to its bound so the cleanup steps stay reserved.
+ * `survivalEndBy` holds to its bound so the cleanup steps stay reserved. Readiness bursts keep
+ * the published reserve, which counts no cleanup.
  */
 export function cohortBoundMs(kind: CohortKind, timeoutMs: number, survival: SurvivalPlan) {
   switch (kind) {
     case "burst":
       return timeoutMs * 2;
     case "cpu-burst":
-      return timeoutMs * (2 + 2 + 1);
+      return timeoutMs * (2 + 2 + cleanupSteps);
     case "survival":
       return timeoutMs * 2 + windowBoundMs(survival, timeoutMs) + timeoutMs * cleanupSteps;
     default: {
@@ -140,16 +158,34 @@ export function accountCap(provider: string, overrides: Readonly<Record<string, 
 export function selectedCohorts(selection: readonly string[], bursts: readonly number[]) {
   const named = cohortKinds.filter((kind) => kind !== "burst" && selection.includes(kind));
 
-  // Readiness bursts follow --bursts as they always have, unless the run names only new kinds.
-  const plain = bursts.length > 0 && (selection.includes("burst") || named.length === 0);
+  // Readiness bursts follow --bursts as they always have, unless the run names a stress suite.
+  const plain = bursts.length > 0 && (selection.includes("burst") || !isStressSelection(selection));
 
   return [...(plain ? (["burst"] as const) : []), ...named];
 }
 
 /**
- * Whether a run skips normal iterations: it names only cohort kinds. Main-suite scenarios named
- * beside them (`cpu-sustained,burst`) run as normal iterations, then the cohorts run.
+ * Whether a run skips normal iterations: it names only cohort kinds. cpu-sustained named beside
+ * cpu-burst or survival runs as normal iterations, then the cohorts run.
  */
 export function cohortOnly(selection: readonly string[]) {
   return !selection.includes("all") && selection.every((name) => isCohortKind(name));
+}
+
+/**
+ * Refuse a scenario plan that mixes stress suites with publication scenarios, or names a cohort
+ * suite with no cohort sizes to run.
+ */
+export function checkScenarioPlan(selection: readonly string[], bursts: readonly number[]) {
+  const others = selection.filter((name) => !stressSuites.some((suite) => suite === name));
+
+  if (isStressSelection(selection) && others.length)
+    throw new Error(
+      `Stress suites (${stressSuites.join(", ")}) run apart from the publication scenarios; drop ${others.join(", ")} or collect them in their own run`,
+    );
+
+  const cohorts = selection.filter((name) => isCohortKind(name));
+
+  if (cohorts.length && !bursts.length)
+    throw new Error(`--scenarios ${cohorts.join(",")} needs cohort sizes: pass --bursts K[,K...]`);
 }

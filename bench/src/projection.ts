@@ -117,65 +117,69 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
         (meanDuration("restore-destroy") ?? 0);
 
       const overlap = estimateCost(p.name, overlapMs * 100, allocation, region);
-      const burstLife = meanDuration("burst-3/sandbox-lifetime");
 
-      const burst10 =
-        burstLife === null
-          ? null
-          : estimateCost(
-              p.name,
-              burstLife * 10 * (report.config["burst-cohorts"] ?? 1),
-              allocation,
-              region,
-            );
-
-      const burst25 =
-        burstLife === null
-          ? null
-          : estimateCost(
-              p.name,
-              burstLife * 25 * (report.config["burst-cohorts"] ?? 1),
-              allocation,
-              region,
-            );
-
-      // Stress suites, priced from the pilot's own rows and kept out of `total` above. Each
-      // sandbox is priced on its own, so per-sandbox minimums, rounding and creation fees apply
-      // to every one, then multiplied by the number of sandboxes.
+      // Cohorts and dedicated iterations are priced per sandbox: each observed lifetime on its
+      // own, so per-sandbox minimums, rounding and creation fees apply to every one, then the
+      // mean price is multiplied by the number of sandboxes.
       const cohorts = report.config["burst-cohorts"] ?? 1;
       const cap = accountCap(p.name, report.config["account-limits"] ?? {});
 
-      const meanMatching = (pattern: RegExp) => {
-        const values = rows
+      const meanPrice = (lifetimesMs: readonly number[]) => {
+        const prices = lifetimesMs.map((ms) => estimateCost(p.name, ms, allocation, region));
+
+        if (!prices.length || prices.some((price) => price === null)) return null;
+
+        return prices.reduce<number>((a, b) => a + (b ?? 0), 0) / prices.length;
+      };
+
+      const lifetimes = (pattern: RegExp) =>
+        rows
           .filter((s) => pattern.test(s.scenario) && ["sample", "failure"].includes(s.outcome.kind))
           .map((s) => s.durationMs);
 
-        return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
-      };
-
-      const perSandbox = (lifetimeMs: number | null, sandboxes: number) => {
-        const one =
-          lifetimeMs === null ? null : estimateCost(p.name, lifetimeMs, allocation, region);
+      const perSandbox = (lifetimesMs: readonly number[], sandboxes: number) => {
+        const one = meanPrice(lifetimesMs);
 
         return one === null ? null : one * sandboxes;
       };
 
-      // One member's mean lifetime at any observed K, for K members and the configured cohorts.
+      const burstLifetimes = lifetimes(/^burst-3\/sandbox-lifetime$/);
+      const burst10 = perSandbox(burstLifetimes, 10 * cohorts);
+      const burst25 = perSandbox(burstLifetimes, 25 * cohorts);
+
+      // Stress suites, priced from the pilot's own rows and kept out of `total` above.
+      // One member's lifetime at any observed K, for K members and the configured cohorts.
       // A K above the account cap is not collected, so it costs nothing ("skipped").
       const cohortCost = (kind: "cpu-burst" | "survival", k: number) =>
         k > cap
           ? ("skipped" as const)
-          : perSandbox(meanMatching(new RegExp(`^${kind}-\\d+/sandbox-lifetime$`)), k * cohorts);
+          : perSandbox(lifetimes(new RegExp(`^${kind}-\\d+/sandbox-lifetime$`)), k * cohorts);
 
-      // A dedicated cpu-sustained iteration is one sandbox: create, fingerprint, probe, destroy.
-      const sustained = ["cold", "fingerprint", "cpu-sustained", "destroy"].map(meanDuration);
+      // A dedicated cpu-sustained iteration is one sandbox: create, fingerprint, probe, destroy,
+      // summed per iteration and priced per iteration.
+      const sustainedParts = ["cold", "fingerprint", "cpu-sustained", "destroy"];
 
-      const cpuSustained30 = sustained.every((ms) => ms !== null)
-        ? perSandbox(
-            sustained.reduce<number>((a, b) => a + (b ?? 0), 0),
-            30,
+      const sustainedLifetimes = [
+        ...new Set(
+          rows
+            .filter(
+              (s) =>
+                s.scenario === "cpu-sustained" && ["sample", "failure"].includes(s.outcome.kind),
+            )
+            .map((s) => s.iteration),
+        ),
+      ].map((iteration) =>
+        rows
+          .filter(
+            (s) =>
+              s.iteration === iteration &&
+              sustainedParts.includes(s.scenario) &&
+              ["sample", "failure"].includes(s.outcome.kind),
           )
-        : null;
+          .reduce((ms, s) => ms + s.durationMs, 0),
+      );
+
+      const cpuSustained30 = perSandbox(sustainedLifetimes, 30);
 
       const stressParts = {
         cpuSustained30,

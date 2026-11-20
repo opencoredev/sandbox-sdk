@@ -150,8 +150,13 @@ export function classifyFailure(
 ): FailureClass | null {
   if (sample.outcome.kind !== "failure") return null;
   const note = sample.outcome.note;
+  const cohort = parseCohortScenario(sample.scenario);
+  const stressCohort = cohort?.kind === "cpu-burst" || cohort?.kind === "survival";
 
-  if (sample.provider === "boat" && /reported quota/i.test(note)) return "provider-account-limit";
+  // The published Boat rule reads wording; the stress cohorts below need a typed signal, so a
+  // death proved by exact lifecycle evidence is never an account limit for its words.
+  if (sample.provider === "boat" && !stressCohort && /reported quota/i.test(note))
+    return "provider-account-limit";
 
   // Only this observed concurrent-create error is assigned to the likely account limit.
   // Other Daytona invalid_argument errors remain operation failures.
@@ -165,10 +170,8 @@ export function classifyFailure(
   // cpu-burst and survival cohorts (added after the publication runs) need a typed signal: a
   // create or heartbeat the SDK reports as code quota, or HTTP 429. Wording alone and other
   // codes (such as Daytona's invalid_argument for a missing template) stay the provider's.
-  const cohort = parseCohortScenario(sample.scenario);
-
   if (
-    (cohort?.kind === "cpu-burst" || cohort?.kind === "survival") &&
+    stressCohort &&
     ["cold", "window"].includes(cohort.member) &&
     (sample.outcome.code === "quota" || sample.outcome.cause?.httpStatus === 429)
   )
@@ -432,7 +435,7 @@ export function mergeSources(
       reliability:
         "Raw = successes / (successes + failures). Excluding limits/client = successes / (successes + provider-operation failures). Skipped and blocked rows are separate in both denominators. Aggregate rates count observations, including correlated/derived metrics, not unique sandbox reliability.",
       failureClass:
-        "Only failure rows classified: provider-account-limit (Boat quota; Daytona burst invalid_argument, likely concurrency; cpu-burst/survival creates and unresponsive heartbeat windows with SDK code quota or HTTP 429, never a proven death; aggregates inherit); client-third-party (network-mbps HTTP 429 or resets); provider-operation (all remaining operation failures, cause may be unresolved).",
+        "Only failure rows classified: provider-account-limit (Boat quota wording outside the cpu-burst/survival cohorts; Daytona burst invalid_argument, likely concurrency; cpu-burst/survival creates and unresponsive heartbeat windows with SDK code quota or HTTP 429 and no proven death or provider failure; aggregates inherit); client-third-party (network-mbps HTTP 429 or resets); provider-operation (all remaining operation failures, cause may be unresolved).",
       costs:
         "Use original-source sandbox-lifetime estimatedCost only, before attempt selection, including restored lifetime already charged there; do not sum scenario allocations. Unknown lifetime costs stay unknown. Native currency, no FX conversion. Recorded pricing per source retained; reportPricing captures the existing pricing code used for sandbox-hour and command-efficiency estimates; budgets.estimatedUSD is a harness guard, not spend.",
     },

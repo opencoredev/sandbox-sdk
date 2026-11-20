@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { checkScenarioPlan } from "./scenarios.js";
 
 const integer = z.coerce.number().int().positive();
 
@@ -185,6 +186,8 @@ export function parseV2(args: string[]) {
 
   if (config["survival-heartbeat-ms"] > config["survival-window-ms"])
     throw new Error("--survival-heartbeat-ms must not exceed --survival-window-ms");
+
+  checkScenarioPlan(config.scenarios, config.bursts);
 
   if (config.scenarios.includes("cost") && config.scenarios.length !== 1)
     throw new Error("The cost suite must run alone (--scenarios cost)");
