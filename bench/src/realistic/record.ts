@@ -34,6 +34,8 @@ export const variantSchema = z.enum([
   "prepared",
   "state-check",
   "live-registry",
+  /** Several copies started together on one provider ("Real tasks at once", burst.ts). */
+  "concurrent",
 ]);
 
 export type Variant = z.infer<typeof variantSchema>;
