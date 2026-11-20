@@ -5,7 +5,10 @@ import {
   type ExpandedSiteData,
   type ExpandedSiteMetric,
 } from "./types.js";
+import { agentLoopScenarios } from "./agent-loops.js";
+import { agentTaskScenarios } from "./agent-tasks.js";
 import { buildScenarios } from "./builds.js";
+import { cpuScenarios } from "./cpu.js";
 import { filesystemScenarios } from "./filesystem.js";
 import { runtimeScenarios } from "./runtime.js";
 
@@ -14,6 +17,9 @@ import { runtimeScenarios } from "./runtime.js";
  * Kept separate from the legacy `scenarioNames` so existing publication site-data stays unchanged.
  */
 export const expandedScenarios: readonly ExpandedScenario[] = [
+  ...cpuScenarios,
+  ...agentTaskScenarios,
+  ...agentLoopScenarios,
   ...filesystemScenarios,
   ...buildScenarios,
   ...runtimeScenarios,
