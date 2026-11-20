@@ -7,6 +7,9 @@ import { pricing } from "./pricing.js";
 
 const f = (v: number | null) => (v === null ? "unknown" : v.toPrecision(5));
 
+/** A stress cohort estimate: a cost, unknown, or skipped above the account cap. */
+const g = (v: number | null | "skipped") => (v === "skipped" ? v : f(v));
+
 const esc = (v: string) =>
   v
     .replaceAll("&", "&amp;")
@@ -137,7 +140,7 @@ export function markdownV2(r: ReportV2) {
     "",
     "## Stress planning estimates",
     "",
-    "CPU sustained as 30 dedicated iterations (create, fingerprint, probe, destroy); cpu-burst and survival at K=10 and K=25 with the configured number of cohorts, from the pilot's mean member lifetime at any K. A dash means the pilot did not run that suite. These are extrapolations, not quotes, and are not part of the totals above.",
+    "CPU sustained as 30 dedicated iterations (create, fingerprint, probe, destroy); cpu-burst and survival at K=10 and K=25 with the configured number of cohorts, from the pilot's mean member lifetime at any K. Each sandbox is priced on its own (minimum billed time, rounding and creation fee apply per sandbox), then multiplied. unknown means the pilot did not run that suite; skipped means K exceeds the account cap, so that cohort is not collected. These are extrapolations, not quotes, and are not part of the totals above.",
     "",
     "| Provider | Currency | CPU sustained 30 | CPU burst 10 | CPU burst 25 | Survival 10 | Survival 25 | Total |",
     "|---|---|---:|---:|---:|---:|---:|---:|",
@@ -145,7 +148,7 @@ export function markdownV2(r: ReportV2) {
 
   for (const p of projectCosts(r))
     rows.push(
-      `|${p.provider}|${p.currency}|${f(p.stress.cpuSustained30)}|${f(p.stress.cpuBurst10)}|${f(p.stress.cpuBurst25)}|${f(p.stress.survival10)}|${f(p.stress.survival25)}|${f(p.stress.total)}|`,
+      `|${p.provider}|${p.currency}|${f(p.stress.cpuSustained30)}|${g(p.stress.cpuBurst10)}|${g(p.stress.cpuBurst25)}|${g(p.stress.survival10)}|${g(p.stress.survival25)}|${f(p.stress.total)}|`,
     );
   rows.push(
     "",

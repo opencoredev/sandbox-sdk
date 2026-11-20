@@ -1,6 +1,7 @@
 import type { ReportV2 } from "./v2-model.js";
 import { pricedResources } from "./billed-resources.js";
 import { estimateCost, pricing } from "./pricing.js";
+import { accountCap } from "./scenarios.js";
 
 /** Planning estimate only: extrapolates pilot durations, including failures, with no rate-limit prediction. */
 export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "samples">) {
@@ -138,8 +139,11 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
               region,
             );
 
-      // Stress suites, priced from the pilot's own rows and kept out of `total` above.
+      // Stress suites, priced from the pilot's own rows and kept out of `total` above. Each
+      // sandbox is priced on its own, so per-sandbox minimums, rounding and creation fees apply
+      // to every one, then multiplied by the number of sandboxes.
       const cohorts = report.config["burst-cohorts"] ?? 1;
+      const cap = accountCap(p.name, report.config["account-limits"] ?? {});
 
       const meanMatching = (pattern: RegExp) => {
         const values = rows
@@ -149,21 +153,27 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
         return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
       };
 
-      // One member's mean lifetime at any observed K, times K members and the configured cohorts.
-      const cohortCost = (kind: "cpu-burst" | "survival", k: number) => {
-        const life = meanMatching(new RegExp(`^${kind}-\\d+/sandbox-lifetime$`));
+      const perSandbox = (lifetimeMs: number | null, sandboxes: number) => {
+        const one =
+          lifetimeMs === null ? null : estimateCost(p.name, lifetimeMs, allocation, region);
 
-        return life === null ? null : estimateCost(p.name, life * k * cohorts, allocation, region);
+        return one === null ? null : one * sandboxes;
       };
 
+      // One member's mean lifetime at any observed K, for K members and the configured cohorts.
+      // A K above the account cap is not collected, so it costs nothing ("skipped").
+      const cohortCost = (kind: "cpu-burst" | "survival", k: number) =>
+        k > cap
+          ? ("skipped" as const)
+          : perSandbox(meanMatching(new RegExp(`^${kind}-\\d+/sandbox-lifetime$`)), k * cohorts);
+
+      // A dedicated cpu-sustained iteration is one sandbox: create, fingerprint, probe, destroy.
       const sustained = ["cold", "fingerprint", "cpu-sustained", "destroy"].map(meanDuration);
 
       const cpuSustained30 = sustained.every((ms) => ms !== null)
-        ? estimateCost(
-            p.name,
-            sustained.reduce<number>((a, b) => a + (b ?? 0), 0) * 30,
-            allocation,
-            region,
+        ? perSandbox(
+            sustained.reduce<number>((a, b) => a + (b ?? 0), 0),
+            30,
           )
         : null;
 
@@ -197,13 +207,15 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
             : lifecycle + workload + overlap + burst10 + burst25,
         /**
          * CPU sustained (30 dedicated iterations: create, fingerprint, probe, destroy) and the
-         * cpu-burst and survival cohorts at K=10 and 25 with the configured cohort count. Null
-         * where the pilot did not run that suite. Not included in `total`.
+         * cpu-burst and survival cohorts at K=10 and 25 with the configured cohort count, each
+         * sandbox priced on its own. Null where the pilot did not run that suite; "skipped" where
+         * K exceeds the account cap. Not included in `total`.
          */
         stress: {
           ...stressParts,
+          accountCap: cap,
           total: stressValues.every((v) => v !== null)
-            ? stressValues.reduce<number>((a, b) => a + (b ?? 0), 0)
+            ? stressValues.reduce<number>((a, b) => a + (b === "skipped" ? 0 : (b ?? 0)), 0)
             : null,
         },
         note: "Estimate from pilot duration (failures included), same observed/default allocation. Missing restored-fingerprint time uses source fingerprint duration for planning only. Larger-burst rate limits, fixed subscriptions, credits, transfer, retained storage excluded. Unsupported scenarios excluded; unobserved scenarios make estimate unknown. K=10/25 require account capacity; costs include configured burst-cohorts repeats.",

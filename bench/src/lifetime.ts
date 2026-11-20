@@ -57,5 +57,11 @@ export function lifetimeOptions(
   if (timeoutMs > limit)
     throw new Error(`${name} caps a sandbox's lifetime at ${limit / 3_600_000} hours`);
 
+  // An explicit lifetime too short for a survival member would end it mid-window as a "death".
+  if (configured !== undefined && configured < survival)
+    throw new Error(
+      `--lifetime-ms ${name}=${configured} is shorter than a survival member needs: ${survival} ms for create, fingerprint, the window and cleanup`,
+    );
+
   return { timeoutMs };
 }

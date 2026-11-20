@@ -7,10 +7,10 @@ import {
   heartbeatWindow,
   parseBootId,
   survivalFailure,
-  type Heartbeat,
+  type SentHeartbeat,
 } from "../src/survival.js";
 
-const ok = (atMs: number, bootId = "boot-a"): Heartbeat => ({
+const ok = (atMs: number, bootId = "boot-a"): SentHeartbeat => ({
   kind: "ok",
   atMs,
   latencyMs: 5,
@@ -32,7 +32,7 @@ const lookup = (result: LookupEvidence["result"], nativeState?: string): LookupE
 const missed = (
   atMs: number,
   { found = lookup("present"), code }: { found?: LookupEvidence | null; code?: string } = {},
-): Heartbeat => {
+): SentHeartbeat => {
   const failure: FailureOutcome = { kind: "failure", note: "heartbeat failed" };
 
   if (code) failure.code = code;
@@ -59,7 +59,8 @@ describe("heartbeatOffsets", () => {
     expect(offsets).toHaveLength(21);
     expect(offsets[0]).toBe(0);
     expect(offsets.at(-1)).toBe(300_000);
-    expect(heartbeatOffsets({ windowMs: 1000, intervalMs: 400 })).toEqual([0, 400, 800]);
+    // A window that is not a whole number of intervals still ends with a heartbeat at its end.
+    expect(heartbeatOffsets({ windowMs: 1000, intervalMs: 400 })).toEqual([0, 400, 800, 1000]);
   });
 });
 
@@ -69,16 +70,22 @@ describe("classifyHeartbeats", () => {
   });
 
   it("calls a missed heartbeat on a sandbox the provider no longer has a death", () => {
-    expect(classifyHeartbeats([ok(0), missed(15, { found: lookup("not-found") })], 3)).toEqual({
+    const gone = missed(15, { found: lookup("not-found") });
+
+    // The verdict carries the heartbeat whose lookup proved the death.
+    expect(classifyHeartbeats([ok(0), gone], 3)).toEqual({
       kind: "died",
       atMs: 15,
       reason: "absent",
+      evidence: gone,
     });
-    expect(classifyHeartbeats([ok(0), missed(15, { found: lookup("terminal") })], 3)).toEqual({
-      kind: "died",
-      atMs: 15,
-      reason: "absent",
-    });
+    expect(classifyHeartbeats([ok(0), missed(15, { found: lookup("terminal") })], 3)).toMatchObject(
+      {
+        kind: "died",
+        atMs: 15,
+        reason: "absent",
+      },
+    );
   });
 
   it("calls a dead native state, an SDK not_found or a new boot ID a death", () => {
@@ -88,7 +95,7 @@ describe("classifyHeartbeats", () => {
     expect(
       classifyHeartbeats([ok(0), missed(15, { found: null, code: "not_found" })], 3),
     ).toMatchObject({ kind: "died", reason: "not-found" });
-    expect(classifyHeartbeats([ok(0), ok(15), ok(30, "boot-b")], 3)).toEqual({
+    expect(classifyHeartbeats([ok(0), ok(15), ok(30, "boot-b")], 3)).toMatchObject({
       kind: "died",
       atMs: 30,
       reason: "rebooted",
@@ -96,7 +103,7 @@ describe("classifyHeartbeats", () => {
   });
 
   it("calls a miss on a sandbox that still exists unresponsive, recovered or not", () => {
-    expect(classifyHeartbeats([ok(0), missed(15), ok(30)], 3)).toEqual({
+    expect(classifyHeartbeats([ok(0), missed(15), ok(30)], 3)).toMatchObject({
       kind: "unresponsive",
       missed: 1,
       firstMissAtMs: 15,
@@ -105,11 +112,19 @@ describe("classifyHeartbeats", () => {
     // A lookup that itself failed proves nothing either way.
     expect(
       classifyHeartbeats([ok(0), missed(15, { found: lookup("unavailable") }), missed(30)], 3),
-    ).toEqual({ kind: "unresponsive", missed: 2, firstMissAtMs: 15, recovered: false });
+    ).toMatchObject({ kind: "unresponsive", missed: 2, firstMissAtMs: 15, recovered: false });
   });
 
   it("gives an interrupted window no verdict unless it had already failed", () => {
-    expect(classifyHeartbeats([ok(0), ok(15)], 3)).toEqual({ kind: "interrupted", atMs: 15 });
+    expect(classifyHeartbeats([ok(0), ok(15)], 3, true)).toEqual({
+      kind: "interrupted",
+      atMs: 15,
+      reason: "stopped",
+    });
+    // Out of time before the last slot: no verdict either, and never the provider's fault.
+    expect(
+      classifyHeartbeats([ok(0), ok(15), { kind: "skipped", atMs: 30, reason: "deadline" }], 3),
+    ).toEqual({ kind: "interrupted", atMs: 30, reason: "deadline" });
     expect(classifyHeartbeats([ok(0), missed(15)], 3)).toMatchObject({ kind: "unresponsive" });
   });
 });
@@ -118,6 +133,7 @@ describe("heartbeatWindow", () => {
   const base = {
     plan: { windowMs: 120, intervalMs: 40 },
     heartbeatTimeoutMs: 1000,
+    endBy: Number.POSITIVE_INFINITY,
     sanitize: (text: string) => text,
     track: <T>(work: Promise<T>) => work,
   };
@@ -162,7 +178,7 @@ describe("heartbeatWindow", () => {
     const miss = result.heartbeats[1];
 
     expect(miss?.kind === "missed" && miss.timedOut).toBe(true);
-    expect(miss?.latencyMs).toBeLessThan(100);
+    expect(miss?.kind === "missed" && miss.latencyMs).toBeLessThan(100);
     expect(lookups).toBe(1);
   });
 
@@ -180,13 +196,17 @@ describe("heartbeatWindow", () => {
       stop: new AbortController().signal,
     });
 
-    expect(result.verdict).toEqual({ kind: "died", atMs: expect.any(Number), reason: "absent" });
+    expect(result.verdict).toMatchObject({ kind: "died", reason: "absent" });
     expect(result.heartbeats).toHaveLength(2);
-    expect(survivalFailure(result, "survival-3/window")).toMatchObject({
+    // The lookup decided the death; the row names it and carries no heartbeat error code.
+    const failure = survivalFailure(result, "survival-3/window");
+
+    expect(failure).toEqual({
       kind: "failure",
-      code: "not_found",
       stage: "survival-3/window",
-      note: expect.stringMatching(/^Died at 0 s \(absent\): Sandbox gone/),
+      note: expect.stringMatching(
+        /^Died at 0 s \(absent\): exact lookup not-found; heartbeat not_found: Sandbox gone/,
+      ),
     });
   });
 

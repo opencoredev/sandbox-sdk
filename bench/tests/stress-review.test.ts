@@ -1,6 +1,7 @@
 // Regression tests for the review of the stress suites (cpu-sustained, cpu-burst, survival).
 // Each test reproduces one counterexample the review found; the finding number is in its name.
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,6 +170,7 @@ describe("finding 7: CPU burst overlap and segment consistency", () => {
       }
 
       const [segments, steps, , seed] = rest.map(Number);
+
       const run = async () => {
         const startedAt = Date.now() / 1000;
         await sleep(40);
@@ -379,6 +381,7 @@ describe("finding 8: scenario selection and Modal lifetime", () => {
 describe("finding 9: cost projections charge each sandbox", () => {
   it("prices every cohort member at its own minimum, then multiplies", () => {
     const at = "2026-11-19T00:00:00.000Z";
+
     const host = {
       timestamp: at,
       load: [0, 0, 0],
@@ -386,6 +389,7 @@ describe("finding 9: cost projections charge each sandbox", () => {
       cpuTicks: [],
       network: "",
     };
+
     const fingerprint: Fingerprint = {
       cpuModel: "",
       flags: [],
@@ -452,9 +456,15 @@ describe("finding 9: cost projections charge each sandbox", () => {
     });
 
     // 25 sandboxes, each billed Vercel's one-minute minimum at 1 vCPU / 2 GiB, plus a creation fee.
-    expect(vercel?.stress.cpuBurst25).toBeCloseTo(0.07102, 5);
+    expect(vercel?.stress.cpuBurst25).toBeCloseTo(25 * (0.1704 / 60 + 0.6 / 1_000_000), 9);
+    expect(vercel?.stress.cpuBurst25).toBeCloseTo(0.071015, 6);
   });
 });
+
+type SourceSample = MergeSource["samples"][number];
+
+/** A row's details as a plain object, for fixtures that change one field. */
+const detailsObject = z.record(z.string(), z.unknown());
 
 // Real collections over the offline memory fake, priced as Boat, read back as merge reads them.
 const dirs: string[] = [];
@@ -515,13 +525,13 @@ describe("findings 1, 2 and 4: publication", () => {
 
   /** The survival fixture's rows, split by member scenario, deep-copied for mutation. */
   function rows() {
-    const all: Sample[] = structuredClone(survival.samples);
+    const all: SourceSample[] = structuredClone(survival.samples);
     const pick = (name: string) => all.filter((s) => s.scenario === `survival-2/${name}`);
 
     return { all, cold: pick("cold"), windows: pick("window"), aggregate: pick("cohort")[0]! };
   }
 
-  const source = (samples: Sample[], runId = "survival-fixture") => ({
+  const source = (samples: SourceSample[], runId = "survival-fixture") => ({
     ...survival,
     runId,
     samples,
@@ -548,11 +558,13 @@ describe("findings 1, 2 and 4: publication", () => {
     const merged = mergeSources([main, fixture], [], 45, policy);
 
     expect(merged.selectionRemoved).toEqual({});
+
     const site = siteData(
       mergeSources([main], [], 45, policy),
       "default",
       mergeSources([fixture], [], 45, policy),
     );
+
     const row = site.stress.burstSurvival[0]?.providers[0];
 
     expect(row).toMatchObject({ attempted: 2, createFailed: { accountLimit: 1 } });
@@ -562,8 +574,12 @@ describe("findings 1, 2 and 4: publication", () => {
   it("2: a rate-limited heartbeat keeps its member's verdict", () => {
     const { cold, windows, aggregate } = rows();
     windows[1]!.outcome = { kind: "failure", code: "quota", note: "HTTP 429" };
-    windows[1]!.details = { ...(windows[1]!.details as object), verdict: { kind: "unresponsive" } };
+    windows[1]!.details = {
+      ...detailsObject.parse(windows[1]!.details),
+      verdict: { kind: "unresponsive" },
+    };
     const stress = mergeSources([source([...cold, ...windows, aggregate])], [], 45, policy);
+
     const row = siteData(mergeSources([main]), "default", stress).stress.burstSurvival[0]
       ?.providers[0];
 
@@ -576,6 +592,7 @@ describe("findings 1, 2 and 4: publication", () => {
     const { cold, windows, aggregate } = rows();
     aggregate.outcome = { kind: "skipped", note: "interrupted" };
     const stress = mergeSources([source([...cold, windows[0]!, aggregate])]);
+
     const row = siteData(mergeSources([main]), "default", stress).stress.burstSurvival[0]
       ?.providers[0];
 
@@ -586,6 +603,7 @@ describe("findings 1, 2 and 4: publication", () => {
     const { cold, windows, aggregate } = rows();
     aggregate.outcome = { kind: "skipped", note: "budget stopped admission" };
     const stress = mergeSources([source([cold[0]!, windows[0]!, aggregate])]);
+
     const row = siteData(mergeSources([main]), "default", stress).stress.burstSurvival[0]
       ?.providers[0];
 
@@ -597,7 +615,7 @@ describe("findings 1, 2 and 4: publication", () => {
       source(
         rows().all.map((s) => ({
           ...s,
-          details: s.details === null ? null : { ...(s.details as object), plan },
+          details: s.details === null ? null : { ...detailsObject.parse(s.details), plan },
         })),
         runId,
       );
@@ -606,6 +624,7 @@ describe("findings 1, 2 and 4: publication", () => {
       withPlan("short", { windowMs: 1000, intervalMs: 1000 }),
       withPlan("long", { windowMs: 300_000, intervalMs: 15_000 }),
     ]);
+
     const entries = siteData(mergeSources([main]), "default", stress).stress.burstSurvival[0]
       ?.providers;
 

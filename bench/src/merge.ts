@@ -145,10 +145,6 @@ export const discardedRun = {
 
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 
-/** A provider's own words for a quota or rate refusal (the realistic burst runner's create rule). */
-const accountLimitWords =
-  /\bquota\b|rate.?limit|too many (requests|sandboxes|machines)|\b429\b|concurrency limit|limit (reached|exceeded)|exceeds? (the |your )?(account|plan|org)/i;
-
 export function classifyFailure(
   sample: Pick<Sample, "provider" | "scenario" | "outcome">,
 ): FailureClass | null {
@@ -157,22 +153,24 @@ export function classifyFailure(
 
   if (sample.provider === "boat" && /reported quota/i.test(note)) return "provider-account-limit";
 
-  const cohort = parseCohortScenario(sample.scenario);
-
   // Only this observed concurrent-create error is assigned to the likely account limit.
   // Other Daytona invalid_argument errors remain operation failures.
-  if (sample.provider === "daytona" && cohort?.member === "cold" && /invalid_argument/.test(note))
+  if (
+    sample.provider === "daytona" &&
+    /^burst-\d+\/cold$/.test(sample.scenario) &&
+    /invalid_argument/.test(note)
+  )
     return "provider-account-limit";
 
-  // cpu-burst and survival cohorts (added after the publication runs): a create refused for quota
-  // or rate reasons, or a heartbeat rate-limited, is an account limit; matched on the SDK's quota
-  // code, HTTP 429 or the provider's own words, as the realistic burst runner matches creates.
+  // cpu-burst and survival cohorts (added after the publication runs) need a typed signal: a
+  // create or heartbeat the SDK reports as code quota, or HTTP 429. Wording alone and other
+  // codes (such as Daytona's invalid_argument for a missing template) stay the provider's.
+  const cohort = parseCohortScenario(sample.scenario);
+
   if (
     (cohort?.kind === "cpu-burst" || cohort?.kind === "survival") &&
     ["cold", "window"].includes(cohort.member) &&
-    (sample.outcome.code === "quota" ||
-      sample.outcome.cause?.httpStatus === 429 ||
-      accountLimitWords.test(note))
+    (sample.outcome.code === "quota" || sample.outcome.cause?.httpStatus === 429)
   )
     return "provider-account-limit";
 
@@ -405,13 +403,15 @@ export function mergeSources(
 
   const selection = attemptPolicy
     ? selectAttempts(samples, attemptPolicy)
-    : { samples, removed: {}, removedByTrack: {} };
+    : { samples, removed: {}, removedByTrack: {}, stressRemoved: {} };
 
   return {
     attemptPolicy,
     selectionRemoved: selection.removed,
     /** selectionRemoved split by track, so each track's export can disclose its own. */
     selectionRemovedByTrack: selection.removedByTrack,
+    /** Stress rows (cpu-sustained, cpu-burst, survival) removed by whole unit, kept apart from selectionRemoved. */
+    stressSelectionRemoved: selection.stressRemoved,
     schemaVersion: "publication-merge-v1" as const,
     runId: "publication-final",
     bootstrapSeed: seed,
@@ -432,7 +432,7 @@ export function mergeSources(
       reliability:
         "Raw = successes / (successes + failures). Excluding limits/client = successes / (successes + provider-operation failures). Skipped and blocked rows are separate in both denominators. Aggregate rates count observations, including correlated/derived metrics, not unique sandbox reliability.",
       failureClass:
-        "Only failure rows classified: provider-account-limit (Boat quota; Daytona cohort-create invalid_argument, likely concurrency; cpu-burst/survival creates and heartbeats refused with SDK code quota, HTTP 429 or quota/rate-limit wording; aggregates inherit); client-third-party (network-mbps HTTP 429 or resets); provider-operation (all remaining operation failures, cause may be unresolved).",
+        "Only failure rows classified: provider-account-limit (Boat quota; Daytona burst invalid_argument, likely concurrency; cpu-burst/survival creates and unresponsive heartbeat windows with SDK code quota or HTTP 429, never a proven death; aggregates inherit); client-third-party (network-mbps HTTP 429 or resets); provider-operation (all remaining operation failures, cause may be unresolved).",
       costs:
         "Use original-source sandbox-lifetime estimatedCost only, before attempt selection, including restored lifetime already charged there; do not sum scenario allocations. Unknown lifetime costs stay unknown. Native currency, no FX conversion. Recorded pricing per source retained; reportPricing captures the existing pricing code used for sandbox-hour and command-efficiency estimates; budgets.estimatedUSD is a harness guard, not spend.",
     },
@@ -563,7 +563,9 @@ export async function mergeCommand(args: string[]) {
   report.runId = basename(output);
 
   if (
-    report.samples.length + sum(Object.values(report.selectionRemoved)) !==
+    report.samples.length +
+      sum(Object.values(report.selectionRemoved)) +
+      sum(Object.values(report.stressSelectionRemoved)) !==
     report.inputSampleCount
   )
     throw new Error("Sample conservation failed");

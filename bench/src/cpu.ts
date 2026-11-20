@@ -1,5 +1,8 @@
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import type { Sandbox } from "@opencoredev/sandbox-sdk";
 import { statistics } from "./stats.js";
+import { command } from "./workloads.js";
 
 /**
  * Fixed work for the CPU probe (probes/cpu.py): `segments` runs of `steps` iterations of the same
@@ -20,37 +23,77 @@ export const cpuWork = {
   burst: { segments: 4, steps: 10_000_000 },
 } as const satisfies Record<string, CpuWork>;
 
-/** The probe's LCG seed, the same as perf.py's. */
-const seed = 123456789;
-
-const checksums = new Map<number, number>();
-
-/** The LCG state after `steps` steps from the probe's seed, computed here, independent of the guest. */
-export function lcgChecksum(steps: number): number {
-  const known = checksums.get(steps);
-
-  if (known !== undefined) return known;
-  let x = seed;
-
-  for (let i = 0; i < steps; i++) x = (Math.imul(1664525, x) + 1013904223) >>> 0;
-  checksums.set(steps, x);
-
-  return x;
+/**
+ * One probe run's challenge: the work, the worker count, and a fresh seed the guest must start
+ * its LCG from, so a reply recorded on an earlier run carries the wrong checksum.
+ */
+export interface CpuChallenge {
+  work: CpuWork;
+  seed: number;
+  workers: number;
 }
 
+/** A fresh 32-bit seed for one probe run. */
+export function newCpuSeed(): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
+}
+
+const multiplier = 1664525;
+const increment = 1013904223;
+
+/**
+ * The LCG state after `steps` steps from `seed`. The step x -> a*x + c (mod 2^32) is composed with
+ * itself by repeated squaring, so this takes O(log steps) time. The same shortcut is open to a
+ * guest, which is why the checksum proves the right answer, not that the work ran.
+ */
+export function lcgChecksum(seed: number, steps: number): number {
+  let a = 1,
+    c = 0,
+    stepA = multiplier,
+    stepC = increment;
+
+  for (let n = steps; n > 0; n = Math.floor(n / 2)) {
+    if (n % 2 === 1) {
+      a = Math.imul(stepA, a) >>> 0;
+      c = (Math.imul(stepA, c) + stepC) >>> 0;
+    }
+
+    stepC = (Math.imul(stepA, stepC) + stepC) >>> 0;
+    stepA = Math.imul(stepA, stepA) >>> 0;
+  }
+
+  return (Math.imul(a, seed) + c) >>> 0;
+}
+
+/**
+ * The fastest rate any process may claim, in LCG steps per second. CPython runs this kernel at
+ * 9-30 M steps/s on current CPUs; anything above this bound is not a CPython guest doing the work.
+ */
+export const maxStepsPerSecond = 1e9;
+
 const rate = z.number().positive().finite();
+const epochSeconds = z.number().positive().finite();
 
 const runSchema = z.object({
   checksum: z.number().int().nonnegative(),
   seconds: rate,
   rates: z.array(rate).min(1),
+  /** Guest wall clock (epoch seconds) at the phase's start and end. */
+  startedAt: epochSeconds,
+  endedAt: epochSeconds,
 });
 
 export const cpuProbeSchema = z.object({
+  seed: z.number().int().nonnegative(),
   segments: z.number().int().positive(),
   steps: z.number().int().positive(),
   single: runSchema,
-  all: z.object({ workers: z.array(runSchema).min(1), wallSeconds: rate }),
+  all: z.object({
+    workers: z.array(runSchema).min(1),
+    wallSeconds: rate,
+    startedAt: epochSeconds,
+    endedAt: epochSeconds,
+  }),
   cpus: z.object({
     visible: z.number().int().positive().nullable(),
     affinity: z.number().int().positive(),
@@ -61,15 +104,35 @@ export const cpuProbeSchema = z.object({
 
 export type CpuProbe = z.infer<typeof cpuProbeSchema>;
 
-/** Mean rate of the last quarter of segments over the first quarter. Below 1, the guest slowed down. */
-export function steadiness(rates: readonly number[]): number | null {
-  const q = Math.max(1, Math.floor(rates.length / 4));
+function median(xs: readonly number[]) {
+  const sorted = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
 
-  if (rates.length < 2) return null;
+  if (!sorted.length) return null;
+
+  return sorted.length % 2
+    ? (sorted[mid] ?? null)
+    : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+}
+
+/**
+ * How even a phase's segment rates were. `minOverMedian` is the slowest segment over the median
+ * one: 1 means every segment ran at the typical rate, and one stalled segment pulls it down
+ * wherever it falls. `lastOverFirst` is the mean rate of the last quarter of segments over the
+ * first quarter: below 1, the guest slowed down by the end (quota throttling, steal).
+ */
+export function segmentConsistency(rates: readonly number[]) {
+  const mid = median(rates);
+  const q = Math.max(1, Math.floor(rates.length / 4));
   const mean = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
 
-  return mean(rates.slice(-q)) / mean(rates.slice(0, q));
+  return {
+    minOverMedian: mid === null || mid <= 0 ? null : Math.min(...rates) / mid,
+    lastOverFirst: rates.length < 2 ? null : mean(rates.slice(-q)) / mean(rates.slice(0, q)),
+  };
 }
+
+export type SegmentConsistency = ReturnType<typeof segmentConsistency>;
 
 /** Per-segment rates summed across the all-core workers, which start together and do equal work. */
 function combinedRates(workers: CpuProbe["all"]["workers"]) {
@@ -87,19 +150,57 @@ export interface CpuResult {
   allOpsPerSecond: number;
   singleSeconds: number;
   allSeconds: number;
-  singleSteadiness: number | null;
-  allSteadiness: number | null;
+  single: SegmentConsistency;
+  all: SegmentConsistency;
   workers: number;
   /** CPUs the guest can use: its affinity set, capped by a cgroup quota when one is set. */
   guestVcpus: number;
 }
 
+/** Slack for comparing two clocks' readings of one interval: 10% plus a fixed margin. */
+const close = (a: number, b: number, marginSeconds: number) =>
+  Math.abs(a - b) <= 0.1 * Math.max(a, b) + marginSeconds;
+
 /**
- * Parse the probe's JSON and check it did exactly the requested work: the same segments, steps and
- * worker count, and every process's final LCG state equal to the harness's own. Throws otherwise.
+ * Check one phase's timings against each other: its segment durations must add up to its own
+ * seconds, its wall-clock span must match them, and no rate may exceed what CPython can do.
  */
-export function cpuResult(output: string, work: CpuWork, workers: number): CpuResult {
+function checkRun(run: z.infer<typeof runSchema>, work: CpuWork, label: string) {
+  const segmentSeconds = run.rates.reduce((sum, r) => sum + work.steps / r, 0);
+
+  if (!close(segmentSeconds, run.seconds, 0.02))
+    throw new Error(
+      `CPU probe ${label} timing is inconsistent: its segments take ${segmentSeconds.toPrecision(3)} s, the phase ${run.seconds.toPrecision(3)} s`,
+    );
+
+  if (!close(run.endedAt - run.startedAt, run.seconds, 0.05))
+    throw new Error(
+      `CPU probe ${label} timing is inconsistent: wall clock ${(run.endedAt - run.startedAt).toPrecision(3)} s, timer ${run.seconds.toPrecision(3)} s`,
+    );
+
+  const fastest = Math.max(...run.rates, (work.segments * work.steps) / run.seconds);
+
+  if (fastest > maxStepsPerSecond)
+    throw new Error(
+      `CPU probe ${label} claims a rate of ${fastest.toExponential(2)} steps/s, above the ${maxStepsPerSecond.toExponential(0)} steps/s any CPython process reaches`,
+    );
+}
+
+/**
+ * Parse the probe's JSON and check it did exactly the requested work: the same seed, segments,
+ * steps and worker count; every process's final LCG state equal to the harness's own; phase,
+ * segment and wall-clock timings that agree with each other; and phases that fit inside the
+ * `hostSeconds` the exec took. Throws otherwise.
+ *
+ * These checks catch a wrong, stale or implausible reply. They cannot prove the guest executed
+ * the work: the LCG has a closed form (see `lcgChecksum`), and a provider controls its guest and
+ * its output, so a dishonest guest could compute the answer and report plausible timings.
+ */
+export function cpuResult(output: string, challenge: CpuChallenge, hostSeconds: number): CpuResult {
+  const { work, workers, seed } = challenge;
   const probe = cpuProbeSchema.parse(JSON.parse(output));
+
+  if (probe.seed !== seed) throw new Error(`CPU probe ran from seed ${probe.seed}, not ${seed}`);
 
   if (probe.segments !== work.segments || probe.steps !== work.steps)
     throw new Error(
@@ -108,30 +209,180 @@ export function cpuResult(output: string, work: CpuWork, workers: number): CpuRe
 
   if (probe.all.workers.length !== workers)
     throw new Error(`CPU probe ran ${probe.all.workers.length} workers, not ${workers}`);
-  const expected = lcgChecksum(work.segments * work.steps);
+  const expected = lcgChecksum(seed, work.segments * work.steps);
 
-  for (const run of [probe.single, ...probe.all.workers]) {
+  for (const [index, run] of [probe.single, ...probe.all.workers].entries()) {
+    const label = index === 0 ? "single" : `worker ${index}`;
+
     if (run.rates.length !== work.segments)
       throw new Error(`CPU probe timed ${run.rates.length} segments, not ${work.segments}`);
 
     if (run.checksum !== expected)
       throw new Error(`CPU probe checksum ${run.checksum} differs from ${expected}`);
+
+    checkRun(run, work, label);
   }
+
+  const { all } = probe;
+
+  if (!close(all.endedAt - all.startedAt, all.wallSeconds, 0.05))
+    throw new Error(
+      `CPU probe all-core timing is inconsistent: wall clock ${(all.endedAt - all.startedAt).toPrecision(3)} s, timer ${all.wallSeconds.toPrecision(3)} s`,
+    );
+
+  for (const w of all.workers)
+    if (w.seconds > all.wallSeconds * 1.05 + 0.02 || w.startedAt < all.startedAt - 0.05)
+      throw new Error("CPU probe timing is inconsistent: a worker ran outside the all-core phase");
+
+  if (probe.single.endedAt > all.startedAt + 0.05)
+    throw new Error(
+      "CPU probe timing is inconsistent: the all-core phase began before single ended",
+    );
+
+  const guestSeconds = probe.single.seconds + all.wallSeconds;
+
+  if (guestSeconds > hostSeconds * 1.05 + 0.05)
+    throw new Error(
+      `CPU probe reports ${guestSeconds.toPrecision(3)} s of work, longer than the ${hostSeconds.toPrecision(3)} s the host saw the exec take`,
+    );
 
   const total = work.segments * work.steps;
 
   return {
     probe,
     singleOpsPerSecond: total / probe.single.seconds,
-    allOpsPerSecond: (total * workers) / probe.all.wallSeconds,
+    allOpsPerSecond: (total * workers) / all.wallSeconds,
     singleSeconds: probe.single.seconds,
-    allSeconds: probe.all.wallSeconds,
-    singleSteadiness: steadiness(probe.single.rates),
-    allSteadiness: steadiness(combinedRates(probe.all.workers)),
+    allSeconds: all.wallSeconds,
+    single: segmentConsistency(probe.single.rates),
+    all: segmentConsistency(combinedRates(all.workers)),
     workers,
     guestVcpus: Math.min(probe.cpus.affinity, probe.cpus.quota ?? Infinity),
   };
 }
+
+/** Milliseconds since the epoch on the host, at `performance.now()` resolution. */
+export const hostEpochMs = () => performance.timeOrigin + performance.now();
+
+/** A probe written to the guest, with the guest clock's offset from the host's, before it runs. */
+export interface StagedCpuProbe {
+  challenge: CpuChallenge;
+  command: string;
+  /** Guest clock minus host clock, estimated from one round trip. */
+  clockOffsetMs: number;
+  /** Half that round trip: the offset is right to within this. */
+  clockUncertaintyMs: number;
+}
+
+/**
+ * Stage a probe run: write probes/cpu.py into the guest and read the guest clock once, so the
+ * only thing left after a cohort's common start is dispatching one short command.
+ */
+export async function stageCpuProbe(
+  box: Sandbox,
+  challenge: CpuChallenge,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<StagedCpuProbe> {
+  const script = await readFile(new URL("../probes/cpu.py", import.meta.url), "utf8");
+  const path = `/tmp/bench-cpu-${challenge.seed.toString(16)}.py`;
+  await box.files.write(path, script);
+  const before = hostEpochMs();
+  const reply = await command(box, `python3 ${path} clock`, timeoutMs, signal);
+  const after = hostEpochMs();
+  const guestMs = Number(reply) * 1000;
+
+  if (!Number.isFinite(guestMs) || guestMs <= 0)
+    throw new Error(`CPU probe clock reply is not a time: ${JSON.stringify(reply.slice(0, 80))}`);
+  const { work, workers, seed } = challenge;
+
+  return {
+    challenge,
+    command: `python3 ${path} run ${work.segments} ${work.steps} ${workers} ${seed}`,
+    clockOffsetMs: guestMs - (before + after) / 2,
+    clockUncertaintyMs: (after - before) / 2,
+  };
+}
+
+/** A [start, end] interval in host epoch milliseconds. */
+export type Interval = readonly [number, number];
+
+/**
+ * Run a staged probe. `returnedAt` (`performance.now()`) is taken as soon as the exec returns,
+ * before any checks or report writes; `guest` holds each phase's interval on the host clock.
+ */
+export async function runStagedCpuProbe(
+  box: Sandbox,
+  staged: StagedCpuProbe,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) {
+  const dispatchedAt = performance.now();
+  const dispatchedEpoch = hostEpochMs();
+  const output = await command(box, staged.command, timeoutMs, signal);
+  const returnedAt = performance.now();
+
+  if (signal?.aborted) throw new Error("CPU probe aborted");
+  const result = cpuResult(output, staged.challenge, (returnedAt - dispatchedAt) / 1000);
+
+  const onHost = (run: { startedAt: number; endedAt: number }): Interval => [
+    run.startedAt * 1000 - staged.clockOffsetMs,
+    run.endedAt * 1000 - staged.clockOffsetMs,
+  ];
+
+  const guest = { single: onHost(result.probe.single), all: onHost(result.probe.all) };
+  // The guest clock may drift or be stepped between staging and the run; allow a quarter second.
+  const slack = staged.clockUncertaintyMs + 250;
+  const returnedEpoch = dispatchedEpoch + (returnedAt - dispatchedAt);
+
+  if (guest.single[0] < dispatchedEpoch - slack || guest.all[1] > returnedEpoch + slack)
+    throw new Error("CPU probe timing is inconsistent: guest phases fall outside the exec");
+
+  return { result, returnedAt, guest, clockUncertaintyMs: staged.clockUncertaintyMs };
+}
+
+/** A cohort's CPU phases count as run together when all members overlap this share of a phase. */
+export const overlapThreshold = 0.8;
+
+/**
+ * How closely a cohort's members ran each phase together, on the host clock: the spread of their
+ * start times, and the share of a typical (median) phase during which every member was running
+ * it. The worst case narrows the common interval by each side's clock uncertainty; `ok` needs
+ * the worst case at or above `overlapThreshold` for both phases.
+ */
+export function cpuOverlap(
+  members: readonly { single: Interval; all: Interval }[],
+  clockUncertaintyMs: number,
+) {
+  const phase = (intervals: readonly Interval[]) => {
+    const starts = intervals.map(([s]) => s);
+    const ends = intervals.map(([, e]) => e);
+    const typical = median(intervals.map(([s, e]) => e - s)) ?? 0;
+    const common = Math.min(...ends) - Math.max(...starts);
+
+    const share = (ms: number) =>
+      typical > 0 ? Number((Math.max(0, ms) / typical).toFixed(3)) : 0;
+
+    return {
+      startSkewMs: Math.round(Math.max(...starts) - Math.min(...starts)),
+      allRunningFraction: share(common),
+      worstCaseFraction: share(common - 2 * clockUncertaintyMs),
+    };
+  };
+
+  const single = phase(members.map((m) => m.single));
+  const all = phase(members.map((m) => m.all));
+
+  return {
+    single,
+    all,
+    clockUncertaintyMs: Math.round(clockUncertaintyMs),
+    threshold: overlapThreshold,
+    ok: single.worstCaseFraction >= overlapThreshold && all.worstCaseFraction >= overlapThreshold,
+  };
+}
+
+export type CpuOverlap = ReturnType<typeof cpuOverlap>;
 
 /**
  * How far apart one cohort's members ran: nearest-rank percentiles of per-sandbox throughput,

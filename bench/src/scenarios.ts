@@ -78,24 +78,62 @@ export interface SurvivalPlan {
 }
 
 /**
- * The longest one cohort member can run, for its admission reserve: create and fingerprint each
- * take up to the per-step timeout, then the kind's own work. A survival member's last heartbeat
- * and a liveness lookup after a miss can each take another timeout.
+ * From a survival window's start until its last heartbeat, and the exact lookup after a miss,
+ * have finished: each is bounded by the heartbeat deadline, which never exceeds the interval.
+ */
+export function windowBoundMs(plan: SurvivalPlan, timeoutMs: number) {
+  return plan.windowMs + 2 * Math.min(timeoutMs, plan.intervalMs);
+}
+
+/** Steps after a cohort member's work: draining its tracked calls, then destroy. */
+const cleanupSteps = 2;
+
+/**
+ * The longest one cohort member can run, for its admission reserve and sandbox lifetime: create
+ * and fingerprint each take up to the per-step timeout, then the kind's own work, then cleanup.
+ * cpu-burst's work is staging the probe and running it; survival's is the heartbeat window, which
+ * `survivalEndBy` holds to its bound so the cleanup steps stay reserved.
  */
 export function cohortBoundMs(kind: CohortKind, timeoutMs: number, survival: SurvivalPlan) {
   switch (kind) {
     case "burst":
       return timeoutMs * 2;
     case "cpu-burst":
-      return timeoutMs * 3;
+      return timeoutMs * (2 + 2 + 1);
     case "survival":
-      return timeoutMs * 4 + survival.windowMs;
+      return timeoutMs * 2 + windowBoundMs(survival, timeoutMs) + timeoutMs * cleanupSteps;
     default: {
       const exhaustive: never = kind;
 
       return exhaustive;
     }
   }
+}
+
+/**
+ * The absolute `performance.now()` deadline for a survival cohort's windows: the cohort's start
+ * plus its member bound, less the cleanup steps. Every member's heartbeats and lookups end by it.
+ */
+export function survivalEndBy(cohortStart: number, timeoutMs: number, plan: SurvivalPlan) {
+  return cohortStart + cohortBoundMs("survival", timeoutMs, plan) - timeoutMs * cleanupSteps;
+}
+
+/** Conservative concurrent-sandbox caps per account, where `--account-limits` gives none. */
+const defaultAccountCaps = new Map([
+  ["boxd", 50],
+  ["e2b", 20],
+  ["upstash", 10],
+  ["freestyle", 10],
+  ["tenki", 5],
+  ["baseten", 10],
+  ["instabox", 25],
+]);
+
+/** The most sandboxes one cohort may hold on a provider's account; boxd never above 50. */
+export function accountCap(provider: string, overrides: Readonly<Record<string, number>>) {
+  const configured = overrides[provider] ?? defaultAccountCaps.get(provider) ?? 10;
+
+  return provider === "boxd" ? Math.min(configured, 50) : configured;
 }
 
 /** Which cohort kinds a run collects. */
@@ -108,10 +146,10 @@ export function selectedCohorts(selection: readonly string[], bursts: readonly n
   return [...(plain ? (["burst"] as const) : []), ...named];
 }
 
-/** Whether a run skips normal iterations: it names only cohort kinds, or names burst. */
+/**
+ * Whether a run skips normal iterations: it names only cohort kinds. Main-suite scenarios named
+ * beside them (`cpu-sustained,burst`) run as normal iterations, then the cohorts run.
+ */
 export function cohortOnly(selection: readonly string[]) {
-  return (
-    !selection.includes("all") &&
-    (selection.includes("burst") || selection.every((name) => isCohortKind(name)))
-  );
+  return !selection.includes("all") && selection.every((name) => isCohortKind(name));
 }

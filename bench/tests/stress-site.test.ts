@@ -77,7 +77,7 @@ it("exports burst survival under stress and leaves every older field unchanged",
   );
 
   const before = siteData(mergeSources([main]));
-  const after = siteData(mergeSources([main, survival]));
+  const after = siteData(mergeSources([main]), "default", mergeSources([survival]));
   const { stress, ...older } = after;
   const { stress: empty, ...olderBefore } = before;
 
@@ -85,6 +85,7 @@ it("exports burst survival under stress and leaves every older field unchanged",
   expect(empty).toEqual({
     observations: 0,
     runs: [],
+    selectionRemoved: {},
     cpuSustained: [],
     cpuBurst: [],
     burstSurvival: [],
@@ -99,9 +100,12 @@ it("exports burst survival under stress and leaves every older field unchanged",
       providers: [
         {
           provider: "boat",
+          requestedSize: null,
+          template: null,
           windowS: 2,
           heartbeatS: 1,
           cohorts: 1,
+          incomplete: { cohorts: 0, members: 0 },
           attempted: 3,
           survived: 2,
           createFailed: { total: 0, accountLimit: 0, clientNetwork: 0, provider: 0 },

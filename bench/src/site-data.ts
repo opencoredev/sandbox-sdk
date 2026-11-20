@@ -17,7 +17,8 @@ import {
 import { statistics } from "./stats.js";
 import { distribution } from "./v2-stats.js";
 import type { Fingerprint } from "./fingerprint.js";
-import { isStressSample, stressData } from "./stress-site.js";
+import { stressData, type StressReport } from "./stress-site.js";
+import { isStressSample } from "./suite.js";
 
 // Compact, chart-ready view of a merged publication report for apps/bench-site.
 // Every number here is derived from results.json; the site never hard-codes measurements.
@@ -463,65 +464,30 @@ export function exclusions(input: SiteReport, track: "default" | "same-spec") {
 }
 
 /**
- * The collection window without runs that collected only stress rows, so adding one leaves the
- * window as it was. Null when there are none: the merged report's own window applies.
+ * The site's data for one track. Every field but `stress` comes from `input`, the publication
+ * report, exactly as before the stress suites existed. `stress` comes only from `stressReport`, a
+ * separate merge of stress runs. A publication report holding stress rows is refused rather than
+ * filtered: which rows belong where is the merge inputs' decision, not site-data's.
  */
-function legacyWindow(input: Pick<SiteReport, "samples" | "sources">) {
-  const stressOnly = new Set(
-    input.sources
-      .filter((source) => {
-        const rows = input.samples.filter((s) => s.sourceRunId === source.runId);
+export function siteData(
+  input: SiteReport,
+  track: "default" | "same-spec" = "default",
+  stressReport: StressReport | null = null,
+) {
+  const stressRows = input.samples.filter(isStressSample);
 
-        return rows.length > 0 && rows.every(isStressSample);
-      })
-      .map((source) => source.runId),
-  );
+  if (stressRows.length)
+    throw new Error(
+      `The publication report has ${stressRows.length} stress rows (runs ${[...new Set(stressRows.map((s) => s.sourceRunId))].join(", ")}): merge stress runs into their own report and pass it with --stress-report`,
+    );
 
-  if (!stressOnly.size) return null;
-  const others = input.sources.filter((s) => !stressOnly.has(s.runId));
-
-  return {
-    start: others.map((s) => s.timestamp).sort()[0] ?? null,
-    end:
-      others
-        .map((s) => s.finishedAt)
-        .sort()
-        .at(-1) ?? null,
-  };
-}
-
-/** Policy rules for the stress suites belong to the stress section, not the older exclusions. */
-const stressSuites: ReadonlySet<string> = new Set(["cpu-burst", "survival"]);
-
-export function siteData(input: SiteReport, track: "default" | "same-spec" = "default") {
-  const allExclusions = exclusions(input, track);
-
-  const disclosed = {
-    ...allExclusions,
-    superseded: allExclusions.superseded.filter((rule) => !stressSuites.has(rule.suite)),
-    notRun: allExclusions.notRun.filter((rule) => !stressSuites.has(rule.suite)),
-    replacements: allExclusions.replacements.filter((rule) => !stressSuites.has(rule.suite)),
-  };
+  const disclosed = exclusions(input, track);
 
   // Nothing below reads the per-track counts; exclusions above already has them.
-  const full = publicationTrack(
+  const r = publicationTrack(
     { ...input, selectionRemovedByTrack: input.selectionRemovedByTrack ?? {} },
     track,
   );
-
-  // Every field but `stress` reads only the scenarios that existed before it, so adding stress
-  // rows to a report leaves them unchanged. Runs that collected only stress rows drop out too.
-  const legacySamples = full.samples.filter((s) => !isStressSample(s));
-  const legacyRuns = new Set(legacySamples.map((s) => s.sourceRunId));
-
-  const r = {
-    ...full,
-    samples: legacySamples,
-    summaries: full.summaries.filter((s) => !isStressSample(s)),
-    sources: full.sources.filter(
-      (s) => legacyRuns.has(s.runId) || !full.samples.some((x) => x.sourceRunId === s.runId),
-    ),
-  };
 
   const names = [...new Set(r.sources.flatMap((s) => s.providers.map((p) => p.name)))];
 
@@ -684,7 +650,7 @@ export function siteData(input: SiteReport, track: "default" | "same-spec" = "de
       verification: p.allocationVerification,
     })),
     generatedFrom: r.runId,
-    window: legacyWindow(input) ?? { start: r.timestamp, end: r.finishedAt },
+    window: { start: r.timestamp, end: r.finishedAt },
     observations: r.samples.length,
     runs: r.sources.map((s) => ({ id: s.runId, suite: s.suite, samples: s.sampleCount })),
     excluded: r.excludedSources,
@@ -693,10 +659,8 @@ export function siteData(input: SiteReport, track: "default" | "same-spec" = "de
     providers,
     metrics,
     coldSamples,
-    // CPU sustained, CPU burst and burst survival (stress-site.ts).
-    stress: stressData(full, [
-      ...new Set(full.sources.flatMap((s) => s.providers.map((p) => p.name))),
-    ]),
+    // CPU sustained, CPU burst and burst survival, from the separate stress report (stress-site.ts).
+    stress: stressData(stressReport, track),
   };
 }
 
@@ -708,6 +672,8 @@ export async function siteDataCommand(args: string[]) {
     options: {
       track: { type: "string", default: "default" },
       report: { type: "string", default: "results/publication-final" },
+      // A merge of stress runs only (cpu-sustained, cpu-burst, survival); omitted, stress is empty.
+      "stress-report": { type: "string" },
       out: { type: "string", default: "../apps/bench-site/src/data/benchmark.json" },
     },
   });
@@ -717,8 +683,12 @@ export async function siteDataCommand(args: string[]) {
     await readFile(join(values.report, "results.json"), "utf8"),
   );
 
+  const stress: StressReport | null = values["stress-report"]
+    ? JSON.parse(await readFile(join(values["stress-report"], "results.json"), "utf8"))
+    : null;
+
   const track = (await import("./v2-config.js")).trackSchema.parse(values.track);
-  await writeFile(values.out, `${JSON.stringify(siteData(report, track), null, 1)}\n`);
+  await writeFile(values.out, `${JSON.stringify(siteData(report, track, stress), null, 1)}\n`);
 
   process.stdout.write(`Wrote ${values.out}\n`);
 }

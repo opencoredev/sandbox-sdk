@@ -31,6 +31,7 @@ import {
 import { estimateCost, budgetUSD, settledBudgetUSD } from "./pricing.js";
 import { pricedResources, reservationResources } from "./billed-resources.js";
 import {
+  accountCap,
   cohortAggregate,
   cohortBoundMs,
   cohortOnly,
@@ -40,10 +41,23 @@ import {
   scenarioNames,
   selectedCohorts,
   selectsScenario,
+  survivalEndBy,
   type CohortKind,
   type SurvivalPlan,
 } from "./scenarios.js";
-import { cpuResult, cpuWork, throughputSpread, type CpuResult, type CpuWork } from "./cpu.js";
+import {
+  cpuOverlap,
+  cpuWork,
+  maxStepsPerSecond,
+  overlapThreshold,
+  newCpuSeed,
+  runStagedCpuProbe,
+  stageCpuProbe,
+  throughputSpread,
+  type CpuWork,
+  type Interval,
+  type StagedCpuProbe,
+} from "./cpu.js";
 import {
   heartbeatCommand,
   heartbeatDetails,
@@ -166,8 +180,13 @@ interface CohortRun {
   ready: Barrier;
   /** Released once every member has finished its work; members keep their sandboxes until then. */
   done: Barrier;
-  /** `performance.now()` when each member's CPU workload returned successfully (cpu-burst). */
-  cpuFinishedAt: number[];
+  /** `performance.now()` when the cohort started admitting members: the survival deadline's base. */
+  startedAt: number;
+  /**
+   * Each member's successful CPU workload (cpu-burst): when its exec returned (`performance.now()`,
+   * taken before any report write), its phases on the host clock, and that clock's uncertainty.
+   */
+  cpu: { returnedAt: number; single: Interval; all: Interval; clockUncertaintyMs: number }[];
   /** Each member's window verdict (survival). */
   verdicts: SurvivalVerdict["kind"][];
 }
@@ -383,17 +402,17 @@ export async function runV2(
 
   if (selectsScenario(config.scenarios, "cpu-sustained") || config.scenarios.includes("cpu-burst"))
     report.methodology.push(
-      `CPU probe (probes/cpu.py): perf.py's CPython 32-bit LCG kernel and seed, fixed work of segments x steps (cpu-sustained ${cpuWork.sustained.segments}x${cpuWork.sustained.steps}, cpu-burst ${cpuWork.burst.segments}x${cpuWork.burst.steps}) on one process, then on ceil(min(nproc, quota)) fork() workers (max 64) reporting over pipes. Every process's final LCG state must equal the harness's own computation or the row fails. Rows: steps/s single and all-core (worker startup included), each segment's rate, steadiness (last quarter of segments over first quarter), and the CPUs the guest sees (affinity, cgroup quota). Python version differences remain a confounder.`,
+      `CPU probe (probes/cpu.py): perf.py's CPython 32-bit LCG kernel from a fresh random seed per run, fixed work of segments x steps (cpu-sustained ${cpuWork.sustained.segments}x${cpuWork.sustained.steps}, cpu-burst ${cpuWork.burst.segments}x${cpuWork.burst.steps}) on one process, then on ceil(min(nproc, quota)) fork() workers (max 64) reporting over pipes. The script is written to the guest and the guest clock read before the run. A row fails unless every process's final LCG state equals the harness's own value for that seed, segment times add up to each phase, guest wall-clock spans match, no rate exceeds ${maxStepsPerSecond.toExponential(0)} steps/s, and the phases fit inside the exec the host timed. These checks reject wrong, stale or implausible replies; they cannot prove the guest executed the work, since the LCG has a closed form and the provider controls the guest's output. Rows: steps/s single and all-core (worker startup included), each segment's rate, consistency (slowest segment over median segment) and trend (last quarter of segments over first quarter), and the CPUs the guest sees (affinity, cgroup quota). Python version differences remain a confounder.`,
     );
 
   if (config.scenarios.includes("cpu-burst"))
     report.methodology.push(
-      "CPU burst: K sandboxes created at once; once every member is ready (or failed), all start the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's return and is a sample only when all K complete. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.",
+      `CPU burst: K sandboxes created at once; each stages its probe, then once every member is ready (or failed) all dispatch the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's exec return (timestamped before any report write) and is a sample only when all K complete. Overlap: each member's phases are placed on the host clock using its guest clock offset (one round trip, uncertainty half of it); the aggregate records start skew and the share of a median phase during which every member ran it, and flags the cohort when the worst case falls below ${overlapThreshold}. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.`,
     );
 
   if (config.scenarios.includes("survival"))
     report.methodology.push(
-      `Burst survival: K sandboxes created at once; once every member is ready (or failed), each sends a heartbeat (${heartbeatCommand}) every ${config["survival-heartbeat-ms"]} ms for ${config["survival-window-ms"]} ms, each bounded by the interval. A missed heartbeat triggers an exact read-only native lookup: absent, terminal or dead native state, an SDK not_found, or a changed boot ID is death; any other miss marks the member unresponsive. Create failures keep the failure taxonomy (account limits are not provider failures). An interrupted run's unfinished windows are skipped, not failures.`,
+      `Burst survival: K sandboxes created at once; once every member is ready (or failed), each sends a heartbeat (${heartbeatCommand}) every ${config["survival-heartbeat-ms"]} ms and at the window's end (${config["survival-window-ms"]} ms), each bounded by the interval. A missed heartbeat triggers an exact read-only native lookup within the same bound. Exact lifecycle evidence decides: absent, terminal or a dead native state is death and a live native state is not, whatever the exec error; an SDK not_found decides only when no lookup answered; a changed boot ID is death. Any other miss marks the member unresponsive. Slots that pass while a miss is being handled are recorded as skipped, never sent late, and every heartbeat and lookup ends by one cohort deadline that keeps the cleanup reserve. Survival needs every slot answered, through the window's end. Create failures and heartbeats need a typed signal (SDK code quota or HTTP 429) to count as account limits; a proven death never does. An interrupted run's unfinished windows are skipped, not failures.`,
     );
 
   let reportWrites = Promise.resolve();
@@ -1240,27 +1259,43 @@ export async function runV2(
     }
 
     /**
-     * Run the fixed-work CPU probe (probes/cpu.py) and publish its probe row plus two throughput
-     * rows, `<scenario>-single` and `<scenario>-all`, like perf's derived metrics.
+     * Stage a CPU probe run: a fresh seed, the worker count from the fingerprint, the script
+     * written into the guest and the guest clock read. Bounded by the step timeout.
      */
-    async function cpuScenario(active: Sandbox, scenario: string, work: CpuWork) {
-      const probe = await measure(scenario, async (signal): Promise<CpuResult> => {
-        if (p.name === "memory") throw new Skip("Memory is an offline fake");
+    async function stageCpu(active: Sandbox, work: CpuWork): Promise<StagedCpuProbe> {
+      if (p.name === "memory") throw new Skip("Memory is an offline fake");
 
-        if (!fp) throw new Error("Fingerprint required to size the all-core run");
-        const workers = Math.min(64, Math.ceil(resources(fp).cpu));
-        const script = await readFile(new URL("../probes/cpu.py", import.meta.url), "utf8");
+      if (!fp) throw new Error("Fingerprint required to size the all-core run");
+      const workers = Math.min(64, Math.ceil(resources(fp).cpu));
 
-        const output = await command(
-          active,
-          `BENCH_CPU_SEGMENTS=${work.segments} BENCH_CPU_STEPS=${work.steps} BENCH_CORES=${workers} python3 - <<'BENCH_CPU'\n${script}\nBENCH_CPU`,
-          timeout,
-          signal,
-        );
+      return deadline(timeout, (signal) =>
+        pending.track(
+          stageCpuProbe(active, { work, seed: newCpuSeed(), workers }, timeout, signal),
+        ),
+      );
+    }
 
-        if (signal.aborted) throw new Error("CPU probe aborted");
+    /**
+     * Run a staged CPU probe (probes/cpu.py) and publish its probe row plus two throughput
+     * rows, `<scenario>-single` and `<scenario>-all`, like perf's derived metrics. A staging
+     * failure fails the probe row. `onReturn` sees the run as soon as its exec returns.
+     */
+    async function cpuScenario(
+      active: Sandbox,
+      scenario: string,
+      staging: Promise<StagedCpuProbe>,
+      onReturn: (ran: Awaited<ReturnType<typeof runStagedCpuProbe>>) => void = () => {},
+    ) {
+      const probe = await measure(scenario, async (signal) => {
+        const ran = await runStagedCpuProbe(active, await staging, timeout, signal);
+        onReturn(ran);
 
-        return cpuResult(output, work, workers);
+        return {
+          ...ran.result,
+          seed: ran.result.probe.seed,
+          guest: ran.guest,
+          clockUncertaintyMs: ran.clockUncertaintyMs,
+        };
       });
 
       const source = probe.sample;
@@ -1280,12 +1315,14 @@ export async function runV2(
         const details =
           probe.kind === "success"
             ? {
-                work,
+                work: { segments: probe.result.probe.segments, steps: probe.result.probe.steps },
+                seed: probe.result.seed,
                 workers: phase === "single" ? 1 : probe.result.workers,
                 seconds: phase === "single" ? probe.result.singleSeconds : probe.result.allSeconds,
-                steadiness:
-                  phase === "single" ? probe.result.singleSteadiness : probe.result.allSteadiness,
+                consistency: probe.result[phase],
                 guestVcpus: probe.result.guestVcpus,
+                guest: probe.result.guest[phase],
+                clockUncertaintyMs: probe.result.clockUncertaintyMs,
                 cpus: probe.result.probe.cpus,
                 python: probe.result.probe.python,
               }
@@ -1319,6 +1356,11 @@ export async function runV2(
      * short CPU workload for cpu-burst, the heartbeat window for survival.
      */
     async function cohortWork({ run, gates }: CohortMember, active: Sandbox) {
+      // A cpu-burst member stages its probe before the common start, so a slow upload or clock
+      // read cannot delay its CPU phases relative to the others.
+      const staging = run.kind === "cpu-burst" ? stageCpu(active, cpuWork.burst) : null;
+
+      await staging?.catch(() => {});
       await gates.ready();
 
       if (stopping.signal.aborted) return;
@@ -1327,9 +1369,19 @@ export async function runV2(
         case "burst":
           return;
         case "cpu-burst": {
-          const probe = await cpuScenario(active, "cpu", cpuWork.burst);
-
-          if (probe.kind === "success") run.cpuFinishedAt.push(performance.now());
+          // Staged before the barrier, below; only the exec dispatch follows the common start.
+          await cpuScenario(
+            active,
+            "cpu",
+            staging ?? Promise.reject(new Error("CPU probe not staged")),
+            (ran) =>
+              run.cpu.push({
+                returnedAt: ran.returnedAt,
+                single: ran.guest.single,
+                all: ran.guest.all,
+                clockUncertaintyMs: ran.clockUncertaintyMs,
+              }),
+          );
 
           return;
         }
@@ -1343,8 +1395,10 @@ export async function runV2(
             plan: survivalPlan,
             heartbeat: async (signal) =>
               parseBootId(await command(active, heartbeatCommand, timeout, signal)),
-            lookup: () => lookupSandbox(p.provider, active.id, timeout),
+            lookup: (ms) => lookupSandbox(p.provider, active.id, ms),
             heartbeatTimeoutMs: timeout,
+            // One deadline for the whole cohort, leaving its cleanup steps reserved.
+            endBy: survivalEndBy(run.startedAt, timeout, survivalPlan),
             stop: stopping.signal,
             sanitize,
             track: (work) => pending.track(work),
@@ -1896,7 +1950,10 @@ export async function runV2(
         }
 
         if (group === "cpu-sustained") {
-          await cpuScenario(active, "cpu-sustained", cpuWork.sustained);
+          const staging = stageCpu(active, cpuWork.sustained);
+
+          await staging.catch(() => {});
+          await cpuScenario(active, "cpu-sustained", staging);
 
           continue;
         }
@@ -2361,10 +2418,17 @@ export async function runV2(
         const all = outcomeValues(rows.filter((s) => s.scenario === `${prefix}/cpu-all`));
         const released = run.ready.releasedAt;
 
-        // From the moment every member was released together to the slowest member's return.
+        // From the moment every member was released together to the slowest member's return,
+        // each timestamped as its exec returned, before its rows were written.
         const allCompleteMs =
-          single.length === k && released !== null && run.cpuFinishedAt.length === k
-            ? Math.max(...run.cpuFinishedAt) - released
+          single.length === k && released !== null && run.cpu.length === k
+            ? Math.max(...run.cpu.map((m) => m.returnedAt)) - released
+            : null;
+
+        // Whether the members' CPU phases overlapped, on the host clock (guest clocks corrected).
+        const overlap =
+          run.cpu.length >= 2
+            ? cpuOverlap(run.cpu, Math.max(...run.cpu.map((m) => m.clockUncertaintyMs)))
             : null;
 
         const durationMs = allCompleteMs ?? performance.now() - timing.start;
@@ -2394,9 +2458,11 @@ export async function runV2(
           outcome,
           details: {
             ...base,
+            work: cpuWork.burst,
             ready: readyCount,
             completed: single.length,
             allCompleteMs,
+            overlap,
             single: throughputSpread(single),
             all: throughputSpread(all),
           },
@@ -2464,14 +2530,7 @@ export async function runV2(
       return;
     }
 
-    const configured =
-      config["account-limits"][p.name] ??
-      { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5, baseten: 10, instabox: 25 }[
-        p.name
-      ] ??
-      10;
-
-    const account = Math.min(configured, p.name === "boxd" ? 50 : configured);
+    const account = accountCap(p.name, config["account-limits"]);
 
     const existing = await deadline(config["timeout-ms"], () => p.provider.list({}))
       .then((v) => v.length)
@@ -2506,7 +2565,8 @@ export async function runV2(
       k,
       ready: new Barrier(k),
       done: new Barrier(k),
-      cpuFinishedAt: [],
+      startedAt: start,
+      cpu: [],
       verdicts: [],
     };
 

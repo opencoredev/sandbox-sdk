@@ -18,8 +18,12 @@ describe("failure taxonomy for the new cohorts", () => {
     expect(failed("e2b", "survival-10/cold", { note: "Create failed", code: "quota" })).toBe(
       "provider-account-limit",
     );
+    expect(
+      failed("e2b", "cpu-burst-25/cold", { note: "Create failed", cause: { httpStatus: 429 } }),
+    ).toBe("provider-account-limit");
+    // Wording alone is not a typed signal: it stays the provider's.
     expect(failed("e2b", "cpu-burst-25/cold", { note: "Rate limit exceeded for sandboxes" })).toBe(
-      "provider-account-limit",
+      "provider-operation",
     );
     expect(
       failed("vercel", "survival-10/window", {
@@ -41,11 +45,13 @@ describe("failure taxonomy for the new cohorts", () => {
     );
   });
 
-  it("applies the Daytona concurrent-create rule to every cohort kind", () => {
-    for (const scenario of ["burst-10/cold", "cpu-burst-10/cold", "survival-25/cold"])
-      expect(failed("daytona", scenario, { note: "invalid_argument" })).toBe(
-        "provider-account-limit",
-      );
+  it("keeps the Daytona concurrent-create rule to the readiness bursts it was observed in", () => {
+    expect(failed("daytona", "burst-10/cold", { note: "invalid_argument" })).toBe(
+      "provider-account-limit",
+    );
+
+    for (const scenario of ["cpu-burst-10/cold", "survival-25/cold"])
+      expect(failed("daytona", scenario, { note: "invalid_argument" })).toBe("provider-operation");
   });
 
   it("leaves the publication suites' classification as it was", () => {
@@ -94,6 +100,7 @@ describe("suites and scenario names", () => {
     expect(cohortOnly(["survival", "cpu-burst"])).toBe(true);
     expect(cohortOnly(["cpu-sustained"])).toBe(false);
     expect(cohortOnly(["all"])).toBe(false);
+    expect(cohortOnly(["cpu-sustained", "burst"])).toBe(false);
   });
 });
 
@@ -104,11 +111,13 @@ describe("admission reserves", () => {
     expect(iterationBoundMs(1000, ["cpu-sustained"])).toBe(20_000);
   });
 
-  it("covers a survival member's whole window", () => {
+  it("covers a member's setup, its work and its cleanup", () => {
     const plan = { windowMs: 300_000, intervalMs: 15_000 };
 
     expect(cohortBoundMs("burst", 1000, plan)).toBe(2000);
-    expect(cohortBoundMs("cpu-burst", 1000, plan)).toBe(3000);
-    expect(cohortBoundMs("survival", 1000, plan)).toBe(304_000);
+    // Create, fingerprint, staging, the probe, destroy.
+    expect(cohortBoundMs("cpu-burst", 1000, plan)).toBe(5000);
+    // Create and fingerprint, the window plus its last heartbeat and lookup, drain and destroy.
+    expect(cohortBoundMs("survival", 1000, plan)).toBe(2000 + 302_000 + 2000);
   });
 });
