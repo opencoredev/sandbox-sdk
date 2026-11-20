@@ -1,12 +1,17 @@
 /** Verified against @beamcloud/beam-js 1.1.6 and Beam's gateway on 2026-11-18. */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHttpClient } from "../../http.js";
 import { createNativeApi, type NativeApi } from "../../native.js";
 import type { CreateInput, Labels, Provider, SandboxInfo } from "../../provider.js";
 import { files, python, type Guest } from "../../shared/guest.js";
 import { isNumber, isObject, isString, isStringRecord } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
-import { createGateway, type BeamContainer, type BeamGateway } from "./api.js";
+import {
+  createGateway,
+  createGatewayClient,
+  type BeamContainer,
+  type BeamGateway,
+  type BeamPlane,
+} from "./api.js";
 import { beamError, failure, maybeSent } from "./errors.js";
 import { execute, rangeCommand, type BeamGuest } from "./execute.js";
 
@@ -25,17 +30,17 @@ export interface BeamOptions {
   /** Gateway URL. Default: `https://app.beam.cloud`. */
   gatewayUrl?: string;
   /**
-   * Per gateway request. Default: 30 s. beam-js's own create requests follow it too, except image
-   * builds, which beam-js gives 10 minutes. beam-js keeps one client per process, made with the
-   * timeout of the provider whose create first uses it.
+   * Per gateway request, retries included. Default: 30 s. beam-js's own create requests follow it
+   * too, except image builds, which beam-js gives 10 minutes. beam-js keeps one client per process,
+   * made with the timeout of the provider whose create first uses it; a client that code using
+   * beam-js directly made first keeps that code's timeout.
    */
   requestTimeoutMs?: number;
   /** For tests. */
   fetch?: typeof fetch;
 }
 
-/** The gateway's routes under `/api/v1/gateway`, such as `/pods/{containerId}/exec`. */
-export type BeamPlane = "gateway";
+export type { BeamPlane } from "./api.js";
 
 /**
  * `box.native`: Beam's gateway with this adapter's token, bound to the container (the
@@ -178,17 +183,53 @@ export const pieceCommand = (path: string, piece: string, offset: number, length
  * which carry the request's Authorization header, with console.error. While a create runs, console
  * calls made inside it are filtered: log and info are dropped, and warn and error pass only text
  * with the token removed (an error object becomes its name). Calls from anywhere else in the
- * process pass through unchanged. Counted, so overlapping creates restore the console once.
+ * process pass through unchanged.
+ *
+ * Every copy of the SDK in the process (an ESM and a CommonJS build, two versions) shares one
+ * filter, counted, so overlapping creates install it once and remove it once. On removal, a method
+ * someone replaced in the meantime is left as they set it. Such a replacement is not filtered: a
+ * console method replaced while a create runs gets beam-js's output from then on unchanged.
  */
-let quiet = 0;
+interface QuietConsole {
+  depth: number;
+  inCreate: AsyncLocalStorage<true>;
+  secrets: Set<string>;
+  /** While installed: the methods it replaced, and its own. */
+  installed?: { saved: ConsoleMethods; wrappers: ConsoleMethods };
+}
 
-const inCreate = new AsyncLocalStorage<true>();
+type ConsoleMethods = Pick<typeof console, "log" | "info" | "warn" | "error">;
 
-let saved: Pick<typeof console, "log" | "info" | "warn" | "error"> | undefined;
+const consoleMethods = ["log", "info", "warn", "error"] as const;
 
-const secrets = new Set<string>();
+const quietKey = Symbol.for("@opencoredev/sandbox-sdk/beam-quiet-console/1");
 
-function scrubbed(args: unknown[]): string[] {
+function isQuietConsole(value: unknown): value is QuietConsole {
+  return (
+    isObject(value) &&
+    "depth" in value &&
+    isNumber(value.depth) &&
+    "inCreate" in value &&
+    value.inCreate instanceof AsyncLocalStorage &&
+    "secrets" in value &&
+    value.secrets instanceof Set
+  );
+}
+
+function quietConsole(): QuietConsole {
+  // Every copy of the SDK uses this versioned key for this shape; it is still checked before use.
+  const holder: Record<symbol, QuietConsole | undefined> = globalThis;
+  const existing = holder[quietKey];
+
+  if (isQuietConsole(existing)) return existing;
+  const made: QuietConsole = { depth: 0, inCreate: new AsyncLocalStorage(), secrets: new Set() };
+
+  holder[quietKey] = made;
+
+  return made;
+}
+
+function scrubbed(secrets: Set<string>, args: unknown[]): string[] {
   // One pass, longest first, so no secret is replaced inside another's replacement.
   const list = [...secrets].sort((a, b) => b.length - a.length);
 
@@ -205,40 +246,46 @@ function scrubbed(args: unknown[]): string[] {
 }
 
 async function silently<T>(token: string, action: () => Promise<T>): Promise<T> {
-  // Real tokens are long; a short one would only mangle unrelated text.
-  if (token.length >= 8) secrets.add(token);
+  const quiet = quietConsole();
+  const { inCreate } = quiet;
 
-  if (quiet++ === 0) {
-    const original = {
+  // Real tokens are long; a short one would only mangle unrelated text.
+  if (token.length >= 8) quiet.secrets.add(token);
+
+  if (quiet.depth++ === 0) {
+    const saved: ConsoleMethods = {
       log: console.log,
       info: console.info,
       warn: console.warn,
       error: console.error,
     };
 
-    saved = original;
-
-    console.log = (...args: unknown[]) => {
-      if (!inCreate.getStore()) original.log(...args);
+    const wrappers: ConsoleMethods = {
+      log: (...args: unknown[]) => {
+        if (!inCreate.getStore()) saved.log(...args);
+      },
+      info: (...args: unknown[]) => {
+        if (!inCreate.getStore()) saved.info(...args);
+      },
+      warn: (...args: unknown[]) =>
+        inCreate.getStore() ? saved.warn(...scrubbed(quiet.secrets, args)) : saved.warn(...args),
+      error: (...args: unknown[]) =>
+        inCreate.getStore() ? saved.error(...scrubbed(quiet.secrets, args)) : saved.error(...args),
     };
 
-    console.info = (...args: unknown[]) => {
-      if (!inCreate.getStore()) original.info(...args);
-    };
-
-    console.warn = (...args: unknown[]) =>
-      inCreate.getStore() ? original.warn(...scrubbed(args)) : original.warn(...args);
-
-    console.error = (...args: unknown[]) =>
-      inCreate.getStore() ? original.error(...scrubbed(args)) : original.error(...args);
+    quiet.installed = { saved, wrappers };
+    Object.assign(console, wrappers);
   }
 
   try {
     return await inCreate.run(true, action);
   } finally {
-    if (--quiet === 0 && saved) {
-      Object.assign(console, saved);
-      saved = undefined;
+    if (--quiet.depth === 0 && quiet.installed) {
+      const { saved, wrappers } = quiet.installed;
+
+      for (const name of consoleMethods)
+        if (console[name] === wrappers[name]) console[name] = saved[name];
+      quiet.installed = undefined;
     }
   }
 }
@@ -277,43 +324,27 @@ export function createBeamProvider(
     return { token: token.trim(), workspaceId: workspaceId.trim() };
   }
 
-  function api(): BeamGateway {
-    return (gateway ??= createGateway({
-      token: credentials().token,
-      url: gatewayUrl,
-      fetch: options.fetch ?? fetch,
-      requestTimeoutMs,
-    }));
-  }
-
-  /** `box.native`'s transport: the gateway, with the SDK's retries, error mapping and redaction. */
-  const http = createHttpClient<BeamPlane>({
-    provider: "beam",
-    label: "Beam",
-    planes: {
-      gateway: {
-        baseUrl: gatewayUrl.replace(/\/+$/, "") + "/api/v1/gateway",
-        auth: () => ({ Authorization: `Bearer ${credentials().token}` }),
-      },
-    },
-    defaultPlane: "gateway",
+  /** The gateway's transport, for the adapter and `box.native`: retries, error mapping, redaction. */
+  const http = createGatewayClient({
+    token: () => credentials().token,
+    url: gatewayUrl,
     fetch: options.fetch,
-    timeoutMs: requestTimeoutMs,
-    secrets: () => [token],
-    authHint: "Set BEAM_TOKEN to a valid Beam token.",
+    requestTimeoutMs,
   });
+
+  function api(): BeamGateway {
+    credentials();
+
+    return (gateway ??= createGateway(http));
+  }
 
   const natives = new Map<string, BeamNative>();
 
-  /** beam-js, with its global configuration checked against this provider's before each use. */
+  /** beam-js. Its global configuration is checked in the same turn as each create (see create). */
   async function sdk(): Promise<BeamModule> {
-    const { token: t, workspaceId: w } = credentials();
-    const m = await (module ??= load());
+    credentials();
 
-    // Code using beam-js directly can change its token or reset its client at any time.
-    m.configure({ token: t, workspaceId: w, gatewayUrl, requestTimeoutMs });
-
-    return m;
+    return (module ??= load());
   }
 
   async function safe<T>(id: string | undefined, action: () => Promise<T>): Promise<T> {
@@ -335,6 +366,31 @@ export function createBeamProvider(
       return started.stdout ?? "";
     }
 
+    // The command runs now, so a read lost past the client's own retries is tried again until the
+    // deadline; after it, the command's result is unknown rather than failed.
+    async function follow<T>(read: () => Promise<T>): Promise<T> {
+      for (;;) {
+        try {
+          return await read();
+        } catch (error) {
+          const code = beamError(error, id).code;
+
+          if (signal?.aborted || (code !== "unavailable" && code !== "timeout")) throw error;
+
+          if (Date.now() > deadline) {
+            await g.kill(id, started.pid).catch(() => {});
+            throw failure(
+              "The command started but its result could not be read; check the sandbox's state before running it again",
+              "outcome_unknown",
+              id,
+            );
+          }
+
+          await sleep(250);
+        }
+      }
+    }
+
     for (;;) {
       if (signal?.aborted) throw failure("Command aborted", "aborted", id);
 
@@ -343,12 +399,12 @@ export function createBeamProvider(
         throw failure("Guest command timed out", "timeout", id);
       }
 
-      const code = await g.status(id, started.pid, signal);
+      const code = await follow(() => g.status(id, started.pid, signal));
 
       if (code >= 0) {
         if (code !== 0) throw failure("Guest operation failed", "provider", id);
 
-        return g.stdout(id, started.pid, signal);
+        return follow(() => g.stdout(id, started.pid, signal));
       }
 
       await sleep(50);
@@ -570,7 +626,9 @@ export function createBeamProvider(
         let made: BeamMade;
 
         try {
-          if (input.from !== undefined) made = await api().restore(input.from, input.signal);
+          // Not the caller's signal: once sent, the answer names the container to stop, so it is
+          // read to the gateway's deadline even after an abort. An abort then stops it below.
+          if (input.from !== undefined) made = await api().restore(input.from);
           else {
             const m = await sdk();
             const configKey = JSON.stringify([size.cpu, size.memoryMb, ttl]);
@@ -587,8 +645,13 @@ export function createBeamProvider(
                 })),
               );
             const chosen = template;
+            const { token: t, workspaceId: w } = credentials();
 
-            made = await silently(credentials().token, () => chosen.create());
+            // In the same synchronous turn as the create, so code using beam-js directly cannot
+            // switch its account in between: configure checks the account and makes beam-js's
+            // client, which keeps that token for the requests this create makes.
+            m.configure({ token: t, workspaceId: w, gatewayUrl, requestTimeoutMs });
+            made = await silently(t, () => chosen.create());
           }
         } catch (error) {
           // A refusal (an HTTP status, or Beam's ok:false) made nothing. Without an answer, the
@@ -600,9 +663,16 @@ export function createBeamProvider(
           );
         }
 
-        const id = made.containerId;
+        const id: unknown = made.containerId;
 
-        if (made.stubId) stubs.set(id, made.stubId);
+        // Beam accepted the create without naming its container: one may exist, unreachable.
+        if (!isString(id) || !id)
+          throw failure(
+            `Sandbox creation outcome is unknown: Beam named no container, and a sandbox may be left running until its ${ttl} s lifetime ends`,
+            "outcome_unknown",
+          );
+
+        if (isString(made.stubId) && made.stubId) stubs.set(id, made.stubId);
         const createdAt = Date.now();
 
         try {

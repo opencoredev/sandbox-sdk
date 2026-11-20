@@ -1,11 +1,15 @@
 import { SandboxError, describeNative, reason, statusCode, type ErrorCode } from "../../errors.js";
 import { isNumber, isObject } from "../../shared/narrow.js";
 
+// An outcome_unknown failure's message already says what to check before repeating it.
+const plain = new Set<ErrorCode>(["auth", "file_not_found", "outcome_unknown"]);
+
 export function failure(message: string, code: ErrorCode = "provider", sandboxId?: string) {
-  return new SandboxError(
-    code === "auth" || code === "file_not_found" ? message : `${message}. Check Beam and retry.`,
-    { code, provider: "beam", sandboxId },
-  );
+  return new SandboxError(plain.has(code) ? message : `${message}. Check Beam and retry.`, {
+    code,
+    provider: "beam",
+    sandboxId,
+  });
 }
 
 /**
@@ -66,10 +70,17 @@ export function beamError(cause: unknown, sandboxId?: string): SandboxError {
     status: status === undefined ? undefined : `HTTP ${status}`,
   });
 
-  return new SandboxError(
-    `Beam request failed: ${reason(code, kept.detail)}. Check Beam and retry.`,
-    { code, provider: "beam", sandboxId, cause: kept.cause },
-  );
+  const next =
+    code === "outcome_unknown"
+      ? "It may or may not have taken effect; check the sandbox's state before repeating it."
+      : "Check Beam and retry.";
+
+  return new SandboxError(`Beam request failed: ${reason(code, kept.detail)}. ${next}`, {
+    code,
+    provider: "beam",
+    sandboxId,
+    cause: kept.cause,
+  });
 }
 
 /**
@@ -86,9 +97,11 @@ export function maybeSent(cause: unknown) {
 
   if (cause instanceof TypeError) return true;
 
-  // An answer that said ok but named no container, or that could not be read.
-  if (cause instanceof BeamGatewayError && ["malformed", "unknown"].includes(cause.kind))
-    return true;
+  // The shared client's verdict on a restore it sent and lost.
+  if (cause instanceof SandboxError) return cause.code === "outcome_unknown";
+
+  // An answer that did not say ok:false and named no container, or that could not be read.
+  if (cause instanceof BeamGatewayError && cause.kind === "unknown") return true;
 
   // beam-js's message when the allocation answer had no `ok` it could read (a body it could not
   // parse arrives as text). Beam's refusals carry their own errorMsg; one that came with an empty

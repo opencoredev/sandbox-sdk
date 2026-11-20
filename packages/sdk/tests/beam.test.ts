@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { SandboxError } from "../src/errors.js";
-import { createGateway } from "../src/providers/beam/api.js";
+import { createGateway, createGatewayClient } from "../src/providers/beam/api.js";
 import { beamError } from "../src/providers/beam/errors.js";
 import {
   createBeamProvider,
@@ -131,6 +131,15 @@ function fakeBeam() {
     }
 
     if (route === "ttl" && init?.method === "PATCH") return json({ ok: true });
+
+    // A command that is still running when exec answers, then exits 0 with no output.
+    if (route === "exec") return json({ ok: true, pid: 7, done: false });
+
+    if (route === "status") return json({ ok: true, exitCode: 0 });
+
+    if (route === "stdout") return json({ ok: true, stdout: "" });
+
+    if (route === "kill") return json({ ok: true });
 
     if (route === "ports/expose") return json({ ok: true, url: `https://${body.port}.example` });
 
@@ -502,17 +511,13 @@ describe("beam adapter", () => {
   });
 
   test("a download over the gateway's message cap answered with ok:false moves in pieces", async () => {
-    const gateway = createGateway({
-      token: "t",
-      url: "https://app.beam.cloud",
-      requestTimeoutMs: 5000,
-      fetch: async () =>
-        Response.json({
-          ok: false,
-          errorMsg:
-            "Failed to download file: rpc error: code = ResourceExhausted desc = grpc: received message larger than max (10485760 vs. 4194304)",
-        }),
-    });
+    const gateway = gatewayWith(async () =>
+      Response.json({
+        ok: false,
+        errorMsg:
+          "Failed to download file: rpc error: code = ResourceExhausted desc = grpc: received message larger than max (10485760 vs. 4194304)",
+      }),
+    );
 
     const error = await gateway.download("sandbox-x", "/workspace/big.bin").catch((e) => e);
 
@@ -581,4 +586,252 @@ describe("beam adapter", () => {
       error.mockRestore();
     }
   });
+
+  test("a list read the gateway drops once is retried, as the transport contract says", async () => {
+    const beam = fakeBeam();
+    let drops = 1;
+
+    const provider = beam.provider({
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/containers") && drops-- > 0)
+          return new Response("", { status: 503 });
+
+        return beam.fetch(input, init);
+      },
+    });
+
+    await provider.create({ labels: { a: "1" } });
+    drops = 1;
+
+    expect((await provider.list({})).length).toBe(1);
+  });
+
+  test("a snapshot or exec answered 502/503, or without ok, is outcome_unknown, never a refusal", async () => {
+    const answers = [
+      () => new Response("", { status: 502 }),
+      () => new Response("", { status: 503 }),
+      () => Response.json({}),
+      () => Response.json({ ok: true }),
+    ];
+
+    for (const answer of answers) {
+      const gateway = gatewayWith(async () => answer());
+
+      for (const write of [
+        () => gateway.snapshot("sandbox-x", "stub"),
+        () => gateway.exec("sandbox-x", "true"),
+      ]) {
+        const error = beamError(await write().catch((e) => e), "sandbox-x");
+
+        expect(error.code).toBe("outcome_unknown");
+        expect(error.message).toContain("check the sandbox's state before repeating it");
+        expect(error.message).not.toContain("Check Beam and retry");
+      }
+    }
+
+    // An explicit ok:false is the only refusal.
+    const refused = gatewayWith(async () => Response.json({ ok: false, errorMsg: "no" }));
+
+    expect(beamError(await refused.exec("sandbox-x", "true").catch((e) => e)).code).toBe(
+      "provider",
+    );
+  });
+
+  test("a fresh create that names no container is outcome_unknown and sends nothing for it", async () => {
+    const paths: string[] = [];
+
+    const fetchSpy: typeof fetch = async (input) => {
+      paths.push(new URL(String(input)).pathname);
+
+      return Response.json({ ok: false, errorMsg: "Failed to connect to sandbox" });
+    };
+
+    for (const containerId of ["", undefined]) {
+      const module: BeamModule = {
+        configure() {},
+        template: () => ({
+          // beam-js 1.1.6 copies the answer's containerId without checking it.
+          create: async () => JSON.parse(JSON.stringify({ containerId, stubId: "" })),
+        }),
+      };
+
+      const provider = createBeamProvider(
+        { token: "t", workspaceId: "w", fetch: fetchSpy },
+        async () => module,
+      );
+
+      await expect(provider.create({ labels: {} })).rejects.toMatchObject({
+        code: "outcome_unknown",
+      });
+    }
+
+    expect(paths).toEqual([]);
+  });
+
+  test("a status read dropped after exec started is read again, not reported as a failure", async () => {
+    const beam = fakeBeam();
+    // More drops than the client's own two retries, so the poll loop has to read again.
+    let drops = 0;
+
+    const provider = beam.provider({
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname;
+
+        if ((path.endsWith("/status") || path.endsWith("/stdout")) && drops-- > 0)
+          return new Response("", { status: 503 });
+
+        return beam.fetch(input, init);
+      },
+    });
+
+    const box = await provider.create({ labels: {} });
+
+    drops = 4;
+    await expect(provider.files.mkdir(box.id, "/workspace/a")).resolves.toBeUndefined();
+  });
+
+  test("a command whose status cannot be read before its deadline is outcome_unknown", async () => {
+    const beam = fakeBeam();
+    let now = Date.now();
+
+    const provider = beam.provider({
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (new URL(String(input)).pathname.endsWith("/status")) {
+          // Each lost read moves the clock a minute on, past mkdir's two-minute deadline.
+          now += 60_000;
+
+          return new Response("", { status: 503 });
+        }
+
+        return beam.fetch(input, init);
+      },
+    });
+
+    const box = await provider.create({ labels: {} });
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    try {
+      await expect(provider.files.mkdir(box.id, "/workspace/a")).rejects.toMatchObject({
+        code: "outcome_unknown",
+        sandboxId: box.id,
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test("a restore aborted after it was sent still reads its answer and stops the container", async () => {
+    const beam = fakeBeam();
+    const controller = new AbortController();
+    let sent = () => {};
+    const restoreSent = new Promise<void>((resolve) => (sent = resolve));
+
+    const provider = beam.provider({
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (new URL(String(input)).pathname.endsWith("/pods") && init?.method === "POST") {
+          sent();
+          // Beam allocates while the caller gives up; the answer arrives after the abort.
+          await new Promise((resolve) => setTimeout(resolve, 30));
+
+          if (init.signal?.aborted) throw new DOMException("aborted", "AbortError");
+        }
+
+        return beam.fetch(input, init);
+      },
+    });
+
+    const creating = provider.create({ labels: {}, from: "snap-1", signal: controller.signal });
+
+    await restoreSent;
+    controller.abort();
+
+    await expect(creating).rejects.toMatchObject({ code: "aborted" });
+    expect(beam.containers.size).toBe(1);
+    expect([...beam.containers.values()].every((c) => c.status === "STOPPED")).toBe(true);
+  });
+
+  test("a console method replaced during a create is kept after it", async () => {
+    const beam = fakeBeam();
+    const provider = beam.provider();
+    const original = console.warn;
+    let release = () => {};
+
+    try {
+      beam.holdCreates(new Promise<void>((resolve) => (release = resolve)));
+      const creating = provider.create({ labels: {} });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const replacement = () => {};
+
+      console.warn = replacement;
+      release();
+      await creating;
+
+      expect(console.warn).toBe(replacement);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("two copies of the SDK share one console filter, so overlapping creates stay filtered", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const releases: (() => void)[] = [];
+
+    const copy = async (token: string) => {
+      vi.resetModules();
+      const { createBeamProvider: make } = await import("../src/providers/beam/provider.js");
+
+      const gate = new Promise<void>((resolve) => releases.push(resolve));
+
+      const module: BeamModule = {
+        configure() {},
+        template: () => ({
+          async create() {
+            await gate;
+            console.error(`Build failed: Bearer ${token}`);
+            throw Object.assign(new Error("Request failed with status code 401"), {
+              isAxiosError: true,
+              response: { status: 401 },
+            });
+          },
+        }),
+      };
+
+      return make({ token, workspaceId: "w" }, async () => module);
+    };
+
+    try {
+      const first = await copy("first-copy-token-1111");
+      const second = await copy("second-copy-token-2222");
+      const one = first.create({ labels: {} }).catch(() => {});
+      const two = second.create({ labels: {} }).catch(() => {});
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      // The first copy's create ends while the second's is still running.
+      releases[0]?.();
+      await one;
+      releases[1]?.();
+      await two;
+
+      expect(JSON.stringify(error.mock.calls)).not.toMatch(/first-copy|second-copy/);
+      expect(error.mock.calls.length).toBe(2);
+    } finally {
+      error.mockRestore();
+    }
+
+    expect(console.error).not.toBe(error);
+  });
 });
+
+/** The gateway over the SDK's client, answering every request with `answer`. */
+function gatewayWith(answer: typeof fetch) {
+  return createGateway(
+    createGatewayClient({
+      token: () => "t",
+      url: "https://app.beam.cloud",
+      requestTimeoutMs: 5000,
+      fetch: answer,
+    }),
+  );
+}

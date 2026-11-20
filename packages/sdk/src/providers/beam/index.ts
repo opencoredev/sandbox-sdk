@@ -10,9 +10,12 @@ import {
 export type { BeamNative, BeamOptions, BeamPlane, BeamProvider } from "./provider.js";
 
 /**
- * beam-js keeps one global configuration and caches its HTTP client, with the first token and
- * gateway, for the life of the process. One process can therefore use one Beam account: a provider
- * with another token, workspace or gateway is refused instead of creating in the wrong account.
+ * beam-js keeps one global configuration and caches its HTTP client, with the first token, gateway
+ * and timeout, for the life of the process. One process can therefore use one Beam account: a
+ * provider with another token, workspace or gateway is refused instead of creating in the wrong
+ * account. The adapter makes that client in the same turn as its first create, so it holds the
+ * token and `requestTimeoutMs` of that create's provider; a client beam-js already made, by direct
+ * use, keeps its own timeout.
  */
 let configured: string | undefined;
 
@@ -49,11 +52,20 @@ async function load(): Promise<BeamModule> {
         );
 
       configured = value;
-      // Read when beam-js first makes its client; its image builds keep their own 10 minutes.
-      m.beamOpts.timeout = settings.requestTimeoutMs;
       m.beamOpts.token = settings.token;
       m.beamOpts.workspaceId = settings.workspaceId;
       m.beamOpts.gatewayUrl = settings.gatewayUrl;
+
+      if (cached === undefined) {
+        // Read only when beam-js makes its client; its image builds keep their own 10 minutes.
+        m.beamOpts.timeout = settings.requestTimeoutMs;
+        // beam-js makes its client synchronously at the start of a request; an aborted signal
+        // makes axios reject it before anything is sent. The client now holds this token and
+        // timeout, whatever changes beamOpts before the create's own first request.
+        client.default
+          .request({ method: "GET", url: "/api/v1/workspace/current", signal: AbortSignal.abort() })
+          .catch(() => {});
+      }
     },
     template(config) {
       const sandbox = new m.Sandbox({
@@ -69,6 +81,12 @@ async function load(): Promise<BeamModule> {
   };
 }
 
+/**
+ * Beam Sandboxes. Fresh creates go through `@beamcloud/beam-js`, which logs progress and raw HTTP
+ * errors to the console; while a create runs, the console output from inside it is filtered (log
+ * and info dropped, the token removed from warn and error). A console method replaced while a
+ * create runs receives that output unfiltered until the create ends.
+ */
 export function beam(options: BeamOptions = {}): BeamProvider {
   return createBeamProvider(options, load);
 }
