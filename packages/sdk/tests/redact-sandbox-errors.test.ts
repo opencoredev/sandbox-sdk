@@ -298,4 +298,67 @@ describe("Redactor.text redacts to a fixed point", () => {
     expect(huge.truncated).toBe(true);
     expect(huge.stdout).toBe("[REDACTED]");
   });
+
+  test("handles huge secrets, linear escaped Bearer scrubbing, alternating T[REDACTED] stalls, and benign XY[REDACTED] streams", async () => {
+    const bigSecret = "a".repeat(100_000);
+    const bigRedactor = new Redactor();
+    bigRedactor.add([bigSecret]);
+
+    expect(bigRedactor.text(`pre ${bigSecret} post`)).toBe("pre [REDACTED] post");
+
+    const tBearer = Date.now();
+    const evilBearer = `Bearer \\"${"a".repeat(50_000)}`;
+
+    expect(scrubCredentials(evilBearer)).toBe("Bearer [REDACTED]");
+    expect(Date.now() - tBearer).toBeLessThan(1_000);
+    expect(scrubCredentials('Bearer \\"LEAK_123')).toBe("Bearer [REDACTED]");
+
+    const provider = memory({
+      handlers: {
+        altFlush({ stdout, stderr }) {
+          for (let i = 0; i < 4_000; i++) {
+            stdout("T");
+            stderr("T");
+          }
+
+          return 0;
+        },
+        altUnblock({ stdout, stderr }) {
+          for (let i = 0; i < 4_000; i++) {
+            stdout("T");
+            stderr("T");
+          }
+
+          stdout("Z");
+          stderr("Z");
+
+          return 0;
+        },
+        benignX({ stdout }) {
+          for (let i = 0; i < 1_100; i++) {
+            stdout("X".repeat(1_024));
+          }
+
+          return 0;
+        },
+      },
+    });
+
+    await using tBox = await createSandbox(provider, { secrets: { S: "T[REDACTED]" } });
+    const t0 = Date.now();
+    const flushed = await tBox.run("altFlush");
+    const unblocked = await tBox.run("altUnblock");
+
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(flushed.stdout).toBe("T".repeat(4_000));
+    expect(flushed.stderr).toBe("T".repeat(4_000));
+    expect(unblocked.stdout).toBe(`${"T".repeat(4_000)}Z`);
+    expect(unblocked.stderr).toBe(`${"T".repeat(4_000)}Z`);
+
+    await using xyBox = await createSandbox(provider, { secrets: { S: "XY[REDACTED]" } });
+    const benign = await xyBox.run("benignX", { maxOutputBytes: 2_000_000 });
+
+    expect(benign.truncated).toBe(false);
+    expect(benign.stdout.length).toBe(1_100 * 1_024);
+  });
 });

@@ -187,23 +187,32 @@ export function redactionSedScript(secrets: readonly string[]): string {
   const replacement = placeholder ?? "[REDACTED]";
   const rules: string[] = [];
 
+  const marker = "[REDACTED]";
+
+  const shield = (value: string) =>
+    esc && lit && placeholder
+      ? value.split(marker).map(sedEscape).join(placeholder)
+      : sedEscape(value);
+
   if (esc && lit && placeholder) {
     rules.push(`s|${esc}|${esc}${lit}|g`);
     rules.push(`s|\\[REDACTED\\]|${placeholder}|g`);
   }
 
   for (const secret of lines) {
-    rules.push(`s|${sedEscape(secret)}|${replacement}|g`);
+    rules.push(`s|${shield(secret)}|${replacement}|g`);
 
     for (let index = 0; index < secret.length - 1; index++) {
-      rules.push(`s|${sedEscape(secret.slice(0, secret.length - 1 - index))}$|${replacement}|`);
-      rules.push(`s|^${sedEscape(secret.slice(index + 1))}|${replacement}|`);
+      const prefix = secret.slice(0, secret.length - 1 - index);
+      const suffix = secret.slice(index + 1);
+
+      if (prefix !== marker) rules.push(`s|${shield(prefix)}$|${replacement}|`);
+
+      if (suffix !== marker) rules.push(`s|^${shield(suffix)}|${replacement}|`);
     }
   }
 
   if (esc && lit && placeholder) {
-    const marker = "[REDACTED]";
-    const shield = (value: string) => value.split(marker).map(sedEscape).join(placeholder);
     const rightSuffixes = new Set<string>();
     const leftPrefixes = new Set<string>();
     const aroundPairs: [string, string][] = [];
@@ -272,7 +281,8 @@ export function redactionSedScript(secrets: readonly string[]): string {
 
 /** Escape the characters a basic sed regex or the `|` delimiter would read as syntax. */
 function sedEscape(text: string): string {
-  return text.replace(/[\\[\].*^$|]/g, "\\$&");
+  // `\|` is consumed as an escaped delimiter or read as GNU BRE alternation; `[|]` stays literal.
+  return text.replace(/[\\[\].*^$]/g, "\\$&").replace(/\|/g, "[|]");
 }
 
 /** A shell function `append MARKER TEXT` that adds one log record under the writer's lock

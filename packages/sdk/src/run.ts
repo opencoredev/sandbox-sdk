@@ -418,6 +418,7 @@ export function chunkRedactor(
     // left/around prefixes (`streamChainLeft`) and pull a partial prefix (`streamHoldLeft`) at most once.
     const fullLeft = redactor.streamChainLeft;
     const partialLeft = redactor.streamHoldLeft;
+    let usedPartial = false;
 
     if (initialSafe > 0 && (fullLeft.length > 0 || partialLeft.length > 0)) {
       if (fullLeft.length > 0) {
@@ -456,6 +457,7 @@ export function chunkRedactor(
           if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
             safe -= prefix.length;
             safe = snapBeforeMarker(text, safe);
+            usedPartial = true;
             break;
           }
         }
@@ -465,14 +467,14 @@ export function chunkRedactor(
     const snapped = snapBeforeMarker(text, safe);
 
     if (snapped === 0) {
-      if (offset === 0 || (useHoldZero && holdZeroAt.has(offset))) {
+      if (offset === 0 || (!usedPartial && useHoldZero && holdZeroAt.has(offset))) {
         return { safe: 0, pulledFrom: initialSafe > 0 ? offset + initialSafe : -1 };
       }
 
       return { safe: offset, pulledFrom: -1 };
     }
 
-    if (useHoldZero && holdZeroAt.has(offset + snapped)) {
+    if (!usedPartial && useHoldZero && holdZeroAt.has(offset + snapped)) {
       return { safe: 0, pulledFrom: initialSafe > 0 ? offset + initialSafe : -1 };
     }
 
@@ -765,10 +767,111 @@ export function chunkRedactor(
   }
 
   function drain(final = false) {
-    while (queue.length) {
-      const first = queue[0];
+    if (final && !interleaved && queue.length > 1) {
+      const parts: Record<OutputChunk["stream"], string[]> = { stdout: [], stderr: [] };
+
+      for (const chunk of queue) parts[chunk.stream].push(materialize(chunk));
+      const stdoutRaw = parts.stdout.join("");
+      const stderrRaw = parts.stderr.join("");
+
+      const byStream = {
+        stdout: redactor.redactSegments(stdoutRaw),
+        stderr: redactor.redactSegments(stderrRaw),
+      };
+
+      if (byStream.stdout.text === stdoutRaw && byStream.stderr.text === stderrRaw) {
+        for (const chunk of queue) emitSafe({ stream: chunk.stream, text: chunk.text });
+      } else {
+        const cursor: Record<
+          OutputChunk["stream"],
+          { origOffset: number; consumed: number; segIdx: number }
+        > = {
+          stdout: { origOffset: 0, consumed: 0, segIdx: 0 },
+          stderr: { origOffset: 0, consumed: 0, segIdx: 0 },
+        };
+
+        for (const chunk of queue) {
+          const state = cursor[chunk.stream];
+          const segs = byStream[chunk.stream].segments;
+          const cStart = state.origOffset;
+          const cEnd = cStart + chunk.len;
+          state.origOffset = cEnd;
+
+          if (cEnd <= state.consumed) continue;
+          let out = "";
+
+          while (state.segIdx < segs.length) {
+            const seg = segs[state.segIdx];
+
+            if (!seg || seg.start >= cEnd) break;
+
+            if (seg.end <= state.consumed) {
+              state.segIdx++;
+              continue;
+            }
+
+            if (seg.redacted) {
+              out += seg.text;
+              state.consumed = seg.end;
+              state.segIdx++;
+
+              if (seg.end >= cEnd) break;
+            } else {
+              const from = Math.max(cStart, state.consumed, seg.start);
+              const to = Math.min(cEnd, seg.end);
+
+              if (to > from) {
+                out += seg.text.slice(from - seg.start, to - seg.start);
+                state.consumed = to;
+              }
+
+              if (seg.end <= cEnd) state.segIdx++;
+              else break;
+            }
+          }
+
+          if (out) emitSafe({ stream: chunk.stream, text: out });
+        }
+      }
+
+      queue.length = 0;
+      queuedBytes = 0;
+      resetStall();
+      syncStats();
+
+      return;
+    }
+
+    let headIdx = 0;
+    const cleanSafeBudget: Record<OutputChunk["stream"], number> = { stdout: -1, stderr: -1 };
+
+    while (headIdx < queue.length) {
+      const first = queue[headIdx];
 
       if (!first) break;
+
+      if (!first.len) {
+        headIdx++;
+        continue;
+      }
+
+      if (!interleaved && cleanSafeBudget[first.stream] > 0) {
+        const budget = cleanSafeBudget[first.stream];
+        const take = Math.min(budget, first.len);
+        const text = materialize(first);
+        emitSafe({ stream: first.stream, text: text.slice(0, take) });
+        setChunkText(first, text.slice(take));
+        cleanSafeBudget[first.stream] = budget - take;
+
+        if (!first.len) headIdx++;
+        continue;
+      }
+
+      if (headIdx > 0) {
+        queue.splice(0, headIdx);
+        headIdx = 0;
+        syncStats();
+      }
 
       const stallKey = interleaved ? "*" : first.stream;
       const rawLen = interleaved ? totalLen : streamLen[first.stream];
@@ -883,12 +986,11 @@ export function chunkRedactor(
           }
 
           // A stalled stream must not retain arbitrary output from another stream.
-          // Conservatively redact its ambiguous prefix, preserving arrival order.
+          // Conservatively redact its ambiguous prefix in one pass, preserving arrival order.
           dropped = true;
           emitSafe({ stream: first.stream, text: marker });
-          const removed = queue.shift();
-
-          if (removed) queuedBytes -= removed.bytes;
+          replaceSelected(indices, "");
+          pruneEmpty();
           resetStall();
           syncStats();
           continue;
@@ -896,9 +998,13 @@ export function chunkRedactor(
 
         resetStall();
 
-        // In non-interleaved mode, only drain the contiguous front run of `first.stream` so
-        // intervening chunks from the other stream keep their arrival order.
-        let remaining = Math.min(safe, contiguousLen);
+        if (!interleaved) {
+          cleanSafeBudget[first.stream] = safe;
+          continue;
+        }
+
+        // In interleaved mode, drain up to `safe` characters across the queue.
+        let remaining = safe;
 
         for (const index of indices) {
           const chunk = queue[index];
@@ -1046,6 +1152,12 @@ export function chunkRedactor(
       syncStats();
 
       if (!final && safe === 0) break;
+    }
+
+    if (headIdx > 0) {
+      queue.splice(0, headIdx);
+      pruneEmpty();
+      syncStats();
     }
   }
 

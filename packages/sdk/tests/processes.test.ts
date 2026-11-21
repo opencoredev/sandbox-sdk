@@ -712,6 +712,13 @@ test("redactionSedScript redacts overlapping, marker-substring, and control-byte
     expect(runSed(["A[REDACTED]B[REDACTED]C"], "x A[REDACTED]B[REDACTED]C y")).toBe(
       "x [REDACTED] y",
     );
+    expect(runSed(["A[REDACTED]B[REDACTED]C"], "x A[REDACTED]B\n[REDACTED]C y")).toBe(
+      "x [REDACTED]\n[REDACTED] y",
+    );
+    expect(runSed(["a|b"], "x a|b y")).toBe("x [REDACTED] y");
+    expect(runSed(["sk-abc|def"], "token sk-abc|def end")).toBe("token [REDACTED] end");
+    expect(runSed(["|"], "a|b")).toBe("a[REDACTED]b");
+    expect(runSed(["A|B[REDACTED]C"], "qA|B[REDACTED]Cq")).toBe("q[REDACTED]q");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -745,5 +752,50 @@ test("stream-mode failed start cleans up spec.json for retry and processes() ign
     expect((await box.processes()).map((entry) => entry.name)).toEqual(["retry-stream"]);
   } finally {
     await proc.stop({ graceMs: 0 });
+  }
+});
+
+test("non-stream startProcess stops hook and clears native entry when pid write fails", async () => {
+  const provider = memory();
+  const originalWrite = provider.files.write.bind(provider.files);
+  const originalStart = provider.startProcess?.bind(provider);
+  let stopped = 0;
+  let failPidOnce = true;
+
+  provider.startProcess = async (...args) => {
+    if (!originalStart) throw new Error("missing startProcess");
+    const hook = await originalStart(...args);
+
+    return {
+      ...hook,
+      async stop(options) {
+        stopped += 1;
+
+        return hook.stop(options);
+      },
+    };
+  };
+
+  provider.files.write = async (sandboxId, path, content, options) => {
+    if (failPidOnce && path.endsWith("/pid")) {
+      failPidOnce = false;
+      throw new Error("pid-write-failed");
+    }
+
+    return originalWrite(sandboxId, path, content, options);
+  };
+
+  await using box = await createSandbox(provider);
+
+  await expect(box.start("sleep 30", { name: "pid-fail" })).rejects.toThrow("pid-write-failed");
+  expect(stopped).toBe(1);
+  expect(await box.files.exists("/tmp/.sandbox-sdk/procs/pid-fail/spec.json")).toBe(false);
+
+  const retry = await box.start("sleep 30", { name: "pid-fail" });
+
+  try {
+    expect((await box.processes()).map((entry) => entry.name)).toEqual(["pid-fail"]);
+  } finally {
+    await retry.stop({ graceMs: 0 });
   }
 });

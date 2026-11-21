@@ -934,7 +934,16 @@ export function makeProcesses(
               });
 
               native.set(options.name, hook);
-              await files.write(`${dir}/pid`, String(hook.pid));
+
+              try {
+                await files.write(`${dir}/pid`, String(hook.pid));
+              } catch (error) {
+                // The supervisor runs; stop it so a retry cannot start a second copy.
+                native.delete(options.name);
+                controller?.state("failed");
+                await hook.stop({ graceMs: 0 }).catch(() => {});
+                throw error;
+              }
 
               const exited = hook.wait().then((result) => {
                 early = result.exitCode ?? 137;

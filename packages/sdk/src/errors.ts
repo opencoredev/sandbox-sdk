@@ -158,6 +158,63 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** The `lastIndex`/`exec`/`test` surface of a global RegExp that {@link Redactor} uses. */
+interface LiteralPattern {
+  lastIndex: number;
+  exec(text: string): { readonly index: number; readonly 0: string } | null;
+  test(text: string): boolean;
+}
+
+/** Engines cap regex size (V8 rejects long single-character runs, JSC rejects ~1 MiB patterns) and their SyntaxError quotes the pattern, so longer alternations use {@link literalPattern}. */
+const maxRegExpSource = 16_384;
+
+/** Leftmost match over literal `items` (longest first), like a global alternation RegExp, using indexOf. */
+function literalPattern(items: readonly string[]): LiteralPattern {
+  let next: number[] = [];
+
+  const pattern: LiteralPattern = {
+    lastIndex: 0,
+    exec(text) {
+      if (pattern.lastIndex === 0) next = items.map(() => -2);
+      let best = -1;
+      let bestItem = "";
+
+      for (const [index, item] of items.entries()) {
+        let at = next[index] ?? -2;
+
+        if (at === -2 || (at !== -1 && at < pattern.lastIndex)) {
+          at = text.indexOf(item, pattern.lastIndex);
+          next[index] = at;
+        }
+
+        if (at !== -1 && (best === -1 || at < best)) {
+          best = at;
+          bestItem = item;
+        }
+      }
+
+      if (best === -1) {
+        pattern.lastIndex = 0;
+
+        return null;
+      }
+
+      pattern.lastIndex = best + bestItem.length;
+
+      return { index: best, 0: bestItem };
+    },
+    test(text) {
+      pattern.lastIndex = 0;
+      const found = pattern.exec(text) !== null;
+      pattern.lastIndex = 0;
+
+      return found;
+    },
+  };
+
+  return pattern;
+}
+
 /** @internal One segment of a redacted string mapped back to its original `[start, end)` range. */
 export interface RedactedSegment {
   readonly text: string;
@@ -175,7 +232,7 @@ export interface RedactedText {
 /** @internal Redacts registered secrets from text and errors. */
 export class Redactor {
   private values = new Set<string>();
-  private primaryPattern: RegExp | undefined;
+  private primaryPattern: LiteralPattern | undefined;
   private markerSubPattern: RegExp | undefined;
   private leftPrefixes: string[] = [];
   private rightSuffixes: string[] = [];
@@ -203,8 +260,14 @@ export class Redactor {
     }
 
     outside.sort((a, b) => b.length - a.length);
+    const primarySource = outside.map(escapeRegExp).join("|");
+
     this.primaryPattern =
-      outside.length > 0 ? new RegExp(outside.map(escapeRegExp).join("|"), "g") : undefined;
+      outside.length === 0
+        ? undefined
+        : primarySource.length > maxRegExpSource
+          ? literalPattern(outside)
+          : new RegExp(primarySource, "g");
 
     const left = new Set<string>();
     const right = new Set<string>();
@@ -280,7 +343,7 @@ export class Redactor {
     // Store `[start, end, leftMarker]` per span so leftward merges skip already-absorbed markers in O(1).
     const spans: [number, number, number][] = [];
     this.primaryPattern.lastIndex = 0;
-    let match: RegExpExecArray | null;
+    let match: ReturnType<LiteralPattern["exec"]>;
     let scanMarker = 0;
 
     while ((match = this.primaryPattern.exec(next)) !== null) {
@@ -704,7 +767,8 @@ const credentialPatterns: [RegExp, string][] = [
     "$1[REDACTED]",
   ],
   [
-    /\bBearer\s+(?:\\+"(?:\\.|[^"\\])*\\+"|\\+'(?:\\.|[^'\\])*\\+'|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"',;]+)/gi,
+    // Token68 has no quotes or backslashes, so optional (escaped) quotes around it keep this linear.
+    /\bBearer\s+\\*["']?[^\s"'\\,;]+(?:\\*["'])?/gi,
     "Bearer [REDACTED]",
   ],
   [
