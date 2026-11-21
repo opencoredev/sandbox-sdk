@@ -386,6 +386,50 @@ describe("core safety guarantees", () => {
     expect(result.stdout.endsWith("tail\n")).toBe(true);
     expect(elapsedMs).toBeLessThan(2000);
   });
+
+  test("redaction merges overlapping secrets across single-chunk and split-chunk streams", async () => {
+    const longKey = `ABCDE${"0123456789".repeat(5)}FGHIJxyz`;
+
+    const provider = memory({
+      handlers: {
+        single: ({ stdout }) => {
+          stdout(`pre xyz${longKey} post\n`);
+          stdout("id=tok-12345678901234567890;\n");
+          stdout("same=abcabcabdxy;\n");
+
+          return 0;
+        },
+        split: ({ stdout }) => {
+          stdout("pre xyzAB");
+          stdout(`${longKey.slice(2)} post\n`);
+          stdout("id=tok-12");
+          stdout("345678901234567890;\n");
+          stdout("same=abcabc");
+          stdout("abdxy;\n");
+
+          return 0;
+        },
+      },
+    });
+
+    await using box = await createSandbox(provider, {
+      secrets: {
+        SHORT1: "xyzAB",
+        LONG1: longKey,
+        SHORT2: "tok-12",
+        LONG2: "12345678901234567890",
+        SAME1: "abcabc",
+        SAME2: "cabdxy",
+      },
+    });
+
+    const single = await box.run("single");
+    const split = await box.run("split");
+    const expected = "pre [REDACTED] post\nid=[REDACTED];\nsame=[REDACTED];\n";
+
+    expect(single.stdout).toBe(expected);
+    expect(split.stdout).toBe(expected);
+  });
 });
 
 test("reaping tolerates deletion after listing and still surfaces auth failures", async () => {

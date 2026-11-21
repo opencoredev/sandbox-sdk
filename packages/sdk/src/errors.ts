@@ -239,6 +239,7 @@ export class Redactor {
   private aroundPairs: [string, string][] = [];
   private chainLeft: string[] = [];
   private holdLeft: string[] = [];
+  private outsideSecrets: string[] = [];
   private cachedSecrets: string[] = [];
   private cachedMaxLength = 1;
   private mergesAdjacentMarkers = false;
@@ -261,6 +262,7 @@ export class Redactor {
     }
 
     outside.sort((a, b) => b.length - a.length);
+    this.outsideSecrets = outside;
     const primarySource = outside.map(escapeRegExp).join("|");
 
     this.primaryPattern =
@@ -412,12 +414,43 @@ export class Redactor {
 
       absorbMarkers();
 
-      // Phase 2: greedily expand right/left/around suffixes & prefixes that would form new
-      // secret matches against the replacement `[REDACTED]`, then merge overlapping spans.
+      // Phase 2: greedily expand cross-secret overlapping matches and right/left/around suffixes & prefixes
+      // that would form new secret matches against `[REDACTED]`, then merge overlapping spans.
+      let activeSecret = match[0];
       let grew = true;
 
       while (grew) {
         grew = false;
+
+        if (this.outsideSecrets.length > 1) {
+          for (const secret of this.outsideSecrets) {
+            if (secret.length < 2 || secret === activeSecret) continue;
+
+            const from = Math.max(start + 1, end - secret.length + 1);
+
+            if (from >= end) continue;
+
+            const windowEnd = Math.min(next.length, end - 1 + secret.length);
+
+            if (windowEnd <= end) continue;
+
+            const at = next.slice(from, windowEnd).lastIndexOf(secret);
+
+            if (at !== -1) {
+              const matchEnd = from + at + secret.length;
+
+              if (matchEnd > end) {
+                end = matchEnd;
+                activeSecret = secret;
+                absorbMarkers();
+                grew = true;
+                break;
+              }
+            }
+          }
+
+          if (grew) continue;
+        }
 
         for (const suffix of this.rightSuffixes) {
           if (end < next.length && next.startsWith(suffix, end)) {

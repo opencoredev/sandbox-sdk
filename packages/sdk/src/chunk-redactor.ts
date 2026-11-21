@@ -351,11 +351,23 @@ export function chunkRedactor(
       const covering = segments.find((seg) => seg.redacted && seg.start < hit && seg.end > hit);
 
       if (covering) {
-        searchFrom = covering.end;
-        continue;
+        const coveringText = text.slice(covering.start, covering.end);
+
+        const otherSecrets =
+          secrets.length > 1 ? secrets.filter((secret) => secret !== coveringText) : [];
+
+        const crossHit =
+          otherSecrets.length > 0
+            ? earliestSecretPrefix(text, covering.start + 1, otherSecrets, true)
+            : -1;
+
+        if (crossHit < 0 || crossHit >= covering.end) {
+          searchFrom = covering.end;
+          continue;
+        }
       }
 
-      let cutoff = pullLeftForMarker(text, hit);
+      let cutoff = pullLeftForMarker(text, covering ? covering.start : hit);
 
       while (cutoff > 0) {
         const split = segments.find(

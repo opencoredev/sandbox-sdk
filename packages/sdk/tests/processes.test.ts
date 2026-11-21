@@ -1209,3 +1209,62 @@ test("carry-window detached reader redacts >512B secrets emitted as final partia
   expect(overlapRaw).toContain("[REDACTED]");
   expect(overlapRaw).not.toContain("x".repeat(16));
 });
+
+test("carry-window detached reader preserves clean boundaries for back-to-back periodic and self-overlapping >512B secrets", async () => {
+  const repeated = "q".repeat(600);
+  const periodic = "ab".repeat(300);
+  const a100 = "A".repeat(100);
+  const b400 = "B".repeat(400);
+  const selfOverlap = `${a100}${b400}${a100}`;
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: { REPEATED: repeated, PERIODIC: periodic, SELF: selfOverlap },
+  });
+
+  const procBackToBack = await box.start(`printf '%s%s' "$REPEATED" "$REPEATED"`, {
+    name: "b2b-repeated",
+  });
+
+  await procBackToBack.wait();
+  const b2bLogs = await procBackToBack.logs();
+  const b2bRaw = await box.files.read("/tmp/.sandbox-sdk/procs/b2b-repeated/out.log");
+
+  expect(b2bLogs.text).toBe("[REDACTED][REDACTED]");
+  expect(b2bRaw).not.toContain("q".repeat(16));
+
+  const procPeriodic = await box.start(`printf '%s%s' "$PERIODIC" "$PERIODIC"`, {
+    name: "b2b-periodic",
+  });
+
+  await procPeriodic.wait();
+  const periodicLogs = await procPeriodic.logs();
+  const periodicRaw = await box.files.read("/tmp/.sandbox-sdk/procs/b2b-periodic/out.log");
+
+  expect(periodicLogs.text).toBe("[REDACTED][REDACTED]");
+  expect(periodicRaw).not.toContain("ab".repeat(8));
+
+  const procCross4k = await box.start(
+    `printf '%s%s%s\\n' '${"X".repeat(3000)}' "$REPEATED" "$REPEATED"`,
+    { name: "b2b-cross-4k" },
+  );
+
+  await procCross4k.wait();
+  const crossLogs = await procCross4k.logs();
+  const crossRaw = await box.files.read("/tmp/.sandbox-sdk/procs/b2b-cross-4k/out.log");
+
+  expect(crossLogs.text).toBe(`${"X".repeat(3000)}[REDACTED][REDACTED]\n`);
+  expect(crossRaw).not.toContain("q".repeat(16));
+
+  const procSelf = await box.start(
+    `printf '%s%s%s%s%s%s%s' '${a100}' '${b400}' '${a100}' '${b400}' '${a100}' '${b400}' '${a100}'`,
+    { name: "b2b-self-overlap" },
+  );
+
+  await procSelf.wait();
+  const selfLogs = await procSelf.logs();
+  const selfRaw = await box.files.read("/tmp/.sandbox-sdk/procs/b2b-self-overlap/out.log");
+
+  expect(selfLogs.text).toBe(`[REDACTED]${b400}[REDACTED]`);
+  expect(selfRaw).not.toContain(a100);
+});
