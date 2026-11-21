@@ -361,4 +361,78 @@ describe("Redactor.text redacts to a fixed point", () => {
     expect(benign.truncated).toBe(false);
     expect(benign.stdout.length).toBe(1_100 * 1_024);
   });
+
+  test("preserves interleaved output characters, batch/stream marker parity, and fail-closed overflow boundaries", async () => {
+    const redactor = new Redactor();
+    redactor.add(["ab"]);
+
+    expect(redactor.text("abab")).toBe("[REDACTED][REDACTED]");
+
+    const provider = memory({
+      handlers: {
+        interleavedDrop({ stdout, stderr }) {
+          stdout("a");
+          stderr("ba");
+
+          return 0;
+        },
+        adjacentParity({ stdout }) {
+          stdout("ab");
+          stdout("ab");
+
+          return 0;
+        },
+        failClosedBoundary({ stdout, stderr }) {
+          stdout("A");
+
+          for (let i = 0; i < 1_100; i += 1) stderr("x".repeat(1_024));
+          stdout("X");
+
+          return 0;
+        },
+        redactedAltUnblock({ stdout, stderr }) {
+          for (let i = 0; i < 4_000; i += 1) {
+            stdout("T");
+            stderr("T");
+          }
+
+          stdout("Z");
+          stderr("Z");
+
+          return 0;
+        },
+      },
+    });
+
+    await using interBox = await createSandbox(provider, { secrets: { A: "aa", B: "ab" } });
+    const inter = await interBox.run("interleavedDrop");
+
+    expect(inter.output).toBe("[REDACTED]a");
+
+    await using parityBox = await createSandbox(provider, { secrets: { A: "ab" } });
+    const parity = await parityBox.run("adjacentParity");
+
+    expect(parity.stdout).toBe("[REDACTED][REDACTED]");
+    expect(parity.output).toBe("[REDACTED][REDACTED]");
+
+    await using boundaryBox = await createSandbox(provider, {
+      secrets: { A: "AB", B: "[REDACTED]X" },
+    });
+
+    const boundary = await boundaryBox.run("failClosedBoundary", { maxOutputBytes: 2_000_000 });
+
+    expect(boundary.truncated).toBe(true);
+    expect(boundary.stdout).not.toContain("[REDACTED]X");
+
+    await using unblockBox = await createSandbox(provider, {
+      secrets: { S: "T[REDACTED]", R: "TZ" },
+    });
+
+    const t0 = Date.now();
+    const unblocked = await unblockBox.run("redactedAltUnblock");
+
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(unblocked.stdout).toBe("[REDACTED]");
+    expect(unblocked.stderr).toBe("[REDACTED]");
+  });
 });

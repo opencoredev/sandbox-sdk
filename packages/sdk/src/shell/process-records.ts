@@ -202,9 +202,12 @@ export function redactionSedScript(secrets: readonly string[]): string {
   for (const secret of lines) {
     rules.push(`s|${shield(secret)}|${replacement}|g`);
 
-    for (let index = 0; index < secret.length - 1; index++) {
-      const prefix = secret.slice(0, secret.length - 1 - index);
-      const suffix = secret.slice(index + 1);
+    // Cap per-character chunk-boundary rules for huge secrets so redact.sed stays bounded.
+    const maxEdge = Math.min(secret.length - 1, secret.length > 512 ? 128 : secret.length - 1);
+
+    for (let len = maxEdge; len >= 1; len--) {
+      const prefix = secret.slice(0, len);
+      const suffix = secret.slice(secret.length - len);
 
       if (prefix !== marker) rules.push(`s|${shield(prefix)}$|${replacement}|`);
 

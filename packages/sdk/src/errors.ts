@@ -241,6 +241,7 @@ export class Redactor {
   private holdLeft: string[] = [];
   private cachedSecrets: string[] = [];
   private cachedMaxLength = 1;
+  private mergesAdjacentMarkers = false;
   private compiled = false;
   add(values: Iterable<string>) {
     for (const value of values)
@@ -316,7 +317,17 @@ export class Redactor {
     );
     this.holdLeft = [...hold].sort((a, b) => b.length - a.length);
     this.cachedSecrets = [...this.values].sort((a, b) => b.length - a.length);
-    this.cachedMaxLength = Math.max(1, ...this.cachedSecrets.map((item) => item.length));
+
+    let maxLength = 1;
+
+    for (const item of this.cachedSecrets) {
+      if (item.length > maxLength) maxLength = item.length;
+    }
+
+    this.cachedMaxLength = maxLength;
+
+    const doubleMarker = redactedMarker + redactedMarker;
+    this.mergesAdjacentMarkers = outside.some((secret) => doubleMarker.includes(secret));
 
     if (inside.length > 0) {
       const alternatives = [...new Set([...inside, redactedMarker])].sort(
@@ -444,7 +455,11 @@ export class Redactor {
         while (spans.length > 0) {
           const previous = spans.at(-1);
 
-          if (!previous || start > previous[1]) break;
+          if (
+            !previous ||
+            (this.mergesAdjacentMarkers ? start > previous[1] : start >= previous[1])
+          )
+            break;
           spans.pop();
           start = Math.min(start, previous[0]);
           leftMarker = Math.min(leftMarker, previous[2]);

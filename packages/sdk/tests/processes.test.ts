@@ -755,25 +755,38 @@ test("stream-mode failed start cleans up spec.json for retry and processes() ign
   }
 });
 
-test("non-stream startProcess stops hook and clears native entry when pid write fails", async () => {
-  const provider = memory();
-  const originalWrite = provider.files.write.bind(provider.files);
-  const originalStart = provider.startProcess?.bind(provider);
+test("non-stream startProcess stops hook, clears native entry, and marks status failed on launch failure", async () => {
+  const base = await shellProvider();
+
+  const originalWrite = base.files.write.bind(base.files);
   let stopped = 0;
   let failPidOnce = true;
+  let failStartOnce = false;
 
-  provider.startProcess = async (...args) => {
-    if (!originalStart) throw new Error("missing startProcess");
-    const hook = await originalStart(...args);
+  const provider = {
+    ...base,
+    files: { ...base.files },
+    async startProcess() {
+      if (failStartOnce) {
+        failStartOnce = false;
+        throw new Error("start-launch-failed");
+      }
 
-    return {
-      ...hook,
-      async stop(options) {
-        stopped += 1;
+      let resolveWait!: (value: { exitCode: number; signal: string | null }) => void;
 
-        return hook.stop(options);
-      },
-    };
+      const done = new Promise<{ exitCode: number; signal: string | null }>((resolve) => {
+        resolveWait = resolve;
+      });
+
+      return {
+        pid: process.pid,
+        async stop() {
+          stopped += 1;
+          resolveWait({ exitCode: 0, signal: null });
+        },
+        wait: () => done,
+      };
+    },
   };
 
   provider.files.write = async (sandboxId, path, content, options) => {
@@ -795,7 +808,11 @@ test("non-stream startProcess stops hook and clears native entry when pid write 
 
   try {
     expect((await box.processes()).map((entry) => entry.name)).toEqual(["pid-fail"]);
+
+    failStartOnce = true;
+    await expect(retry.restart()).rejects.toThrow("start-launch-failed");
+    expect(retry.status).toBe("failed");
   } finally {
-    await retry.stop({ graceMs: 0 });
+    await retry.stop({ graceMs: 0 }).catch(() => {});
   }
 });

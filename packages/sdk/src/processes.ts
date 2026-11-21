@@ -985,6 +985,8 @@ export function makeProcesses(
               if (/^\d+$/.test(wire.trim())) early = Number(wire.trim());
             }
           } catch (error) {
+            native.delete(options.name);
+            controller?.state("failed");
             await provider.files.remove(id, sedPath, { recursive: false }).catch(() => {});
             await provider.files
               .remove(id, `${dir}/spec.json`, { recursive: false })

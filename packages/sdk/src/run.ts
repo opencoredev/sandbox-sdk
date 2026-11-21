@@ -319,10 +319,15 @@ export function chunkRedactor(
     return markerAdjSecret;
   }
 
+  const failClosedEmitted: Record<OutputChunk["stream"], boolean> = {
+    stdout: false,
+    stderr: false,
+  };
+
   function emitSafe(chunk: OutputChunk) {
     if (!chunk.text) return;
 
-    if (interleaved) {
+    if (interleaved || failClosedEmitted[chunk.stream]) {
       const prev = emittedTail[chunk.stream];
       let out = chunk.text;
 
@@ -762,8 +767,15 @@ export function chunkRedactor(
   }
 
   function pruneEmpty() {
-    for (let index = queue.length - 1; index >= 0; index--)
-      if (!queue[index]?.len) queue.splice(index, 1);
+    let write = 0;
+
+    for (let read = 0; read < queue.length; read++) {
+      const item = queue[read];
+
+      if (item?.len) queue[write++] = item;
+    }
+
+    queue.length = write;
   }
 
   function drain(final = false) {
@@ -843,7 +855,49 @@ export function chunkRedactor(
     }
 
     let headIdx = 0;
+    let dirtyStats = false;
     const cleanSafeBudget: Record<OutputChunk["stream"], number> = { stdout: -1, stderr: -1 };
+
+    type StreamDrainPlan = {
+      readonly segments: readonly {
+        readonly text: string;
+        readonly redacted: boolean;
+        readonly start: number;
+        readonly end: number;
+      }[];
+      readonly safe: number;
+      origOffset: number;
+      origConsumed: number;
+      outCursor: number;
+      segIdx: number;
+    };
+
+    const streamPlan: Record<OutputChunk["stream"], StreamDrainPlan | undefined> = {
+      stdout: undefined,
+      stderr: undefined,
+    };
+
+    const flushPlanDebts = () => {
+      for (const stream of ["stdout", "stderr"] as const) {
+        const plan = streamPlan[stream];
+
+        if (!plan) continue;
+        let debt = plan.origConsumed - plan.origOffset;
+
+        for (let i = headIdx; i < queue.length && debt > 0; i++) {
+          const chunk = queue[i];
+
+          if (!chunk || chunk.stream !== stream || !chunk.len) continue;
+          const text = materialize(chunk);
+          const drop = Math.min(debt, text.length);
+          setChunkText(chunk, text.slice(drop));
+          debt -= drop;
+          dirtyStats = true;
+        }
+
+        streamPlan[stream] = undefined;
+      }
+    };
 
     while (headIdx < queue.length) {
       const first = queue[headIdx];
@@ -862,14 +916,109 @@ export function chunkRedactor(
         emitSafe({ stream: first.stream, text: text.slice(0, take) });
         setChunkText(first, text.slice(take));
         cleanSafeBudget[first.stream] = budget - take;
+        dirtyStats = true;
 
         if (!first.len) headIdx++;
         continue;
       }
 
-      if (headIdx > 0) {
-        queue.splice(0, headIdx);
-        headIdx = 0;
+      if (!interleaved) {
+        const plan = streamPlan[first.stream];
+
+        if (plan) {
+          const text = materialize(first);
+          const cStart = plan.origOffset;
+          const cEnd = cStart + text.length;
+
+          if (cEnd <= plan.origConsumed) {
+            plan.origOffset = cEnd;
+            setChunkText(first, "");
+            dirtyStats = true;
+            headIdx++;
+            continue;
+          }
+
+          if (plan.outCursor >= plan.safe) {
+            const drop = Math.max(0, plan.origConsumed - cStart);
+
+            if (drop > 0) {
+              setChunkText(first, text.slice(drop));
+              dirtyStats = true;
+            }
+
+            streamPlan[first.stream] = undefined;
+            continue;
+          }
+
+          let out = "";
+
+          while (plan.segIdx < plan.segments.length && plan.outCursor < plan.safe) {
+            const seg = plan.segments[plan.segIdx];
+
+            if (!seg || seg.start >= cEnd) break;
+
+            if (seg.end <= plan.origConsumed) {
+              plan.segIdx++;
+              continue;
+            }
+
+            if (seg.redacted) {
+              if (plan.outCursor + seg.text.length > plan.safe) break;
+              out += seg.text;
+              plan.outCursor += seg.text.length;
+              plan.origConsumed = seg.end;
+              plan.segIdx++;
+
+              if (seg.end >= cEnd) break;
+            } else {
+              const from = Math.max(cStart, plan.origConsumed, seg.start);
+              const maxOrig = Math.min(cEnd, seg.end) - from;
+              const take = Math.min(maxOrig, plan.safe - plan.outCursor);
+
+              if (take > 0) {
+                out += seg.text.slice(from - seg.start, from - seg.start + take);
+                plan.outCursor += take;
+                plan.origConsumed = from + take;
+              }
+
+              if (plan.origConsumed >= seg.end) plan.segIdx++;
+              else break;
+            }
+          }
+
+          if (out) emitSafe({ stream: first.stream, text: out });
+
+          if (plan.origConsumed >= cEnd) {
+            plan.origOffset = cEnd;
+            setChunkText(first, "");
+            dirtyStats = true;
+            headIdx++;
+          } else {
+            const drop = Math.max(0, plan.origConsumed - cStart);
+
+            if (drop > 0) {
+              setChunkText(first, text.slice(drop));
+              dirtyStats = true;
+            }
+
+            plan.origOffset = plan.origConsumed;
+            streamPlan[first.stream] = undefined;
+          }
+
+          continue;
+        }
+      }
+
+      if (headIdx > 0 || dirtyStats) {
+        flushPlanDebts();
+
+        if (headIdx > 0) {
+          queue.splice(0, headIdx);
+          headIdx = 0;
+        }
+
+        dirtyStats = false;
+        pruneEmpty();
         syncStats();
       }
 
@@ -988,6 +1137,7 @@ export function chunkRedactor(
           // A stalled stream must not retain arbitrary output from another stream.
           // Conservatively redact its ambiguous prefix in one pass, preserving arrival order.
           dropped = true;
+          failClosedEmitted[first.stream] = true;
           emitSafe({ stream: first.stream, text: marker });
           replaceSelected(indices, "");
           pruneEmpty();
@@ -1019,59 +1169,16 @@ export function chunkRedactor(
         resetStall();
 
         if (!interleaved && contiguousLen < raw.length && safe > 0) {
-          // Emit only segments overlapping the front contiguous run (`[0, contiguousLen)`) so
-          // later spans in `first.stream` stay in place after any intervening other-stream chunks.
-          let frontOut = "";
-          let consumed = 0;
-          let emitCursor = 0;
-          let coveredFront = false;
+          streamPlan[first.stream] = {
+            segments: redactedResult.segments,
+            safe,
+            origOffset: 0,
+            origConsumed: 0,
+            outCursor: 0,
+            segIdx: 0,
+          };
 
-          for (const seg of redactedResult.segments) {
-            if (emitCursor >= safe) break;
-            const segEndInOut = emitCursor + seg.text.length;
-
-            if (seg.start >= contiguousLen) {
-              coveredFront = true;
-              break;
-            }
-
-            if (seg.redacted) {
-              if (segEndInOut > safe) break;
-              frontOut += seg.text;
-              consumed = seg.end;
-              emitCursor = segEndInOut;
-
-              if (seg.end >= contiguousLen) {
-                coveredFront = true;
-                break;
-              }
-            } else {
-              const takeOrig = Math.min(
-                contiguousLen - seg.start,
-                seg.text.length,
-                safe - emitCursor,
-              );
-
-              if (takeOrig > 0) {
-                frontOut += seg.text.slice(0, takeOrig);
-                consumed = seg.start + takeOrig;
-                emitCursor += takeOrig;
-              }
-
-              if (consumed >= contiguousLen) {
-                coveredFront = true;
-                break;
-              }
-            }
-          }
-
-          if (coveredFront && consumed > 0) {
-            if (frontOut) emitSafe({ stream: first.stream, text: frontOut });
-            consumeFrom(indices, consumed);
-            pruneEmpty();
-            syncStats();
-            continue;
-          }
+          continue;
         }
 
         if (safe > 0) emitRedactedSegments(selected, redactedResult.segments, safe, first.stream);
@@ -1087,23 +1194,18 @@ export function chunkRedactor(
         }
 
         if (interleaved) {
+          const heldChunks = heldRedacted
+            ? heldRedactedChunks(selected, redactedResult.segments, safe, first.stream)
+            : [];
+
           consumeFrom(indices, rawSafe);
 
-          if (heldRedacted) {
-            const heldChunks = heldRedactedChunks(
-              selected,
-              redactedResult.segments,
-              safe,
-              first.stream,
-            );
+          for (let i = heldChunks.length - 1; i >= 0; i--) {
+            const piece = heldChunks[i];
 
-            for (let i = heldChunks.length - 1; i >= 0; i--) {
-              const piece = heldChunks[i];
-
-              if (piece) {
-                queue.unshift(piece);
-                queuedBytes += piece.bytes;
-              }
+            if (piece) {
+              queue.unshift(piece);
+              queuedBytes += piece.bytes;
             }
           }
         } else if (contiguousLen < raw.length) {
@@ -1154,8 +1256,10 @@ export function chunkRedactor(
       if (!final && safe === 0) break;
     }
 
-    if (headIdx > 0) {
-      queue.splice(0, headIdx);
+    flushPlanDebts();
+
+    if (headIdx > 0 || dirtyStats) {
+      if (headIdx > 0) queue.splice(0, headIdx);
       pruneEmpty();
       syncStats();
     }
