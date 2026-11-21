@@ -112,7 +112,7 @@ console.log(exit.exitCode, exit.signal);
 await box.process("dev").stop();
 ```
 
-`wait()` resolves when the process exits. `stop()` sends SIGTERM, then SIGKILL after a grace period. Calling it on a process that already stopped does nothing.
+`wait()` resolves when the process exits. It gives up with a `timeout` error after 30 minutes, or after `timeoutMs` if you pass one, and with `aborted` when its `signal` fires; the process keeps running in both cases. `stop()` sends SIGTERM, then SIGKILL after a grace period. Calling it on a process that already stopped does nothing.
 
 ## Previews
 

@@ -60,7 +60,13 @@ export type { NativeApi, NativeRequestOptions, HttpMethod } from "./native.js";
 
 export type { Files, FileDiff, FileEvent } from "./files.js";
 
-export type { ProcessHandle, ProcessInfo, StartOptions, Readiness } from "./processes.js";
+export type {
+  ProcessHandle,
+  ProcessInfo,
+  StartOptions,
+  Readiness,
+  WaitOptions,
+} from "./processes.js";
 
 export type { Git } from "./git.js";
 

@@ -69,10 +69,40 @@ export interface ProcessHandle {
   }): AsyncIterable<{ text: string; stream: "stdout" | "stderr"; cursor: string }>;
   stop(options?: { graceMs?: number }): Promise<void>;
   restart(): Promise<void>;
-  wait(): Promise<{ exitCode: number | null; signal: string | null }>;
+  /**
+   * Resolves `{ exitCode, signal }` once the process exits. Throws `timeout` after `timeoutMs`
+   * (default 30 minutes) or `aborted` when `signal` fires; the process keeps running either way.
+   */
+  wait(options?: WaitOptions): Promise<{ exitCode: number | null; signal: string | null }>;
 }
 
+export interface WaitOptions {
+  /** How long to wait for the exit before throwing `timeout`. Default: 30 minutes. */
+  timeoutMs?: number;
+  /** Stops waiting with an `aborted` error. The process is not stopped. */
+  signal?: AbortSignal;
+}
+
+/** The default {@link ProcessHandle.wait} deadline. */
+const defaultWaitTimeoutMs = 30 * 60_000;
+const waitPollMs = { first: 25, max: 1000 };
+
 export const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Resolves after `ms`, or as soon as `signal` fires. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+
+    const timer = setTimeout(done, ms);
+
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
 
 export function makeProcesses(
   provider: Provider,
@@ -442,9 +472,35 @@ export function makeProcesses(
             await start(record.command ?? current.command, record.options);
           } else await launch();
         }),
-      wait: () =>
+      wait: (options = {}) =>
         safe(async () => {
-          while (!(await files.exists(`${dir}/exit`))) await delay(25);
+          const timeoutMs = options.timeoutMs ?? defaultWaitTimeoutMs;
+
+          if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+            invalid("wait timeoutMs must be a positive, finite number");
+
+          const deadline = Date.now() + timeoutMs;
+          let pollMs = waitPollMs.first;
+
+          while (!(await files.exists(`${dir}/exit`))) {
+            if (options.signal?.aborted)
+              throw new SandboxError(
+                `Process wait aborted. ${name} is still running. Call wait() again with a fresh signal, or stop() it.`,
+                { code: "aborted" },
+              );
+
+            const left = deadline - Date.now();
+
+            if (left <= 0)
+              throw new SandboxError(
+                `Process wait timed out. ${name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`,
+                { code: "timeout", retryable: true },
+              );
+
+            await abortableDelay(Math.min(pollMs, left), options.signal);
+            pollMs = Math.min(pollMs * 2, waitPollMs.max);
+          }
+
           const current = await info(name);
           status = current.status;
 

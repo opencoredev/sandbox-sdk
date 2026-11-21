@@ -289,10 +289,10 @@ export async function makeHandle<N>(
 
         return handle.restart();
       },
-      wait: async () => {
+      wait: async (options) => {
         await direct(guard);
 
-        return handle.wait();
+        return handle.wait(options);
       },
     };
 

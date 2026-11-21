@@ -399,3 +399,30 @@ test("logs() waits for a record lock whose owner is alive", async () => {
     await box.destroy();
   }
 });
+
+test("wait() gives up at its deadline or on abort instead of polling forever", async () => {
+  await using box = await createSandbox(memory());
+  const process = await box.start("sleep 30", { name: "never-exits" });
+
+  const started = Date.now();
+  await expect(process.wait({ timeoutMs: 150 })).rejects.toMatchObject({
+    code: "timeout",
+    retryable: true,
+    message: expect.stringContaining("still running"),
+  });
+  expect(Date.now() - started).toBeLessThan(2_000);
+
+  const controller = new AbortController();
+  const waiting = process.wait({ signal: controller.signal });
+  setTimeout(() => controller.abort(), 50);
+  await expect(waiting).rejects.toMatchObject({ code: "aborted" });
+
+  await expect(process.wait({ timeoutMs: 0 })).rejects.toMatchObject({
+    code: "invalid_argument",
+  });
+
+  // Neither error stopped the process.
+  expect(await box.files.exists("/tmp/.sandbox-sdk/procs/never-exits/exit")).toBe(false);
+  await process.stop({ graceMs: 0 });
+  expect(await process.wait({ timeoutMs: 5_000 })).toMatchObject({ exitCode: 143 });
+});
