@@ -1168,3 +1168,44 @@ test("carry-window detached reader holds prefixed >512B wrapped secrets across s
   expect(logsB.text.replaceAll("\n", "")).not.toContain(secret.slice(0, 80));
   expect(logsB.text.replaceAll("\n", "")).not.toContain(lastLine);
 });
+
+test("carry-window detached reader redacts >512B secrets emitted as final partial line without newline", async () => {
+  const repeated = "q".repeat(600);
+  const multiLine = `${"C".repeat(600)}\n${"D".repeat(600)}`;
+  const overlapEnds = `abc${"x".repeat(594)}abc`;
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: { REPEATED: repeated, MULTI: multiLine, OVERLAP: overlapEnds },
+  });
+
+  const procRepeated = await box.start(`printf '%s' "$REPEATED"`, { name: "eof-repeated" });
+
+  await procRepeated.wait();
+  const repeatedLogs = await procRepeated.logs();
+  const repeatedRaw = await box.files.read("/tmp/.sandbox-sdk/procs/eof-repeated/out.log");
+
+  expect(repeatedLogs.text).toBe("[REDACTED]");
+  expect(repeatedRaw).toContain("[REDACTED]");
+  expect(repeatedRaw).not.toContain("q".repeat(16));
+
+  const procMulti = await box.start(`printf '%s' '${"D".repeat(600)}'`, { name: "eof-multi" });
+
+  await procMulti.wait();
+  const multiLogs = await procMulti.logs();
+  const multiRaw = await box.files.read("/tmp/.sandbox-sdk/procs/eof-multi/out.log");
+
+  expect(multiLogs.text).toBe("[REDACTED]");
+  expect(multiRaw).toContain("[REDACTED]");
+  expect(multiRaw).not.toContain("D".repeat(16));
+
+  const procOverlap = await box.start(`printf 'pre:%s' "$OVERLAP"`, { name: "eof-overlap" });
+
+  await procOverlap.wait();
+  const overlapLogs = await procOverlap.logs();
+  const overlapRaw = await box.files.read("/tmp/.sandbox-sdk/procs/eof-overlap/out.log");
+
+  expect(overlapLogs.text).toBe("pre:[REDACTED]");
+  expect(overlapRaw).toContain("[REDACTED]");
+  expect(overlapRaw).not.toContain("x".repeat(16));
+});

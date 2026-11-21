@@ -82,6 +82,69 @@ export function chunkRedactor(
     }
   }
 
+  const kmpTables = new Map<string, Int32Array>();
+
+  function kmpTable(secret: string): Int32Array {
+    let table = kmpTables.get(secret);
+
+    if (table) return table;
+
+    table = new Int32Array(secret.length);
+    let matched = 0;
+
+    for (let index = 1; index < secret.length; index++) {
+      while (matched > 0 && secret.charCodeAt(index) !== secret.charCodeAt(matched)) {
+        matched = table[matched - 1] ?? 0;
+      }
+
+      if (secret.charCodeAt(index) === secret.charCodeAt(matched)) matched++;
+      table[index] = matched;
+    }
+
+    kmpTables.set(secret, table);
+
+    return table;
+  }
+
+  /** Earliest index >= `searchFrom` whose trailing suffix is a prefix of any secret, in O(L) time. */
+  function earliestSecretPrefix(
+    text: string,
+    searchFrom: number,
+    secrets: readonly string[],
+    strictProper: boolean,
+  ): number {
+    if (searchFrom >= text.length) return -1;
+
+    let bestLen = 0;
+
+    for (const secret of secrets) {
+      const maxMatch = strictProper ? secret.length - 1 : secret.length;
+
+      if (maxMatch <= bestLen) continue;
+
+      const start = Math.max(searchFrom, text.length - maxMatch);
+
+      if (text.length - start <= bestLen) continue;
+
+      const table = kmpTable(secret);
+      let matched = 0;
+
+      for (let index = start; index < text.length; index++) {
+        const code = text.charCodeAt(index);
+
+        while (matched > 0 && (matched === maxMatch || secret.charCodeAt(matched) !== code)) {
+          matched = table[matched - 1] ?? 0;
+        }
+
+        if (matched < maxMatch && secret.charCodeAt(matched) === code) matched++;
+      }
+
+      if (matched > bestLen) bestLen = matched;
+    }
+
+    return bestLen > 0 ? text.length - bestLen : -1;
+  }
+
   function hasAdjacentMarkerSecret(): boolean {
     const count = redactor.secrets.length;
 
@@ -281,16 +344,7 @@ export function chunkRedactor(
     let searchFrom = Math.max(0, text.length - (redactor.maxLength - 1));
 
     while (searchFrom < text.length) {
-      let hit = -1;
-
-      for (let index = searchFrom; index < text.length; index++) {
-        const suffix = text.slice(index);
-
-        if (secrets.some((secret) => secret.length > suffix.length && secret.startsWith(suffix))) {
-          hit = index;
-          break;
-        }
-      }
+      const hit = earliestSecretPrefix(text, searchFrom, secrets, true);
 
       if (hit < 0) return earliest;
 
@@ -321,16 +375,8 @@ export function chunkRedactor(
   function safePrefixLength(text: string, useHoldZero: boolean, offset = 0) {
     const secrets = redactor.secrets;
     const windowStart = Math.max(0, text.length - (redactor.maxLength - 1));
-    let safe = text.length;
-
-    for (let index = windowStart; index < text.length; index++) {
-      const suffix = text.slice(index);
-
-      if (secrets.some((secret) => secret.startsWith(suffix))) {
-        safe = index;
-        break;
-      }
-    }
+    const hit = earliestSecretPrefix(text, windowStart, secrets, false);
+    let safe = hit < 0 ? text.length : hit;
 
     if (safe === text.length) return { safe: offset + text.length, pulledFrom: -1 };
 

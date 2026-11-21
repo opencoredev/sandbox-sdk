@@ -357,6 +357,35 @@ describe("core safety guarantees", () => {
     await pause(40);
     await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "not_found" });
   });
+
+  test("streaming redaction stays linear for long self-repeating secrets", async () => {
+    const secret = `${"H".repeat(200_000)}END`;
+    const prefix = secret.slice(0, 180_000);
+
+    const provider = memory({
+      handlers: {
+        emit: ({ stdout }) => {
+          for (let offset = 0; offset < prefix.length; offset += 65_536) {
+            stdout(prefix.slice(offset, offset + 65_536));
+          }
+
+          stdout("tail\n");
+
+          return 0;
+        },
+      },
+    });
+
+    await using box = await createSandbox(provider, { secrets: { REPEAT: secret } });
+    const started = performance.now();
+    const result = await box.run("emit");
+    const elapsedMs = performance.now() - started;
+
+    expect(result.truncated).toBe(false);
+    expect(result.stdout.length).toBe(prefix.length + 5);
+    expect(result.stdout.endsWith("tail\n")).toBe(true);
+    expect(elapsedMs).toBeLessThan(2000);
+  });
 });
 
 test("reaping tolerates deletion after listing and still surfaces auth failures", async () => {
