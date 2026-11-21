@@ -83,19 +83,39 @@ export class Demux {
   }
 }
 
+/** Docker Engine client timeouts. */
+export interface DockerTimeouts {
+  /** Idle timeout for one Engine API request, such as an image pull. Default: 10 minutes. */
+  apiTimeoutMs?: number;
+  /** Idle timeout until an exec attach starts streaming. Default: 30 seconds. */
+  attachTimeoutMs?: number;
+}
+
 export class Docker {
   readonly socketPath: string;
+  private readonly apiTimeoutMs: number;
+  private readonly attachTimeoutMs: number;
   private connectionPool: Agent | undefined;
   private pool() {
     return (this.connectionPool ??= new Agent({ keepAlive: true, timeout: 5_000 }));
   }
-  constructor(host = process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock") {
+  constructor(
+    host = process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock",
+    timeouts: DockerTimeouts = {},
+  ) {
     if (!host.startsWith("unix://") || !host.slice(7).startsWith("/"))
       throw failure(
         "DOCKER_HOST must be an absolute unix:// socket URL; remote Docker hosts cannot provide localhost previews",
         "unsupported",
       );
+
+    for (const value of [timeouts.apiTimeoutMs, timeouts.attachTimeoutMs])
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
+        throw failure("Docker timeouts must be positive whole milliseconds", "invalid_argument");
+
     this.socketPath = host.slice(7);
+    this.apiTimeoutMs = timeouts.apiTimeoutMs ?? 600_000;
+    this.attachTimeoutMs = timeouts.attachTimeoutMs ?? 30_000;
   }
   async call(method: string, path: string, body?: DockerJson): Promise<DockerJson> {
     const data = body === undefined ? undefined : JSON.stringify(body);
@@ -136,7 +156,9 @@ export class Docker {
         },
       );
 
-      req.setTimeout(600_000, () => req.destroy(failure("Docker API timed out", "timeout")));
+      req.setTimeout(this.apiTimeoutMs, () =>
+        req.destroy(failure("Docker API timed out", "timeout")),
+      );
       req.on("error", (error) =>
         reject(error instanceof SandboxError ? error : failure(error.message, "unavailable")),
       );
@@ -246,10 +268,16 @@ export class Docker {
           return;
         }
 
+        // Attached: like the upgrade path, a command may stay silent for as long as it runs.
+        req.setTimeout(0);
         consume(res);
       });
-      req.on("error", (error) => reject(failure(error.message, "unavailable")));
-      req.setTimeout(30_000, () => req.destroy(failure("Exec attach timed out", "timeout")));
+      req.on("error", (error) =>
+        reject(error instanceof SandboxError ? error : failure(error.message, "unavailable")),
+      );
+      req.setTimeout(this.attachTimeoutMs, () =>
+        req.destroy(failure("Exec attach timed out", "timeout")),
+      );
       req.end(JSON.stringify({ Detach: false, Tty: false }));
     });
     const result = object(await this.call("GET", `/exec/${encode(execId)}/json`));
