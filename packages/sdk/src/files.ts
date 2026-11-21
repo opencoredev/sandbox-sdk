@@ -203,6 +203,7 @@ try:
 except Exception:sys.exit(70)`;
 
 // Text the guest compares as UTF-8 bytes must decode to itself: no lone surrogates, BOM or replacement character.
+const gitObjectId = /^[0-9a-f]{40,64}$/;
 const byteExact = (text: string) => !/\p{Cs}|[\uFEFF\uFFFD]/u.test(text);
 
 // A path with a lone surrogate names different bytes in the guest than through the RPC path.
@@ -393,8 +394,10 @@ export function makeFiles(
   async function read(path: string, options?: { as: "bytes" }): Promise<string | Uint8Array> {
     const bytes = await safe(() => fs.read(id, pathOf(path)));
 
-    // File reads are data, not output logs. Preserve exact contents (including binary).
-    return options?.as === "bytes" ? bytes : new TextDecoder().decode(bytes);
+    // File reads are data, not output logs. Keep a leading BOM so edit and write round-trip it.
+    return options?.as === "bytes"
+      ? bytes
+      : new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
   }
 
   async function write(
@@ -874,7 +877,8 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
         for (const entry of await list(options.path, { recursive: true, glob: options.glob }))
           if (entry.type === "file") {
-            const lines = (await read(entry.path)).split("\n");
+            // A leading BOM is not part of line 1's text, as in the guest search above.
+            const lines = (await read(entry.path)).replace(/^\uFEFF/, "").split("\n");
 
             for (const [index, text] of lines.entries())
               if (text.includes(query)) {
@@ -995,7 +999,9 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
           const before = (await baseline(options.since)).trim(),
             after = await tree();
 
-          if (!/^[0-9a-f]{40,64}$/.test(before)) invalid("Invalid git checkpoint");
+          // Both IDs come from guest stdout and go into a shell command, so both must be object IDs.
+          if (!gitObjectId.test(before) || !gitObjectId.test(after))
+            invalid("Invalid git checkpoint");
 
           const names = (await git(`diff --no-renames --name-status -z ${before} ${after}`)).split(
             "\0",
