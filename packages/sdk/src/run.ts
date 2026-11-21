@@ -401,6 +401,104 @@ export function chunkRedactor(
     return pos;
   }
 
+  /** Pull `pos` left over any marker-adjacent prefix so emitting `[0, pos)` cannot leave
+   * a leading fragment that combines with a future `[REDACTED]` marker into a secret. */
+  function pullLeftForMarker(text: string, pos: number): number {
+    let safe = snapBeforeMarker(text, pos);
+    const fullLeft = redactor.streamChainLeft;
+    const partialLeft = redactor.streamHoldLeft;
+
+    if (safe <= 0 || (fullLeft.length === 0 && partialLeft.length === 0)) return safe;
+
+    if (fullLeft.length > 0) {
+      let pulled = true;
+
+      while (pulled && safe > 0) {
+        pulled = false;
+
+        for (const prefix of fullLeft) {
+          if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
+            safe -= prefix.length;
+            pulled = true;
+            break;
+          }
+        }
+
+        if (pulled) {
+          safe = snapBeforeMarker(text, safe);
+
+          if (safe >= marker.length && text.startsWith(marker, safe - marker.length))
+            safe -= marker.length;
+        }
+      }
+    }
+
+    if (safe > 0 && partialLeft.length > 0) {
+      for (const prefix of partialLeft) {
+        if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
+          safe -= prefix.length;
+          safe = snapBeforeMarker(text, safe);
+          break;
+        }
+      }
+    }
+
+    return snapBeforeMarker(text, safe);
+  }
+
+  /** Earliest raw cutoff where a trailing suffix is a strict prefix of a secret not already
+   * covered by an earlier complete match in `segments`. Keeps nested/longer secrets raw until
+   * future chunks resolve them so an inner shorter secret cannot redact first and expose the
+   * outer secret's prefix. */
+  function rawHoldCutoff(
+    text: string,
+    segments: readonly {
+      readonly redacted: boolean;
+      readonly start: number;
+      readonly end: number;
+    }[],
+  ): number {
+    const secrets = redactor.secrets;
+    let searchFrom = Math.max(0, text.length - (redactor.maxLength - 1));
+
+    while (searchFrom < text.length) {
+      let hit = -1;
+
+      for (let index = searchFrom; index < text.length; index++) {
+        const suffix = text.slice(index);
+
+        if (secrets.some((secret) => secret.length > suffix.length && secret.startsWith(suffix))) {
+          hit = index;
+          break;
+        }
+      }
+
+      if (hit < 0) return text.length;
+
+      const covering = segments.find((seg) => seg.redacted && seg.start < hit && seg.end > hit);
+
+      if (covering) {
+        searchFrom = covering.end;
+        continue;
+      }
+
+      let cutoff = pullLeftForMarker(text, hit);
+
+      while (cutoff > 0) {
+        const split = segments.find(
+          (seg) => seg.redacted && seg.start < cutoff && seg.end > cutoff,
+        );
+
+        if (!split) break;
+        cutoff = pullLeftForMarker(text, split.start);
+      }
+
+      return cutoff;
+    }
+
+    return text.length;
+  }
+
   function safePrefixLength(text: string, useHoldZero: boolean, offset = 0) {
     const secrets = redactor.secrets;
     const windowStart = Math.max(0, text.length - (redactor.maxLength - 1));
@@ -1100,8 +1198,8 @@ export function chunkRedactor(
         }
       }
 
-      const rawSafe = final ? raw.length : rawPrefixLength(raw);
-      const head = rawSafe === raw.length ? raw : raw.slice(0, rawSafe);
+      let rawSafe = final ? raw.length : rawPrefixLength(raw);
+      let head = rawSafe === raw.length ? raw : raw.slice(0, rawSafe);
 
       const canReuseClean =
         !final &&
@@ -1117,18 +1215,29 @@ export function chunkRedactor(
 
       const hasSecret = canReuseClean ? redactor.hasMatch(tailWindow) : true;
 
-      const redactedResult = hasSecret
+      let redactedResult = hasSecret
         ? redactor.redactSegments(head)
         : {
             text: head,
             segments: head ? [{ text: head, redacted: false, start: 0, end: head.length }] : [],
           };
 
-      const redacted = redactedResult.text;
+      let redacted = redactedResult.text;
+
+      if (!final && redacted !== head) {
+        const rawCutoff = rawHoldCutoff(head, redactedResult.segments);
+
+        if (rawCutoff < head.length) {
+          rawSafe = rawCutoff;
+          head = rawSafe === 0 ? "" : raw.slice(0, rawSafe);
+          redactedResult = head ? redactor.redactSegments(head) : { text: "", segments: [] };
+          redacted = redactedResult.text;
+        }
+      }
 
       const safeCheck = final
         ? { safe: redacted.length, pulledFrom: -1 }
-        : safePrefixLength(redacted, redacted === head && canReuseClean);
+        : safePrefixLength(redacted, redacted === head && canReuseClean && head.length >= cleanLen);
 
       const safe = safeCheck.safe;
 

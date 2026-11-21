@@ -909,3 +909,114 @@ test("detached process redacts >512-byte secret overlapping shorter secret and l
   expect(await box.files.exists("/tmp/.sandbox-sdk/procs/overlap-boundary/redact.sed")).toBe(false);
   expect(await box.files.exists("/tmp/.sandbox-sdk/procs/overlap-boundary/redact.txt")).toBe(false);
 });
+
+test("streaming redactor holds longer secret raw when an inner shorter secret appears across chunks", async () => {
+  const shortSecret = "a_";
+  const longSecret = "c-bXZ1-_X0-0ZYa_Z";
+  const prefixShort = "PREF_SHORT";
+  const prefixLong = "PREF_SHORT_EXTENDED_SECRET";
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: {
+      SHORT: shortSecret,
+      LONG: longSecret,
+      PSHORT: prefixShort,
+      PLONG: prefixLong,
+      AB: "AB",
+      BA: "BA",
+      MARK: "X[REDACTED]Y",
+      INNER: "ab",
+      OUTER: "abC",
+    },
+  });
+
+  // Nested shorter secret inside a longer secret split right before the final byte.
+  const nested = await box.run(`printf 'lead c-bXZ1-_X0-0ZYa_'; sleep 0.05; printf 'Z tail\\n'`);
+
+  expect(nested.stdout).toBe("lead [REDACTED] tail\n");
+  expect(nested.output).toBe("lead [REDACTED] tail\n");
+
+  // Strict prefix secret split before the longer secret's tail.
+  const strictPref = await box.run(`printf 'PREF_SHORT'; sleep 0.05; printf '_EXTENDED_SECRET\\n'`);
+
+  expect(strictPref.stdout).toBe("[REDACTED]\n");
+  expect(strictPref.output).toBe("[REDACTED]\n");
+
+  // Complete match overlapping the start of another secret must not split or leak.
+  const overlapPair = await box.run(`printf 'AB'; sleep 0.05; printf '!\\n'`);
+  expect(overlapPair.stdout).toBe("[REDACTED]!\n");
+
+  // Marker-adjacent prefix before a held raw nested secret must not emit early and leak X[REDACTED]Y.
+  const markerNested = await box.run(`printf 'Xab'; sleep 0.05; printf 'Y\\n'`);
+  expect(markerNested.stdout).toBe("[REDACTED]\n");
+});
+
+test("detached process bounds repeated left-marker carry and paginates logs cleanly", async () => {
+  const longSecret = `W${"k".repeat(1100)}V`;
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: { MARKER: "LEADX[REDACTED]TAILY", LONG: longSecret },
+  });
+
+  const payload = "LEADX".repeat(20_000) + longSecret.slice(0, 500);
+  await box.files.write("/workspace/a.bin", payload);
+  await box.files.write("/workspace/b.bin", "!\nafter\n");
+
+  const startedAt = Date.now();
+
+  const proc = await box.start("cat /workspace/a.bin; sleep 0.1; cat /workspace/b.bin", {
+    name: "bounded-carry",
+  });
+
+  await proc.wait();
+  expect(Date.now() - startedAt).toBeLessThan(10_000);
+
+  // Paging must always advance and terminate without stalling on an oversized record.
+  let cursor: string | undefined;
+  let combined = "";
+  let pages = 0;
+
+  while (pages < 50) {
+    const page = await proc.logs({ after: cursor, maxBytes: 16_384 });
+    pages += 1;
+    combined += page.text;
+
+    if (!page.truncated) break;
+    expect(page.nextCursor).not.toBe(cursor);
+    cursor = page.nextCursor;
+  }
+
+  expect(pages).toBeLessThan(50);
+  expect(combined).toContain("after\n");
+  expect(combined.length).toBeGreaterThan(90_000);
+});
+
+test("non-stream restart sets handle status to failed when setup exec throws", async () => {
+  const base = await shellProvider();
+  const originalExec = base.exec.bind(base);
+  let failNextSetup = false;
+
+  const provider = {
+    ...base,
+    exec: async (...args: Parameters<typeof base.exec>) => {
+      if (failNextSetup && args[1].command.includes("spec.json")) {
+        failNextSetup = false;
+        throw new Error("setup-exec-boom");
+      }
+
+      return originalExec(...args);
+    },
+  };
+
+  await using box = await createSandbox(provider);
+  const proc = await box.start("echo hi", { name: "setup-throw" });
+  await proc.wait();
+  expect(proc.status).toBe("exited");
+
+  failNextSetup = true;
+  await expect(proc.restart()).rejects.toThrow("setup-exec-boom");
+  expect(proc.ready).toBe(false);
+  expect(proc.status).toBe("failed");
+});

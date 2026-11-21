@@ -9,6 +9,7 @@ import { defaults, pathOf, chunkRedactor } from "./run.js";
 import {
   detachedLaunchScript,
   logPageScript,
+  maxLeftMarkerBytes,
   maxSecretLineBytes,
   recordExit,
   recordSetupScript,
@@ -411,7 +412,15 @@ export function makeProcesses(
       }
 
       const after = Math.max(base, requested ?? base);
-      const decoded = decodePage(bytes, Math.max(0, after - base - start), budget, base + start);
+
+      const decoded = decodePage(
+        bytes,
+        Math.max(0, after - base - start),
+        budget,
+        base + start,
+        start + bytes.length < size,
+      );
+
       const offset = base + start + decoded.offset;
 
       return {
@@ -788,14 +797,22 @@ export function makeProcesses(
             throw error;
           }
         } else {
-          const result = await exec(
-            recordSetupScript({ dir, cwd: pathOf(options.cwd) }),
-            {},
-            Buffer.from(spec).toString("base64") +
-              "\n" +
-              Buffer.from(restart).toString("base64") +
-              "\n",
-          );
+          let result: Awaited<ReturnType<typeof exec>>;
+
+          try {
+            result = await exec(
+              recordSetupScript({ dir, cwd: pathOf(options.cwd) }),
+              {},
+              Buffer.from(spec).toString("base64") +
+                "\n" +
+                Buffer.from(restart).toString("base64") +
+                "\n",
+            );
+          } catch (error) {
+            controller?.state("failed");
+            controller?.ready(false);
+            throw error;
+          }
 
           if (result.exitCode === recordExit.running)
             invalid(`Process ${options.name} is already running`);
@@ -928,6 +945,7 @@ export function makeProcesses(
         } else if (launched) {
           // No resident daemon: a detached process group writes durable records itself.
           const maxLineBytes = maxSecretLineBytes(redactor.secrets);
+          const maxLeftBytes = maxLeftMarkerBytes(redactor.secrets);
           const secretsPath = maxLineBytes > 512 ? `${dir}/redact.txt` : undefined;
 
           const wrapper = supervisorScript({
@@ -935,7 +953,7 @@ export function makeProcesses(
             cwd: pathOf(options.cwd),
             command,
             sedPath,
-            holdBytes: maxLineBytes > 512 ? maxLineBytes + 16 : 0,
+            holdBytes: maxLineBytes > 512 ? maxLineBytes + maxLeftBytes + 16 : 0,
             secretsPath,
           });
 

@@ -150,6 +150,37 @@ export function maxSecretLineBytes(secrets: readonly string[]): number {
   return max;
 }
 
+/** Maximum byte length of any secret prefix that sits left of `[REDACTED]` (or a prefix of it). */
+export function maxLeftMarkerBytes(secrets: readonly string[]): number {
+  const marker = "[REDACTED]";
+  let max = 0;
+
+  for (const value of secrets) {
+    for (const line of value.split("\n")) {
+      if (!line) continue;
+      const markerAt = line.indexOf(marker);
+
+      if (markerAt > 0) {
+        const bytes = Buffer.byteLength(line.slice(0, markerAt));
+
+        if (bytes > max) max = bytes;
+      }
+
+      const limit = Math.min(line.length - 1, marker.length - 1);
+
+      for (let overlap = 1; overlap <= limit; overlap++) {
+        if (marker.startsWith(line.slice(line.length - overlap))) {
+          const bytes = Buffer.byteLength(line.slice(0, line.length - overlap));
+
+          if (bytes > max) max = bytes;
+        }
+      }
+    }
+  }
+
+  return max;
+}
+
 /** Deduplicated non-empty secret lines for exact suffix-prefix boundary matching in stream readers. */
 export function secretLinesText(secrets: readonly string[]): string {
   const lines = [...new Set(secrets.flatMap((value) => value.split("\n")).filter(Boolean))];
@@ -352,7 +383,7 @@ function streamReader(input: {
   const computeHold = input.secretsPath
     ? [
         `if command -v awk >/dev/null 2>&1`,
-        `then clen=$(printf '%s\\n' "$chunk" | LC_ALL=C awk 'BEGIN{mk="[REDACTED]";ml=length(mk)}FILENAME!="-"{if(length($0)>1)s[++n]=$0;p=index($0,mk);if(p>1)lb[++nlb]=substr($0,1,p-1);for(o=1;o<ml&&o<length($0);o++){if(substr(mk,1,o)==substr($0,length($0)-o+1,o))lb[++nlb]=substr($0,1,length($0)-o)}next}{t=$0;tl=length(t);k=0;for(i=1;i<=n;i++){p=s[i];pl=length(p);m=tl<pl-1?tl:pl-1;for(j=m;j>k;j--){if(substr(t,tl-j+1,j)==substr(p,1,j)){k=j;break}}}if(k>0&&nlb>0){c=1;while(c){c=0;r=tl-k;for(i=1;i<=nlb;i++){bl=length(lb[i]);if(bl>0&&bl<=r&&substr(t,r-bl+1,bl)==lb[i]){k+=bl;c=1;break}}}}print k}' ${quote(input.secretsPath)} - 2>/dev/null)`,
+        `then clen=$(printf '%s\\n' "$chunk" | LC_ALL=C awk -v mh=${input.holdBytes} 'BEGIN{mk="[REDACTED]";ml=length(mk)}FILENAME!="-"{if(length($0)>1)s[++n]=$0;p=index($0,mk);if(p>1)lb[++nlb]=substr($0,1,p-1);for(o=1;o<ml&&o<length($0);o++){if(substr(mk,1,o)==substr($0,length($0)-o+1,o))lb[++nlb]=substr($0,1,length($0)-o)}next}{t=$0;tl=length(t);k=0;for(i=1;i<=n;i++){p=s[i];pl=length(p);m=tl<pl-1?tl:pl-1;for(j=m;j>k;j--){if(substr(t,tl-j+1,j)==substr(p,1,j)){k=j;break}}}if(k>0&&nlb>0){c=1;while(c&&k<mh){c=0;r=tl-k;for(i=1;i<=nlb;i++){bl=length(lb[i]);if(bl>0&&bl<=r&&k+bl<=mh&&substr(t,r-bl+1,bl)==lb[i]){k+=bl;c=1;break}}}}print k}' ${quote(input.secretsPath)} - 2>/dev/null)`,
         `clen=\${clen:-${input.holdBytes}}`,
         `else clen=${input.holdBytes}`,
         `fi`,
