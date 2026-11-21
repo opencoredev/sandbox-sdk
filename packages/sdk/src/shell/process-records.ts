@@ -181,11 +181,15 @@ export function maxLeftMarkerBytes(secrets: readonly string[]): number {
   return max;
 }
 
-/** Deduplicated non-empty secret lines sorted longest-first for exact suffix-prefix boundary matching in stream readers. */
-export function secretLinesText(secrets: readonly string[]): string {
-  const lines = [...new Set(secrets.flatMap((value) => value.split("\n")).filter(Boolean))].sort(
+function sortedSecretLines(secrets: readonly string[]): string[] {
+  return [...new Set(secrets.flatMap((value) => value.split("\n")).filter(Boolean))].sort(
     (a, b) => b.length - a.length,
   );
+}
+
+/** Deduplicated non-empty secret lines sorted longest-first for exact suffix-prefix boundary matching in stream readers. */
+export function secretLinesText(secrets: readonly string[]): string {
+  const lines = sortedSecretLines(secrets);
 
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }
@@ -198,9 +202,7 @@ export function secretLinesText(secrets: readonly string[]): string {
  * Existing and emitted `[REDACTED]` markers are shielded using control bytes absent from
  * every secret so neither literal markers nor non-secret control bytes are mangled. */
 export function redactionSedScript(secrets: readonly string[]): string {
-  const lines = [...new Set(secrets.flatMap((value) => value.split("\n")).filter(Boolean))].sort(
-    (a, b) => b.length - a.length,
-  );
+  const lines = sortedSecretLines(secrets);
 
   if (lines.length === 0) return "\n";
 
@@ -428,12 +430,65 @@ function streamReader(input: {
   // Carry-window path when any secret line exceeds 512 bytes:
   // 1) Scrub secrets wrapped across newlines in `head`, holding trailing wrapped-prefix lines (>= 8 bytes) across reads.
   // 2) Keep any partial trailing line raw while checking suffix-prefix overlap before sed can rewrite a shorter inner secret.
-  const wrapAwk = `FILENAME!="-"{if(length($0)>512)s[++n]=$0;next}{L[++m]=$0}END{for(i=1;i<=n;i++){sec=s[i];sl=length(sec);c1=substr(sec,1,1);for(a=1;a<m;a++){la=L[a];al=length(la);if(al==0)continue;lim=al<sl-1?al:sl-1;scan=al-lim+1;while(scan<=al){off=index(substr(la,scan),c1);if(off==0)break;idx=scan+off-1;p=al-idx+1;if(substr(la,idx,p)==substr(sec,1,p)){pos=p+1;b=a+1;ok=0;while(b<=m){rem=sl-pos+1;lb=L[b];bl=length(lb);if(bl>=rem){if(substr(lb,1,rem)==substr(sec,pos,rem))ok=1;break}if(bl>0&&substr(sec,pos,bl)==lb){pos+=bl;b++}else break}if(ok){L[a]=substr(la,1,al-p) "[REDACTED]";for(k=a+1;k<b;k++)L[k]="[REDACTED]";L[b]="[REDACTED]" substr(L[b],rem+1);break}}scan=idx+1}}}hc=0;if(!eof&&n>0&&m>0){acc="";for(k=m;k>=1;k--){acc=L[k] acc;al=length(acc);if(al>mh)break;if(al>=8){hit=0;for(i=1;i<=n;i++){sec=s[i];sl=length(sec);c1=substr(sec,1,1);lim=al<sl-1?al:sl-1;scan=al-lim+1;while(scan<=al){off=index(substr(acc,scan),c1);if(off==0)break;idx=scan+off-1;p=al-idx+1;if(p>=8&&substr(acc,idx,p)==substr(sec,1,p)){hc=m-k+1;hit=1;break}scan=idx+1}if(hit)break}}}}print hc;for(j=1;j<=m;j++)print L[j]}`;
+  const wrapAwk = [
+    `FILENAME!="-"{if(length($0)>512)s[++n]=$0;next}`,
+    `{L[++m]=$0}`,
+    `END{`,
+    `for(i=1;i<=n;i++){`,
+    `sec=s[i];sl=length(sec);c1=substr(sec,1,1);`,
+    `for(a=1;a<m;a++){`,
+    `la=L[a];al=length(la);if(al==0)continue;`,
+    `lim=al<sl-1?al:sl-1;scan=al-lim+1;`,
+    `while(scan<=al){`,
+    `off=index(substr(la,scan),c1);if(off==0)break;`,
+    `idx=scan+off-1;p=al-idx+1;`,
+    `if(substr(la,idx,p)==substr(sec,1,p)){`,
+    `pos=p+1;b=a+1;ok=0;`,
+    `while(b<=m){rem=sl-pos+1;lb=L[b];bl=length(lb);`,
+    `if(bl>=rem){if(substr(lb,1,rem)==substr(sec,pos,rem))ok=1;break}`,
+    `if(bl>0&&substr(sec,pos,bl)==lb){pos+=bl;b++}else break}`,
+    `if(ok){L[a]=substr(la,1,al-p) "[REDACTED]";for(k=a+1;k<b;k++)L[k]="[REDACTED]";L[b]="[REDACTED]" substr(L[b],rem+1);break}}`,
+    `scan=idx+1}}}`,
+    // Check length(acc) >= mh before prepending L[k] so a starting line with a non-secret prefix is still held.
+    `hc=0;`,
+    `if(!eof&&n>0&&m>0){`,
+    `acc="";`,
+    `for(k=m;k>=1;k--){`,
+    `if(length(acc)>=mh)break;`,
+    `acc=L[k] acc;al=length(acc);`,
+    `if(al>=8){hit=0;`,
+    `for(i=1;i<=n;i++){`,
+    `sec=s[i];sl=length(sec);c1=substr(sec,1,1);`,
+    `lim=al<sl-1?al:sl-1;scan=al-lim+1;`,
+    `while(scan<=al){`,
+    `off=index(substr(acc,scan),c1);if(off==0)break;`,
+    `idx=scan+off-1;p=al-idx+1;`,
+    `if(p>=8&&substr(acc,idx,p)==substr(sec,1,p)){hc=m-k+1;hit=1;break}`,
+    `scan=idx+1}`,
+    `if(hit)break}}}}`,
+    `print hc;for(j=1;j<=m;j++)print L[j]}`,
+  ].join("");
+
+  const holdAwk = [
+    `BEGIN{mk="[REDACTED]";ml=length(mk)}`,
+    `FILENAME!="-"{`,
+    `if(length($0)>1)s[++n]=$0;`,
+    `p=index($0,mk);if(p>1)lb[++nlb]=substr($0,1,p-1);`,
+    `for(o=1;o<ml&&o<length($0);o++){if(substr(mk,1,o)==substr($0,length($0)-o+1,o))lb[++nlb]=substr($0,1,length($0)-o)}`,
+    `next}`,
+    `{t=$0;tl=length(t);k=0;`,
+    `for(i=1;i<=n;i++){p=s[i];pl=length(p);m=tl<pl-1?tl:pl-1;`,
+    `for(j=m;j>k;j--){if(substr(t,tl-j+1,j)==substr(p,1,j)){k=j;break}}}`,
+    `if(k>0&&nlb>0){c=1;while(c&&k<mh){c=0;r=tl-k;`,
+    `for(i=1;i<=nlb;i++){bl=length(lb[i]);`,
+    `if(bl>0&&bl<=r&&k+bl<=mh&&substr(t,r-bl+1,bl)==lb[i]){k+=bl;c=1;break}}}}`,
+    `print k}`,
+  ].join("");
 
   const computeHold = input.secretsPath
     ? [
         `if command -v awk >/dev/null 2>&1`,
-        `then clen=$(printf '%s\\n' "$chunk" | LC_ALL=C awk -v mh=${input.holdBytes} 'BEGIN{mk="[REDACTED]";ml=length(mk)}FILENAME!="-"{if(length($0)>1)s[++n]=$0;p=index($0,mk);if(p>1)lb[++nlb]=substr($0,1,p-1);for(o=1;o<ml&&o<length($0);o++){if(substr(mk,1,o)==substr($0,length($0)-o+1,o))lb[++nlb]=substr($0,1,length($0)-o)}next}{t=$0;tl=length(t);k=0;for(i=1;i<=n;i++){p=s[i];pl=length(p);m=tl<pl-1?tl:pl-1;for(j=m;j>k;j--){if(substr(t,tl-j+1,j)==substr(p,1,j)){k=j;break}}}if(k>0&&nlb>0){c=1;while(c&&k<mh){c=0;r=tl-k;for(i=1;i<=nlb;i++){bl=length(lb[i]);if(bl>0&&bl<=r&&k+bl<=mh&&substr(t,r-bl+1,bl)==lb[i]){k+=bl;c=1;break}}}}print k}' ${quote(input.secretsPath)} - 2>/dev/null)`,
+        `then clen=$(printf '%s\\n' "$chunk" | LC_ALL=C awk -v mh=${input.holdBytes} '${holdAwk}' ${quote(input.secretsPath)} - 2>/dev/null)`,
         `clen=\${clen:-${input.holdBytes}}`,
         `else clen=${input.holdBytes}`,
         `fi`,

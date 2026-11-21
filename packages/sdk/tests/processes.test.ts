@@ -1121,3 +1121,50 @@ test("carry-window detached reader redacts repetitive >512B secrets wrapped acro
   expect(constantLogs.text).toContain("[REDACTED]");
   expect(constantLogs.text.replaceAll("\n", "")).not.toContain("k".repeat(80));
 });
+
+test("carry-window detached reader holds prefixed >512B wrapped secrets across separate writes", async () => {
+  const secret = Array.from({ length: 1200 }, (_, i) => "0123456789abcdef"[i % 16]).join("");
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: { PREFIXED: secret },
+  });
+
+  // Case A: single starting line whose non-secret prefix + secret prefix exceeds holdBytes (1199).
+  const p600 = "P".repeat(600);
+  const s1 = secret.slice(0, 650);
+  const s2 = secret.slice(650);
+
+  const procA = await box.start(
+    `printf '%s%s\\n' '${p600}' '${s1}'; sleep 0.15; printf '%s\\n' '${s2}'`,
+    { name: "wrap-prefixed-a" },
+  );
+
+  await procA.wait();
+  const logsA = await procA.logs();
+  expect(logsA.text).toContain(p600);
+  expect(logsA.text).toContain("[REDACTED]");
+  expect(logsA.text.replaceAll("\n", "")).not.toContain(secret.slice(0, 80));
+  expect(logsA.text.replaceAll("\n", "")).not.toContain(secret.slice(650, 730));
+
+  // Case B: 100-byte log prefix + 1200-byte secret wrapped in 15 lines of 80 bytes split across two writes.
+  const l100 = "L".repeat(100);
+
+  const first14 = Array.from({ length: 14 }, (_, i) => secret.slice(i * 80, (i + 1) * 80)).join(
+    "\\n",
+  );
+
+  const lastLine = secret.slice(14 * 80);
+
+  const procB = await box.start(
+    `printf '%s${first14}\\n' '${l100}'; sleep 0.15; printf '${lastLine}\\n'`,
+    { name: "wrap-prefixed-b" },
+  );
+
+  await procB.wait();
+  const logsB = await procB.logs();
+  expect(logsB.text).toContain(l100);
+  expect(logsB.text).toContain("[REDACTED]");
+  expect(logsB.text.replaceAll("\n", "")).not.toContain(secret.slice(0, 80));
+  expect(logsB.text.replaceAll("\n", "")).not.toContain(lastLine);
+});
