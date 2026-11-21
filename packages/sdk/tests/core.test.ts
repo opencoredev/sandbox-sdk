@@ -944,3 +944,96 @@ test("createSandbox passes its signal to find and stops waiting on a hung lookup
   expect(signals).toEqual([controller.signal]);
   expect(await provider.list({})).toEqual([]);
 });
+
+test("streaming redaction preserves exact chunk-split parity on replacement-created right suffixes and previous-span boundaries", async () => {
+  const cases: { secrets: Record<string, string>; inputs: string[]; expected: string[] }[] = [
+    {
+      secrets: { A: "b", B: "[REDACTED]ba" },
+      inputs: ["bba", "bbba", "bbbbbbba", "bbc", "pre bba post"],
+      expected: [
+        "[REDACTED]",
+        "[REDACTED][REDACTED]",
+        "[REDACTED]".repeat(6),
+        "[REDACTED][REDACTED]c",
+        "pre [REDACTED] post",
+      ],
+    },
+    {
+      secrets: { A: "[REDa[RED", B: "[REDTED]" },
+      inputs: ["[REDa[REDa[REDTED]"],
+      expected: ["[REDACTED]a[REDACTED]"],
+    },
+  ];
+
+  for (const entry of cases) {
+    for (let idx = 0; idx < entry.inputs.length; idx++) {
+      const text = entry.inputs[idx];
+      const expected = entry.expected[idx];
+
+      if (!text || !expected) continue;
+
+      const splits: string[][] = [
+        [text],
+        [...text],
+        ...Array.from({ length: Math.max(0, text.length - 1) }, (_, cut) => [
+          text.slice(0, cut + 1),
+          text.slice(cut + 1),
+        ]),
+      ];
+
+      for (const chunks of splits) {
+        await using box = await createSandbox(
+          memory({
+            handlers: {
+              emit({ stdout }) {
+                for (const part of chunks) stdout(part);
+
+                return 0;
+              },
+            },
+          }),
+          { secrets: entry.secrets },
+        );
+
+        const res = await box.run("emit");
+        expect(res.stdout).toBe(expected);
+        expect(res.output).toBe(expected);
+
+        const proc = box.run("emit");
+        let streamed = "";
+
+        for await (const chunk of proc) streamed += chunk.text;
+        expect(streamed).toBe(expected);
+      }
+    }
+  }
+});
+
+test("streaming redaction scales linearly on long repeating prefixes in small chunks", async () => {
+  const n = 262_144;
+  const secret = `${"a".repeat(n)}b`;
+
+  await using box = await createSandbox(
+    memory({
+      handlers: {
+        repeat({ stdout }) {
+          const piece = "a".repeat(256);
+
+          for (let offset = 0; offset < n; offset += 256) stdout(piece);
+          stdout("b");
+
+          return 0;
+        },
+      },
+    }),
+    { secrets: { LONG_REPEAT: secret } },
+  );
+
+  const started = performance.now();
+  const res = await box.run("repeat");
+  const elapsedMs = performance.now() - started;
+
+  expect(res.stdout).toBe("[REDACTED]");
+  expect(res.truncated).toBe(false);
+  expect(elapsedMs).toBeLessThan(1_000);
+});

@@ -455,7 +455,14 @@ export function makeProcesses(
         const position = parseLineCursor(options.after);
         let cursor = position.offset;
         const pending = position.pending;
-        const checkpoint = (offset: string) => JSON.stringify({ v: 1, offset, ...pending });
+
+        const checkpoint = (offset: string) =>
+          JSON.stringify({
+            v: 1,
+            offset,
+            stdout: redactor.text(pending.stdout),
+            stderr: redactor.text(pending.stderr),
+          });
 
         do {
           const page = await safe(() => readEvents({ after: cursor, maxBytes: 1_048_576 }));

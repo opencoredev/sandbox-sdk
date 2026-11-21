@@ -239,6 +239,7 @@ export class Redactor {
   private aroundPairs: [string, string][] = [];
   private chainLeft: string[] = [];
   private holdLeft: string[] = [];
+  private rightStreamSuffixes: string[] = [];
   private outsideSecrets: string[] = [];
   private cachedSecrets: string[] = [];
   private cachedMaxLength = 1;
@@ -318,6 +319,9 @@ export class Redactor {
       (a, b) => b.length - a.length,
     );
     this.holdLeft = [...hold].sort((a, b) => b.length - a.length);
+    this.rightStreamSuffixes = [
+      ...new Set([...this.rightSuffixes, ...this.aroundPairs.map(([, after]) => after)]),
+    ].sort((a, b) => b.length - a.length);
     this.cachedSecrets = [...this.values].sort((a, b) => b.length - a.length);
 
     let maxLength = 1;
@@ -461,8 +465,10 @@ export class Redactor {
           }
         }
 
+        const prevEnd = spans.at(-1)?.[1] ?? 0;
+
         for (const prefix of this.leftPrefixes) {
-          if (start >= prefix.length && next.startsWith(prefix, start - prefix.length)) {
+          if (start - prefix.length >= prevEnd && next.startsWith(prefix, start - prefix.length)) {
             start -= prefix.length;
             absorbMarkers();
             grew = true;
@@ -752,6 +758,11 @@ export class Redactor {
     this.compile();
 
     return this.holdLeft;
+  }
+  get streamRightSuffixes(): readonly string[] {
+    this.compile();
+
+    return this.rightStreamSuffixes;
   }
   /** Map any thrown value to a scrubbed SandboxError. */
   error(cause: unknown, provider: string, sandboxId?: string): SandboxError {

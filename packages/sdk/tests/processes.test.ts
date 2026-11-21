@@ -1387,7 +1387,99 @@ test("no-awk detached fallback holds incomplete lines whole so secrets across 4 
 
     expect(b2bLogs.text).toBe("[REDACTED][REDACTED]");
     expect(b2bRaw).not.toContain("q".repeat(16));
+
+    // >64 KiB line without awk must stay cleanly paged across 64 KiB log pages without dropping newlines or merging lines.
+    const bigLine = "x".repeat(70_000);
+
+    const procBig = await box.start(
+      `printf '%s\\nsecond\\n' '${bigLine}'; printf 'err-two\\n' >&2; printf 'third\\n'`,
+      { name: "noawk-big-line" },
+    );
+
+    await procBig.wait();
+
+    // Verify 64 KiB paging reconstructs the exact 70,000-byte line, newline, and following lines without corruption.
+    let paged = "";
+    let nextCursor: string | undefined;
+
+    for (let pageCount = 0; pageCount < 8; pageCount++) {
+      const page = await procBig.logs(
+        nextCursor ? { after: nextCursor, maxBytes: 65_536 } : { maxBytes: 65_536 },
+      );
+
+      paged += page.text;
+      nextCursor = page.nextCursor;
+
+      if (!page.truncated) break;
+    }
+
+    expect(paged).toContain(`${bigLine}\nsecond\n`);
+    expect(paged).toContain("err-two\n");
+    expect(paged).toContain("third\n");
+
+    const bigLines: { stream: string; text: string }[] = [];
+
+    for await (const line of procBig.lines()) {
+      bigLines.push({ stream: line.stream, text: line.text });
+    }
+
+    expect(bigLines).toContainEqual({
+      stream: "stdout",
+      text: `[line truncated]${"x".repeat(65_509)}`,
+    });
+    expect(bigLines).toContainEqual({ stream: "stdout", text: "second" });
+    expect(bigLines).toContainEqual({ stream: "stderr", text: "err-two" });
+    expect(bigLines).toContainEqual({ stream: "stdout", text: "third" });
+
+    // >1 MiB line with a secret straddling the 1,052,672-byte drop point must suppress the entire
+    // oversized line to `[REDACTED]` (leaking zero bytes of the secret suffix) while preserving the next line.
+    const procOverflow = await box.start(
+      `dd if=/dev/zero bs=100 count=10524 2>/dev/null | tr '\\0' 'a'; printf '%s\\nafter-overflow\\n' "$LONG"`,
+      { name: "noawk-overflow-drop" },
+    );
+
+    await procOverflow.wait();
+    const overflowLogs = await procOverflow.logs();
+    const overflowRaw = await box.files.read("/tmp/.sandbox-sdk/procs/noawk-overflow-drop/out.log");
+
+    expect(overflowLogs.text).toBe("[REDACTED]\nafter-overflow\n");
+    expect(overflowRaw).not.toContain("BEGIN_QQQQ");
+    expect(overflowRaw).not.toContain("QQQQ_END");
+    expect(overflowRaw).not.toContain("Q".repeat(16));
   } finally {
     await fs.rm(binDir, { recursive: true, force: true });
   }
+}, 30_000);
+
+test("lines() resume cursor redacts pending secrets when reattaching with newly registered secrets", async () => {
+  const secret = "sk-live-0123456789abcdef";
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider);
+
+  const started = await box.start(
+    `printf 'tok=%s' '${secret}' >&2; printf 'ready\\n'; sleep 0.2; printf '\\n' >&2`,
+    { name: "cursor-redact" },
+  );
+
+  await started.wait();
+
+  const attached = await connectSandbox(provider, box.id, { secrets: { S: secret } });
+  const proc = await attached.process("cursor-redact");
+  const yielded: { stream: string; text: string; cursor: string }[] = [];
+
+  for await (const line of proc.lines()) {
+    yielded.push({ stream: line.stream, text: line.text, cursor: line.cursor });
+  }
+
+  expect(yielded.length).toBeGreaterThanOrEqual(2);
+
+  for (const item of yielded) {
+    expect(item.text).not.toContain(secret);
+    expect(item.cursor).not.toContain(secret);
+  }
+
+  expect(yielded.some((item) => item.stream === "stderr" && item.text === "tok=[REDACTED]")).toBe(
+    true,
+  );
 });

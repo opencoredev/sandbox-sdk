@@ -36,20 +36,33 @@ export function chunkRedactor(
   const streamLen: Record<OutputChunk["stream"], number> = { stdout: 0, stderr: 0 };
   const streamBytes: Record<OutputChunk["stream"], number> = { stdout: 0, stderr: 0 };
   let totalLen = 0;
-  const stallTail: Record<OutputChunk["stream"], string> = { stdout: "", stderr: "" };
-  let stallTailAll = "";
+  const endTail: Record<OutputChunk["stream"], string> = { stdout: "", stderr: "" };
+  let endTailAll = "";
+  const chainTail: Record<OutputChunk["stream"], string> = { stdout: "", stderr: "" };
+  let chainTailAll = "";
+
+  interface StallKmp {
+    readonly secrets: readonly string[];
+    readonly matched: Int32Array;
+    readonly stream: OutputChunk["stream"] | "*";
+  }
+
+  let stallKmp: StallKmp | undefined;
+  let stallDelta: string[] = [];
   const emittedTail: Record<OutputChunk["stream"], string> = { stdout: "", stderr: "" };
   let markerAdjSecret: boolean | undefined;
   let markerAdjSecretsLen = -1;
 
-  function tailKeep(): number {
+  function chainKeep(): number {
     let maxLeft = 0;
 
     for (const p of redactor.streamChainLeft) if (p.length > maxLeft) maxLeft = p.length;
 
     for (const p of redactor.streamHoldLeft) if (p.length > maxLeft) maxLeft = p.length;
 
-    return redactor.maxLength + marker.length * 2 + maxLeft + 2;
+    if (maxLeft === 0) return 0;
+
+    return Math.min(4096, maxLeft + marker.length * 2 + 2);
   }
 
   function materialize(chunk: QueuedChunk): string {
@@ -67,18 +80,27 @@ export function chunkRedactor(
     streamBytes.stdout = 0;
     streamBytes.stderr = 0;
     totalLen = 0;
-    stallTail.stdout = "";
-    stallTail.stderr = "";
-    stallTailAll = "";
-    const keep = tailKeep();
+    endTail.stdout = "";
+    endTail.stderr = "";
+    endTailAll = "";
+    chainTail.stdout = "";
+    chainTail.stderr = "";
+    chainTailAll = "";
+    const endCap = marker.length - 1;
+    const cKeep = chainKeep();
 
     for (const entry of queue) {
       const text = materialize(entry);
       streamLen[entry.stream] += text.length;
       streamBytes[entry.stream] += entry.bytes;
       totalLen += text.length;
-      stallTail[entry.stream] = (stallTail[entry.stream] + text).slice(-keep);
-      stallTailAll = (stallTailAll + text).slice(-keep);
+      endTail[entry.stream] = (endTail[entry.stream] + text).slice(-endCap);
+      endTailAll = (endTailAll + text).slice(-endCap);
+
+      if (cKeep > 0) {
+        chainTail[entry.stream] = (chainTail[entry.stream] + text).slice(-cKeep);
+        chainTailAll = (chainTailAll + text).slice(-cKeep);
+      }
     }
   }
 
@@ -212,6 +234,8 @@ export function chunkRedactor(
     cleanKey = "";
     cleanLen = 0;
     holdZeroAt.clear();
+    stallKmp = undefined;
+    stallDelta = [];
   }
 
   /** Prefix of raw text that does not end with a proper prefix of `[REDACTED]`. */
@@ -338,6 +362,44 @@ export function chunkRedactor(
         }
 
         if (chainCutoff < earliest) earliest = chainCutoff;
+      }
+    }
+
+    // If any redacted segment is followed by a raw tail that is a strict prefix of a
+    // right-of-marker suffix (for example `b` + `[REDACTED]ba` on `bb`), hold from that
+    // segment raw so later chunks can complete the marker-expanded secret identically to batch.
+    const rightSuffixes = redactor.streamRightSuffixes;
+
+    if (rightSuffixes.length > 0) {
+      const maxRight = rightSuffixes[0]?.length ?? 0;
+
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const seg = segments[i];
+
+        if (!seg) continue;
+
+        const tailLen = text.length - seg.end;
+
+        if (tailLen >= maxRight) break;
+
+        if (!seg.redacted || tailLen === 0) continue;
+
+        const tail = text.slice(seg.end);
+
+        if (rightSuffixes.some((suffix) => suffix.length > tailLen && suffix.startsWith(tail))) {
+          let rightCutoff = pullLeftForMarker(text, seg.start);
+
+          while (rightCutoff > 0) {
+            const split = segments.find(
+              (item) => item.redacted && item.start < rightCutoff && item.end > rightCutoff,
+            );
+
+            if (!split) break;
+            rightCutoff = pullLeftForMarker(text, split.start);
+          }
+
+          if (rightCutoff < earliest) earliest = rightCutoff;
+        }
       }
     }
 
@@ -636,6 +698,24 @@ export function chunkRedactor(
 
       remaining -= take;
     }
+  }
+
+  /** Compute the redacted output offset corresponding to a raw prefix cutoff `rawLimit`. */
+  function outputOffsetForRaw(segments: readonly RedactSegment[], rawLimit: number): number {
+    let out = 0;
+
+    for (const seg of segments) {
+      if (seg.start >= rawLimit) break;
+
+      if (seg.redacted) {
+        if (seg.end > rawLimit) break;
+        out += seg.text.length;
+      } else {
+        out += Math.min(seg.end, rawLimit) - seg.start;
+      }
+    }
+
+    return out;
   }
 
   /** Compute the raw prefix length in `head` that corresponds to `safe` emitted characters. */
@@ -959,23 +1039,94 @@ export function chunkRedactor(
         cleanKey === stallKey &&
         cleanLen > 0 &&
         selBytes <= 1_048_576 &&
-        queuedBytes <= 1_048_576
+        queuedBytes <= 1_048_576 &&
+        stallKmp !== undefined &&
+        stallKmp.stream === stallKey &&
+        stallKmp.secrets === redactor.secrets
       ) {
-        const tail = interleaved ? stallTailAll : stallTail[first.stream];
-        const tailRawSafe = rawPrefixLength(tail);
-        const fastRawSafe = rawLen - (tail.length - tailRawSafe);
-        const headTail = tailRawSafe === tail.length ? tail : tail.slice(0, tailRawSafe);
-        const baseOffset = fastRawSafe - headTail.length;
+        const tailEnd = interleaved ? endTailAll : endTail[first.stream];
 
-        if (fastRawSafe >= cleanLen && baseOffset <= cleanLen && !redactor.hasMatch(headTail)) {
-          const fastSafe = safePrefixLength(headTail, true, baseOffset);
+        if (rawPrefixLength(tailEnd) === tailEnd.length) {
+          const delta = stallDelta;
+          stallDelta = [];
 
-          if (fastSafe.safe === 0) {
-            cleanLen = fastRawSafe;
+          if (delta.length === 0) break;
 
-            if (fastSafe.pulledFrom >= 0) holdZeroAt.add(fastSafe.pulledFrom);
-            break;
+          const { secrets, matched } = stallKmp;
+          let hitFull = false;
+          let bestLen = 0;
+
+          for (let sIdx = 0; sIdx < secrets.length; sIdx++) {
+            const secret = secrets[sIdx];
+
+            if (!secret) continue;
+            const table = kmpTable(secret);
+            let m = matched[sIdx] ?? 0;
+
+            for (const piece of delta) {
+              for (let i = 0; i < piece.length; i++) {
+                const code = piece.charCodeAt(i);
+
+                while (m > 0 && secret.charCodeAt(m) !== code) {
+                  m = table[m - 1] ?? 0;
+                }
+
+                if (secret.charCodeAt(m) === code) {
+                  m++;
+
+                  if (m === secret.length) {
+                    hitFull = true;
+                    break;
+                  }
+                }
+              }
+
+              if (hitFull) break;
+            }
+
+            if (hitFull) break;
+            matched[sIdx] = m;
+
+            if (m > bestLen) bestLen = m;
           }
+
+          if (!hitFull) {
+            const hit = bestLen > 0 ? rawLen - bestLen : rawLen;
+
+            if (hit === 0) {
+              cleanLen = rawLen;
+              break;
+            }
+
+            if (bestLen > 0 && holdZeroAt.has(hit)) {
+              cleanLen = rawLen;
+              break;
+            }
+
+            if (
+              bestLen > 0 &&
+              (redactor.streamChainLeft.length > 0 || redactor.streamHoldLeft.length > 0)
+            ) {
+              const cTail = interleaved ? chainTailAll : chainTail[first.stream];
+              const cBase = rawLen - cTail.length;
+
+              if (hit >= cBase && hit < rawLen) {
+                const fastSafe = safePrefixLength(cTail, true, cBase);
+
+                if (fastSafe.safe === 0) {
+                  cleanLen = rawLen;
+
+                  if (fastSafe.pulledFrom >= 0) holdZeroAt.add(fastSafe.pulledFrom);
+                  break;
+                }
+              }
+            }
+          }
+
+          stallKmp = undefined;
+        } else {
+          stallKmp = undefined;
+          stallDelta = [];
         }
       }
 
@@ -1044,24 +1195,25 @@ export function chunkRedactor(
             segments: head ? [{ text: head, redacted: false, start: 0, end: head.length }] : [],
           };
 
-      let redacted = redactedResult.text;
+      const redacted = redactedResult.text;
 
-      if (!final && redacted !== head) {
-        const rawCutoff = rawHoldCutoff(head, redactedResult.segments);
-
-        if (rawCutoff < head.length) {
-          rawSafe = rawCutoff;
-          head = rawSafe === 0 ? "" : raw.slice(0, rawSafe);
-          redactedResult = head ? redactor.redactSegments(head) : { text: "", segments: [] };
-          redacted = redactedResult.text;
-        }
-      }
+      const rawCutoff =
+        !final && redacted !== head ? rawHoldCutoff(head, redactedResult.segments) : head.length;
 
       const safeCheck = final
         ? { safe: redacted.length, pulledFrom: -1 }
         : safePrefixLength(redacted, redacted === head && canReuseClean && head.length >= cleanLen);
 
-      const safe = safeCheck.safe;
+      let safe = safeCheck.safe;
+
+      if (!final && rawCutoff < head.length) {
+        const cap = snapBeforeMarker(
+          redacted,
+          outputOffsetForRaw(redactedResult.segments, rawCutoff),
+        );
+
+        if (cap < safe) safe = cap;
+      }
 
       if (redacted === head) {
         if (safe === 0) {
@@ -1084,6 +1236,39 @@ export function chunkRedactor(
             cleanLen = head.length;
 
             if (safeCheck.pulledFrom >= 0) holdZeroAt.add(safeCheck.pulledFrom);
+
+            if (rawSafe === raw.length && head.length > 0) {
+              const secrets = redactor.secrets;
+              const matched = new Int32Array(secrets.length);
+
+              for (let sIdx = 0; sIdx < secrets.length; sIdx++) {
+                const secret = secrets[sIdx];
+
+                if (!secret) continue;
+                const table = kmpTable(secret);
+                const start = Math.max(0, head.length - (secret.length - 1));
+                let m = 0;
+
+                for (let i = start; i < head.length; i++) {
+                  const code = head.charCodeAt(i);
+
+                  while (m > 0 && secret.charCodeAt(m) !== code) {
+                    m = table[m - 1] ?? 0;
+                  }
+
+                  if (secret.charCodeAt(m) === code) m++;
+                }
+
+                matched[sIdx] = m;
+              }
+
+              stallKmp = { secrets, matched, stream: stallKey };
+              stallDelta = [];
+            } else {
+              stallKmp = undefined;
+              stallDelta = [];
+            }
+
             break;
           }
 
@@ -1193,12 +1378,23 @@ export function chunkRedactor(
 
       if (!chunk.text) return;
       const bytes = Buffer.byteLength(chunk.text);
-      const keep = tailKeep();
+      const endCap = marker.length - 1;
+      const cKeep = chainKeep();
       streamLen[chunk.stream] += chunk.text.length;
       streamBytes[chunk.stream] += bytes;
       totalLen += chunk.text.length;
-      stallTail[chunk.stream] = (stallTail[chunk.stream] + chunk.text).slice(-keep);
-      stallTailAll = (stallTailAll + chunk.text).slice(-keep);
+      endTail[chunk.stream] = (endTail[chunk.stream] + chunk.text).slice(-endCap);
+      endTailAll = (endTailAll + chunk.text).slice(-endCap);
+
+      if (cKeep > 0) {
+        chainTail[chunk.stream] = (chainTail[chunk.stream] + chunk.text).slice(-cKeep);
+        chainTailAll = (chainTailAll + chunk.text).slice(-cKeep);
+      }
+
+      if (stallKmp && (stallKmp.stream === "*" || stallKmp.stream === chunk.stream)) {
+        stallDelta.push(chunk.text);
+      }
+
       const prev = queue.at(-1);
 
       if (prev && prev.stream === chunk.stream) {
