@@ -380,6 +380,54 @@ function streamReader(input: {
   holdBytes: number;
   secretsPath?: string;
 }): string {
+  // Fast single-sed path when every secret is <= 512 bytes (prefix/suffix rules are in redact.sed).
+  if (input.holdBytes <= 0) {
+    return [
+      `(nl=$(printf '\\nX')`,
+      `nl=\${nl%X}`,
+      `while :`,
+      `do chunk=$(dd bs=4096 count=1 2>/dev/null; printf .)`,
+      `chunk=\${chunk%.}`,
+      `[ -n "$chunk" ] || break`,
+      // Count the continuation bytes still owed by a multi-byte character at the chunk's end.
+      `need=0`,
+      `for byte in $(printf '%s' "$chunk" | tail -c 4 | od -An -tu1)`,
+      `do if [ "$byte" -ge 240 ]`,
+      `then need=3`,
+      `elif [ "$byte" -ge 224 ]`,
+      `then need=2`,
+      `elif [ "$byte" -ge 192 ]`,
+      `then need=1`,
+      `elif [ "$byte" -ge 128 ]`,
+      `then [ "$need" -le 0 ] || need=$((need-1))`,
+      `else need=0`,
+      `fi`,
+      `done`,
+      `if [ "$need" -gt 0 ]`,
+      `then rest=$(dd bs=1 count="$need" 2>/dev/null; printf .)`,
+      `rest=\${rest%.}`,
+      `chunk="$chunk$rest"`,
+      `fi`,
+      `chunk=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
+      `chunk=\${chunk%.}`,
+      `chunk=\${chunk%"$nl"}`,
+      `while [ -n "$chunk" ]`,
+      `do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}`,
+      `append ${input.marker} "$line"`,
+      `chunk=\${chunk#*"$nl"};`,
+      `*) append ${input.marker.toLowerCase()} "$chunk"`,
+      `chunk=;`,
+      `esac`,
+      `done`,
+      `done < ${quote(input.fifo)}) &`,
+    ].join("; ");
+  }
+
+  // Carry-window path when any secret line exceeds 512 bytes:
+  // 1) Scrub secrets wrapped across newlines in `head`, holding trailing wrapped-prefix lines (>= 8 bytes) across reads.
+  // 2) Keep any partial trailing line raw while checking suffix-prefix overlap before sed can rewrite a shorter inner secret.
+  const wrapAwk = `FILENAME!="-"{if(length($0)>512)s[++n]=$0;next}{L[++m]=$0}END{for(i=1;i<=n;i++){sec=s[i];sl=length(sec);c1=substr(sec,1,1);for(a=1;a<m;a++){la=L[a];al=length(la);if(al==0)continue;lim=al<sl-1?al:sl-1;scan=al-lim+1;while(scan<=al){off=index(substr(la,scan),c1);if(off==0)break;idx=scan+off-1;p=al-idx+1;if(substr(la,idx,p)==substr(sec,1,p)){pos=p+1;b=a+1;ok=0;while(b<=m){rem=sl-pos+1;lb=L[b];bl=length(lb);if(bl>=rem){if(substr(lb,1,rem)==substr(sec,pos,rem))ok=1;break}if(bl>0&&substr(sec,pos,bl)==lb){pos+=bl;b++}else break}if(ok){L[a]=substr(la,1,al-p) "[REDACTED]";for(k=a+1;k<b;k++)L[k]="[REDACTED]";L[b]="[REDACTED]" substr(L[b],rem+1);break}}scan=idx+1}}}hc=0;if(!eof&&n>0&&m>0){acc="";for(k=m;k>=1;k--){acc=L[k] acc;al=length(acc);if(al>mh)break;if(al>=8){for(i=1;i<=n;i++){sec=s[i];sl=length(sec);c1=substr(sec,1,1);lim=al<sl-1?al:sl-1;scan=al-lim+1;while(scan<=al){off=index(substr(acc,scan),c1);if(off==0)break;idx=scan+off-1;p=al-idx+1;if(p>=8&&substr(acc,idx,p)==substr(sec,1,p)){hc=m-k+1;break}scan=idx+1}if(hc>0)break}}if(hc>0)break}}print hc;for(j=1;j<=m;j++)print L[j]}`;
+
   const computeHold = input.secretsPath
     ? [
         `if command -v awk >/dev/null 2>&1`,
@@ -390,50 +438,106 @@ function streamReader(input: {
       ]
     : [`clen=${input.holdBytes}`];
 
-  const partialTailLines =
-    input.holdBytes > 0
-      ? [
-          `if [ -n "$chunk" ]`,
-          `then tlen=$(printf '%s' "$chunk" | wc -c)`,
-          ...computeHold,
-          `if [ "$clen" -le 0 ]`,
-          `then emit=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
-          `emit=\${emit%.}`,
-          `emit=\${emit%"$nl"}`,
-          `[ -z "$emit" ] || append ${input.marker.toLowerCase()} "$emit"`,
-          `elif [ "$tlen" -gt "$clen" ]`,
-          `then elen=$((tlen-clen))`,
-          `while [ "$elen" -gt 0 ]`,
-          `do b=$(printf '%s' "$chunk" | tail -c "$clen" | head -c 1 | od -An -tu1)`,
-          `b=\${b##* }`,
-          `if [ -n "$b" ] && [ "$b" -ge 128 ] && [ "$b" -lt 192 ]`,
-          `then elen=$((elen-1))`,
-          `clen=$((clen+1))`,
-          `else break`,
-          `fi`,
-          `done`,
-          `if [ "$elen" -gt 0 ]`,
-          `then emit=$(printf '%s' "$chunk" | head -c "$elen"; printf .)`,
-          `emit=\${emit%.}`,
-          `emit=$(printf '%s\\n' "$emit" | sed -f ${quote(input.sedPath)}; printf .)`,
-          `emit=\${emit%.}`,
-          `emit=\${emit%"$nl"}`,
-          `[ -z "$emit" ] || append ${input.marker.toLowerCase()} "$emit"`,
-          `fi`,
-          `carry=$(printf '%s' "$chunk" | tail -c "$clen"; printf .)`,
-          `carry=\${carry%.}`,
-          `else carry=$chunk`,
-          `fi`,
-          `fi`,
-        ]
-      : [
-          `if [ -n "$chunk" ]`,
-          `then emit=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
-          `emit=\${emit%.}`,
-          `emit=\${emit%"$nl"}`,
-          `[ -z "$emit" ] || append ${input.marker.toLowerCase()} "$emit"`,
-          `fi`,
-        ];
+  const scrubWrappedHead = input.secretsPath
+    ? [
+        `hcnt=0`,
+        `if command -v awk >/dev/null 2>&1`,
+        `then wrapped=$(printf '%s\\n' "$head" | LC_ALL=C awk -v mh=${input.holdBytes} -v eof=0 '${wrapAwk}' ${quote(input.secretsPath)} - 2>/dev/null; printf .)`,
+        `wrapped=\${wrapped%.}`,
+        `if [ -n "$wrapped" ]`,
+        `then hcnt=\${wrapped%%"$nl"*}`,
+        `head=\${wrapped#*"$nl"}`,
+        `head=\${head%"$nl"}`,
+        `fi`,
+        `fi`,
+        `if [ "$hcnt" -gt 0 ]`,
+        `then total_l=$(printf '%s\\n' "$head" | wc -l)`,
+        `keep_l=$((total_l-hcnt))`,
+        `if [ "$keep_l" -gt 0 ]`,
+        `then emit_h=$(printf '%s\\n' "$head" | head -n "$keep_l"; printf .)`,
+        `emit_h=\${emit_h%.}`,
+        `emit_h=\${emit_h%"$nl"}`,
+        `held_h=$(printf '%s\\n' "$head" | tail -n "$hcnt"; printf .)`,
+        `held_h=\${held_h%.}`,
+        `held_h=\${held_h%"$nl"}`,
+        `head=$emit_h`,
+        `else held_h=$head`,
+        `head=`,
+        `fi`,
+        `else held_h=`,
+        `fi`,
+      ]
+    : [`held_h=`];
+
+  const eofFlush = input.secretsPath
+    ? [
+        `if [ -n "$carry" ]`,
+        `then if command -v awk >/dev/null 2>&1`,
+        `then wrapped=$(printf '%s\\n' "$carry" | LC_ALL=C awk -v mh=${input.holdBytes} -v eof=1 '${wrapAwk}' ${quote(input.secretsPath)} - 2>/dev/null; printf .)`,
+        `wrapped=\${wrapped%.}`,
+        `if [ -n "$wrapped" ]`,
+        `then carry=\${wrapped#*"$nl"}`,
+        `carry=\${carry%"$nl"}`,
+        `fi`,
+        `fi`,
+        `chunk=$(printf '%s\\n' "$carry" | sed -f ${quote(input.sedPath)}; printf .)`,
+        `chunk=\${chunk%.}`,
+        `chunk=\${chunk%"$nl"}`,
+        `while [ -n "$chunk" ]`,
+        `do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}`,
+        `append ${input.marker} "$line"`,
+        `chunk=\${chunk#*"$nl"};`,
+        `*) append ${input.marker.toLowerCase()} "$chunk"`,
+        `chunk=;`,
+        `esac`,
+        `done`,
+        `fi`,
+      ]
+    : [
+        `if [ -n "$carry" ]`,
+        `then chunk=$(printf '%s\\n' "$carry" | sed -f ${quote(input.sedPath)}; printf .)`,
+        `chunk=\${chunk%.}`,
+        `chunk=\${chunk%"$nl"}`,
+        `[ -z "$chunk" ] || append ${input.marker.toLowerCase()} "$chunk"`,
+        `fi`,
+      ];
+
+  const partialTailLines = [
+    `if [ -n "$held_h" ]`,
+    `then carry="$held_h$nl$chunk"`,
+    `elif [ -n "$chunk" ]`,
+    `then tlen=$(printf '%s' "$chunk" | wc -c)`,
+    ...computeHold,
+    `if [ "$clen" -le 0 ]`,
+    `then emit=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
+    `emit=\${emit%.}`,
+    `emit=\${emit%"$nl"}`,
+    `[ -z "$emit" ] || append ${input.marker.toLowerCase()} "$emit"`,
+    `elif [ "$tlen" -gt "$clen" ]`,
+    `then elen=$((tlen-clen))`,
+    `while [ "$elen" -gt 0 ]`,
+    `do b=$(printf '%s' "$chunk" | tail -c "$clen" | head -c 1 | od -An -tu1)`,
+    `b=\${b##* }`,
+    `if [ -n "$b" ] && [ "$b" -ge 128 ] && [ "$b" -lt 192 ]`,
+    `then elen=$((elen-1))`,
+    `clen=$((clen+1))`,
+    `else break`,
+    `fi`,
+    `done`,
+    `if [ "$elen" -gt 0 ]`,
+    `then emit=$(printf '%s' "$chunk" | head -c "$elen"; printf .)`,
+    `emit=\${emit%.}`,
+    `emit=$(printf '%s\\n' "$emit" | sed -f ${quote(input.sedPath)}; printf .)`,
+    `emit=\${emit%.}`,
+    `emit=\${emit%"$nl"}`,
+    `[ -z "$emit" ] || append ${input.marker.toLowerCase()} "$emit"`,
+    `fi`,
+    `carry=$(printf '%s' "$chunk" | tail -c "$clen"; printf .)`,
+    `carry=\${carry%.}`,
+    `else carry=$chunk`,
+    `fi`,
+    `fi`,
+  ];
 
   return [
     `(nl=$(printf '\\nX')`,
@@ -443,12 +547,7 @@ function streamReader(input: {
     `do raw=$(dd bs=4096 count=1 2>/dev/null; printf .)`,
     `raw=\${raw%.}`,
     `if [ -z "$raw" ]`,
-    `then if [ -n "$carry" ]`,
-    `then chunk=$(printf '%s\\n' "$carry" | sed -f ${quote(input.sedPath)}; printf .)`,
-    `chunk=\${chunk%.}`,
-    `chunk=\${chunk%"$nl"}`,
-    `[ -z "$chunk" ] || append ${input.marker.toLowerCase()} "$chunk"`,
-    `fi`,
+    `then ${eofFlush.join("; ")}`,
     `break`,
     `fi`,
     // Count the continuation bytes still owed by a multi-byte character at the chunk's end.
@@ -472,11 +571,14 @@ function streamReader(input: {
     `fi`,
     `chunk="$carry$raw"`,
     `carry=`,
-    // Redact complete lines in one sed pass; keep any partial trailing line raw so
-    // suffix-prefix carry matching runs before sed can rewrite an overlapping shorter secret.
+    `held_h=`,
+    // Redact complete lines in one pass (with wrapped-secret detection); keep any partial
+    // trailing line raw so suffix-prefix carry matching runs before sed can rewrite a shorter secret.
     `case "$chunk" in *"$nl"*) tail=\${chunk##*"$nl"}`,
     `head=\${chunk%"$nl$tail"}`,
-    `head=$(printf '%s\\n' "$head" | sed -f ${quote(input.sedPath)}; printf .)`,
+    ...scrubWrappedHead,
+    `if [ -n "$head" ]`,
+    `then head=$(printf '%s\\n' "$head" | sed -f ${quote(input.sedPath)}; printf .)`,
     `head=\${head%.}`,
     `head=\${head%"$nl"}`,
     `while :`,
@@ -486,6 +588,7 @@ function streamReader(input: {
     `*) append ${input.marker} "$head"; break;`,
     `esac`,
     `done`,
+    `fi`,
     `chunk=$tail;`,
     `esac`,
     ...partialTailLines,

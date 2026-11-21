@@ -952,6 +952,57 @@ test("streaming redactor holds longer secret raw when an inner shorter secret ap
   expect(markerNested.stdout).toBe("[REDACTED]\n");
 });
 
+test("streaming redaction matches single-chunk output across overlapping marker-around secrets", async () => {
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: { A: "[REDACTED]bab", B: "Y[REDACTED]Y" },
+  });
+
+  const one = await box.run(`printf 'Y[REDACTED]Y[REDACTED]babY'`);
+  const two = await box.run(`printf 'Y[REDACTED]Y'; sleep 0.05; printf '[REDACTED]babY'`);
+
+  expect(one.stdout).toBe("[REDACTED]");
+  expect(two.stdout).toBe("[REDACTED]");
+  expect(two.output).toBe("[REDACTED]");
+});
+
+test("detached process redacts >512-byte secrets wrapped across newlines", async () => {
+  const longSecret = `W${"K".repeat(1198)}Z`;
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: { LONG: longSecret },
+  });
+
+  // Single write split 600 + "\n" + 600.
+  await box.files.write(
+    "/workspace/wrap1.txt",
+    `${longSecret.slice(0, 600)}\n${longSecret.slice(600)}\n`,
+  );
+
+  const p1 = await box.start("cat /workspace/wrap1.txt", { name: "wrap-one-write" });
+  await p1.wait();
+  const l1 = await p1.logs();
+
+  expect(l1.text).toBe("[REDACTED]\n[REDACTED]\n");
+  expect(l1.text).not.toContain("KKKKKK");
+
+  // Two separate writes split across a newline.
+  await box.files.write("/workspace/wrap2a.txt", `${longSecret.slice(0, 600)}\n`);
+  await box.files.write("/workspace/wrap2b.txt", `${longSecret.slice(600)}\n`);
+
+  const p2 = await box.start("cat /workspace/wrap2a.txt; sleep 0.1; cat /workspace/wrap2b.txt", {
+    name: "wrap-two-writes",
+  });
+
+  await p2.wait();
+  const l2 = await p2.logs();
+
+  expect(l2.text).toBe("[REDACTED]\n[REDACTED]\n");
+  expect(l2.text).not.toContain("KKKKKK");
+});
+
 test("detached process bounds repeated left-marker carry and paginates logs cleanly", async () => {
   const longSecret = `W${"k".repeat(1100)}V`;
   const provider = await shellProvider();
