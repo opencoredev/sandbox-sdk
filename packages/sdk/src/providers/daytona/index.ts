@@ -47,7 +47,7 @@ export interface DaytonaOptions {
   organizationId?: string;
   /** Defaults to DAYTONA_API_URL, then DAYTONA_SERVER_URL, then https://app.daytona.io/api. */
   baseUrl?: string;
-  /** @deprecated Use baseUrl. Removed in 1.0.0. */
+  /** @deprecated Use baseUrl. Deprecated; will be removed in 2.0.0. */
   apiUrl?: string;
   /** Defaults to DAYTONA_TARGET, then us. */
   target?: string;
