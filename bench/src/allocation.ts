@@ -47,6 +47,12 @@ const presets: SizePresets = {
     medium: { cpu: 4, memoryGiB: 8 },
     large: { cpu: 8, memoryGiB: 16 },
   },
+  // The Groundbox adapter's presets: Groundbox's default 2 GiB per vCPU.
+  groundbox: {
+    small: { cpu: 2, memoryGiB: 4 },
+    medium: { cpu: 4, memoryGiB: 8 },
+    large: { cpu: 8, memoryGiB: 16 },
+  },
   // The Baseten adapter's presets: memory sets CPU at 2 GiB per vCPU.
   baseten: {
     small: { cpu: 1, memoryGiB: 2 },

@@ -179,6 +179,16 @@ const sources = new Map<string, BillingSource>(
         "Metered, not invoice: Instabox's own per-machine usage (running time only, not starting, paused or stopped) at the published rates, $0.004/vCPU-hour and $0.00225/GiB-hour (https://instabox.sh/docs/account/pricing.md). Disk is included in paid plans (Builder: 1 TiB across machines) and egress within the plan's allowance, so neither is priced. Plan fee, monthly credits and tax are excluded.",
       ],
     },
+    groundbox: {
+      source: "https://api.groundbox.dev/v1/sandboxes/{id}/usage",
+      granularity: "per-sandbox compute and paused-storage cost so far, in micro-dollars",
+      delay:
+        "live; final once the sandbox is deleted (still readable by ID afterwards, as stopped)",
+      key: "GROUNDBOX_API_KEY",
+      notes: [
+        "Metered, not invoice: Groundbox's own per-sandbox meter (cost_micros), compute at $0.04/vCPU-hour by the second plus paused storage at $0.05/GB-month (https://groundbox.dev/pricing). Memory up to 4 GiB per vCPU is included. Plan fee, included usage and tax are excluded.",
+      ],
+    },
     beam: {
       source: "No verified public billing endpoint",
       granularity: "not available",
@@ -307,6 +317,34 @@ export function instaboxUsageQuery(row: Pick<OwnedSandbox, "startedAt">, now = D
   if (Number.isFinite(started)) query.set("from", new Date(started - 24 * 3_600_000).toISOString());
 
   return query;
+}
+
+const groundboxUsageSchema = z.object({
+  running_seconds: money,
+  compute_cost_micros: money,
+  storage_cost_micros: money,
+  cost_micros: money,
+});
+
+/**
+ * One sandbox's cost from `GET /v1/sandboxes/{id}/usage`: Groundbox's own meter. It is final only
+ * once the sandbox has ended (`stopped` or `failed` on `GET /v1/sandboxes/{id}`); before that it
+ * is the cost so far.
+ */
+export function decodeGroundbox(raw: Json, state: { ended: boolean }): Cost {
+  const usage = groundboxUsageSchema.parse(raw);
+  const usd = (micros: number) => (micros / 1_000_000).toFixed(6);
+
+  return {
+    kind: "metered",
+    usd: usage.cost_micros / 1_000_000,
+    scope: state.ended ? "sandbox-lifetime" : "window",
+    complete: state.ended,
+    confidence: state.ended ? "medium" : "low",
+    note: state.ended
+      ? `Metered, not invoice: Groundbox's per-sandbox meter (${usage.running_seconds} running seconds; compute ${usd(usage.compute_cost_micros)} USD, paused storage ${usd(usage.storage_cost_micros)} USD)`
+      : "Partial: Groundbox's meter so far, because the sandbox still existed",
+  };
 }
 
 export function decodeUpstash(raw: Json, id: string): Cost {
@@ -913,6 +951,7 @@ export async function collectProvider(
     "modal",
     "vercel",
     "instabox",
+    "groundbox",
   ].includes(provider);
 
   let blocked = offline
@@ -1175,6 +1214,20 @@ export async function collectProvider(
         );
 
         cost = decodeInstabox(usage, { deleted, started: row.startedAt !== null });
+      } else if (provider === "groundbox") {
+        const headers = { Authorization: `Bearer ${key ?? ""}` };
+        const base = env.GROUNDBOX_API_URL ?? "https://api.groundbox.dev/v1";
+
+        // The state first: a sandbox that had ended when its usage is read has a final meter.
+        const sandbox = z
+          .object({ status: z.string() })
+          .parse(await transport(`${base}/sandboxes/${id}`, headers));
+
+        const usage = await transport(`${base}/sandboxes/${id}/usage`, headers);
+
+        cost = decodeGroundbox(usage, {
+          ended: sandbox.status === "stopped" || sandbox.status === "failed",
+        });
       } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
       else cost = unavailable("No supported per-sandbox billing source");
       result.sandboxes.push({ id: row.id, source: spec.source, cost });

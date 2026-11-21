@@ -46,6 +46,10 @@ async function withModal<T>(
   }
 }
 
+function groundboxBase() {
+  return process.env.GROUNDBOX_API_URL ?? "https://api.groundbox.dev/v1";
+}
+
 function instaboxBase() {
   return process.env.INSTABOX_API_URL ?? "https://api.instabox.sh";
 }
@@ -63,6 +67,22 @@ export async function snapshotCleaner(
   provider: Provider,
   sandboxId: string,
 ): Promise<(id: string) => Promise<void>> {
+  if (name === "groundbox") {
+    // A fresh request: cleanup can run after the source sandbox is gone. Deleting one already
+    // deleted answers 200 again.
+    return async (id) => {
+      const response = await fetch(`${groundboxBase()}/snapshots/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${process.env.GROUNDBOX_API_KEY ?? ""}` },
+      });
+
+      if (!response.ok && response.status !== 404)
+        throw Object.assign(new Error("Groundbox snapshot delete failed"), {
+          status: response.status,
+        });
+    };
+  }
+
   if (name === "instabox") {
     // A fresh request: cleanup can run after the source machine is gone.
     return async (id) => {
@@ -232,6 +252,8 @@ const snapshotInfo = z.object({
   sourceVmId: z.string().nullish(),
   box_id: z.string().nullish(),
   sourceMachineId: z.string().nullish(),
+  source_sandbox_id: z.string().nullish(),
+  status: z.string().nullish(),
 });
 
 type SnapshotInfo = z.infer<typeof snapshotInfo>;
@@ -301,6 +323,22 @@ export async function inspectSnapshot(
             status: response.status,
           });
         info = snapshotInfo.parse(await response.json());
+        break;
+      }
+
+      case "groundbox": {
+        const response = await fetch(`${groundboxBase()}/snapshots/${encodeURIComponent(id)}`, {
+          headers: { Authorization: `Bearer ${process.env.GROUNDBOX_API_KEY ?? ""}` },
+        });
+
+        if (!response.ok)
+          throw Object.assign(new Error("Snapshot metadata unavailable"), {
+            status: response.status,
+          });
+        info = snapshotInfo.parse(await response.json());
+
+        // A deleted snapshot keeps answering, with status `deleted`.
+        if (info.status === "deleted") return { exists: false };
         break;
       }
 
@@ -379,11 +417,14 @@ export async function inspectSnapshot(
       info.sessionId ??
       info.sourceVmId ??
       info.box_id ??
-      info.sourceMachineId;
+      info.sourceMachineId ??
+      info.source_sandbox_id;
 
     // These APIs expose provenance: unreadable or cleared source fields cannot authorize deletion.
     if (
-      ["daytona", "superserve", "tenki", "freestyle", "upstash", "instabox"].includes(name) &&
+      ["daytona", "superserve", "tenki", "freestyle", "upstash", "instabox", "groundbox"].includes(
+        name,
+      ) &&
       !parent
     )
       throw new Error("Snapshot source metadata unavailable");

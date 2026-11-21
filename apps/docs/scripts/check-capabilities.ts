@@ -39,6 +39,7 @@ import { createBoxdProvider } from "../../../packages/sdk/src/providers/boxd/pro
 import { daytona } from "../../../packages/sdk/src/providers/daytona/index.ts";
 import { e2b } from "../../../packages/sdk/src/providers/e2b/index.ts";
 import { freestyle } from "../../../packages/sdk/src/providers/freestyle/index.ts";
+import { groundbox } from "../../../packages/sdk/src/providers/groundbox/index.ts";
 import { instabox } from "../../../packages/sdk/src/providers/instabox/index.ts";
 import { local } from "../../../packages/sdk/src/providers/local/index.ts";
 import { createModalProvider } from "../../../packages/sdk/src/providers/modal/provider.ts";
@@ -65,7 +66,7 @@ async function stubTransport(): Promise<never> {
 
 const realFetch = globalThis.fetch;
 
-/** E2B, Daytona, Freestyle, Instabox, Superserve, Boat and Sandboxer reach their API through the global
+/** E2B, Daytona, Freestyle, Instabox, Groundbox, Superserve, Boat and Sandboxer reach their API through the global
  * fetch, so it stands in for them. */
 const stubFetch: typeof fetch = async () => {
   transportCalls += 1;
@@ -144,6 +145,10 @@ const subjects: readonly Subject[] = [
   {
     column: "Instabox",
     build: () => instabox({ apiKey: offlineKey, baseUrl: "https://offline.invalid" }),
+  },
+  {
+    column: "Groundbox",
+    build: () => groundbox({ apiKey: offlineKey, baseUrl: "https://offline.invalid/v1" }),
   },
   { column: "Memory", build: () => memory() },
 ];
@@ -330,6 +335,11 @@ const rows: readonly Row[] = [
         rejects({ labels: { app: noise(1100) } }),
       ],
       "120 chars": [accepts({ labels: labels(1) }), rejects({ labels: { app: noise(400) } })],
+      "512 chars": [
+        accepts({ labels: labels(5) }),
+        accepts({ labels: { app: noise(500) } }),
+        rejects({ labels: { app: noise(600) } }),
+      ],
       "About 2.9 KB": [
         accepts({ labels: { app: noise(2000) } }),
         rejects({ labels: { app: noise(4000) } }),

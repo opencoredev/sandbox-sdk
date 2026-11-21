@@ -12,6 +12,7 @@ export const externalPackages: readonly string[] = [
   "@boatdev/sdk",
   "@boxd-sh/sdk",
   "@daytonaio/sdk",
+  "@groundbox/sdk",
   "@daytona/api-client",
   "@daytona/toolbox-api-client",
   "@rivet-dev/agentos-core",

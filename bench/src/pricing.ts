@@ -56,6 +56,18 @@ export interface PriceTable {
 }
 
 export const pricing: PriceTable = {
+  groundbox: {
+    ...base,
+    cpuSecond: 0.04 / 3600,
+    // Memory up to 4 GiB per vCPU is included in the vCPU price.
+    memoryGiBSecond: 0,
+    // A running sandbox's disk is not part of its price; a paused or shut-down one pays $0.05/GB-month.
+    diskGiBSecond: 0,
+    retrieved: "2026-11-20",
+    source: "https://groundbox.dev/pricing",
+    notes:
+      "Published rate: $0.04 per vCPU-hour on dedicated cores, billed by the second, with memory up to 4 GiB per vCPU included and no charge for a running sandbox's disk. Paused or shut-down sandboxes and kept snapshots pay storage at $0.05/GB-month, not priced here. Plan fee ($20 a month with $20 of usage included) and the free plan's $5 credit excluded. Default size 2 vCPU / 4 GiB.",
+  },
   instabox: {
     ...base,
     cpuSecond: 0.004 / 3600,
@@ -306,6 +318,7 @@ export const defaultCompute: ComputeTable = {
   vercel: { cpu: 2, memoryGiB: 4 },
   baseten: { cpu: 2, memoryGiB: 4 },
   instabox: { cpu: 4, memoryGiB: 8 },
+  groundbox: { cpu: 2, memoryGiB: 4 },
   // Beam's TypeScript SDK default: 1 CPU, 128 MiB.
   beam: { cpu: 1, memoryGiB: 0.125 },
 };
