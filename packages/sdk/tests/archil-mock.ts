@@ -1,5 +1,6 @@
 /** A fake `disk` module: sandboxes are MockGuest directories, processes are real local shells. */
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import type { CreateSandboxRequest } from "disk";
 import type { ArchilModule } from "../src/providers/archil/provider.js";
 import type {
@@ -22,12 +23,24 @@ class FakeApiError extends Error {
   }
 }
 
-export const archilState = {
+interface ArchilState {
+  sandboxes: Map<string, FakeSandbox>;
+  creates: CreateSandboxRequest[];
+  runs: string[];
+  /** Fail the next create without an HTTP answer, after making the sandbox. */
+  dropNextCreateAnswer: boolean;
+  /** Drop the first output message that starts at or past this stream offset, once. */
+  dropOutputAbove: number | undefined;
+}
+
+export const archilState: ArchilState = {
   sandboxes: new Map<string, FakeSandbox>(),
   creates: new Array<CreateSandboxRequest>(),
   runs: new Array<string>(),
   /** Fail the next create without an HTTP answer, after making the sandbox. */
   dropNextCreateAnswer: false,
+  /** Drop the first output message that starts at or past this stream offset, once. */
+  dropOutputAbove: undefined,
 };
 
 class FakeProcess implements ArchilProcess {
@@ -50,12 +63,25 @@ class FakeProcess implements ArchilProcess {
     const strip = (data: Buffer) =>
       new Uint8Array(Buffer.from(data.toString("latin1").split(guest.root).join(""), "latin1"));
 
-    this.#child.stdout?.on("data", (data: Buffer) =>
-      options.onOutput?.({ stream: "stdout", data: strip(data) }),
-    );
-    this.#child.stderr?.on("data", (data: Buffer) =>
-      options.onOutput?.({ stream: "stderr", data: strip(data) }),
-    );
+    // Archil counts one offset across both streams.
+    let written = 0;
+
+    const deliver = (stream: "stdout" | "stderr", data: Uint8Array) => {
+      const offset = written;
+      written += data.length;
+
+      // Like Archil's stream under load: a message past the drop threshold skips its bytes.
+      if (archilState.dropOutputAbove !== undefined && offset >= archilState.dropOutputAbove) {
+        archilState.dropOutputAbove = undefined;
+
+        return;
+      }
+
+      options.onOutput?.({ stream, offset, data });
+    };
+
+    this.#child.stdout?.on("data", (data: Buffer) => deliver("stdout", strip(data)));
+    this.#child.stderr?.on("data", (data: Buffer) => deliver("stderr", strip(data)));
 
     const timer =
       options.timeoutSeconds === undefined
@@ -102,6 +128,14 @@ class FakeProcess implements ArchilProcess {
 class FakeSandbox {
   status: Status = "running";
   readonly createdAt = new Date();
+  readonly files = {
+    downloadFile: async (path: string, write: (chunk: Uint8Array) => void) => {
+      const bytes = await readFile(this.guest.rewrite(path));
+
+      for (let offset = 0; offset < bytes.length; offset += 512 * 1024)
+        write(new Uint8Array(bytes.subarray(offset, offset + 512 * 1024)));
+    },
+  };
   constructor(
     readonly id: string,
     readonly name: string,

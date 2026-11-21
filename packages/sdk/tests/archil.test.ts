@@ -134,6 +134,42 @@ describe("Archil exec", () => {
   });
 });
 
+describe("Archil output gaps", () => {
+  test("a command whose output Archil skipped says so where the bytes went missing", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      archilState.dropOutputAbove = 64 * 1024;
+      const result = await box.run("head -c 1000000 /dev/zero | tr '\\0' y");
+      expect(result.stdout).toContain("Archil's output stream skipped");
+    } finally {
+      archilState.dropOutputAbove = undefined;
+      await box.destroy();
+    }
+  });
+
+  test("a range read that lost bytes falls back to the paced download", async () => {
+    const p = provider();
+    const box = await createSandbox(p);
+
+    try {
+      const bytes = new Uint8Array(2_000_000).map((_, i) => i % 251);
+      await box.files.write("big.bin", bytes);
+      archilState.dropOutputAbove = 64 * 1024;
+
+      const range = await p.files.readRange?.(box.id, "/workspace/big.bin", {
+        offset: 10,
+        length: 1_500_000,
+      });
+
+      expect(range).toEqual(bytes.subarray(10, 1_500_010));
+    } finally {
+      archilState.dropOutputAbove = undefined;
+      await box.destroy();
+    }
+  });
+});
+
 describe("Archil errors", () => {
   const apiError = (status: number, code: string, message = "secret /workspace/path") =>
     Object.assign(new Error(message), { name: "ArchilApiError", status, code });

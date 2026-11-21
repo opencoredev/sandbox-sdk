@@ -23,7 +23,34 @@ export interface ArchilRunOptions {
   timeoutSeconds?: number;
   terminal?: { cols: number; rows: number };
   collectOutput?: boolean;
-  onOutput?: (output: { stream: "stdout" | "stderr"; data: Uint8Array }) => void;
+  onOutput?: (output: ArchilOutput) => void;
+}
+
+/** One output message. `offset` counts every output byte before `data`, stdout and stderr together. */
+export interface ArchilOutput {
+  stream: "stdout" | "stderr";
+  offset: number;
+  data: Uint8Array;
+}
+
+/**
+ * Archil's output stream can skip bytes when a command writes faster than they are delivered
+ * (measured 2026-11-21: a 10 MiB `cat` arrived 1.3 MiB short, with one jump in `offset`). This
+ * follows the offset, which Archil counts across both streams, and reports how many bytes a
+ * message skipped, so a loss is never silent.
+ */
+export class OutputGaps {
+  #next = 0;
+  lost = 0;
+
+  /** Bytes skipped before this message, 0 when it follows on. */
+  take({ offset, data }: ArchilOutput): number {
+    const skipped = Math.max(0, offset - this.#next);
+    this.#next = Math.max(this.#next, offset + data.length);
+    this.lost += skipped;
+
+    return skipped;
+  }
 }
 
 /** The part of a `disk` `Sandbox` that starts processes. Each `run` opens one process connection. */
@@ -43,9 +70,18 @@ const killConfirmMs = 10_000;
 // The client's timer fires first, so a command never runs past its deadline by more than this.
 const nativeGraceSeconds = 5;
 
+/**
+ * Archil kills a process's group when its main process exits (measured 2026-11-21): a background
+ * `nohup setsid ...` started just before the exit dies if `setsid()` has not run yet. So the
+ * command runs in a subshell, and before exiting the shell waits, up to about a second, while any
+ * process in its group is still `nohup` or `setsid` on its way to a session of its own. Ordinary
+ * background jobs are never waited for; Archil ends them with the command, as before.
+ */
+const settle = `read -r l < /proc/$$/stat; set -- \${l##*) }; g=$3; i=0; while [ "$i" -lt 100 ]; do w=; for f in /proc/[0-9]*/stat; do { read -r l < "$f"; } 2>/dev/null || continue; case "$l" in *"(nohup) "*|*"(setsid) "*) set -- \${l##*) }; [ "$3" = "$g" ] && w=1;; esac; done; [ -z "$w" ] && break; sleep 0.01; i=$((i+1)); done`;
+
 /** Runs `command` in `cwd` the way a fresh POSIX shell would: a missing directory is exit 1. */
 export function inDirectory(cwd: string, command: string): string {
-  return `cd -- ${quote(cwd)} || exit 1\n${command}`;
+  return `cd -- ${quote(cwd)} || exit 1\n(\n${command}\n)\nc=$?\n${settle}\nexit "$c"`;
 }
 
 function bounded<T>(promise: Promise<T>, ms: number): Promise<T | "late"> {
@@ -112,6 +148,7 @@ export async function execute({
 }): Promise<ExecResult> {
   if (input.signal?.aborted) return stopped;
   const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+  const gaps = new OutputGaps();
 
   const emit = (stream: "stdout" | "stderr", text: string) => {
     if (text) input.onChunk({ stream, text });
@@ -135,7 +172,17 @@ export async function execute({
       env: input.env,
       timeoutSeconds: Math.ceil(input.timeoutMs / 1000) + nativeGraceSeconds,
       collectOutput: false,
-      onOutput: ({ stream, data }) => emit(stream, decoders[stream].decode(data, { stream: true })),
+      onOutput: (output) => {
+        const { stream, data } = output;
+        const skipped = gaps.take(output);
+
+        if (skipped > 0)
+          emit(
+            stream,
+            `${decoders[stream].decode()}\n[sandbox-sdk: Archil's output stream skipped ${skipped} bytes here]\n`,
+          );
+        emit(stream, decoders[stream].decode(data, { stream: true }));
+      },
     });
 
     try {
@@ -194,6 +241,8 @@ export interface CollectedRun {
   exitCode: number | undefined;
   stdout: Uint8Array;
   stderr: string;
+  /** Output bytes Archil's stream skipped. Nonzero means stdout is incomplete. */
+  lost: number;
 }
 
 /** Runs a short helper command to completion and collects its raw output. For guest file operations. */
@@ -207,12 +256,16 @@ export async function collect(
   const stdout: Uint8Array[] = [];
   const stderr = new TextDecoder();
   let errorText = "";
+  const gaps = new OutputGaps();
 
   const process = await start(runner, sandboxId, command, {
     env: options.env,
     timeoutSeconds: Math.ceil(timeoutMs / 1000) + nativeGraceSeconds,
     collectOutput: false,
-    onOutput: ({ stream, data }) => {
+    onOutput: (output) => {
+      const { stream, data } = output;
+      gaps.take(output);
+
       if (stream === "stdout") stdout.push(data.slice());
       else errorText += stderr.decode(data, { stream: true });
     },
@@ -240,6 +293,7 @@ export async function collect(
       exitCode: result.status === "completed" ? result.exitCode : undefined,
       stdout: bytes,
       stderr: errorText + stderr.decode(),
+      lost: gaps.lost,
     };
   } catch (error) {
     throw archilError(error, sandboxId);

@@ -298,19 +298,68 @@ export function createArchilProvider(
         if (result.exitCode !== 0) throw failure("File write failed", "provider", id);
       },
       read: async (path, range) => {
-        const result = await collect(
-          run,
-          id,
-          python(readProgram, path, String(range?.offset ?? 0), String(range?.length ?? -1)),
-        );
+        // A range is usually a small log page: one helper read, unless Archil's stream skipped bytes.
+        if (range) {
+          const result = await collect(
+            run,
+            id,
+            python(readProgram, path, String(range.offset), String(range.length)),
+          );
 
-        if (result.exitCode === 3) throw failure("File does not exist", "file_not_found", id);
+          if (result.exitCode === 3) throw failure("File does not exist", "file_not_found", id);
 
-        if (result.exitCode !== 0) throw failure("File read failed", "provider", id);
+          if (result.exitCode !== 0) throw failure("File read failed", "provider", id);
 
-        return result.stdout;
+          if (result.lost === 0) return result.stdout;
+        }
+
+        const whole = await download(id, path);
+
+        return range ? whole.subarray(range.offset, range.offset + range.length) : whole;
       },
     };
+  }
+
+  /**
+   * Reads a whole file through `disk`'s download, which asks for one 512 KiB piece at a time and so
+   * never outruns Archil's output stream. Its failures carry guest text, so a stat classifies them.
+   */
+  async function download(id: string, path: string): Promise<Uint8Array> {
+    const parts: Uint8Array[] = [];
+
+    const attempt = async () => {
+      parts.length = 0;
+      await (
+        await sandbox(id)
+      ).files.downloadFile(path, (chunk) => {
+        parts.push(chunk.slice());
+      });
+    };
+
+    try {
+      await attempt();
+    } catch {
+      // Missing, not a regular file, or the sandbox paused itself: the stat wakes it if so.
+      const check = await collect(runner(id), id, `[ -f ${quote(path)} ]`);
+
+      if (check.exitCode !== 0) throw failure("File does not exist", "file_not_found", id);
+
+      try {
+        await attempt();
+      } catch {
+        throw failure("File read failed", "provider", id);
+      }
+    }
+
+    const bytes = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+    let offset = 0;
+
+    for (const part of parts) {
+      bytes.set(part, offset);
+      offset += part.length;
+    }
+
+    return bytes;
   }
 
   /** Reads a running sandbox's marker. Undefined when it has none: not made by this SDK, or still being made. */

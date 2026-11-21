@@ -91,7 +91,10 @@ describe.skipIf(!credentials)("Archil live options", { timeout: 180_000 }, () =>
 
   // destroy deletes the sandbox, so anything left from this run is a leak.
   test("no sandbox from this run is left", async () => {
-    const client = new Archil({ apiKey: process.env.ARCHIL_API_KEY });
+    const client = new Archil({
+      apiKey: process.env.ARCHIL_API_KEY,
+      region: process.env.ARCHIL_REGION ?? "aws-us-east-1",
+    });
 
     const left = async () =>
       (await client.sandboxes.list())
