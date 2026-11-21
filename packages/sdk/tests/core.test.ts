@@ -815,3 +815,23 @@ test("shell process setup uses two execs and one upload, preserving UTF-8 and du
     await box.destroy();
   }
 }, 30_000);
+
+test("createSandbox passes its signal to find and stops waiting on a hung lookup", async () => {
+  const provider = memory();
+  const signals: (AbortSignal | undefined)[] = [];
+
+  provider.find = (_key, options) => {
+    signals.push(options?.signal);
+
+    // A lookup that never settles on its own.
+    return new Promise(() => {});
+  };
+
+  const controller = new AbortController();
+  const pending = createSandbox(provider, { key: "hung-find", signal: controller.signal });
+  setTimeout(() => controller.abort(), 50);
+
+  await expect(pending).rejects.toMatchObject({ code: "aborted" });
+  expect(signals).toEqual([controller.signal]);
+  expect(await provider.list({})).toEqual([]);
+});

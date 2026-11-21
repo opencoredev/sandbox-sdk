@@ -150,6 +150,31 @@ function validate(provider: Provider, options: CreateOptions) {
       invalid("Timeouts must be positive milliseconds");
 }
 
+/** Waits for a lookup, or rejects `aborted` as soon as `signal` fires. Only for calls that change nothing. */
+async function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  let abort = () => {};
+
+  const cancellation = new Promise<never>((_, reject) => {
+    abort = () =>
+      reject(
+        new SandboxError(
+          "Creation aborted. The signal was cancelled during the key lookup. Retry with a fresh signal.",
+          { code: "aborted" },
+        ),
+      );
+    signal.addEventListener("abort", abort, { once: true });
+
+    if (signal.aborted) abort();
+  });
+
+  try {
+    return await Promise.race([work, cancellation]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
 export function createSandbox<P extends Provider>(
   provider: P,
   options?: CreateOptions,
@@ -193,7 +218,10 @@ export async function createSandbox(
           forgetKey(provider, options.key);
         }
 
-        info ??= await provider.find(options.key);
+        info ??= await untilAborted(
+          provider.find(options.key, { signal: options.signal }),
+          options.signal,
+        );
       }
 
       let created = !info;
@@ -216,7 +244,7 @@ export async function createSandbox(
           .catch(async (error) => {
             // A native unique-name conflict can race the initial lookup on another client.
             if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) {
-              const existing = await provider.find(options.key);
+              const existing = await provider.find(options.key, { signal: options.signal });
 
               if (existing) {
                 created = false;

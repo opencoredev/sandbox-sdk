@@ -273,7 +273,8 @@ export interface Provider<
   readonly processRecordRoot?: string;
   readonly capabilities: ReadonlySet<C>;
   create(input: CreateInput): Promise<SandboxInfo>;
-  find(key: string): Promise<SandboxInfo | undefined>;
+  /** Look up a sandbox by key. `signal` is the create's signal; the core stops waiting when it fires either way. */
+  find(key: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo | undefined>;
   connect(id: string): Promise<SandboxInfo>;
   list(labels: Labels): Promise<SandboxInfo[]>;
   destroy(id: string): Promise<void>;

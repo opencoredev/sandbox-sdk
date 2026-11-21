@@ -26,7 +26,7 @@ Import the types from `@opencoredev/sandbox-sdk/provider`. A `Provider` has:
 | `keyMode`                                 | `"exact"` if the service enforces unique names, otherwise `"best-effort"`                       |
 | `capabilities`                            | The optional features you implement                                                             |
 | `create(input)`                           | Create a sandbox with the requested size, env, network, ports, limits, labels, and snapshot     |
-| `find(key)`                               | Find a sandbox by key, or `undefined`                                                           |
+| `find(key, { signal? })`                  | Find a sandbox by key, or `undefined`. `signal` is the create's signal                          |
 | `connect(id)`                             | Attach to a sandbox by ID. Throw `not_found` if it's gone.                                      |
 | `list(labels)`                            | List sandboxes matching labels                                                                  |
 | `destroy(id)`                             | Delete a sandbox                                                                                |
