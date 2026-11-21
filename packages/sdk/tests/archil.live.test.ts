@@ -38,7 +38,11 @@ describe.skipIf(!credentials)("Archil live options", { timeout: 180_000 }, () =>
     }
   });
 
-  test("large stdin, large output and a 10 MiB file all arrive whole", async () => {
+  // Archil's process stream has no backpressure: when the client's link falls behind a burst of
+  // output, the server skips bytes, and a reattach at the gap returns nothing (measured
+  // 2026-11-21: 1, 2 and 4 MB arrived whole on an idle link; 10 MiB lost 1.3 MiB). Stdin and
+  // files travel paced, so they must be exact; command output must be whole or say what was lost.
+  test("large stdin and a 10 MiB file arrive whole; large output is whole or marked", async () => {
     const box = await createSandbox(liveProvider());
 
     try {
@@ -49,7 +53,9 @@ describe.skipIf(!credentials)("Archil live options", { timeout: 180_000 }, () =>
         maxOutputBytes: 4_000_000,
       });
 
-      expect(big.stdout.length).toBe(2_000_000);
+      const marked = big.stdout.includes("Archil's output stream skipped");
+      expect(marked || big.stdout.length === 2_000_000).toBe(true);
+      expect(big.stdout.replace(/\n\[sandbox-sdk: [^\]]*\]\n/g, "")).toMatch(/^y*$/);
 
       const bytes = new Uint8Array(10 * 1024 * 1024).map((_, i) => (i * 31) % 251);
       await box.files.write("big.bin", bytes);
