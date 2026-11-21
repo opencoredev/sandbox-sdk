@@ -28,6 +28,8 @@ import { isNumber, isString } from "../../shared/narrow.js";
 import { userAgent } from "../../version.js";
 import {
   createGroundboxClient,
+  deadlineLabel,
+  deadlineOf,
   ended,
   field,
   keyLabel,
@@ -36,7 +38,9 @@ import {
   parseEntries,
   parseEntry,
   parseExec,
+  parseCommand,
   parseLogs,
+  parseOutput,
   parsePreview,
   parseSandbox,
   parseSandboxPage,
@@ -152,6 +156,7 @@ interface CreateBody {
   disk_gb?: number;
   timeout_minutes?: number;
   idle_timeout_seconds?: number;
+  wake_on_request?: boolean;
   env?: Record<string, string>;
   metadata: Labels;
   allow_hosts?: string[];
@@ -338,16 +343,26 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
     );
   }
 
+  /** Neither the kill nor the command's end could be confirmed: it may still be running. */
+  function unconfirmedKill(id: string, cause?: unknown) {
+    return fail(
+      "the command was abandoned, but its end could not be confirmed; it may still be running",
+      "outcome_unknown",
+      { sandboxId: id, cause: cause instanceof SandboxError ? cause : undefined },
+    );
+  }
+
   /**
-   * Ends a command whose request was abandoned. Groundbox runs `POST .../exec` under its supervisor,
-   * which can outlive the request, so the command is found by the marker on its first line and
-   * killed, with everything it started.
+   * Ends a command whose request was abandoned and resolves with its exec ID once it is confirmed
+   * over. Groundbox runs `POST .../exec` under its supervisor, which can outlive the request, so the
+   * command is found by the marker on its first line and killed, with everything it started. A
+   * list or kill that fails, or a command that never shows up, is `outcome_unknown`.
    */
-  async function killMarked(id: string, marker: string) {
+  async function killMarked(id: string, marker: string): Promise<string> {
     const until = Date.now() + 3000;
 
     for (;;) {
-      let found: { id: string; cmd: string }[] = [];
+      let found;
 
       try {
         const listed = await http.cleanup({
@@ -355,27 +370,69 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
           path: "/sandboxes/{id}/commands",
           params: { id },
           sandboxId: id,
-          query: { state: "running", limit: 500 },
+          query: { limit: 100 },
         });
 
-        found = parseCommands(listed.json()).filter((command) => command.cmd.startsWith(marker));
+        found = parseCommands(listed.json()).find((command) => command.cmd.startsWith(marker));
+      } catch (error) {
+        throw unconfirmedKill(id, error);
+      }
+
+      if (found) {
+        if (found.state !== "running") return found.id;
+
+        try {
+          const killed = await http.cleanup({
+            method: "POST",
+            path: "/sandboxes/{id}/commands/{exec}/kill",
+            params: { id, exec: found.id },
+            sandboxId: id,
+            body: {},
+          });
+
+          if (parseCommand(killed.json())?.state === "running") throw unconfirmedKill(id);
+        } catch (error) {
+          throw error instanceof SandboxError && error.code === "outcome_unknown"
+            ? error
+            : unconfirmedKill(id, error);
+        }
+
+        return found.id;
+      }
+
+      // The request may not have reached the sandbox yet, or never will: that can't be told apart.
+      if (Date.now() > until) throw unconfirmedKill(id);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  /** What a killed command had printed, read back from the sandbox's command log (best-effort). */
+  async function partialOutput(id: string, exec: string, onChunk: ExecInput["onChunk"]) {
+    let seq = 0;
+
+    for (let page = 0; page < 8; page++) {
+      let output;
+
+      try {
+        const answer = await http.cleanup({
+          method: "GET",
+          path: "/sandboxes/{id}/commands/{exec}/output",
+          params: { id, exec },
+          sandboxId: id,
+          query: { seq },
+        });
+
+        output = parseOutput(answer.json());
       } catch {
         return;
       }
 
-      for (const command of found)
-        await http
-          .cleanup({
-            method: "POST",
-            path: "/sandboxes/{id}/commands/{exec}/kill",
-            params: { id, exec: command.id },
-            sandboxId: id,
-            body: {},
-          })
-          .catch(() => undefined);
+      if (output.stdout) onChunk({ stream: "stdout", text: output.stdout });
 
-      if (found.length > 0 || Date.now() > until) return;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (output.stderr) onChunk({ stream: "stderr", text: output.stderr });
+      seq = output.seq;
+
+      if (!output.more) return;
     }
   }
 
@@ -411,7 +468,8 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
       });
     } catch (error) {
       if (input.signal?.aborted) {
-        await killMarked(id, marker);
+        const exec = await killMarked(id, marker);
+        await partialOutput(id, exec, input.onChunk);
 
         return { exitCode: null, timedOut: true };
       }
@@ -421,11 +479,12 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
 
     const answer = parseExec(raw, id);
 
-    if (answer.timedOut) return { exitCode: null, timedOut: true };
-
+    // A command killed at the guest's own limit still answers with what it printed.
     if (answer.stdout) input.onChunk({ stream: "stdout", text: answer.stdout });
 
     if (answer.stderr) input.onChunk({ stream: "stderr", text: answer.stderr });
+
+    if (answer.timedOut) return { exitCode: null, timedOut: true };
 
     return { exitCode: answer.exitCode, timedOut: false };
   }
@@ -486,7 +545,11 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
     throw createError(cause, { sandboxId: id, stage, cleanupCode });
   }
 
-  async function lifecycle(id: string, action: "pause" | "resume" | "start") {
+  async function lifecycle(
+    id: string,
+    action: "pause" | "resume" | "start",
+    wakeOnRequest = true,
+  ): Promise<Sandbox> {
     const deadline = createDeadline(operationTimeoutMs);
 
     const sandbox = parseSandbox(
@@ -494,8 +557,9 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
         method: "POST",
         path: `/sandboxes/{id}/${action}`,
         sandboxId: id,
-        // A command, a file or a preview wakes a sandbox paused here, as after an idle pause.
-        body: action === "pause" ? { wake_on_request: true } : undefined,
+        // A command, a file or a preview wakes a sandbox paused here, as after an idle pause,
+        // unless it has a hard lifetime: a wake would restart Groundbox's timeout.
+        body: action === "pause" ? { wake_on_request: wakeOnRequest } : undefined,
         deadline,
       }),
     );
@@ -505,6 +569,70 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
 
     if (settled.status !== want)
       throw fail(`${action} left the sandbox ${settled.status}`, "provider", { sandboxId: id });
+
+    return settled;
+  }
+
+  /**
+   * Holds a sandbox to the end of its hard lifetime. Groundbox restarts `timeout_minutes` on every
+   * start or wake, so after one the adapter sets what is left of the recorded deadline; a sandbox
+   * past it is deleted and reported gone.
+   */
+  async function holdToDeadline(sandbox: Sandbox) {
+    const end = deadlineOf(sandbox);
+
+    if (end === undefined) return;
+    const left = end - Date.now();
+
+    if (left <= 0) {
+      await destroy(sandbox.id);
+
+      throw fail(`sandbox ${sandbox.id} has passed its timeoutMs and was deleted`, "not_found", {
+        sandboxId: sandbox.id,
+      });
+    }
+
+    await json({
+      method: "PATCH",
+      path: "/sandboxes/{id}",
+      sandboxId: sandbox.id,
+      body: { timeout_minutes: lifetimeMinutes(left) },
+    });
+  }
+
+  /**
+   * A snapshot that did not become ready: delete it on a fresh deadline, since it may still finish
+   * and outlive its sandbox. When the delete fails too, the error names the snapshot to remove.
+   */
+  async function discardSnapshot(
+    sandboxId: string,
+    snapshotId: string,
+    cause: unknown,
+  ): Promise<never> {
+    const original =
+      cause instanceof SandboxError ? cause : fail("snapshot failed", "provider", { sandboxId });
+
+    try {
+      await http.cleanup({
+        method: "DELETE",
+        path: `/snapshots/${encodeURIComponent(snapshotId)}`,
+        sandboxId,
+      });
+    } catch (cleanup) {
+      if (!(cleanup instanceof SandboxError && cleanup.code === "not_found"))
+        throw new SandboxError(
+          `${original.message} Snapshot ${snapshotId} could not be deleted; delete it with deleteSnapshot.`,
+          {
+            code: original.code,
+            provider: name,
+            sandboxId,
+            retryable: original.retryable,
+            cause: original,
+          },
+        );
+    }
+
+    throw original;
   }
 
   async function buildTemplate(
@@ -513,23 +641,28 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
   ) {
     const deadline = createDeadline(settings.timeoutMs ?? 30 * 60_000, settings.signal);
 
-    // Build-only env and workdir go in front of each step; Groundbox's own `env` would reach every sandbox.
+    // Build-only env and workdir go in front of each step; Groundbox's own `env` would reach every
+    // sandbox. The step runs only once its directory is there: a failed mkdir or cd fails the build.
     const prefix = [
       ...Object.entries(spec.env ?? {}).map(([key, value]) => `export ${key}=${quote(value)}`),
-      ...(spec.workdir ? [`mkdir -p ${quote(spec.workdir)}`, `cd ${quote(spec.workdir)}`] : []),
+      ...(spec.workdir
+        ? [`mkdir -p ${quote(spec.workdir)} && cd ${quote(spec.workdir)} || exit 1`]
+        : []),
     ];
 
     const run = (spec.run ?? []).map((step) =>
-      prefix.length ? `${prefix.join("; ")}; ${step}` : step,
+      prefix.length ? `${prefix.join("\n")}\n${step}` : step,
     );
 
     const build: TemplateBody = { run };
 
     if (spec.image) build.image = spec.image;
 
+    // The same whole-vCPU, whole-GiB rule as a sandbox's size: refused, never rounded.
     if (spec.size) {
-      build.cpus = spec.size.cpu;
-      build.memory_gb = Math.ceil(spec.size.memoryMb / 1024);
+      const size = sizeOf(spec.size);
+      build.cpus = size.cpus;
+      build.memory_gb = size.memory_gb;
     }
 
     let template;
@@ -587,7 +720,8 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
             "provider",
           );
 
-        return { id: template.id, name: template.name, buildId: String(version) };
+        // `tpl_...:<version>` pins this build; the bare ID would follow the newest ready version.
+        return { id: `${template.id}:${version}`, name: template.name, buildId: String(version) };
       }
 
       if (deadline.remaining() === 0)
@@ -635,6 +769,10 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
 
       if (input.key !== undefined) labels[keyLabel] = input.key;
 
+      // The hard lifetime's end, so a resume or reconnect can hold the sandbox to it.
+      if (input.timeoutMs !== undefined)
+        labels[deadlineLabel] = String(Date.now() + input.timeoutMs);
+
       // Groundbox metadata: names of 1 to 64 characters, values of at most 512.
       for (const [label, value] of Object.entries(labels))
         if (label.length < 1 || label.length > 64 || value.length > 512)
@@ -645,11 +783,11 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
       const fromSnapshot = input.from?.startsWith("snap_") ? input.from : undefined;
       const template = fromSnapshot ? undefined : (input.from ?? options.template);
 
-      const body: CreateBody = {
-        // A snapshot keeps its own size; Groundbox refuses another one.
-        ...sizeOf(input.size),
-        metadata: labels,
-      };
+      // A snapshot keeps its own size, so no size is sent with it.
+      if (fromSnapshot && input.size !== undefined)
+        throw fail("a sandbox from a snapshot keeps the snapshot's size; omit size", "unsupported");
+
+      const body: CreateBody = { ...sizeOf(input.size), metadata: labels };
 
       if (fromSnapshot) body.snapshot_id = fromSnapshot;
       else if (template) body.template = template;
@@ -657,8 +795,12 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
 
       if (input.timeoutMs !== undefined) body.timeout_minutes = lifetimeMinutes(input.timeoutMs);
 
-      if (input.idleTimeoutMs !== undefined)
+      if (input.idleTimeoutMs !== undefined) {
         body.idle_timeout_seconds = idleSeconds(input.idleTimeoutMs);
+
+        // A wake restarts Groundbox's timeout, so with a hard lifetime only resume() wakes it.
+        if (input.timeoutMs !== undefined) body.wake_on_request = false;
+      }
 
       // Every command gets the sandbox's env, so a fresh connect can read the secrets' names back.
       if (input.env && Object.keys(input.env).length > 0) body.env = input.env;
@@ -716,6 +858,17 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
       if (ended.has(sandbox.status))
         throw fail(`sandbox ${id} is ${sandbox.status}`, "not_found", { sandboxId: id });
 
+      const end = deadlineOf(sandbox);
+
+      // Past its hard lifetime: a paused sandbox can outlive Groundbox's own timer.
+      if (end !== undefined && end <= Date.now()) {
+        await destroy(id);
+
+        throw fail(`sandbox ${id} has passed its timeoutMs and was deleted`, "not_found", {
+          sandboxId: id,
+        });
+      }
+
       return toInfo(sandbox);
     },
 
@@ -756,22 +909,58 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
       const staged = `/tmp/.sandbox-sdk/stdin-${randomUUID()}`;
       const started = Date.now();
 
-      await http.request({
-        method: "PUT",
-        path: "/sandboxes/{id}/files",
-        params: { id },
-        sandboxId: id,
-        query: { path: staged },
-        body: stdin,
-        signal: input.signal,
-        timeoutMs: input.timeoutMs,
-      });
+      // The PUT may land after its answer is lost or the caller gave up, so remove the file on a
+      // fresh deadline whenever the command may not have read it.
+      const discard = () =>
+        http
+          .cleanup({
+            method: "DELETE",
+            path: "/sandboxes/{id}/files",
+            params: { id },
+            sandboxId: id,
+            query: { path: staged },
+          })
+          .catch(() => undefined);
 
-      return execBuffered(id, `exec < ${quote(staged)}; rm -f ${quote(staged)}\n${input.command}`, {
-        ...input,
-        stdin: undefined,
-        timeoutMs: Math.max(1, input.timeoutMs - (Date.now() - started)),
-      });
+      try {
+        await http.request({
+          method: "PUT",
+          path: "/sandboxes/{id}/files",
+          params: { id },
+          sandboxId: id,
+          query: { path: staged },
+          body: stdin,
+          signal: input.signal,
+          timeoutMs: input.timeoutMs,
+        });
+      } catch (error) {
+        await discard();
+
+        // Cancelled or out of time while uploading: the command never started.
+        if (input.signal?.aborted) return { exitCode: null, timedOut: true };
+        throw error;
+      }
+
+      let result: ExecResult;
+
+      try {
+        result = await execBuffered(
+          id,
+          `exec < ${quote(staged)}; rm -f ${quote(staged)}\n${input.command}`,
+          {
+            ...input,
+            stdin: undefined,
+            timeoutMs: Math.max(1, input.timeoutMs - (Date.now() - started)),
+          },
+        );
+      } catch (error) {
+        await discard();
+        throw error;
+      }
+
+      if (result.exitCode === null) await discard();
+
+      return result;
     },
 
     files: {
@@ -916,22 +1105,33 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
     },
 
     async pause(id) {
-      await lifecycle(id, "pause");
+      const sandbox = await getSandbox(id);
+
+      await lifecycle(id, "pause", deadlineOf(sandbox) === undefined);
     },
 
     async resume(id) {
       const sandbox = await getSandbox(id);
 
-      if (sandbox.status === "running") return;
+      if (sandbox.status === "running") return holdToDeadline(sandbox);
+
+      // Past its hard lifetime, it is deleted rather than woken.
+      const end = deadlineOf(sandbox);
+
+      if (end !== undefined && end <= Date.now()) return holdToDeadline(sandbox);
 
       // A sandbox shut down with its disk kept boots again with start; a paused one resumes.
-      await lifecycle(id, sandbox.status === "shut_down" ? "start" : "resume");
+      await holdToDeadline(
+        await lifecycle(id, sandbox.status === "shut_down" ? "start" : "resume"),
+      );
     },
 
     async snapshot(id, snapshotOptions) {
-      if (snapshotOptions?.expiresInMs)
+      // Groundbox sets the expiry itself: a snapshot is deleted after 30 days without a restore, so
+      // neither a chosen expiry nor `0` (keep until deleted) can be honoured.
+      if (snapshotOptions?.expiresInMs !== undefined)
         throw fail(
-          "snapshots are kept until deleted (or 30 days unused); omit expiresInMs",
+          "Groundbox deletes a snapshot after 30 days unused and takes no expiry; omit expiresInMs",
           "unsupported",
           { sandboxId: id },
         );
@@ -949,22 +1149,26 @@ export function createGroundboxProvider(options: GroundboxOptions = {}): Groundb
         }),
       );
 
-      while (snapshot.status === "creating") {
-        await sleep(500, deadline, name);
-        snapshot = parseSnapshot(
-          await json({
-            method: "GET",
-            path: `/snapshots/${encodeURIComponent(snapshot.id)}`,
-            sandboxId: id,
-            deadline,
-          }),
-        );
-      }
+      try {
+        while (snapshot.status === "creating") {
+          await sleep(500, deadline, name);
+          snapshot = parseSnapshot(
+            await json({
+              method: "GET",
+              path: `/snapshots/${encodeURIComponent(snapshot.id)}`,
+              sandboxId: id,
+              deadline,
+            }),
+          );
+        }
 
-      if (snapshot.status !== "ready")
-        throw fail(`snapshot ${snapshot.id} ended ${snapshot.status}`, "provider", {
-          sandboxId: id,
-        });
+        if (snapshot.status !== "ready")
+          throw fail(`snapshot ${snapshot.id} ended ${snapshot.status}`, "provider", {
+            sandboxId: id,
+          });
+      } catch (error) {
+        return discardSnapshot(id, snapshot.id, error);
+      }
 
       return { id: snapshot.id };
     },

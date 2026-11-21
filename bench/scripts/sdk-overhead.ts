@@ -759,24 +759,24 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     const m: typeof import("@groundbox/sdk") = await import(nativeUrl("@groundbox/sdk"));
     const client = new m.Groundbox();
 
-    // The adapter's create waits until the sandbox runs; create_sandbox usually answers running.
-    let box = await client.create_sandbox({ metadata: label, timeout_minutes: 10 });
+    // Keep the admitted ID before readiness, so a readiness failure can still be cleaned up. The
+    // adapter's create waits until the sandbox runs; create_sandbox usually answers running.
+    const box = await client.create_sandbox({ metadata: label, timeout_minutes: 10 });
+    const id = box.id;
 
-    if (box.status !== "running") box = await client.wait_for_sandbox(box.id, { timeout_s: 120 });
-
-    return {
-      id: box.id,
+    const raw = {
+      id,
       exec: async () => {
-        const r = await client.run_command(box.id, "true", { timeout_s: 60 });
+        const r = await client.run_command(id, "true", { timeout_s: 60 });
 
         if (r.exit_code !== 0) throw new Error(`exit ${r.exit_code}`);
       },
       destroy: async () => {
-        await client.delete_sandbox(box.id);
+        await client.delete_sandbox(id);
       },
       exists: async () => {
         try {
-          const status = (await client.get_sandbox(box.id)).status;
+          const status = (await client.get_sandbox(id)).status;
 
           return status !== "stopped" && status !== "failed";
         } catch (error) {
@@ -785,6 +785,16 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
         }
       },
     };
+
+    admit(raw);
+
+    if (box.status !== "running") {
+      const ready = await client.wait_for_sandbox(id, { timeout_s: 120 });
+
+      if (ready.status !== "running") throw new Error(`Groundbox sandbox is ${ready.status}`);
+    }
+
+    return raw;
   }
 
   if (name === "beam") {

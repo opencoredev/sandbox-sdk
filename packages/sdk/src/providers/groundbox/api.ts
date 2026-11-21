@@ -15,6 +15,20 @@ export type GroundboxPlane = "api";
 /** The label that carries the SDK's sandbox key in a sandbox's metadata. */
 export const keyLabel = "sandbox-sdk-key";
 
+/**
+ * The label that carries the hard lifetime's end, in epoch milliseconds. Groundbox's
+ * `timeout_minutes` counts from the last start or wake, so the adapter keeps the absolute end itself.
+ */
+export const deadlineLabel = "sandbox-sdk-deadline";
+
+/** The hard lifetime's end recorded on a sandbox, or undefined when it has none. */
+export function deadlineOf(sandbox: Sandbox): number | undefined {
+  const raw = sandbox.metadata[deadlineLabel];
+  const at = raw === undefined ? Number.NaN : Number(raw);
+
+  return Number.isSafeInteger(at) ? at : undefined;
+}
+
 export interface ClientOptions {
   /** The key, read per request; throws when it is missing. */
   apiKey: () => string;
@@ -126,7 +140,7 @@ export function parseSandboxPage(raw: JsonValue | undefined): SandboxPage {
 
 /** A sandbox as the SDK sees it: the key label moves to `key`, the status to running, paused or stopped. */
 export function toInfo(sandbox: Sandbox): SandboxInfo {
-  const { [keyLabel]: key, ...labels } = sandbox.metadata;
+  const { [keyLabel]: key, [deadlineLabel]: _deadline, ...labels } = sandbox.metadata;
 
   const state: SandboxInfo["state"] = paused.has(sandbox.status)
     ? "paused"
@@ -158,18 +172,51 @@ export function parseExec(raw: JsonValue | undefined, sandboxId: string): ExecAn
   return { exitCode, stdout, stderr, timedOut: field(raw, "timed_out") === true };
 }
 
-/** One running command from `GET /v1/sandboxes/{id}/commands`: its exec ID and the start of its shell line. */
-export function parseCommands(raw: JsonValue | undefined): { id: string; cmd: string }[] {
+/** One command from `GET /v1/sandboxes/{id}/commands`: its exec ID, the start of its shell line and its state. */
+export interface Command {
+  id: string;
+  cmd: string;
+  /** `running`, `exited` or `lost`. */
+  state: string;
+}
+
+export function parseCommand(raw: JsonValue | undefined): Command | undefined {
+  const id = field(raw, "id");
+  const cmd = field(raw, "cmd");
+  const state = field(raw, "state");
+
+  return isString(id) && isString(cmd) && isString(state) ? { id, cmd, state } : undefined;
+}
+
+export function parseCommands(raw: JsonValue | undefined): Command[] {
   const data = field(raw, "data");
 
-  if (!Array.isArray(data)) return [];
+  if (!Array.isArray(data)) throw fail("unexpected command list from the API");
 
   return data.flatMap((entry) => {
-    const id = field(entry, "id");
-    const cmd = field(entry, "cmd");
+    const command = parseCommand(entry);
 
-    return isString(id) && isString(cmd) ? [{ id, cmd }] : [];
+    return command ? [command] : [];
   });
+}
+
+export interface OutputPage {
+  stdout: string;
+  stderr: string;
+  seq: number;
+  more: boolean;
+}
+
+/** `GET /v1/sandboxes/{id}/commands/{exec}/output?seq=`. */
+export function parseOutput(raw: JsonValue | undefined): OutputPage {
+  const stdout = field(raw, "stdout");
+  const stderr = field(raw, "stderr");
+  const seq = field(raw, "seq");
+
+  if (!isString(stdout) || !isString(stderr) || !isNumber(seq))
+    throw fail("unexpected command output from the API");
+
+  return { stdout, stderr, seq, more: field(raw, "more") === true };
 }
 
 /** A `FileEntry`: `dir`, `file`, `symlink` or `other`. */

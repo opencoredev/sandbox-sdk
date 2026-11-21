@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SandboxError } from "../src/errors.js";
 import { groundbox } from "../src/providers/groundbox/index.js";
+import { stdinPieces } from "../src/providers/groundbox/stream.js";
 import { fakeServer, type FakeServer, type RecordedRequest } from "./http-fake.js";
 
 let server: FakeServer;
@@ -82,15 +83,23 @@ describe("groundbox create", () => {
       createdAt: Date.parse("2026-11-20T12:00:00Z"),
     });
     const [create] = server.calls("POST /v1/sandboxes");
-    expect(body(create)).toEqual({
+    const sent = body(create);
+    expect(sent).toEqual({
       cpus: 4,
       memory_gb: 8,
       disk_gb: 40,
-      metadata: { team: "a", "sandbox-sdk-key": "k1" },
+      metadata: {
+        team: "a",
+        "sandbox-sdk-key": "k1",
+        "sandbox-sdk-deadline": expect.stringMatching(/^\d+$/),
+      },
       timeout_minutes: 2,
       idle_timeout_seconds: 60,
+      // A wake would restart Groundbox's timeout, so only resume() wakes a sandbox with a lifetime.
+      wake_on_request: false,
       env: { NODE_ENV: "test" },
     });
+    expect(Number(sent.metadata["sandbox-sdk-deadline"])).toBeGreaterThan(Date.now() + 80_000);
     expect(create!.headers.authorization).toBe("Bearer gbx_test_key");
     expect(create!.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
     expect(create!.headers["user-agent"]).toMatch(/^sandbox-sdk\//);
@@ -140,6 +149,15 @@ describe("groundbox create", () => {
       metadata: {},
       snapshot_id: "snap_abcdefgh1234",
     });
+  });
+
+  test("a sandbox from a snapshot refuses a size: it keeps the snapshot's", async () => {
+    const error = await rejection(
+      provider().create({ labels: {}, from: "snap_abcdefgh1234", size: "small" }),
+    );
+
+    expect(error.code).toBe("unsupported");
+    expect(server.requests).toHaveLength(0);
   });
 
   test("a failed setup deletes the sandbox and marks the error as admitted by this call", async () => {
@@ -265,13 +283,17 @@ describe("groundbox exec", () => {
     expect(sent.cmd).toMatch(/^# sandbox-sdk [0-9a-f-]{36}\necho hi$/);
   });
 
-  test("a server timeout has no exit code", async () => {
-    server.on("POST /v1/sandboxes/{id}/exec", { json: exec(137, "", "", true) });
+  test("a server timeout has no exit code and keeps what the command printed", async () => {
+    server.on("POST /v1/sandboxes/{id}/exec", { json: exec(137, "partial\n", "warn\n", true) });
+    const chunks: string[] = [];
 
-    expect(await provider().exec("sbx_abc123def456", { ...input, onChunk() {} })).toEqual({
-      exitCode: null,
-      timedOut: true,
-    });
+    expect(
+      await provider().exec("sbx_abc123def456", {
+        ...input,
+        onChunk: (chunk) => chunks.push(`${chunk.stream}:${chunk.text}`),
+      }),
+    ).toEqual({ exitCode: null, timedOut: true });
+    expect(chunks).toEqual(["stdout:partial\n", "stderr:warn\n"]);
   });
 
   test("an abort finds the command by its marker and kills it", async () => {
@@ -283,28 +305,38 @@ describe("groundbox exec", () => {
         response.end(
           JSON.stringify({
             data: [
-              { id: "ex_other0000000000000", cmd: "# sandbox-sdk someone-else\nsleep 1" },
-              { id: "ex_mine00000000000000", cmd: `${marker}\nsleep 60` },
+              {
+                id: "ex_other0000000000000",
+                cmd: "# sandbox-sdk someone-else\nsleep 1",
+                state: "running",
+              },
+              { id: "ex_mine00000000000000", cmd: `${marker}\nsleep 60`, state: "running" },
             ],
             running: 2,
           }),
         );
       })
       .on("POST /v1/sandboxes/{id}/commands/{exec}/kill", {
-        json: { id: "ex_mine00000000000000" },
+        json: { id: "ex_mine00000000000000", cmd: "# sandbox-sdk", state: "exited" },
+      })
+      .on("GET /v1/sandboxes/{id}/commands/{exec}/output", {
+        json: { stdout: "before the kill\n", stderr: "", seq: 16, more: false, done: true },
       });
 
     const controller = new AbortController();
+    const chunks: string[] = [];
 
     const run = provider().exec("sbx_abc123def456", {
       ...input,
       signal: controller.signal,
-      onChunk() {},
+      onChunk: (chunk) => chunks.push(chunk.text),
     });
 
     await expect.poll(() => server.calls("POST /v1/sandboxes/{id}/exec").length).toBe(1);
     controller.abort();
     expect(await run).toEqual({ exitCode: null, timedOut: true });
+    // The output it printed before the kill is read back from the command log.
+    expect(chunks).toEqual(["before the kill\n"]);
     const kills = server.calls("POST /v1/sandboxes/{id}/commands/{exec}/kill");
     expect(kills.map((call) => call.url)).toEqual([
       "/v1/sandboxes/sbx_abc123def456/commands/ex_mine00000000000000/kill",
@@ -329,6 +361,79 @@ describe("groundbox exec", () => {
     const sent = body(server.calls("POST /v1/sandboxes/{id}/exec")[0]);
     expect(sent.stdin).toBeUndefined();
     expect(sent.cmd).toContain(`exec < '${staged}'; rm -f '${staged}'`);
+  });
+
+  test("an abort during a large stdin upload returns the timeout result and removes the file", async () => {
+    server
+      .on("PUT /v1/sandboxes/{id}/files", { hang: true })
+      .on("DELETE /v1/sandboxes/{id}/files", { json: { path: "/tmp/x", deleted: true } });
+
+    const controller = new AbortController();
+
+    const run = provider().exec("sbx_abc123def456", {
+      ...input,
+      stdin: "x".repeat(600_000),
+      signal: controller.signal,
+      onChunk() {},
+    });
+
+    await expect.poll(() => server.calls("PUT /v1/sandboxes/{id}/files").length).toBe(1);
+    controller.abort();
+    expect(await run).toEqual({ exitCode: null, timedOut: true });
+    const staged = new URL(server.calls("PUT /v1/sandboxes/{id}/files")[0]!.url, server.url);
+    const [removed] = server.calls("DELETE /v1/sandboxes/{id}/files");
+    expect(new URL(removed!.url, server.url).searchParams.get("path")).toBe(
+      staged.searchParams.get("path"),
+    );
+    expect(server.calls("POST /v1/sandboxes/{id}/exec")).toHaveLength(0);
+  });
+
+  test("an abort whose kill can't be confirmed is outcome_unknown", async () => {
+    server
+      .on("POST /v1/sandboxes/{id}/exec", { hang: true })
+      .on("GET /v1/sandboxes/{id}/commands", {
+        status: 500,
+        json: { error: { code: "internal", message: "down" } },
+      });
+
+    const controller = new AbortController();
+
+    const run = provider().exec("sbx_abc123def456", {
+      ...input,
+      signal: controller.signal,
+      onChunk() {},
+    });
+
+    await expect.poll(() => server.calls("POST /v1/sandboxes/{id}/exec").length).toBe(1);
+    controller.abort();
+    expect((await rejection(run)).code).toBe("outcome_unknown");
+  });
+
+  test("an abort whose command is still running after the kill is outcome_unknown", async () => {
+    server
+      .on("POST /v1/sandboxes/{id}/exec", { hang: true })
+      .on("GET /v1/sandboxes/{id}/commands", (_request, response) => {
+        const marker = body(server.calls("POST /v1/sandboxes/{id}/exec")[0]).cmd.split("\n")[0];
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({ data: [{ id: "ex_mine", cmd: marker, state: "running" }], running: 1 }),
+        );
+      })
+      .on("POST /v1/sandboxes/{id}/commands/{exec}/kill", {
+        json: { id: "ex_mine", cmd: "x", state: "running" },
+      });
+
+    const controller = new AbortController();
+
+    const run = provider().exec("sbx_abc123def456", {
+      ...input,
+      signal: controller.signal,
+      onChunk() {},
+    });
+
+    await expect.poll(() => server.calls("POST /v1/sandboxes/{id}/exec").length).toBe(1);
+    controller.abort();
+    expect((await rejection(run)).code).toBe("outcome_unknown");
   });
 
   test("commands over an hour are refused", async () => {
@@ -576,7 +681,12 @@ describe("groundbox previews, lifecycle and snapshots", () => {
   test("pause keeps memory and wakes on request; resume of a shut-down sandbox starts it", async () => {
     server
       .on("POST /v1/sandboxes/{id}/pause", { json: sandbox("pausing") })
-      .on("GET /v1/sandboxes/{id}", { json: sandbox("paused") }, { json: sandbox("shut_down") })
+      .on(
+        "GET /v1/sandboxes/{id}",
+        { json: sandbox("running") },
+        { json: sandbox("paused") },
+        { json: sandbox("shut_down") },
+      )
       .on("POST /v1/sandboxes/{id}/start", { json: sandbox("running") });
 
     await provider().pause!("sbx_abc123def456");
@@ -618,6 +728,81 @@ describe("groundbox previews, lifecycle and snapshots", () => {
     expect(await groundboxProvider.deleteSnapshot!("snap_abcdefgh1234")).toBe(false);
     expect(await groundboxProvider.deleteSnapshot!("snap_abcdefgh1234")).toBe(false);
     expect(server.calls("DELETE /v1/snapshots/{id}")).toHaveLength(1);
+  });
+
+  test("snapshot refuses expiresInMs 0: Groundbox deletes snapshots after 30 days unused", async () => {
+    expect(
+      (await rejection(provider().snapshot!("sbx_abc123def456", { expiresInMs: 0 }))).code,
+    ).toBe("unsupported");
+    expect(server.requests).toHaveLength(0);
+  });
+
+  test("a snapshot that fails while polling is deleted; if that fails too, the error names it", async () => {
+    const snapshot = (status: string) => ({ id: "snap_abcdefgh1234", status });
+
+    server
+      .on("POST /v1/snapshots", { status: 201, json: snapshot("creating") })
+      .on("GET /v1/snapshots/{id}", { json: snapshot("failed") })
+      .on(
+        "DELETE /v1/snapshots/{id}",
+        { json: snapshot("deleted") },
+        { status: 500, json: { error: { code: "internal", message: "down" } } },
+      );
+
+    const first = await rejection(provider().snapshot!("sbx_abc123def456"));
+    expect(first.message).not.toContain("could not be deleted");
+    expect(server.calls("DELETE /v1/snapshots/{id}")).toHaveLength(1);
+
+    const second = await rejection(provider().snapshot!("sbx_abc123def456"));
+    expect(second.message).toContain("snap_abcdefgh1234 could not be deleted");
+  });
+
+  test("a sandbox with a hard lifetime pauses without wake, and resume sets what is left of it", async () => {
+    const deadline = Date.now() + 30 * 60_000;
+    const timed = (status: string) => sandbox(status, { "sandbox-sdk-deadline": String(deadline) });
+
+    server
+      .on("GET /v1/sandboxes/{id}", { json: timed("running") }, { json: timed("paused") })
+      .on("POST /v1/sandboxes/{id}/pause", { json: timed("paused") })
+      .on("POST /v1/sandboxes/{id}/resume", { json: timed("running") })
+      .on("PATCH /v1/sandboxes/{id}", { json: timed("running") });
+
+    await provider().pause!("sbx_abc123def456");
+    expect(body(server.calls("POST /v1/sandboxes/{id}/pause")[0])).toEqual({
+      wake_on_request: false,
+    });
+    await provider().resume!("sbx_abc123def456");
+    expect(body(server.calls("PATCH /v1/sandboxes/{id}")[0])).toEqual({ timeout_minutes: 30 });
+  });
+
+  test("a sandbox past its hard lifetime is deleted on resume or connect, not woken", async () => {
+    const late = sandbox("paused", { "sandbox-sdk-deadline": String(Date.now() - 1000) });
+
+    server
+      .on("GET /v1/sandboxes/{id}", { json: late })
+      .on("DELETE /v1/sandboxes/{id}", { json: sandbox("stopped") });
+
+    expect((await rejection(provider().resume!("sbx_abc123def456"))).code).toBe("not_found");
+    expect((await rejection(provider().connect("sbx_abc123def456"))).code).toBe("not_found");
+    expect(server.calls("DELETE /v1/sandboxes/{id}")).toHaveLength(2);
+    expect(server.calls("POST /v1/sandboxes/{id}/resume")).toHaveLength(0);
+  });
+
+  test("the deadline label stays out of the labels the SDK reports", async () => {
+    server.on("GET /v1/sandboxes/{id}", {
+      json: sandbox("running", { app: "x", "sandbox-sdk-deadline": String(Date.now() + 60_000) }),
+    });
+
+    expect((await provider().connect("sbx_abc123def456")).labels).toEqual({ app: "x" });
+  });
+
+  test("buildTemplate refuses sizes it would have to round", async () => {
+    const error = await rejection(
+      provider().buildTemplate!({ name: "x", size: { cpu: 2, memoryMb: 3000 } }, {}),
+    );
+
+    expect(error.code).toBe("unsupported");
+    expect(server.requests).toHaveLength(0);
   });
 
   test("buildTemplate builds a new version when the name is taken and follows its log", async () => {
@@ -666,11 +851,12 @@ describe("groundbox previews, lifecycle and snapshots", () => {
       { onLog: (line) => lines.push(line) },
     );
 
-    expect(built).toEqual({ id: "tpl_abcdefgh1234", name: "node", buildId: "2" });
+    // The ID pins the version built, so a later build doesn't change what it starts.
+    expect(built).toEqual({ id: "tpl_abcdefgh1234:2", name: "node", buildId: "2" });
     expect(lines).toEqual(["step 1", "done"]);
     expect(body(server.calls("POST /v1/templates/{name}/builds")[0])).toEqual({
       image: "node:22-bookworm",
-      run: ["export A='b c'; mkdir -p '/app'; cd '/app'; npm i -g pnpm"],
+      run: ["export A='b c'\nmkdir -p '/app' && cd '/app' || exit 1\nnpm i -g pnpm"],
     });
   });
 });
@@ -715,5 +901,37 @@ describe("groundbox labels", () => {
 
     expect([long.code, name.code]).toEqual(["unsupported", "unsupported"]);
     expect(server.requests).toHaveLength(0);
+  });
+});
+
+describe("groundbox stream input and terminal", () => {
+  test("stdin pieces never split a surrogate pair", () => {
+    const input = `${"x".repeat(7)}😀${"y".repeat(3)}`;
+    const pieces = stdinPieces(input, 8);
+
+    expect(pieces.join("")).toBe(input);
+    expect(pieces[0]).toBe("x".repeat(7));
+    expect(pieces[1]!.startsWith("😀")).toBe(true);
+
+    for (const piece of pieces) {
+      const last = piece.charCodeAt(piece.length - 1);
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+    }
+  });
+
+  test("a terminal whose shell exits closes its socket", async () => {
+    vi.stubGlobal("WebSocket", FakeSocket);
+    FakeSocket.script = [{ type: "exit", exit_code: 0, duration_ms: 1 }];
+
+    const terminal = await provider().terminal!("sbx_abc123def456", { cols: 80, rows: 24 });
+
+    expect(await terminal.wait!()).toEqual({ exitCode: 0 });
+    expect(FakeSocket.last!.closedWith).toBe(1000);
+    expect(FakeSocket.last!.sent[0]).toMatchObject({
+      type: "start",
+      tty: true,
+      rows: 24,
+      cols: 80,
+    });
   });
 });

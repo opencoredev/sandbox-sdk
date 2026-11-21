@@ -140,9 +140,28 @@ function open(dial: Dial, signal?: AbortSignal): Promise<WebSocket> {
   });
 }
 
+/**
+ * Stdin in pieces of at most `size` UTF-16 units. A piece never ends on the first half of a
+ * surrogate pair, so each frame carries whole code points.
+ */
+export function stdinPieces(stdin: string, size = stdinPiece): string[] {
+  const pieces: string[] = [];
+
+  for (let offset = 0; offset < stdin.length;) {
+    let end = Math.min(stdin.length, offset + size);
+    const last = stdin.charCodeAt(end - 1);
+
+    // A high surrogate at the cut: keep it with its low half in the next piece.
+    if (end < stdin.length && end - offset > 1 && last >= 0xd800 && last <= 0xdbff) end -= 1;
+    pieces.push(stdin.slice(offset, end));
+    offset = end;
+  }
+
+  return pieces;
+}
+
 function sendStdin(ws: WebSocket, stdin: string) {
-  for (let offset = 0; offset < stdin.length; offset += stdinPiece)
-    ws.send(JSON.stringify({ type: "stdin", data: stdin.slice(offset, offset + stdinPiece) }));
+  for (const data of stdinPieces(stdin)) ws.send(JSON.stringify({ type: "stdin", data }));
   ws.send(JSON.stringify({ type: "stdin_end" }));
 }
 
@@ -261,23 +280,33 @@ export async function streamTerminal(dial: Dial, start: StreamStart): Promise<Te
     settle = resolve;
   });
 
-  const end = (result: { exitCode: number | null }) => {
-    if (exit) return;
-    exit = result;
-    settle?.(result);
-  };
-
-  ws.addEventListener("message", (event: MessageEvent) => {
+  const onMessage = (event: MessageEvent) => {
     const message = parse(isString(event.data) ? event.data : String(event.data));
 
     if (message.type === "stdout" || message.type === "stderr") {
       for (const listener of listeners) listener(message.data);
     } else if (message.type === "exit") end({ exitCode: message.exitCode });
     else if (message.type === "error") end({ exitCode: null });
-  });
+  };
 
-  ws.addEventListener("close", () => end({ exitCode: null }));
-  ws.addEventListener("error", () => {});
+  const onClose = () => end({ exitCode: null });
+  const onError = () => {};
+
+  // Once the shell has ended, the socket is closed and detached whatever the server does next.
+  function end(result: { exitCode: number | null }) {
+    if (exit) return;
+    exit = result;
+    ws.removeEventListener("message", onMessage);
+    ws.removeEventListener("close", onClose);
+    listeners.clear();
+
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(1000);
+    settle?.(result);
+  }
+
+  ws.addEventListener("message", onMessage);
+  ws.addEventListener("close", onClose);
+  ws.addEventListener("error", onError);
   ws.send(JSON.stringify({ type: "start", ...start, tty: true, stdin: true }));
 
   const send = (message: ClientMessage) => {
@@ -300,8 +329,7 @@ export async function streamTerminal(dial: Dial, start: StreamStart): Promise<Te
       if (exit) return;
       send({ type: "kill" });
 
-      // Closing on purpose (code 1000) ends the command too.
-      if (ws.readyState === WebSocket.OPEN) ws.close(1000);
+      // Closing on purpose (code 1000) ends the command too; end() closes the socket.
       end({ exitCode: null });
     },
     wait: () => exited,
