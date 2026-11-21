@@ -119,6 +119,10 @@
       "types": "./dist/providers/beam/index.d.ts",
       "default": "./dist/providers/beam/index.js"
     },
+    "./archil": {
+      "types": "./dist/providers/archil/index.d.ts",
+      "default": "./dist/providers/archil/index.js"
+    },
     "./agentos": {
       "types": "./dist/providers/agentos/index.d.ts",
       "default": "./dist/providers/agentos/index.js"
@@ -170,6 +174,7 @@
     "@upstash/box": "^0.7.9",
     "@vercel/sandbox": "3.8.0",
     "ai": "^7.0.143",
+    "disk": "1.12.1",
     "e2b": "2.56.0",
     "esbuild": "0.28.1",
     "freestyle": "0.2.20",
@@ -189,6 +194,7 @@
     "@upstash/box": "^0.7.9",
     "@vercel/sandbox": "^3.8.0",
     "ai": "^7.0.143",
+    "disk": "^1.12.1",
     "modal": "^0.11.1",
     "railway": "^3.16.0",
     "vitest": ">=3",
@@ -235,6 +241,9 @@
       "optional": true
     },
     "@beamcloud/beam-js": {
+      "optional": true
+    },
+    "disk": {
       "optional": true
     }
   },
