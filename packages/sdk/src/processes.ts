@@ -15,6 +15,9 @@ import {
   supervisorScript,
 } from "./shell/process-records.js";
 
+/** Timeout errors created by `ProcessHandle.wait()`'s own deadline timer. */
+export const waitDeadlineErrors = new WeakSet<SandboxError>();
+
 /** A stable process name for a command: its program name plus a short FNV-1a hash of the full command. */
 export function defaultProcessName(command: string): string {
   let hash = 0x811c9dc5;
@@ -539,8 +542,8 @@ export function makeProcesses(
             id,
           );
 
-        const makeTimeoutError = () =>
-          redactor.error(
+        const makeTimeoutError = () => {
+          const error = redactor.error(
             new SandboxError(
               `Process wait timed out. ${name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`,
               { code: "timeout", retryable: true },
@@ -548,6 +551,11 @@ export function makeProcesses(
             provider.name,
             id,
           );
+
+          waitDeadlineErrors.add(error);
+
+          return error;
+        };
 
         return new Promise((resolve, reject) => {
           let settled = false;

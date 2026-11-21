@@ -45,7 +45,7 @@ jobs:
       - run: bun run typecheck
 
   # The SDK unit tests import source files, so they need no build. Three shards
-  # keep each run far below the suite's 120-second timeout.
+  # keep each run well within the job's 120-second timeout.
   sdk-tests:
     name: sdk tests (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest

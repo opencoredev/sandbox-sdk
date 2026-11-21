@@ -148,6 +148,9 @@ export function isNotFound(
 
 const redactedMarker = "[REDACTED]";
 
+/** Errors whose provider details were intentionally withheld before secret recovery completed. */
+export const withheldErrors = new WeakSet<SandboxError>();
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -157,6 +160,8 @@ export class Redactor {
   private values = new Set<string>();
   private primaryPattern: RegExp | undefined;
   private markerSubPattern: RegExp | undefined;
+  private leftPrefixes: string[] = [];
+  private rightSuffixes: string[] = [];
   private compiled = false;
   add(values: Iterable<string>) {
     for (const value of values)
@@ -186,6 +191,23 @@ export class Redactor {
       outside.sort((a, b) => b.length - a.length);
       this.primaryPattern =
         outside.length > 0 ? new RegExp(outside.map(escapeRegExp).join("|"), "g") : undefined;
+
+      const left = new Set<string>();
+      const right = new Set<string>();
+
+      for (const secret of outside) {
+        const limit = Math.min(secret.length, redactedMarker.length);
+
+        for (let overlap = 1; overlap < limit; overlap++) {
+          if (redactedMarker.endsWith(secret.slice(0, overlap))) right.add(secret.slice(overlap));
+
+          if (redactedMarker.startsWith(secret.slice(secret.length - overlap)))
+            left.add(secret.slice(0, secret.length - overlap));
+        }
+      }
+
+      this.leftPrefixes = [...left].sort((a, b) => b.length - a.length);
+      this.rightSuffixes = [...right].sort((a, b) => b.length - a.length);
 
       if (inside.length > 0) {
         const alternatives = [...new Set([...inside, redactedMarker])].sort(
@@ -221,25 +243,59 @@ export class Redactor {
           let start = match.index;
           let end = start + match[0].length;
 
-          while (markerIndex < markers.length) {
-            const marker = markers[markerIndex];
+          const absorbMarkers = () => {
+            while (markerIndex > 0 && (markers[markerIndex - 1]?.[1] ?? 0) > start) markerIndex--;
 
-            if (!marker || marker[1] > start) break;
-            markerIndex++;
+            while (markerIndex < markers.length) {
+              const marker = markers[markerIndex];
+
+              if (!marker || marker[1] > start) break;
+              markerIndex++;
+            }
+
+            for (let index = markerIndex; index < markers.length; index++) {
+              const marker = markers[index];
+
+              if (!marker || marker[0] >= end) break;
+              start = Math.min(start, marker[0]);
+              end = Math.max(end, marker[1]);
+            }
+          };
+
+          absorbMarkers();
+
+          let grew = true;
+
+          while (grew) {
+            grew = false;
+
+            for (const suffix of this.rightSuffixes) {
+              if (end < next.length && next.startsWith(suffix, end)) {
+                end += suffix.length;
+                absorbMarkers();
+                grew = true;
+                break;
+              }
+            }
+
+            for (const prefix of this.leftPrefixes) {
+              if (start >= prefix.length && next.startsWith(prefix, start - prefix.length)) {
+                start -= prefix.length;
+                absorbMarkers();
+                grew = true;
+                break;
+              }
+            }
+
+            while (spans.length > 0 && start <= spans[spans.length - 1]![1]) {
+              start = Math.min(start, spans.pop()![0]);
+              grew = true;
+            }
           }
 
-          for (let index = markerIndex; index < markers.length; index++) {
-            const marker = markers[index];
+          spans.push([start, end]);
 
-            if (!marker || marker[0] >= end) break;
-            start = Math.min(start, marker[0]);
-            end = Math.max(end, marker[1]);
-          }
-
-          const prev = spans[spans.length - 1];
-
-          if (prev && start < prev[1]) prev[1] = Math.max(prev[1], end);
-          else spans.push([start, end]);
+          if (this.primaryPattern.lastIndex < end) this.primaryPattern.lastIndex = end;
         }
 
         if (spans.length > 0) {
@@ -270,8 +326,14 @@ export class Redactor {
   get maxLength() {
     return Math.max(1, ...[...this.values].map((value) => value.length));
   }
+  get overlapLeft(): readonly string[] {
+    if (!this.compiled) this.text("");
+
+    return this.leftPrefixes;
+  }
   /** Map any thrown value to a scrubbed SandboxError. */
   error(cause: unknown, provider: string, sandboxId?: string): SandboxError {
+    if (cause instanceof SandboxError && withheldErrors.has(cause)) return cause;
     const safeProvider = scrubCredentials(this.text(provider));
 
     const scrubId = (id: string | undefined) =>

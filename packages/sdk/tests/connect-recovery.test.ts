@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { connectSandbox, createSandbox, hasCapability } from "../src/index.js";
+import { SandboxError, connectSandbox, createSandbox, hasCapability } from "../src/index.js";
 import { memory } from "../src/memory.js";
 import type { ExecInput, Provider } from "../src/provider.js";
 import { secretRecoveryCommand } from "../src/run.js";
@@ -132,6 +132,113 @@ describe("connectSandbox secret recovery", () => {
     expect(box.process("env")).toBe(handle);
     expect((await handle.logs()).text).toBe("[REDACTED]\n");
     await box.destroy();
+  });
+
+  test("unrecovered secret-recovery errors are withheld across handle operations while preserving retryAfterMs", async () => {
+    const backing = memory();
+    const created = await createSandbox(backing, { secrets: { TOKEN: "unrecovered-secret-999" } });
+
+    const provider: Provider = {
+      ...backing,
+      readSecretEnvironment: async () => {
+        throw new SandboxError("backend exploded with unrecovered-secret-999", {
+          code: "quota",
+          retryable: true,
+          retryAfterMs: 4200,
+          provider: backing.name,
+          sandboxId: created.id,
+        });
+      },
+    };
+
+    const box = await connectSandbox(provider, created.id);
+    const proc = box.process("svc");
+
+    const ops: Array<() => Promise<void>> = [
+      async () => {
+        await box.run("true");
+      },
+      async () => {
+        await box.files.read("/etc/hosts");
+      },
+      async () => {
+        await box.start("sleep 1");
+      },
+      async () => {
+        await proc.logs();
+      },
+      async () => {
+        await proc.lines()[Symbol.asyncIterator]().next();
+      },
+      async () => {
+        await proc.stop();
+      },
+      async () => {
+        await proc.restart();
+      },
+      async () => {
+        await proc.wait({ timeoutMs: 200 });
+      },
+    ];
+
+    for (const op of ops) {
+      let caught: unknown;
+
+      try {
+        await op();
+      } catch (error) {
+        caught = error;
+      }
+
+      if (!(caught instanceof SandboxError)) throw new Error("expected SandboxError");
+      expect(caught).toMatchObject({ code: "quota", retryable: true, retryAfterMs: 4200 });
+      expect(caught.message).toContain("withheld");
+      expect(caught.message).not.toContain("unrecovered-secret-999");
+    }
+
+    await box.close();
+  });
+
+  test("streaming run redaction holds fixed-point marker-overlap invariants and linear expansion", async () => {
+    const cases: Array<[string[], string]> = [
+      [["D", "R", "]["], "DD"],
+      [["T[", "E"], "TE["],
+      [["Q", "D]Z"], "Q" + "Z".repeat(100)],
+      [["TED]XYZ"], "keep-before TED]XYZ" + "XYZ".repeat(550)],
+    ];
+
+    for (const [secrets, payload] of cases) {
+      const provider = memory({
+        handlers: {
+          emit({ stdout }) {
+            for (const ch of payload) stdout(ch);
+
+            return 0;
+          },
+        },
+      });
+
+      const box = await createSandbox(provider, {
+        secrets: Object.fromEntries(secrets.map((value, i) => [`S_${i}`, value])),
+      });
+
+      try {
+        const result = await box.run("emit");
+        const streamed: string[] = [];
+
+        for await (const chunk of box.run("emit")) streamed.push(chunk.text);
+        const joined = streamed.join("");
+
+        for (const text of [result.stdout, result.output, joined]) {
+          for (const secret of secrets)
+            if (!"[REDACTED]".includes(secret)) expect(text).not.toContain(secret);
+
+          if (payload.startsWith("keep-before ")) expect(text).toContain("keep-before ");
+        }
+      } finally {
+        await box.destroy();
+      }
+    }
   });
 });
 

@@ -202,65 +202,117 @@ export function chunkRedactor(
   emit: (chunk: OutputChunk) => void,
   interleaved = false,
 ) {
+  const marker = "[REDACTED]";
   const queue: OutputChunk[] = [];
 
-  function drain(final = false) {
+  function safePrefixLength(text: string): number {
     const secrets = redactor.secrets;
-    const leading = new Set(secrets.map((secret) => secret[0]));
+    const windowStart = Math.max(0, text.length - (redactor.maxLength - 1));
+    let safe = text.length;
 
+    for (let index = windowStart; index < text.length; index++) {
+      const suffix = text.slice(index);
+
+      if (secrets.some((secret) => secret.startsWith(suffix))) {
+        safe = index;
+        break;
+      }
+    }
+
+    if (safe === text.length) return text.length;
+
+    // Keep any marker that could still absorb a right-overlap or be split across emissions.
+    let pos = text.indexOf(marker);
+
+    while (pos !== -1) {
+      if (pos < safe && pos + marker.length > safe) {
+        safe = pos;
+        break;
+      }
+
+      pos = text.indexOf(marker, pos + marker.length);
+    }
+
+    // Hold trailing characters that could extend left from a future marker.
+    const leftPrefixes = redactor.overlapLeft;
+
+    if (leftPrefixes.length > 0) {
+      let pulled = true;
+
+      while (pulled && safe > 0) {
+        pulled = false;
+
+        for (const prefix of leftPrefixes) {
+          if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
+            safe -= prefix.length;
+            pulled = true;
+            break;
+          }
+        }
+
+        if (pulled && safe >= marker.length && text.startsWith(marker, safe - marker.length))
+          safe -= marker.length;
+      }
+    }
+
+    return safe;
+  }
+
+  function drain(final = false) {
     while (queue.length) {
       const first = queue[0];
 
       if (!first) break;
 
-      if (!leading.has(first.text[0])) {
-        let count = 1;
+      const indices: number[] = [];
 
-        while (count < first.text.length && !leading.has(first.text[count])) count++;
-        emit({ stream: first.stream, text: first.text.slice(0, count) });
-        first.text = first.text.slice(count);
+      for (let i = 0; i < queue.length; i++)
+        if (interleaved || queue[i]!.stream === first.stream) indices.push(i);
 
-        if (!first.text) queue.shift();
-        continue;
-      }
+      const raw = indices.map((i) => queue[i]!.text).join("");
+      const redacted = redactor.text(raw);
+      const safe = final ? redacted.length : safePrefixLength(redacted);
 
-      const text = queue
-        .flatMap((chunk) => (interleaved || chunk.stream === first.stream ? [chunk.text] : []))
-        .join("");
-
-      const secret = secrets.find((secret) => text.startsWith(secret));
-
-      if (secret) {
-        emit({ stream: first.stream, text: "[REDACTED]" });
-        let remaining = secret.length;
-
-        for (const chunk of queue)
-          if ((interleaved || chunk.stream === first.stream) && remaining) {
-            const count = Math.min(remaining, chunk.text.length);
-            chunk.text = chunk.text.slice(count);
-            remaining -= count;
-          }
-      } else {
-        if (!final && secrets.some((secret) => secret.startsWith(text))) {
+      if (redacted === raw) {
+        if (safe === 0) {
           if (queue.reduce((size, chunk) => size + Buffer.byteLength(chunk.text), 0) <= 1_048_576)
             break;
           // A stalled stream must not retain arbitrary output from another stream.
           // Conservatively redact its ambiguous prefix, preserving arrival order.
-          emit({ stream: first.stream, text: "[REDACTED]" });
+          emit({ stream: first.stream, text: marker });
           queue.shift();
           continue;
         }
 
-        // Emit up to the next potentially secret-leading character.
-        let count = 1;
+        let remaining = safe;
 
-        while (count < first.text.length && !leading.has(first.text[count])) count++;
-        emit({ stream: first.stream, text: first.text.slice(0, count) });
-        first.text = first.text.slice(count);
+        for (const index of indices) {
+          const chunk = queue[index]!;
+
+          if (!remaining) break;
+          const take = Math.min(remaining, chunk.text.length);
+          emit({ stream: chunk.stream, text: chunk.text.slice(0, take) });
+          chunk.text = chunk.text.slice(take);
+          remaining -= take;
+        }
+      } else {
+        if (safe > 0) emit({ stream: first.stream, text: redacted.slice(0, safe) });
+        let tail = redacted.slice(safe);
+
+        if (!final && Buffer.byteLength(tail) > 1_048_576) {
+          emit({ stream: first.stream, text: marker });
+          tail = "";
+        }
+
+        queue[indices[0]!]!.text = tail;
+
+        for (let i = 1; i < indices.length; i++) queue[indices[i]!]!.text = "";
       }
 
       for (let index = queue.length - 1; index >= 0; index--)
         if (!queue[index]?.text) queue.splice(index, 1);
+
+      if (!final && safe === 0) break;
     }
   }
 
@@ -272,6 +324,7 @@ export function chunkRedactor(
         return;
       }
 
+      if (!chunk.text) return;
       queue.push({ ...chunk });
       drain();
     },

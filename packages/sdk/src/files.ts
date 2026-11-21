@@ -953,7 +953,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
         for (const entry of await list(options.path, { recursive: true, glob: options.glob }))
           if (entry.type === "file") {
-            // A leading BOM is not part of line 1's text, as in the guest search above.
+            // Strip a leading UTF-8 BOM from line 1 so matching behaves consistently on BOM files.
             const lines = (await read(entry.path)).replace(/^\uFEFF/, "").split("\n");
 
             for (const [index, text] of lines.entries())
