@@ -83,20 +83,33 @@ export function hasCapability<B extends SandboxBase<unknown>, K extends Capabili
 
 const sdkLabel = { "sandbox-sdk": "1" };
 
+/** The optional provider methods each capability stands for. */
+const capabilityMethods = [
+  ["pause", ["pause", "resume"]],
+  ["snapshot", ["snapshot"]],
+  ["terminal", ["terminal"]],
+  ["snapshot-delete", ["deleteSnapshot"]],
+  ["templates", ["buildTemplate"]],
+] as const satisfies readonly (readonly [Capability, readonly (keyof Provider)[]])[];
+
 function validate(provider: Provider, options: CreateOptions) {
   for (const name of Object.keys({ ...options.env, ...options.secrets }))
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) invalid("Invalid environment variable name");
 
-  for (const cap of provider.capabilities) {
-    if (
-      (cap === "pause" && (!provider.pause || !provider.resume)) ||
-      (cap === "snapshot" && !provider.snapshot) ||
-      (cap === "terminal" && !provider.terminal) ||
-      (cap === "snapshot-delete" && !provider.deleteSnapshot) ||
-      (cap === "templates" && !provider.buildTemplate)
-    )
+  // Both directions: a declared capability needs its methods, and a method needs its capability,
+  // because the handle only exposes a method whose capability is declared.
+  for (const [capability, methods] of capabilityMethods) {
+    const present = methods.filter((method) => provider[method] !== undefined);
+
+    if (provider.capabilities.has(capability) && present.length !== methods.length)
       throw new SandboxError(
-        "Invalid adapter capabilities. A declared method is missing. Fix the adapter contract.",
+        `Invalid adapter capabilities. ${provider.name} declares "${capability}" but does not implement ${methods.join(" and ")}. Fix the adapter contract.`,
+        { code: "provider" },
+      );
+
+    if (!provider.capabilities.has(capability) && present.length > 0)
+      throw new SandboxError(
+        `Invalid adapter capabilities. ${provider.name} implements ${present.join(" and ")} but does not declare "${capability}". Fix the adapter contract.`,
         { code: "provider" },
       );
   }
