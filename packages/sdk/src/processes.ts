@@ -781,8 +781,6 @@ export function makeProcesses(
               { code: "provider" },
             );
           else {
-            const sed = redactionSedScript(redactor.secrets);
-            await provider.files.write(id, sedPath, new TextEncoder().encode(sed), { mode: 0o600 });
             controller?.state("starting");
             controller?.ready(false);
           }
@@ -883,6 +881,16 @@ export function makeProcesses(
           });
 
           try {
+            const sed = redactionSedScript(redactor.secrets);
+
+            if (provider.files.writeSupportsMode === false) {
+              await files.write(sedPath, sed, { mode: 0o600 });
+            } else {
+              await provider.files.write(id, sedPath, new TextEncoder().encode(sed), {
+                mode: 0o600,
+              });
+            }
+
             if (provider.startProcess) {
               const hook = await provider.startProcess(id, {
                 command: wrapper,
@@ -915,7 +923,7 @@ export function makeProcesses(
               // Without readiness, wait up to ~100 ms in the guest for a command that exits at once.
               let wire = "";
 
-              await exec(
+              const launchResult = await exec(
                 detachedLaunchScript({ dir, supervisor: wrapper, waitForExit: !options.ready }),
                 options.env,
                 undefined,
@@ -923,6 +931,13 @@ export function makeProcesses(
                   wire += text;
                 },
               );
+
+              if (launchResult.timedOut || launchResult.exitCode !== 0) {
+                throw new SandboxError(
+                  "Process launch failed. Could not start the background supervisor.",
+                  { code: "provider" },
+                );
+              }
 
               if (/^\d+$/.test(wire.trim())) early = Number(wire.trim());
             }

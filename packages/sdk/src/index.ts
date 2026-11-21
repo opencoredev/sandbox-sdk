@@ -101,7 +101,7 @@ function validate(provider: Provider, options: CreateOptions) {
   // Both directions: a declared capability needs its methods, and a method needs its capability,
   // because the handle only exposes a method whose capability is declared.
   for (const [capability, methods] of capabilityMethods) {
-    const present = methods.filter((method) => provider[method] !== undefined);
+    const present = methods.filter((method) => provider[method] instanceof Function);
 
     if (provider.capabilities.has(capability) && present.length !== methods.length)
       throw new SandboxError(

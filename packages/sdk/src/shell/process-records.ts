@@ -136,26 +136,81 @@ export function recordSetupScript(input: { dir: string; cwd: string }): string {
 
 /** The sed program the stream readers apply to each chunk. Each secret line is replaced
  * whole, and each of its prefixes at a chunk's end and suffixes at its start, so a secret
- * split across two reads is still redacted. */
+ * split across two reads is still redacted. Existing and emitted `[REDACTED]` markers are
+ * shielded using control bytes absent from every secret so neither literal markers nor
+ * non-secret control bytes are mangled. */
 export function redactionSedScript(secrets: readonly string[]): string {
   const lines = secrets.flatMap((value) => value.split("\n")).filter(Boolean);
-  const placeholder = "\u001e";
-  const hasInsideMarker = lines.some((secret) => "[REDACTED]".includes(secret));
-  const canShield = hasInsideMarker && lines.every((secret) => !secret.includes(placeholder));
+
+  if (lines.length === 0) return "\n";
+
+  // Choose three distinct non-whitespace control bytes absent from all secrets:
+  // `esc` escapes literal occurrences of itself (`esc` -> `esc + lit`), while
+  // `esc + mark` shields existing and newly emitted `[REDACTED]` markers until the end.
+  const candidates = [
+    "\u001e",
+    "\u001f",
+    "\u001c",
+    "\u001d",
+    "\u0001",
+    "\u0002",
+    "\u0003",
+    "\u0004",
+    "\u0005",
+    "\u0006",
+    "\u0007",
+    "\u0008",
+    "\u000b",
+    "\u000c",
+    "\u000e",
+    "\u000f",
+    "\u0010",
+    "\u0011",
+    "\u0012",
+    "\u0013",
+    "\u0014",
+    "\u0015",
+    "\u0016",
+    "\u0017",
+    "\u0018",
+    "\u0019",
+    "\u001a",
+    "\u001b",
+  ].filter((ch) => lines.every((secret) => !secret.includes(ch)));
+
+  const esc = candidates[0];
+  const lit = candidates[1];
+  const mark = candidates[2];
+  const placeholder = esc && lit && mark ? `${esc}${mark}` : undefined;
+  const replacement = placeholder ?? "[REDACTED]";
   const rules: string[] = [];
 
-  if (canShield) rules.push(`s|\\[REDACTED\\]|${placeholder}|g`);
+  if (esc && lit && placeholder) {
+    rules.push(`s|${esc}|${esc}${lit}|g`);
+    rules.push(`s|\\[REDACTED\\]|${placeholder}|g`);
+  }
 
   for (const secret of lines) {
-    rules.push(`s|${sedEscape(secret)}|[REDACTED]|g`);
+    rules.push(`s|${sedEscape(secret)}|${replacement}|g`);
 
     for (let index = 0; index < secret.length - 1; index++) {
-      rules.push(`s|${sedEscape(secret.slice(0, secret.length - 1 - index))}$|[REDACTED]|`);
-      rules.push(`s|^${sedEscape(secret.slice(index + 1))}|[REDACTED]|`);
+      rules.push(`s|${sedEscape(secret.slice(0, secret.length - 1 - index))}$|${replacement}|`);
+      rules.push(`s|^${sedEscape(secret.slice(index + 1))}|${replacement}|`);
     }
   }
 
-  if (canShield) rules.push(`s|${placeholder}|[REDACTED]|g`);
+  if (esc && lit && placeholder) {
+    const spansAdjacentMarkers = lines.some(
+      (secret) => "[REDACTED][REDACTED]".includes(secret) && !"[REDACTED]".includes(secret),
+    );
+
+    if (spansAdjacentMarkers) {
+      rules.push(":m", `s|${placeholder}${placeholder}|${placeholder}|g`, "t m");
+    }
+
+    rules.push(`s|${placeholder}|[REDACTED]|g`);
+    rules.push(`s|${esc}${lit}|${esc}|g`);
+  }
 
   return rules.join("\n") + "\n";
 }

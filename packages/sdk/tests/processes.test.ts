@@ -1,6 +1,11 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { connectSandbox, createSandbox, SandboxError } from "../src/index.js";
 import { memory } from "../src/memory.js";
+import { redactionSedScript } from "../src/shell/process-records.js";
 import { shellProvider } from "./shell-provider.js";
 
 test("start() with a missing cwd reports failed and logs the shell's cd error", async () => {
@@ -672,5 +677,35 @@ test("restart() shares cross-handle stream reservations with concurrent start()"
       .stop({ graceMs: 0 })
       .catch(() => {});
     await box2.close();
+  }
+});
+
+test("redactionSedScript redacts overlapping, marker-substring, and control-byte secrets through real sed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sandbox-sdk-sed-"));
+
+  try {
+    const runSed = (secrets: string[], input: string) => {
+      const scriptPath = join(dir, "redact.sed");
+      writeFileSync(scriptPath, redactionSedScript(secrets), "utf8");
+
+      return execFileSync("sed", ["-f", scriptPath], { input, encoding: "utf8" });
+    };
+
+    expect(runSed(["D", "R", "]["], "alpha D beta R gamma ][ [REDACTED]")).toBe(
+      "alpha [REDACTED] beta [REDACTED] gamma [REDACTED] [REDACTED]",
+    );
+    expect(runSed(["TOKEN1", "ACT"], "x TOKEN1 y ACT z [REDACTED]")).toBe(
+      "x [REDACTED] y [REDACTED] z [REDACTED]",
+    );
+    expect(runSed(["ED]Z", "hunter2"], "a hunter2Z b [REDACTED]Z c")).toBe(
+      "a [REDACTED]Z b [REDACTED]Z c",
+    );
+    expect(runSed(["R"], "keep\u001eR\u001eend")).toBe("keep\u001e[REDACTED]\u001eend");
+    expect(runSed(["R", "x\u001ey"], "pre [REDACTED] x\u001ey R post")).toBe(
+      "pre [REDACTED] [REDACTED] [REDACTED] post",
+    );
+    expect(runSed(["]["], "[REDACTED][REDACTED]")).toBe("[REDACTED]");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -158,6 +158,20 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** @internal One segment of a redacted string mapped back to its original `[start, end)` range. */
+export interface RedactedSegment {
+  readonly text: string;
+  readonly redacted: boolean;
+  readonly start: number;
+  readonly end: number;
+}
+
+/** @internal Redacted text together with its source-mapped segments. */
+export interface RedactedText {
+  readonly text: string;
+  readonly segments: RedactedSegment[];
+}
+
 /** @internal Redacts registered secrets from text and errors. */
 export class Redactor {
   private values = new Set<string>();
@@ -177,6 +191,221 @@ export class Redactor {
         this.compiled = false;
       }
   }
+  private compile() {
+    if (this.compiled) return;
+    const outside: string[] = [];
+    const inside: string[] = [];
+
+    for (const secret of this.values) {
+      if (redactedMarker.includes(secret)) inside.push(secret);
+      else outside.push(secret);
+    }
+
+    outside.sort((a, b) => b.length - a.length);
+    this.primaryPattern =
+      outside.length > 0 ? new RegExp(outside.map(escapeRegExp).join("|"), "g") : undefined;
+
+    const left = new Set<string>();
+    const right = new Set<string>();
+    const hold = new Set<string>();
+    const around: [string, string][] = [];
+
+    for (const secret of outside) {
+      // Include full-marker overlap (overlap === redactedMarker.length) when the secret
+      // starts or ends with `[REDACTED]` plus additional text.
+      const limit = Math.min(secret.length - 1, redactedMarker.length);
+
+      for (let overlap = 1; overlap <= limit; overlap++) {
+        if (redactedMarker.endsWith(secret.slice(0, overlap))) right.add(secret.slice(overlap));
+
+        if (redactedMarker.startsWith(secret.slice(secret.length - overlap))) {
+          const prefix = secret.slice(0, secret.length - overlap);
+          left.add(prefix);
+
+          for (let len = 1; len <= prefix.length; len++) hold.add(prefix.slice(0, len));
+        }
+      }
+
+      // Capture secrets containing `[REDACTED]` in the middle (e.g. `X[REDACTED]Y`) so
+      // batch expansion stays linear and streaming holds the leading prefix `X`.
+      let markerAt = secret.indexOf(redactedMarker);
+
+      while (markerAt !== -1) {
+        const before = secret.slice(0, markerAt);
+        const after = secret.slice(markerAt + redactedMarker.length);
+
+        if (before) {
+          for (let len = 1; len <= before.length; len++) hold.add(before.slice(0, len));
+        }
+
+        if (before && after) around.push([before, after]);
+
+        markerAt = secret.indexOf(redactedMarker, markerAt + 1);
+      }
+    }
+
+    this.leftPrefixes = [...left].sort((a, b) => b.length - a.length);
+    this.rightSuffixes = [...right].sort((a, b) => b.length - a.length);
+    this.aroundPairs = around;
+    this.holdLeft = [...hold].sort((a, b) => b.length - a.length);
+    this.cachedSecrets = [...this.values].sort((a, b) => b.length - a.length);
+    this.cachedMaxLength = Math.max(1, ...this.cachedSecrets.map((item) => item.length));
+
+    if (inside.length > 0) {
+      const alternatives = [...new Set([...inside, redactedMarker])].sort(
+        (a, b) => b.length - a.length,
+      );
+
+      this.markerSubPattern = new RegExp(alternatives.map(escapeRegExp).join("|"), "g");
+    } else this.markerSubPattern = undefined;
+
+    this.compiled = true;
+  }
+  private findPrimarySpans(next: string): [number, number][] {
+    if (!this.primaryPattern) return [];
+
+    // Phase 1: locate all existing `[REDACTED]` markers so matched spans absorb overlapped markers.
+    const markers: [number, number][] = [];
+    let pos = next.indexOf(redactedMarker);
+
+    while (pos !== -1) {
+      markers.push([pos, pos + redactedMarker.length]);
+      pos = next.indexOf(redactedMarker, pos + redactedMarker.length);
+    }
+
+    // Store `[start, end, leftMarker]` per span so leftward merges skip already-absorbed markers in O(1).
+    const spans: [number, number, number][] = [];
+    this.primaryPattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let scanMarker = 0;
+
+    while ((match = this.primaryPattern.exec(next)) !== null) {
+      let start = match.index;
+      let end = start + match[0].length;
+
+      while (scanMarker < markers.length && (markers[scanMarker]?.[1] ?? 0) <= start) {
+        scanMarker++;
+      }
+
+      let leftMarker = scanMarker;
+      let rightMarker = scanMarker;
+
+      const absorbMarkers = () => {
+        let expanded = true;
+
+        while (expanded) {
+          expanded = false;
+
+          while (leftMarker > 0 && (markers[leftMarker - 1]?.[1] ?? 0) > start) {
+            leftMarker--;
+            const marker = markers[leftMarker];
+
+            if (marker) {
+              if (marker[0] < start) {
+                start = marker[0];
+                expanded = true;
+              }
+
+              if (marker[1] > end) {
+                end = marker[1];
+                expanded = true;
+              }
+            }
+          }
+
+          while (rightMarker < markers.length && (markers[rightMarker]?.[0] ?? 0) < end) {
+            const marker = markers[rightMarker];
+            rightMarker++;
+
+            if (marker) {
+              if (marker[0] < start) {
+                start = marker[0];
+                expanded = true;
+              }
+
+              if (marker[1] > end) {
+                end = marker[1];
+                expanded = true;
+              }
+            }
+          }
+        }
+      };
+
+      absorbMarkers();
+
+      // Phase 2: greedily expand right/left/around suffixes & prefixes that would form new
+      // secret matches against the replacement `[REDACTED]`, then merge overlapping spans.
+      let grew = true;
+
+      while (grew) {
+        grew = false;
+
+        for (const suffix of this.rightSuffixes) {
+          if (end < next.length && next.startsWith(suffix, end)) {
+            end += suffix.length;
+            absorbMarkers();
+            grew = true;
+            break;
+          }
+        }
+
+        for (const prefix of this.leftPrefixes) {
+          if (start >= prefix.length && next.startsWith(prefix, start - prefix.length)) {
+            start -= prefix.length;
+            absorbMarkers();
+            grew = true;
+            break;
+          }
+        }
+
+        for (const [before, after] of this.aroundPairs) {
+          if (
+            start >= before.length &&
+            end + after.length <= next.length &&
+            next.startsWith(before, start - before.length) &&
+            next.startsWith(after, end)
+          ) {
+            start -= before.length;
+            end += after.length;
+            absorbMarkers();
+            grew = true;
+            break;
+          }
+        }
+
+        while (spans.length > 0) {
+          const previous = spans.at(-1);
+
+          if (!previous || start > previous[1]) break;
+          spans.pop();
+          start = Math.min(start, previous[0]);
+          leftMarker = Math.min(leftMarker, previous[2]);
+          absorbMarkers();
+          grew = true;
+        }
+      }
+
+      spans.push([start, end, leftMarker]);
+      scanMarker = rightMarker;
+
+      if (this.primaryPattern.lastIndex < end) this.primaryPattern.lastIndex = end;
+    }
+
+    return spans.map(([start, end]) => [start, end]);
+  }
+  private findMarkerSubSpans(next: string): [number, number][] {
+    if (!this.markerSubPattern) return [];
+    const spans: [number, number][] = [];
+    this.markerSubPattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = this.markerSubPattern.exec(next)) !== null) {
+      if (match[0] !== redactedMarker) spans.push([match.index, match.index + match[0].length]);
+    }
+
+    return spans;
+  }
   /**
    * Replaces every registered secret with `[REDACTED]`. Secrets that are not substrings of
    * `[REDACTED]` run without exempting literal markers, while secrets inside `[REDACTED]` match
@@ -185,220 +414,23 @@ export class Redactor {
    */
   text(value: string): string {
     if (this.values.size === 0) return value;
-
-    if (!this.compiled) {
-      const outside: string[] = [];
-      const inside: string[] = [];
-
-      for (const secret of this.values) {
-        if (redactedMarker.includes(secret)) inside.push(secret);
-        else outside.push(secret);
-      }
-
-      outside.sort((a, b) => b.length - a.length);
-      this.primaryPattern =
-        outside.length > 0 ? new RegExp(outside.map(escapeRegExp).join("|"), "g") : undefined;
-
-      const left = new Set<string>();
-      const right = new Set<string>();
-      const hold = new Set<string>();
-      const around: [string, string][] = [];
-
-      for (const secret of outside) {
-        // Include full-marker overlap (overlap === redactedMarker.length) when the secret
-        // starts or ends with `[REDACTED]` plus additional text.
-        const limit = Math.min(secret.length - 1, redactedMarker.length);
-
-        for (let overlap = 1; overlap <= limit; overlap++) {
-          if (redactedMarker.endsWith(secret.slice(0, overlap))) right.add(secret.slice(overlap));
-
-          if (redactedMarker.startsWith(secret.slice(secret.length - overlap))) {
-            const prefix = secret.slice(0, secret.length - overlap);
-            left.add(prefix);
-
-            for (let len = 1; len <= prefix.length; len++) hold.add(prefix.slice(0, len));
-          }
-        }
-
-        // Capture secrets containing `[REDACTED]` in the middle (e.g. `X[REDACTED]Y`) so
-        // batch expansion stays linear and streaming holds the leading prefix `X`.
-        let markerAt = secret.indexOf(redactedMarker);
-
-        while (markerAt !== -1) {
-          const before = secret.slice(0, markerAt);
-          const after = secret.slice(markerAt + redactedMarker.length);
-
-          if (before) {
-            for (let len = 1; len <= before.length; len++) hold.add(before.slice(0, len));
-          }
-
-          if (before && after) around.push([before, after]);
-
-          markerAt = secret.indexOf(redactedMarker, markerAt + 1);
-        }
-      }
-
-      this.leftPrefixes = [...left].sort((a, b) => b.length - a.length);
-      this.rightSuffixes = [...right].sort((a, b) => b.length - a.length);
-      this.aroundPairs = around;
-      this.holdLeft = [...hold].sort((a, b) => b.length - a.length);
-      this.cachedSecrets = [...this.values].sort((a, b) => b.length - a.length);
-      this.cachedMaxLength = Math.max(1, ...this.cachedSecrets.map((item) => item.length));
-
-      if (inside.length > 0) {
-        const alternatives = [...new Set([...inside, redactedMarker])].sort(
-          (a, b) => b.length - a.length,
-        );
-
-        this.markerSubPattern = new RegExp(alternatives.map(escapeRegExp).join("|"), "g");
-      } else this.markerSubPattern = undefined;
-
-      this.compiled = true;
-    }
-
+    this.compile();
     let result = value;
 
     for (let pass = 0; pass < 512; pass++) {
       let next = result;
+      const spans = this.findPrimarySpans(next);
 
-      if (this.primaryPattern) {
-        // Phase 1: locate all existing `[REDACTED]` markers so matched spans absorb overlapped markers.
-        const markers: [number, number][] = [];
-        let pos = next.indexOf(redactedMarker);
+      if (spans.length > 0) {
+        let out = "";
+        let cursor = 0;
 
-        while (pos !== -1) {
-          markers.push([pos, pos + redactedMarker.length]);
-          pos = next.indexOf(redactedMarker, pos + redactedMarker.length);
+        for (const [start, end] of spans) {
+          out += next.slice(cursor, start) + redactedMarker;
+          cursor = end;
         }
 
-        const spans: [number, number][] = [];
-        this.primaryPattern.lastIndex = 0;
-        let match: RegExpExecArray | null;
-        let scanMarker = 0;
-
-        while ((match = this.primaryPattern.exec(next)) !== null) {
-          let start = match.index;
-          let end = start + match[0].length;
-
-          while (scanMarker < markers.length && (markers[scanMarker]?.[1] ?? 0) <= start) {
-            scanMarker++;
-          }
-
-          let leftMarker = scanMarker;
-          let rightMarker = scanMarker;
-
-          const absorbMarkers = () => {
-            let expanded = true;
-
-            while (expanded) {
-              expanded = false;
-
-              while (leftMarker > 0 && (markers[leftMarker - 1]?.[1] ?? 0) > start) {
-                leftMarker--;
-                const marker = markers[leftMarker];
-
-                if (marker) {
-                  if (marker[0] < start) {
-                    start = marker[0];
-                    expanded = true;
-                  }
-
-                  if (marker[1] > end) {
-                    end = marker[1];
-                    expanded = true;
-                  }
-                }
-              }
-
-              while (rightMarker < markers.length && (markers[rightMarker]?.[0] ?? 0) < end) {
-                const marker = markers[rightMarker];
-                rightMarker++;
-
-                if (marker) {
-                  if (marker[0] < start) {
-                    start = marker[0];
-                    expanded = true;
-                  }
-
-                  if (marker[1] > end) {
-                    end = marker[1];
-                    expanded = true;
-                  }
-                }
-              }
-            }
-          };
-
-          absorbMarkers();
-
-          // Phase 2: greedily expand right/left/around suffixes & prefixes that would form new
-          // secret matches against the replacement `[REDACTED]`, then merge overlapping spans.
-          let grew = true;
-
-          while (grew) {
-            grew = false;
-
-            for (const suffix of this.rightSuffixes) {
-              if (end < next.length && next.startsWith(suffix, end)) {
-                end += suffix.length;
-                absorbMarkers();
-                grew = true;
-                break;
-              }
-            }
-
-            for (const prefix of this.leftPrefixes) {
-              if (start >= prefix.length && next.startsWith(prefix, start - prefix.length)) {
-                start -= prefix.length;
-                absorbMarkers();
-                grew = true;
-                break;
-              }
-            }
-
-            for (const [before, after] of this.aroundPairs) {
-              if (
-                start >= before.length &&
-                end + after.length <= next.length &&
-                next.startsWith(before, start - before.length) &&
-                next.startsWith(after, end)
-              ) {
-                start -= before.length;
-                end += after.length;
-                absorbMarkers();
-                grew = true;
-                break;
-              }
-            }
-
-            while (spans.length > 0) {
-              const previous = spans.at(-1);
-
-              if (!previous || start > previous[1]) break;
-              spans.pop();
-              start = Math.min(start, previous[0]);
-              absorbMarkers();
-              grew = true;
-            }
-          }
-
-          spans.push([start, end]);
-          scanMarker = rightMarker;
-
-          if (this.primaryPattern.lastIndex < end) this.primaryPattern.lastIndex = end;
-        }
-
-        if (spans.length > 0) {
-          let out = "";
-          let cursor = 0;
-
-          for (const [start, end] of spans) {
-            out += next.slice(cursor, start) + redactedMarker;
-            cursor = end;
-          }
-
-          next = out + next.slice(cursor);
-        }
+        next = out + next.slice(cursor);
       }
 
       if (this.markerSubPattern) next = next.replace(this.markerSubPattern, redactedMarker);
@@ -410,10 +442,159 @@ export class Redactor {
     // Secrets that keep re-forming past the pass budget fail closed cleanly.
     return redactedMarker;
   }
+  /** Redact `value` and return each output segment mapped back to its original `[start, end)` range. */
+  redactSegments(value: string): RedactedText {
+    if (this.values.size === 0 || !value) {
+      return {
+        text: value,
+        segments: value ? [{ text: value, redacted: false, start: 0, end: value.length }] : [],
+      };
+    }
+
+    this.compile();
+    let result = value;
+
+    let segments: RedactedSegment[] = [
+      { text: value, redacted: false, start: 0, end: value.length },
+    ];
+
+    const applySpans = (
+      current: string,
+      currentSegments: RedactedSegment[],
+      spans: readonly [number, number][],
+    ): RedactedText => {
+      if (spans.length === 0) return { text: current, segments: currentSegments };
+      const nextSegments: RedactedSegment[] = [];
+      let segIndex = 0;
+      let segOffset = 0;
+
+      const emitUnchanged = (from: number, to: number) => {
+        if (to <= from) return;
+
+        while (segIndex < currentSegments.length) {
+          const seg = currentSegments[segIndex];
+
+          if (!seg) break;
+          const segEnd = segOffset + seg.text.length;
+
+          if (segEnd <= from) {
+            segOffset = segEnd;
+            segIndex++;
+            continue;
+          }
+
+          if (segOffset >= to) break;
+          const sliceStart = Math.max(from, segOffset) - segOffset;
+          const sliceEnd = Math.min(to, segEnd) - segOffset;
+          const piece = seg.text.slice(sliceStart, sliceEnd);
+
+          if (piece) {
+            nextSegments.push(
+              seg.redacted
+                ? { text: piece, redacted: true, start: seg.start, end: seg.end }
+                : {
+                    text: piece,
+                    redacted: false,
+                    start: seg.start + sliceStart,
+                    end: seg.start + sliceEnd,
+                  },
+            );
+          }
+
+          if (segEnd <= to) {
+            segOffset = segEnd;
+            segIndex++;
+          } else break;
+        }
+      };
+
+      const consumeReplaced = (from: number, to: number) => {
+        let origStart = value.length;
+        let origEnd = 0;
+
+        while (segIndex < currentSegments.length) {
+          const seg = currentSegments[segIndex];
+
+          if (!seg) break;
+          const segEnd = segOffset + seg.text.length;
+
+          if (segEnd <= from) {
+            segOffset = segEnd;
+            segIndex++;
+            continue;
+          }
+
+          if (segOffset >= to) break;
+          const sliceStart = Math.max(from, segOffset) - segOffset;
+          const sliceEnd = Math.min(to, segEnd) - segOffset;
+          const pieceStart = seg.redacted ? seg.start : seg.start + sliceStart;
+          const pieceEnd = seg.redacted ? seg.end : seg.start + sliceEnd;
+
+          if (pieceStart < origStart) origStart = pieceStart;
+
+          if (pieceEnd > origEnd) origEnd = pieceEnd;
+
+          if (segEnd <= to) {
+            segOffset = segEnd;
+            segIndex++;
+          } else break;
+        }
+
+        nextSegments.push({
+          text: redactedMarker,
+          redacted: true,
+          start: origStart,
+          end: origEnd,
+        });
+      };
+
+      let cursor = 0;
+      let out = "";
+
+      for (const [start, end] of spans) {
+        emitUnchanged(cursor, start);
+        consumeReplaced(start, end);
+        out += current.slice(cursor, start) + redactedMarker;
+        cursor = end;
+      }
+
+      emitUnchanged(cursor, current.length);
+
+      return { text: out + current.slice(cursor), segments: nextSegments };
+    };
+
+    for (let pass = 0; pass < 512; pass++) {
+      let next = result;
+      let nextSegments = segments;
+      const primarySpans = this.findPrimarySpans(next);
+
+      if (primarySpans.length > 0) {
+        const applied = applySpans(next, nextSegments, primarySpans);
+        next = applied.text;
+        nextSegments = applied.segments;
+      }
+
+      const subSpans = this.findMarkerSubSpans(next);
+
+      if (subSpans.length > 0) {
+        const applied = applySpans(next, nextSegments, subSpans);
+        next = applied.text;
+        nextSegments = applied.segments;
+      }
+
+      if (next === result) return { text: result, segments };
+      result = next;
+      segments = nextSegments;
+    }
+
+    return {
+      text: redactedMarker,
+      segments: [{ text: redactedMarker, redacted: true, start: 0, end: value.length }],
+    };
+  }
   hasMatch(value: string): boolean {
     if (this.values.size === 0 || !value) return false;
-
-    if (!this.compiled) this.text("");
+    this.compile();
 
     if (this.primaryPattern) {
       this.primaryPattern.lastIndex = 0;
@@ -433,22 +614,22 @@ export class Redactor {
     return false;
   }
   get secrets(): readonly string[] {
-    if (!this.compiled) this.text("");
+    this.compile();
 
     return this.cachedSecrets;
   }
   get maxLength(): number {
-    if (!this.compiled) this.text("");
+    this.compile();
 
     return this.cachedMaxLength;
   }
   get overlapLeft(): readonly string[] {
-    if (!this.compiled) this.text("");
+    this.compile();
 
     return this.leftPrefixes;
   }
   get streamHoldLeft(): readonly string[] {
-    if (!this.compiled) this.text("");
+    this.compile();
 
     return this.holdLeft;
   }
