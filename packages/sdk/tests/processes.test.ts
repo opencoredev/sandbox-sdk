@@ -698,8 +698,12 @@ test("redactionSedScript redacts overlapping, marker-substring, and control-byte
       "x [REDACTED] y [REDACTED] z [REDACTED]",
     );
     expect(runSed(["ED]Z", "hunter2"], "a hunter2Z b [REDACTED]Z c")).toBe(
-      "a [REDACTED]Z b [REDACTED]Z c",
+      "a [REDACTED] b [REDACTED] c",
     );
+    expect(runSed(["D]x"], "[REDACTED]x")).toBe("[REDACTED]");
+    expect(runSed(["]["], "[REDACTED][x")).toBe("[REDACTED]x");
+    expect(runSed(["A[REDACTED]"], "A[REDACTED]")).toBe("[REDACTED]");
+    expect(runSed(["short", "short\nlonger-secret"], "longer-secret")).toBe("[REDACTED]");
     expect(runSed(["R"], "keep\u001eR\u001eend")).toBe("keep\u001e[REDACTED]\u001eend");
     expect(runSed(["R", "x\u001ey"], "pre [REDACTED] x\u001ey R post")).toBe(
       "pre [REDACTED] [REDACTED] [REDACTED] post",

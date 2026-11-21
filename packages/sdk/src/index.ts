@@ -94,6 +94,17 @@ const capabilityMethods = [
   ["templates", ["buildTemplate"]],
 ] as const satisfies readonly (readonly [Capability, readonly (keyof Provider)[]])[];
 
+function isCallable<T>(value: T): boolean {
+  const tag = Object.prototype.toString.call(value);
+
+  return (
+    tag === "[object Function]" ||
+    tag === "[object AsyncFunction]" ||
+    tag === "[object GeneratorFunction]" ||
+    tag === "[object AsyncGeneratorFunction]"
+  );
+}
+
 function validate(provider: Provider, options: CreateOptions) {
   for (const name of Object.keys({ ...options.env, ...options.secrets }))
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) invalid("Invalid environment variable name");
@@ -101,7 +112,7 @@ function validate(provider: Provider, options: CreateOptions) {
   // Both directions: a declared capability needs its methods, and a method needs its capability,
   // because the handle only exposes a method whose capability is declared.
   for (const [capability, methods] of capabilityMethods) {
-    const present = methods.filter((method) => provider[method] instanceof Function);
+    const present = methods.filter((method) => isCallable(provider[method]));
 
     if (provider.capabilities.has(capability) && present.length !== methods.length)
       throw new SandboxError(
@@ -455,13 +466,14 @@ function hook<T>(
       { code: "unsupported", provider: provider.name },
     );
 
-  if (found === undefined)
+  if (!isCallable(found))
     throw new SandboxError(
       "Invalid adapter capabilities. A declared method is missing. Fix the adapter contract.",
       { code: "provider", provider: provider.name },
     );
 
-  return found;
+  // SAFETY: `isCallable` guarantees `found` is a callable function, so it cannot be undefined.
+  return found as T;
 }
 
 /**

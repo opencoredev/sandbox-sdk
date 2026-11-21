@@ -140,7 +140,9 @@ export function recordSetupScript(input: { dir: string; cwd: string }): string {
  * shielded using control bytes absent from every secret so neither literal markers nor
  * non-secret control bytes are mangled. */
 export function redactionSedScript(secrets: readonly string[]): string {
-  const lines = secrets.flatMap((value) => value.split("\n")).filter(Boolean);
+  const lines = [...new Set(secrets.flatMap((value) => value.split("\n")).filter(Boolean))].sort(
+    (a, b) => b.length - a.length,
+  );
 
   if (lines.length === 0) return "\n";
 
@@ -200,12 +202,57 @@ export function redactionSedScript(secrets: readonly string[]): string {
   }
 
   if (esc && lit && placeholder) {
+    const marker = "[REDACTED]";
+    const rightSuffixes = new Set<string>();
+    const leftPrefixes = new Set<string>();
+    const aroundPairs: [string, string][] = [];
+
+    for (const secret of lines) {
+      if (marker.includes(secret)) continue;
+      const limit = Math.min(secret.length - 1, marker.length);
+
+      for (let overlap = 1; overlap <= limit; overlap++) {
+        if (marker.endsWith(secret.slice(0, overlap))) rightSuffixes.add(secret.slice(overlap));
+
+        if (marker.startsWith(secret.slice(secret.length - overlap)))
+          leftPrefixes.add(secret.slice(0, secret.length - overlap));
+      }
+
+      let markerAt = secret.indexOf(marker);
+
+      while (markerAt !== -1) {
+        const before = secret.slice(0, markerAt);
+        const after = secret.slice(markerAt + marker.length);
+
+        if (before && after) aroundPairs.push([before, after]);
+        markerAt = secret.indexOf(marker, markerAt + 1);
+      }
+    }
+
     const spansAdjacentMarkers = lines.some(
-      (secret) => "[REDACTED][REDACTED]".includes(secret) && !"[REDACTED]".includes(secret),
+      (secret) => "[REDACTED][REDACTED]".includes(secret) && !marker.includes(secret),
     );
 
+    const absorbRules: string[] = [];
+
+    for (const [before, after] of aroundPairs) {
+      absorbRules.push(`s|${sedEscape(before)}${placeholder}${sedEscape(after)}|${placeholder}|g`);
+    }
+
+    for (const suffix of [...rightSuffixes].sort((a, b) => b.length - a.length)) {
+      absorbRules.push(`s|${placeholder}${sedEscape(suffix)}|${placeholder}|g`);
+    }
+
+    for (const prefix of [...leftPrefixes].sort((a, b) => b.length - a.length)) {
+      absorbRules.push(`s|${sedEscape(prefix)}${placeholder}|${placeholder}|g`);
+    }
+
     if (spansAdjacentMarkers) {
-      rules.push(":m", `s|${placeholder}${placeholder}|${placeholder}|g`, "t m");
+      absorbRules.push(`s|${placeholder}${placeholder}|${placeholder}|g`);
+    }
+
+    if (absorbRules.length > 0) {
+      rules.push(":m", ...absorbRules, "t m");
     }
 
     rules.push(`s|${placeholder}|[REDACTED]|g`);

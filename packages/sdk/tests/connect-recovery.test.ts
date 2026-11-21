@@ -526,3 +526,101 @@ test("snapshot expiresInMs is validated before the provider is called", async ()
   expect(snapshot).toHaveBeenCalledWith(box.id, { expiresInMs: 0 });
   await box.destroy();
 });
+
+test("hardening R11: per-stream marker preservation, linear non-secret floods, quoted Bearer scrubbing, cross-realm capabilities, and hook null guard", async () => {
+  const vm = await import("node:vm");
+  const { deleteSnapshot } = await import("../src/index.js");
+  const { scrubCredentials } = await import("../src/errors.js");
+
+  // 1. Interleaved marker absorption preserves per-stream markers so splitting chunks by stream never leaks
+  const crossStream = memory({
+    handlers: {
+      leak({ stdout, stderr }) {
+        stdout("user=hun");
+        stderr("warn k3y");
+        stdout("hunter2ter2\n");
+
+        return 0;
+      },
+    },
+  });
+
+  const box1 = await createSandbox(crossStream, {
+    secrets: { A: "hunter2", B: "k3y[" },
+  });
+
+  try {
+    const chunks: Array<{ stream: string; text: string }> = [];
+
+    for await (const chunk of box1.run("leak")) chunks.push(chunk);
+
+    const outOnly = chunks.flatMap((c) => (c.stream === "stdout" ? [c.text] : [])).join("");
+    const errOnly = chunks.flatMap((c) => (c.stream === "stderr" ? [c.text] : [])).join("");
+
+    expect(outOnly).not.toContain("hunter2");
+    expect(errOnly).not.toContain("k3y[");
+    expect(chunks.map((c) => c.text).join("")).not.toContain("hunter2");
+    expect(chunks.map((c) => c.text).join("")).not.toContain("k3y[");
+  } finally {
+    await box1.destroy();
+  }
+
+  // 2. Partial hold prefix does not stall or drop 1.2 MiB of benign output
+  const floodPayload = "x".repeat(1_200_000) + "\nend\n";
+
+  const floodProvider = memory({
+    handlers: {
+      flood({ stdout }) {
+        stdout(floodPayload);
+
+        return 0;
+      },
+    },
+  });
+
+  const box2 = await createSandbox(floodProvider, {
+    secrets: { S: "xy[REDACTED]" },
+  });
+
+  try {
+    const start = Date.now();
+    const res = await box2.run("flood", { maxOutputBytes: 2_000_000 });
+    expect(Date.now() - start).toBeLessThan(1500);
+    expect(res.stdout).toBe(floodPayload);
+    expect(res.truncated).toBe(false);
+  } finally {
+    await box2.destroy();
+  }
+
+  // 3. Quoted Bearer credentials are scrubbed
+  expect(scrubCredentials('Authorization failed: Bearer "LEAK_123"')).toBe(
+    "Authorization failed: Bearer [REDACTED]",
+  );
+
+  // 4. Cross-realm provider method is accepted by validate() and null method is rejected by hook()
+  const crossRealmSnapshot = vm.runInNewContext("(async () => ({ id: 'vm-snap' }))");
+  const backing = memory();
+
+  const vmBox = await createSandbox({
+    ...backing,
+    capabilities: new Set(["snapshot"]),
+    snapshot: crossRealmSnapshot,
+  });
+
+  await vmBox.destroy();
+
+  await expect(
+    deleteSnapshot(
+      {
+        ...backing,
+        capabilities: new Set(["snapshot-delete"]),
+        // SAFETY: Test fixture exercises a malformed runtime adapter with null method.
+        deleteSnapshot: null as never,
+      },
+      "snap-1",
+    ),
+  ).rejects.toMatchObject({
+    code: "provider",
+    message: expect.stringContaining("Invalid adapter capabilities"),
+  });
+});

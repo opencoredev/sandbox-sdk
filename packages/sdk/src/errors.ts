@@ -180,6 +180,7 @@ export class Redactor {
   private leftPrefixes: string[] = [];
   private rightSuffixes: string[] = [];
   private aroundPairs: [string, string][] = [];
+  private chainLeft: string[] = [];
   private holdLeft: string[] = [];
   private cachedSecrets: string[] = [];
   private cachedMaxLength = 1;
@@ -247,6 +248,9 @@ export class Redactor {
     this.leftPrefixes = [...left].sort((a, b) => b.length - a.length);
     this.rightSuffixes = [...right].sort((a, b) => b.length - a.length);
     this.aroundPairs = around;
+    this.chainLeft = [...new Set([...left, ...around.map(([before]) => before)])].sort(
+      (a, b) => b.length - a.length,
+    );
     this.holdLeft = [...hold].sort((a, b) => b.length - a.length);
     this.cachedSecrets = [...this.values].sort((a, b) => b.length - a.length);
     this.cachedMaxLength = Math.max(1, ...this.cachedSecrets.map((item) => item.length));
@@ -628,6 +632,11 @@ export class Redactor {
 
     return this.leftPrefixes;
   }
+  get streamChainLeft(): readonly string[] {
+    this.compile();
+
+    return this.chainLeft;
+  }
   get streamHoldLeft(): readonly string[] {
     this.compile();
 
@@ -694,7 +703,7 @@ const credentialPatterns: [RegExp, string][] = [
     /(\bauthorization["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n;]+)/gi,
     "$1[REDACTED]",
   ],
-  [/\bBearer\s+[^\s"',;]+/gi, "Bearer [REDACTED]"],
+  [/\bBearer\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"',;]+)/gi, "Bearer [REDACTED]"],
   [
     /((?:["']?(?:api[-_]?key|access[-_]?token|token|password|secret)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi,
     "$1[REDACTED]",

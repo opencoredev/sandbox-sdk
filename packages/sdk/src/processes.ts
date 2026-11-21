@@ -499,6 +499,9 @@ export function makeProcesses(
           }
 
           if (!(await files.exists(`${dir}/exit`))) await files.write(`${dir}/exit`, "143");
+          await provider.files
+            .remove(id, `${dir}/redact.sed`, { recursive: false })
+            .catch(() => {});
           status = "exited";
         }),
       restart: () =>
@@ -883,7 +886,7 @@ export function makeProcesses(
           try {
             const sed = redactionSedScript(redactor.secrets);
 
-            if (provider.files.writeSupportsMode === false) {
+            if (!provider.files.writeSupportsMode) {
               await files.write(sedPath, sed, { mode: 0o600 });
             } else {
               await provider.files.write(id, sedPath, new TextEncoder().encode(sed), {
@@ -943,6 +946,9 @@ export function makeProcesses(
             }
           } catch (error) {
             await provider.files.remove(id, sedPath, { recursive: false }).catch(() => {});
+            await provider.files
+              .remove(id, `${dir}/spec.json`, { recursive: false })
+              .catch(() => {});
             throw error;
           }
         }
