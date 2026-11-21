@@ -502,11 +502,11 @@ function streamReader(input: {
     ? [
         `if command -v awk >/dev/null 2>&1`,
         `then clen=$(printf '%s\\n' "$chunk" | LC_ALL=C awk -v mh=${input.holdBytes} '${holdAwk}' ${quote(input.secretsPath)} - 2>/dev/null)`,
-        `clen=\${clen:-${input.holdBytes}}`,
-        `else clen=${input.holdBytes}`,
+        `clen=\${clen:--1}`,
+        `else clen=-1`,
         `fi`,
       ]
-    : [`clen=${input.holdBytes}`];
+    : [`clen=-1`];
 
   const scrubWrappedHead = input.secretsPath
     ? [
@@ -580,7 +580,13 @@ function streamReader(input: {
     `elif [ -n "$chunk" ]`,
     `then tlen=$(printf '%s' "$chunk" | wc -c)`,
     ...computeHold,
-    `if [ "$clen" -le 0 ]`,
+    `if [ "$clen" -lt 0 ]`,
+    `then if [ "$tlen" -gt 1048576 ]`,
+    `then append ${input.marker.toLowerCase()} "[REDACTED]"`,
+    `carry=`,
+    `else carry=$chunk`,
+    `fi`,
+    `elif [ "$clen" -le 0 ]`,
     `then emit=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
     `emit=\${emit%.}`,
     `emit=\${emit%"$nl"}`,

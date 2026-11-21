@@ -638,66 +638,26 @@ export function chunkRedactor(
     }
   }
 
-  /** Build per-stream chunks for the unemitted suffix of `segments` starting at `offset`. */
-  function heldRedactedChunks(
-    chunks: readonly OutputChunk[],
-    segments: readonly RedactSegment[],
-    offset: number,
-    fallbackStream: OutputChunk["stream"],
-  ): QueuedChunk[] {
-    const out: QueuedChunk[] = [];
-    let cursor = 0;
-
-    const append = (stream: OutputChunk["stream"], text: string) => {
-      if (!text) return;
-      const prev = out.at(-1);
-
-      if (prev && prev.stream === stream) {
-        prev.text += text;
-        prev.len += text.length;
-        prev.bytes += Buffer.byteLength(text);
-      } else {
-        out.push({ stream, text, len: text.length, bytes: Buffer.byteLength(text) });
-      }
-    };
+  /** Compute the raw prefix length in `head` that corresponds to `safe` emitted characters. */
+  function rawOffsetForSafe(segments: readonly RedactSegment[], safe: number): number {
+    let remaining = safe;
+    let orig = 0;
 
     for (const seg of segments) {
-      const segEnd = cursor + seg.text.length;
-
-      if (segEnd <= offset) {
-        cursor = segEnd;
-        continue;
-      }
-
-      const skip = Math.max(0, offset - cursor);
-      const piece = seg.text.slice(skip);
-      cursor = segEnd;
-
-      if (!piece) continue;
+      if (remaining <= 0) break;
 
       if (seg.redacted) {
-        append(streamAt(chunks, seg.start, fallbackStream), piece);
+        if (remaining < seg.text.length) break;
+        remaining -= seg.text.length;
+        orig = seg.end;
       } else {
-        let rangeOffset = 0;
-        const sliceStart = seg.start + skip;
-        const sliceEnd = sliceStart + piece.length;
-
-        for (const chunk of chunks) {
-          const chunkStart = rangeOffset;
-          const chunkEnd = rangeOffset + chunk.text.length;
-          rangeOffset = chunkEnd;
-
-          if (chunkEnd <= sliceStart) continue;
-
-          if (chunkStart >= sliceEnd) break;
-          const from = Math.max(sliceStart, chunkStart) - chunkStart;
-          const to = Math.min(sliceEnd, chunkEnd) - chunkStart;
-          append(chunk.stream, chunk.text.slice(from, to));
-        }
+        const take = Math.min(remaining, seg.text.length);
+        remaining -= take;
+        orig = seg.start + take;
       }
     }
 
-    return out;
+    return orig;
   }
 
   function consumeFrom(indices: readonly number[], count: number) {
@@ -1179,73 +1139,33 @@ export function chunkRedactor(
           continue;
         }
 
-        if (safe > 0) emitRedactedSegments(selected, redactedResult.segments, safe, first.stream);
-        const heldRedacted = redacted.slice(safe);
-        const heldRaw = raw.slice(rawSafe);
+        if (safe === 0) {
+          if (!final && selectedBytes > 1_048_576) {
+            dropped = true;
+            replaceSelected(indices, marker);
+            pruneEmpty();
+            resetStall();
+            syncStats();
+            break;
+          }
 
-        if (!final && Buffer.byteLength(heldRedacted) + Buffer.byteLength(heldRaw) > 1_048_576) {
-          dropped = true;
-          replaceSelected(indices, marker);
-          pruneEmpty();
-          syncStats();
+          if (!final && queuedBytes > 1_048_576) {
+            dropped = true;
+            failClosedEmitted[first.stream] = true;
+            emitSafe({ stream: first.stream, text: marker });
+            replaceSelected(indices, "");
+            pruneEmpty();
+            resetStall();
+            syncStats();
+            continue;
+          }
+
           break;
         }
 
-        if (interleaved) {
-          const heldChunks = heldRedacted
-            ? heldRedactedChunks(selected, redactedResult.segments, safe, first.stream)
-            : [];
-
-          consumeFrom(indices, rawSafe);
-
-          for (let i = heldChunks.length - 1; i >= 0; i--) {
-            const piece = heldChunks[i];
-
-            if (piece) {
-              queue.unshift(piece);
-              queuedBytes += piece.bytes;
-            }
-          }
-        } else if (contiguousLen < raw.length) {
-          // Keep any unconsumed segments that start past the contiguous front run at their
-          // original later queue positions so intervening chunks of the other stream keep order.
-          let frontHeld = "";
-          let consumedOrig = 0;
-          let outCursor = 0;
-
-          for (const seg of redactedResult.segments) {
-            const segOutEnd = outCursor + seg.text.length;
-
-            if (seg.start >= contiguousLen) break;
-
-            if (segOutEnd > safe) {
-              const skip = Math.max(0, safe - outCursor);
-              frontHeld += seg.text.slice(skip);
-            }
-
-            consumedOrig = Math.max(consumedOrig, seg.end);
-            outCursor = segOutEnd;
-          }
-
-          if (consumedOrig > 0) {
-            consumeFrom(indices, Math.min(consumedOrig, rawSafe));
-
-            if (frontHeld) {
-              const bytes = Buffer.byteLength(frontHeld);
-              queue.unshift({
-                stream: first.stream,
-                text: frontHeld,
-                len: frontHeld.length,
-                bytes,
-              });
-              queuedBytes += bytes;
-            }
-          } else {
-            replaceSelected(indices, heldRedacted + heldRaw, first.stream);
-          }
-        } else {
-          replaceSelected(indices, heldRedacted + heldRaw, first.stream);
-        }
+        emitRedactedSegments(selected, redactedResult.segments, safe, first.stream);
+        const consumedRaw = final ? rawSafe : rawOffsetForSafe(redactedResult.segments, safe);
+        consumeFrom(indices, consumedRaw);
       }
 
       pruneEmpty();

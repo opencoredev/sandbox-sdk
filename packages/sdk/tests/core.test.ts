@@ -430,6 +430,42 @@ describe("core safety guarantees", () => {
     expect(single.stdout).toBe(expected);
     expect(split.stdout).toBe(expected);
   });
+
+  test("streaming keeps raw held segments so marker-prefixed secrets match single-chunk output", async () => {
+    const marker = "[REDACTED]";
+    const s0 = `${marker}ba`;
+    const s1 = `${marker.repeat(3)}b`;
+    const payload = `${s0}${s1}${s0}`;
+
+    const provider = memory({
+      handlers: {
+        single: ({ stdout }) => {
+          stdout(payload);
+
+          return 0;
+        },
+        oneChar: ({ stdout }) => {
+          for (const ch of payload) stdout(ch);
+
+          return 0;
+        },
+        prefixedOneChar: ({ stdout }) => {
+          for (const ch of `pre ${payload} post`) stdout(ch);
+
+          return 0;
+        },
+      },
+    });
+
+    await using box = await createSandbox(provider, { secrets: { S0: s0, S1: s1 } });
+    const single = await box.run("single");
+    const oneChar = await box.run("oneChar");
+    const prefixed = await box.run("prefixedOneChar");
+
+    expect(single.stdout).toBe(marker.repeat(3));
+    expect(oneChar.stdout).toBe(marker.repeat(3));
+    expect(prefixed.stdout).toBe(`pre ${marker.repeat(3)} post`);
+  });
 });
 
 test("reaping tolerates deletion after listing and still surfaces auth failures", async () => {

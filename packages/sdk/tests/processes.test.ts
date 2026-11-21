@@ -1268,3 +1268,126 @@ test("carry-window detached reader preserves clean boundaries for back-to-back p
   expect(selfLogs.text).toBe(`[REDACTED]${b400}[REDACTED]`);
   expect(selfRaw).not.toContain(a100);
 });
+
+test("no-awk detached fallback holds incomplete lines whole so secrets across 4 KiB cutpoints never split", async () => {
+  const { promises: fs } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { execFileSync } = await import("node:child_process");
+
+  const binDir = await fs.mkdtemp(join(tmpdir(), "sdk-noawk-bin-"));
+
+  try {
+    const tools = [
+      "sh",
+      "sed",
+      "dd",
+      "od",
+      "tail",
+      "head",
+      "wc",
+      "base64",
+      "date",
+      "tr",
+      "grep",
+      "cut",
+      "ln",
+      "mkfifo",
+      "setsid",
+      "nohup",
+      "rm",
+      "rmdir",
+      "mkdir",
+      "chmod",
+      "cat",
+      "sleep",
+      "mv",
+      "touch",
+      "true",
+      "false",
+      "printf",
+    ];
+
+    for (const tool of tools) {
+      try {
+        const resolved = execFileSync("which", [tool], { encoding: "utf8" }).trim();
+
+        if (resolved) await fs.symlink(resolved, join(binDir, tool));
+      } catch {
+        // Optional helper not installed at top level (e.g. shell builtin printf/true/false).
+      }
+    }
+
+    const longPlain = `BEGIN_${"Q".repeat(600)}_END`;
+    const shortSecret = "SHORT_SECRET_123";
+    const nestedInner = "NESTED_INNER_KEY";
+    const nestedOuter = `HEAD_${"A".repeat(100)}_${nestedInner}_${"B".repeat(500)}_TAIL`;
+    const repeated = "q".repeat(600);
+    const provider = await shellProvider();
+
+    await using box = await createSandbox(provider, {
+      env: { PATH: binDir },
+      secrets: {
+        LONG: longPlain,
+        SHORT: shortSecret,
+        INNER: nestedInner,
+        OUTER: nestedOuter,
+        REP: repeated,
+      },
+    });
+
+    const awkCheck = await box.run("command -v awk || echo NO_AWK");
+
+    expect(awkCheck.stdout.trim()).toBe("NO_AWK");
+
+    const procCut = await box.start(
+      `printf '%s%s%s\\n' '${"P".repeat(3200)}' "$LONG" '${"Z".repeat(301)}'`,
+      { name: "noawk-cut-long" },
+    );
+
+    await procCut.wait();
+    const cutLogs = await procCut.logs();
+    const cutRaw = await box.files.read("/tmp/.sandbox-sdk/procs/noawk-cut-long/out.log");
+
+    expect(cutLogs.text).toBe(`${"P".repeat(3200)}[REDACTED]${"Z".repeat(301)}\n`);
+    expect(cutRaw).not.toContain("BEGIN_QQQQ");
+    expect(cutRaw).not.toContain("QQQQ_END");
+
+    const procShort = await box.start(
+      `printf '%s%s%s\\n' '${"P".repeat(3462)}' "$SHORT" '${"Z".repeat(650)}'`,
+      { name: "noawk-cut-short" },
+    );
+
+    await procShort.wait();
+    const shortLogs = await procShort.logs();
+    const shortRaw = await box.files.read("/tmp/.sandbox-sdk/procs/noawk-cut-short/out.log");
+
+    expect(shortLogs.text).toBe(`${"P".repeat(3462)}[REDACTED]${"Z".repeat(650)}\n`);
+    expect(shortRaw).not.toContain("SHORT_SE");
+    expect(shortRaw).not.toContain("CRET_123");
+
+    const procNested = await box.start(
+      `printf '%s%s%s\\n' '${"P".repeat(3200)}' "$OUTER" '${"Z".repeat(300)}'`,
+      { name: "noawk-cut-nested" },
+    );
+
+    await procNested.wait();
+    const nestedLogs = await procNested.logs();
+    const nestedRaw = await box.files.read("/tmp/.sandbox-sdk/procs/noawk-cut-nested/out.log");
+
+    expect(nestedLogs.text).toBe(`${"P".repeat(3200)}[REDACTED]${"Z".repeat(300)}\n`);
+    expect(nestedRaw).not.toContain("HEAD_AAAA");
+    expect(nestedRaw).not.toContain("BBBB_TAIL");
+
+    const procB2b = await box.start(`printf '%s%s' "$REP" "$REP"`, { name: "noawk-b2b" });
+
+    await procB2b.wait();
+    const b2bLogs = await procB2b.logs();
+    const b2bRaw = await box.files.read("/tmp/.sandbox-sdk/procs/noawk-b2b/out.log");
+
+    expect(b2bLogs.text).toBe("[REDACTED][REDACTED]");
+    expect(b2bRaw).not.toContain("q".repeat(16));
+  } finally {
+    await fs.rm(binDir, { recursive: true, force: true });
+  }
+});
