@@ -485,4 +485,57 @@ describe("Redactor.text redacts to a fixed point", () => {
     expect(pingPongOut.stdout).toBe(`${"T".repeat(4000)} [REDACTED]`);
     expect(pingPongOut.stderr).toBe(`${"T".repeat(4000)} [REDACTED]`);
   });
+
+  test("preserves single-chunk parity across all splits and 1-char chunks for chained around-marker secrets", async () => {
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly secrets: Record<string, string>;
+      readonly payload: string;
+    }> = [
+      {
+        name: "Y-around-Y chained with marker-prefix bab",
+        secrets: { A: "[REDACTED]bab", B: "Y[REDACTED]Y" },
+        payload: "Y[REDACTED]Y[REDACTED]babY",
+      },
+      {
+        name: "X-around-Y chained with Y-around-Z and tok",
+        secrets: { A: "X[REDACTED]Y", B: "Y[REDACTED]Z", C: "tok" },
+        payload: "XtokYtokZ",
+      },
+    ];
+
+    for (const item of cases) {
+      let currentChunks: string[] = [];
+      const base = memory();
+
+      const splitProvider: typeof base = {
+        ...base,
+        async exec(_id, input) {
+          for (const chunk of currentChunks) {
+            input.onChunk?.({ stream: "stdout", text: chunk });
+          }
+
+          return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+        },
+      };
+
+      await using box = await createSandbox(splitProvider, { secrets: item.secrets });
+
+      currentChunks = [item.payload];
+      const whole = await box.run("whole");
+      expect(whole.stdout).toBe("[REDACTED]");
+
+      // Every 2-way split including cut right before the final trailing character
+      for (let cut = 1; cut < item.payload.length; cut += 1) {
+        currentChunks = [item.payload.slice(0, cut), item.payload.slice(cut)];
+        const res = await box.run(`split-${cut}`);
+        expect(res.stdout, `${item.name} cut@${cut}`).toBe(whole.stdout);
+      }
+
+      // One-character chunks
+      currentChunks = [...item.payload];
+      const oneChar = await box.run("one-char");
+      expect(oneChar.stdout, `${item.name} 1-char`).toBe(whole.stdout);
+    }
+  });
 });

@@ -441,6 +441,7 @@ function streamReader(input: {
   const scrubWrappedHead = input.secretsPath
     ? [
         `hcnt=0`,
+        `emit_head=1`,
         `if command -v awk >/dev/null 2>&1`,
         `then wrapped=$(printf '%s\\n' "$head" | LC_ALL=C awk -v mh=${input.holdBytes} -v eof=0 '${wrapAwk}' ${quote(input.secretsPath)} - 2>/dev/null; printf .)`,
         `wrapped=\${wrapped%.}`,
@@ -463,11 +464,12 @@ function streamReader(input: {
         `head=$emit_h`,
         `else held_h=$head`,
         `head=`,
+        `emit_head=0`,
         `fi`,
         `else held_h=`,
         `fi`,
       ]
-    : [`held_h=`];
+    : [`held_h=`, `emit_head=1`];
 
   const eofFlush = input.secretsPath
     ? [
@@ -577,7 +579,7 @@ function streamReader(input: {
     `case "$chunk" in *"$nl"*) tail=\${chunk##*"$nl"}`,
     `head=\${chunk%"$nl$tail"}`,
     ...scrubWrappedHead,
-    `if [ -n "$head" ]`,
+    `if [ "$emit_head" -eq 1 ]`,
     `then head=$(printf '%s\\n' "$head" | sed -f ${quote(input.sedPath)}; printf .)`,
     `head=\${head%.}`,
     `head=\${head%"$nl"}`,

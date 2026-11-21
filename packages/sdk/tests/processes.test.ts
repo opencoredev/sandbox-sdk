@@ -1071,3 +1071,20 @@ test("non-stream restart sets handle status to failed when setup exec throws", a
   expect(proc.ready).toBe(false);
   expect(proc.status).toBe("failed");
 });
+
+test("carry-window detached reader preserves standalone blank lines when a secret exceeds 512 bytes", async () => {
+  const longSecret = `BLANK${"K".repeat(590)}TAIL`;
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: { LONG: longSecret },
+  });
+
+  const proc = await box.start(`printf 'a\\n'; sleep 0.1; printf '\\n'; sleep 0.1; printf 'b\\n'`, {
+    name: "blank-lines",
+  });
+
+  await proc.wait();
+  const logs = await proc.logs();
+  expect(logs.text).toBe("a\n\nb\n");
+});

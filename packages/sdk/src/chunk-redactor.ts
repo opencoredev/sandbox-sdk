@@ -1,6 +1,16 @@
 import type { OutputChunk } from "./provider.js";
 import type { Redactor } from "./errors.js";
 
+interface RedactSpan {
+  readonly redacted: boolean;
+  readonly start: number;
+  readonly end: number;
+}
+
+interface RedactSegment extends RedactSpan {
+  readonly text: string;
+}
+
 /** Hold suffixes so secrets split between transport chunks never escape. */
 export function chunkRedactor(
   redactor: Redactor,
@@ -212,40 +222,60 @@ export function chunkRedactor(
    * covered by an earlier complete match in `segments`. Keeps nested/longer secrets raw until
    * future chunks resolve them so an inner shorter secret cannot redact first and expose the
    * outer secret's prefix. */
-  function rawHoldCutoff(
-    text: string,
-    segments: readonly {
-      readonly redacted: boolean;
-      readonly start: number;
-      readonly end: number;
-    }[],
-  ): number {
+  function rawHoldCutoff(text: string, segments: readonly RedactSpan[]): number {
     const secrets = redactor.secrets;
     let earliest = text.length;
 
-    // If a redacted match ends right at `text.length` and its raw tail ends with a
-    // marker-chaining left prefix (for example `Y[REDACTED]Y` ending with `Y` when
-    // `Y[REDACTED]Y` is an around-marker secret), keep that match raw so a future chunk
-    // that reduces to `[REDACTED]` can merge across the shared boundary character.
+    // If a trailing contiguous run of redacted matches ends right at `text.length` and
+    // any segment in that run (or the text immediately preceding it) ends with a
+    // marker-chaining left prefix (for example `Y[REDACTED]Y` followed by `[REDACTED]bab`
+    // when `Y[REDACTED]Y` is an around-marker secret), keep the entire run raw so a future
+    // chunk (such as `Y`) can merge across the shared boundary character.
     const lastSeg = segments.at(-1);
 
-    if (
-      lastSeg?.redacted &&
-      lastSeg.end === text.length &&
-      redactor.streamChainLeft.some((prefix) => text.endsWith(prefix))
-    ) {
-      let chainCutoff = pullLeftForMarker(text, lastSeg.start);
+    if (lastSeg?.redacted && lastSeg.end === text.length && redactor.streamChainLeft.length > 0) {
+      let chainIdx = segments.length - 1;
+      let chainStart = lastSeg.start;
+      let matchesChainLeft = redactor.streamChainLeft.some((prefix) => text.endsWith(prefix));
 
-      while (chainCutoff > 0) {
-        const split = segments.find(
-          (seg) => seg.redacted && seg.start < chainCutoff && seg.end > chainCutoff,
-        );
+      while (chainIdx > 0) {
+        const prev = segments[chainIdx - 1];
 
-        if (!split) break;
-        chainCutoff = pullLeftForMarker(text, split.start);
+        if (!prev?.redacted || prev.end !== chainStart) break;
+
+        if (
+          !matchesChainLeft &&
+          redactor.streamChainLeft.some((prefix) => text.slice(0, prev.end).endsWith(prefix))
+        ) {
+          matchesChainLeft = true;
+        }
+
+        chainStart = prev.start;
+        chainIdx -= 1;
       }
 
-      if (chainCutoff < earliest) earliest = chainCutoff;
+      if (
+        !matchesChainLeft &&
+        chainStart > 0 &&
+        redactor.streamChainLeft.some((prefix) => text.slice(0, chainStart).endsWith(prefix))
+      ) {
+        matchesChainLeft = true;
+      }
+
+      if (matchesChainLeft) {
+        let chainCutoff = pullLeftForMarker(text, chainStart);
+
+        while (chainCutoff > 0) {
+          const split = segments.find(
+            (seg) => seg.redacted && seg.start < chainCutoff && seg.end > chainCutoff,
+          );
+
+          if (!split) break;
+          chainCutoff = pullLeftForMarker(text, split.start);
+        }
+
+        if (chainCutoff < earliest) earliest = chainCutoff;
+      }
     }
 
     let searchFrom = Math.max(0, text.length - (redactor.maxLength - 1));
@@ -465,12 +495,7 @@ export function chunkRedactor(
   /** Emit redacted segments up to `limit` characters while preserving exact stream attribution. */
   function emitRedactedSegments(
     chunks: readonly OutputChunk[],
-    segments: readonly {
-      readonly text: string;
-      readonly redacted: boolean;
-      readonly start: number;
-      readonly end: number;
-    }[],
+    segments: readonly RedactSegment[],
     limit: number,
     fallbackStream: OutputChunk["stream"],
   ) {
@@ -558,12 +583,7 @@ export function chunkRedactor(
   /** Build per-stream chunks for the unemitted suffix of `segments` starting at `offset`. */
   function heldRedactedChunks(
     chunks: readonly OutputChunk[],
-    segments: readonly {
-      readonly text: string;
-      readonly redacted: boolean;
-      readonly start: number;
-      readonly end: number;
-    }[],
+    segments: readonly RedactSegment[],
     offset: number,
     fallbackStream: OutputChunk["stream"],
   ): QueuedChunk[] {
@@ -748,12 +768,7 @@ export function chunkRedactor(
     const cleanSafeBudget: Record<OutputChunk["stream"], number> = { stdout: -1, stderr: -1 };
 
     type StreamDrainPlan = {
-      readonly segments: readonly {
-        readonly text: string;
-        readonly redacted: boolean;
-        readonly start: number;
-        readonly end: number;
-      }[];
+      readonly segments: readonly RedactSegment[];
       readonly safe: number;
       origOffset: number;
       origConsumed: number;
