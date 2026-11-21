@@ -304,9 +304,15 @@ export function memory(options: MemoryOptions = {}): Provider<MemoryNative, "net
         continue;
       }
 
+      // POSIX: unquoted, a backslash keeps the next character as is (so \n is n). In double quotes it
+      // escapes only $ ` " \ and newline, and is otherwise kept, so printf still sees "\n".
       if (char === "\\") {
         const next = command[++index] ?? "";
-        word += next === "n" ? "\\n" : next;
+
+        // A backslash-newline joins lines in both modes.
+        if (next === "\n") continue;
+
+        word += mode === "double" && !'$`"\\'.includes(next) ? `\\${next}` : next;
         active = true;
         continue;
       }
