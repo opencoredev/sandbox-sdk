@@ -443,6 +443,7 @@ test("the guest copy of the redaction program is removed when the process exits"
 
 test("wait() bounds stalled secret recovery and redacts secrets in wait errors", async () => {
   const provider = memory();
+
   await using box = await createSandbox(provider, { secrets: { TOKEN: "s3cr3t-wait-name" } });
   const running = await box.start("sleep 30", { name: "s3cr3t-wait-name" });
 
@@ -468,21 +469,93 @@ test("wait() bounds stalled secret recovery and redacts secrets in wait errors",
     try {
       const reattachedProc = attached.process("s3cr3t-wait-name");
       const started = Date.now();
-      await expect(reattachedProc.wait({ timeoutMs: 25 })).rejects.toMatchObject({
-        code: "timeout",
-        provider: provider.name,
-        sandboxId: box.id,
-      });
+      let reattachedTimed: unknown;
+
+      try {
+        await reattachedProc.wait({ timeoutMs: 25 });
+      } catch (error) {
+        reattachedTimed = error;
+      }
+
+      expect(reattachedTimed).toMatchObject({ code: "timeout" });
+      expect(String(reattachedTimed)).not.toContain("s3cr3t-wait-name");
       expect(Date.now() - started).toBeLessThan(1_000);
-      await expect(reattachedProc.wait({ signal: AbortSignal.abort() })).rejects.toMatchObject({
-        code: "aborted",
-        provider: provider.name,
-        sandboxId: box.id,
-      });
+
+      let reattachedAborted: unknown;
+
+      try {
+        await reattachedProc.wait({ signal: AbortSignal.abort() });
+      } catch (error) {
+        reattachedAborted = error;
+      }
+
+      expect(reattachedAborted).toMatchObject({ code: "aborted" });
+      expect(String(reattachedAborted)).not.toContain("s3cr3t-wait-name");
     } finally {
       await attached.close();
     }
   } finally {
     await running.stop({ graceMs: 0 });
   }
+});
+
+test("wait() handles delays >= 2^31 ms without timer overflow and shares stream start reservations across handles", async () => {
+  const provider = memory();
+  await using box = await createSandbox(provider);
+  const running = await box.start("sleep 30", { name: "long-wait" });
+
+  try {
+    const controller = new AbortController();
+    const pending = running.wait({ timeoutMs: 2 ** 31, signal: controller.signal });
+    setTimeout(() => controller.abort(), 30);
+    await expect(pending).rejects.toMatchObject({ code: "aborted" });
+
+    const secondHandle = await connectSandbox(provider, box.id);
+
+    try {
+      const results = await Promise.allSettled([
+        box.start("sleep 30", { name: "shared-stream" }),
+        secondHandle.start("sleep 30", { name: "shared-stream" }),
+      ]);
+
+      expect(results.filter((entry) => entry.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((entry) => entry.status === "rejected")).toHaveLength(1);
+    } finally {
+      await secondHandle.close();
+    }
+  } finally {
+    await running.stop({ graceMs: 0 });
+  }
+});
+
+test("Redactor blocks marker-boundary secret bypasses and redacts error metadata", async () => {
+  const provider = memory();
+
+  await using box = await createSandbox(provider, {
+    secrets: {
+      OVERLAP: "TED]XYZ",
+      PROV: provider.name,
+    },
+  });
+
+  const baseExec = provider.exec.bind(provider);
+
+  provider.exec = async () => {
+    throw new SandboxError("native failure: [REDACTED]XYZ", { code: "provider" });
+  };
+
+  let caught: unknown;
+
+  try {
+    await box.run("echo hi");
+  } catch (error) {
+    caught = error;
+  } finally {
+    provider.exec = baseExec;
+  }
+
+  if (!(caught instanceof SandboxError)) throw new Error("expected SandboxError");
+
+  expect(caught.message).not.toContain("TED]XYZ");
+  expect(caught.provider).toBe("[REDACTED]");
 });

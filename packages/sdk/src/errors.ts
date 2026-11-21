@@ -144,32 +144,55 @@ function escapeRegExp(text: string): string {
 /** @internal Redacts registered secrets from text and errors. */
 export class Redactor {
   private values = new Set<string>();
-  private pattern: RegExp | undefined;
+  private primaryPattern: RegExp | undefined;
+  private markerSubPattern: RegExp | undefined;
+  private compiled = false;
   add(values: Iterable<string>) {
     for (const value of values)
       if (value && !this.values.has(value)) {
         this.values.add(value);
-        this.pattern = undefined;
+        this.compiled = false;
       }
   }
   /**
-   * Replaces every registered secret with `[REDACTED]` in one left-to-right pass. The longest
-   * secret wins at each position, and a marker written by one match is never scanned again, so a
-   * secret that is part of `[REDACTED]` (such as `"RED"`) cannot mangle it. A marker already in
-   * the text is matched as a whole and kept, so redacting twice changes nothing.
+   * Replaces every registered secret with `[REDACTED]`. Secrets that are not substrings of
+   * `[REDACTED]` are matched first without exempting literal markers, so input like
+   * `[REDACTED]XYZ` cannot hide a secret `TED]XYZ` across the marker boundary. Any remaining
+   * secret that is a substring of `[REDACTED]` (such as `"RED"`) runs in a second pass that
+   * matches whole markers verbatim so redacting twice changes nothing.
    */
   text(value: string): string {
     if (this.values.size === 0) return value;
 
-    if (!this.pattern) {
-      const alternatives = [...new Set([...this.values, redactedMarker])].sort(
-        (a, b) => b.length - a.length,
-      );
+    if (!this.compiled) {
+      const outside: string[] = [];
+      const inside: string[] = [];
 
-      this.pattern = new RegExp(alternatives.map(escapeRegExp).join("|"), "g");
+      for (const secret of this.values) {
+        if (redactedMarker.includes(secret)) inside.push(secret);
+        else outside.push(secret);
+      }
+
+      outside.sort((a, b) => b.length - a.length);
+      this.primaryPattern =
+        outside.length > 0 ? new RegExp(outside.map(escapeRegExp).join("|"), "g") : undefined;
+
+      if (inside.length > 0) {
+        const alternatives = [...new Set([...inside, redactedMarker])].sort(
+          (a, b) => b.length - a.length,
+        );
+
+        this.markerSubPattern = new RegExp(alternatives.map(escapeRegExp).join("|"), "g");
+      } else this.markerSubPattern = undefined;
+
+      this.compiled = true;
     }
 
-    return value.replace(this.pattern, redactedMarker);
+    let result = this.primaryPattern ? value.replace(this.primaryPattern, redactedMarker) : value;
+
+    if (this.markerSubPattern) result = result.replace(this.markerSubPattern, redactedMarker);
+
+    return result;
   }
   get secrets() {
     return [...this.values].sort((a, b) => b.length - a.length);
@@ -179,6 +202,11 @@ export class Redactor {
   }
   /** Map any thrown value to a scrubbed SandboxError. */
   error(cause: unknown, provider: string, sandboxId?: string): SandboxError {
+    const safeProvider = scrubCredentials(this.text(provider));
+
+    const scrubId = (id: string | undefined) =>
+      id === undefined ? undefined : scrubCredentials(this.text(id));
+
     if (cause instanceof SandboxError) {
       // Adapters build these from native text, so scrub them too. Messages keep their lines and length: log tails live there.
       return new SandboxError(scrubCredentials(this.text(cause.message)), {
@@ -186,9 +214,9 @@ export class Redactor {
         retryable: cause.retryable,
         retryAfterMs: cause.retryAfterMs,
         hint: scrubCredentials(this.text(cause.hint)),
-        provider,
+        provider: safeProvider,
         // Create paths know no ID yet; keep the one an adapter named, such as a box it could not delete.
-        sandboxId: sandboxId ?? cause.sandboxId,
+        sandboxId: scrubId(sandboxId ?? cause.sandboxId),
         // Do not preserve arbitrary native objects: they may contain credentials in fields or cycles.
         // Adapter evidence (see evidenceCause) keeps its fields as the JSON in its message.
         cause:
@@ -213,8 +241,8 @@ export class Redactor {
       {
         code: "provider",
         hint: hints.provider,
-        provider,
-        sandboxId,
+        provider: safeProvider,
+        sandboxId: scrubId(sandboxId),
         cause: nativeDetail(cause, (text) => this.text(text)),
       },
     );

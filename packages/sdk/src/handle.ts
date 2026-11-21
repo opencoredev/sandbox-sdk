@@ -16,6 +16,7 @@ import { makeFiles, removeIfPresent } from "./files.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";
 import { defaultWaitTimeoutMs, makeProcesses, type ProcessHandle } from "./processes.js";
+import { setLongTimeout } from "./retry.js";
 
 /** Whether a parsed secret-names record is a list of environment variable names. */
 function isNameList(value: unknown): value is string[] {
@@ -298,37 +299,41 @@ export async function makeHandle<N>(
         const signal = options.signal;
         const startedAt = Date.now();
 
-        const makeAborted = () =>
-          redactor.error(
-            new SandboxError(
-              `Process wait aborted. ${handle.name} is still running. Call wait() again with a fresh signal, or stop() it.`,
-              { code: "aborted" },
-            ),
-            provider.name,
-            info.id,
-          );
+        const makeAborted = () => {
+          const message = recovered
+            ? `Process wait aborted. ${handle.name} may still be running. Call wait() again with a fresh signal, or stop() it.`
+            : "Process wait aborted while recovering sandbox secrets. Stopped waiting; call wait() again with a fresh signal, or stop() the process.";
 
-        const makeTimeout = () =>
-          redactor.error(
-            new SandboxError(
-              `Process wait timed out. ${handle.name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`,
-              { code: "timeout", retryable: true },
-            ),
-            provider.name,
-            info.id,
+          return redactor.error(
+            new SandboxError(message, { code: "aborted" }),
+            recovered ? provider.name : "unknown",
+            recovered ? info.id : undefined,
           );
+        };
+
+        const makeTimeout = () => {
+          const message = recovered
+            ? `Process wait timed out. ${handle.name} did not exit within ${timeoutMs} ms and may still be running. Call wait() again with a larger timeoutMs, or stop() it.`
+            : `Process wait timed out after ${timeoutMs} ms while recovering sandbox secrets. Stopped waiting; call wait() again with a larger timeoutMs, or stop() the process.`;
+
+          return redactor.error(
+            new SandboxError(message, { code: "timeout", retryable: true }),
+            recovered ? provider.name : "unknown",
+            recovered ? info.id : undefined,
+          );
+        };
 
         if (signal?.aborted) throw makeAborted();
 
         await new Promise<void>((resolve, reject) => {
           let settled = false;
-          let timer: ReturnType<typeof setTimeout> | undefined;
+          let cancelTimer: (() => void) | undefined;
 
           const finish = (cb: () => void) => {
             if (settled) return;
             settled = true;
 
-            if (timer !== undefined) clearTimeout(timer);
+            cancelTimer?.();
             signal?.removeEventListener("abort", onAbort);
             cb();
           };
@@ -336,7 +341,7 @@ export async function makeHandle<N>(
           const onAbort = () => finish(() => reject(makeAborted()));
 
           signal?.addEventListener("abort", onAbort, { once: true });
-          timer = setTimeout(() => finish(() => reject(makeTimeout())), timeoutMs);
+          cancelTimer = setLongTimeout(() => finish(() => reject(makeTimeout())), timeoutMs);
 
           void (async () => {
             try {

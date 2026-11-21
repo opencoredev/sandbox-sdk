@@ -4,6 +4,7 @@ import type { Files } from "./files.js";
 import { encodeChunk, decodePage } from "./logs.js";
 import { parseLineCursor, parseProcessRecord, parseRestartRecord } from "./core/process-records.js";
 import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
+import { setLongTimeout } from "./retry.js";
 import { defaults, pathOf, chunkRedactor } from "./run.js";
 import {
   detachedLaunchScript,
@@ -92,16 +93,53 @@ export const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 /** Resolves after `ms`, or as soon as `signal` fires. */
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve) => {
+    let cancelTimer: (() => void) | undefined;
+
     const done = () => {
-      clearTimeout(timer);
+      cancelTimer?.();
       signal?.removeEventListener("abort", done);
       resolve();
     };
 
-    const timer = setTimeout(done, ms);
+    cancelTimer = setLongTimeout(done, ms);
 
     signal?.addEventListener("abort", done, { once: true });
+
+    if (signal?.aborted) done();
   });
+}
+
+// Stream providers lack an atomic guest lock, so handles in the same runtime share reservations
+// keyed by provider instance and sandbox id.
+const streamReservations = new WeakMap<Provider, Map<string, Set<string>>>();
+
+function reserveStreamName(
+  provider: Provider,
+  sandboxId: string,
+  name: string,
+): (() => void) | null {
+  let bySandbox = streamReservations.get(provider);
+
+  if (!bySandbox) {
+    bySandbox = new Map();
+    streamReservations.set(provider, bySandbox);
+  }
+
+  let names = bySandbox.get(sandboxId);
+
+  if (!names) {
+    names = new Set();
+    bySandbox.set(sandboxId, names);
+  }
+
+  if (names.has(name)) return null;
+  names.add(name);
+
+  return () => {
+    names.delete(name);
+
+    if (names.size === 0) bySandbox.delete(sandboxId);
+  };
 }
 
 export function makeProcesses(
@@ -114,8 +152,6 @@ export function makeProcesses(
   const root = provider.processRecordRoot ?? "/tmp/.sandbox-sdk/procs";
   const native = new Map<string, NativeProcess>();
   const handles = new Map<string, ProcessHandle>();
-  // Names this client is starting on a stream provider, whose records have no atomic guest check.
-  const starting = new Set<string>();
   // Stream providers run commands without a guest shell, so the core keeps their records with file calls.
   const streams = provider.processMode === "stream";
 
@@ -502,13 +538,13 @@ export function makeProcesses(
 
         return new Promise((resolve, reject) => {
           let settled = false;
-          let timer: ReturnType<typeof setTimeout> | undefined;
+          let cancelTimer: (() => void) | undefined;
 
           const finish = (cb: () => void) => {
             if (settled) return;
             settled = true;
 
-            if (timer !== undefined) clearTimeout(timer);
+            cancelTimer?.();
             signal?.removeEventListener("abort", onAbort);
             cb();
           };
@@ -522,7 +558,7 @@ export function makeProcesses(
           }
 
           signal?.addEventListener("abort", onAbort, { once: true });
-          timer = setTimeout(() => finish(() => reject(makeTimeoutError())), timeoutMs);
+          cancelTimer = setLongTimeout(() => finish(() => reject(makeTimeoutError())), timeoutMs);
 
           const deadline = Date.now() + timeoutMs;
 
@@ -606,13 +642,14 @@ export function makeProcesses(
     // two concurrent starts could both pass the running check before either writes spec.json.
     if (!streams || !provider.startProcess) return startRecord(command, input);
 
-    if (starting.has(name)) return safe(() => invalid(`Process ${name} is already running`));
-    starting.add(name);
+    const release = reserveStreamName(provider, id, name);
+
+    if (!release) return safe(() => invalid(`Process ${name} is already running`));
 
     try {
       return await startRecord(command, input);
     } finally {
-      starting.delete(name);
+      release();
     }
   }
 

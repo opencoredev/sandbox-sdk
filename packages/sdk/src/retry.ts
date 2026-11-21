@@ -59,17 +59,53 @@ export async function withRetry<T>(
   }
 }
 
+const maxTimerMs = 2_147_483_647;
+
+/**
+ * Schedules `fn` after `ms` without overflowing 32-bit signed Node/Bun timers (which would clamp
+ * delays >= 2^31 ms to 1 ms). Returns a cancel function.
+ */
+export function setLongTimeout(fn: () => void, ms: number): () => void {
+  const deadline = Date.now() + ms;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
+
+  const tick = () => {
+    if (cancelled) return;
+
+    const left = deadline - Date.now();
+
+    if (left <= 0) {
+      fn();
+
+      return;
+    }
+
+    timer = setTimeout(tick, Math.min(left, maxTimerMs));
+  };
+
+  timer = setTimeout(tick, Math.min(Math.max(0, ms), maxTimerMs));
+
+  return () => {
+    cancelled = true;
+
+    if (timer !== undefined) clearTimeout(timer);
+  };
+}
+
 function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
   if (signal?.aborted) return Promise.resolve();
 
   return new Promise<void>((resolve) => {
+    let cancelTimer: (() => void) | undefined;
+
     const done = () => {
-      clearTimeout(timer);
+      cancelTimer?.();
       signal?.removeEventListener("abort", done);
       resolve();
     };
 
-    const timer = setTimeout(done, ms);
+    cancelTimer = setLongTimeout(done, ms);
 
     signal?.addEventListener("abort", done, { once: true });
 
