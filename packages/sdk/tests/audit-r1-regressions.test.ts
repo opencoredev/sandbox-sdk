@@ -73,23 +73,26 @@ test("withRetry rejects promptly when signal aborts inside action before backoff
   expect(outcome).toBe("aborted");
 });
 
-test("directory tar upload and download permission failures map to auth", async () => {
-  const target = await mkdtemp(join(tmpdir(), "sandbox-sdk-tar-perm-"));
-  const remote = await createSandbox(await shellProvider());
+test.skipIf(process.getuid?.() === 0)(
+  "directory tar upload and download permission failures map to auth",
+  async () => {
+    const target = await mkdtemp(join(tmpdir(), "sandbox-sdk-tar-perm-"));
+    const remote = await createSandbox(await shellProvider());
 
-  try {
-    await remote.files.write("dir/out.txt", "data");
-    await chmod(target, 0o500);
-    await expect(remote.files.download("dir", target)).rejects.toMatchObject({ code: "auth" });
+    try {
+      await remote.files.write("dir/out.txt", "data");
+      await chmod(target, 0o500);
+      await expect(remote.files.download("dir", target)).rejects.toMatchObject({ code: "auth" });
 
-    await chmod(target, 0o700);
-    const blocked = join(target, "private.txt");
-    await writeFile(blocked, "secret");
-    await chmod(blocked, 0o000);
-    await expect(remote.files.upload(target, "in")).rejects.toMatchObject({ code: "auth" });
-  } finally {
-    await chmod(target, 0o700);
-    await rm(target, { recursive: true, force: true });
-    await remote.destroy();
-  }
-});
+      await chmod(target, 0o700);
+      const blocked = join(target, "private.txt");
+      await writeFile(blocked, "secret");
+      await chmod(blocked, 0o000);
+      await expect(remote.files.upload(target, "in")).rejects.toMatchObject({ code: "auth" });
+    } finally {
+      await chmod(target, 0o700);
+      await rm(target, { recursive: true, force: true });
+      await remote.destroy();
+    }
+  },
+);

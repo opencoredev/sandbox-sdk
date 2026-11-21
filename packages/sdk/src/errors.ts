@@ -151,6 +151,9 @@ const redactedMarker = "[REDACTED]";
 /** Errors whose provider details were intentionally withheld before secret recovery completed. */
 export const withheldErrors = new WeakSet<SandboxError>();
 
+/** Timeout errors created by `ProcessHandle.wait()`'s own deadline timer. */
+export const waitDeadlineErrors = new WeakSet<SandboxError>();
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -162,6 +165,10 @@ export class Redactor {
   private markerSubPattern: RegExp | undefined;
   private leftPrefixes: string[] = [];
   private rightSuffixes: string[] = [];
+  private aroundPairs: [string, string][] = [];
+  private holdLeft: string[] = [];
+  private cachedSecrets: string[] = [];
+  private cachedMaxLength = 1;
   private compiled = false;
   add(values: Iterable<string>) {
     for (const value of values)
@@ -194,20 +201,46 @@ export class Redactor {
 
       const left = new Set<string>();
       const right = new Set<string>();
+      const hold = new Set<string>();
+      const around: [string, string][] = [];
 
       for (const secret of outside) {
-        const limit = Math.min(secret.length, redactedMarker.length);
+        // Include full-marker overlap (overlap === redactedMarker.length) when the secret
+        // starts or ends with `[REDACTED]` plus additional text.
+        const limit = Math.min(secret.length - 1, redactedMarker.length);
 
-        for (let overlap = 1; overlap < limit; overlap++) {
+        for (let overlap = 1; overlap <= limit; overlap++) {
           if (redactedMarker.endsWith(secret.slice(0, overlap))) right.add(secret.slice(overlap));
 
-          if (redactedMarker.startsWith(secret.slice(secret.length - overlap)))
-            left.add(secret.slice(0, secret.length - overlap));
+          if (redactedMarker.startsWith(secret.slice(secret.length - overlap))) {
+            const prefix = secret.slice(0, secret.length - overlap);
+            left.add(prefix);
+            hold.add(prefix);
+          }
+        }
+
+        // Capture secrets containing `[REDACTED]` in the middle (e.g. `X[REDACTED]Y`) so
+        // batch expansion stays linear and streaming holds the leading prefix `X`.
+        let markerAt = secret.indexOf(redactedMarker);
+
+        while (markerAt !== -1) {
+          const before = secret.slice(0, markerAt);
+          const after = secret.slice(markerAt + redactedMarker.length);
+
+          if (before) hold.add(before);
+
+          if (before && after) around.push([before, after]);
+
+          markerAt = secret.indexOf(redactedMarker, markerAt + 1);
         }
       }
 
       this.leftPrefixes = [...left].sort((a, b) => b.length - a.length);
       this.rightSuffixes = [...right].sort((a, b) => b.length - a.length);
+      this.aroundPairs = around;
+      this.holdLeft = [...hold].sort((a, b) => b.length - a.length);
+      this.cachedSecrets = [...this.values].sort((a, b) => b.length - a.length);
+      this.cachedMaxLength = Math.max(1, ...this.cachedSecrets.map((item) => item.length));
 
       if (inside.length > 0) {
         const alternatives = [...new Set([...inside, redactedMarker])].sort(
@@ -226,6 +259,7 @@ export class Redactor {
       let next = result;
 
       if (this.primaryPattern) {
+        // Phase 1: locate all existing `[REDACTED]` markers so matched spans absorb overlapped markers.
         const markers: [number, number][] = [];
         let pos = next.indexOf(redactedMarker);
 
@@ -264,6 +298,8 @@ export class Redactor {
 
           absorbMarkers();
 
+          // Phase 2: greedily expand right/left/around suffixes & prefixes that would form new
+          // secret matches against the replacement `[REDACTED]`, then merge overlapping spans.
           let grew = true;
 
           while (grew) {
@@ -287,8 +323,27 @@ export class Redactor {
               }
             }
 
-            while (spans.length > 0 && start <= spans[spans.length - 1]![1]) {
-              start = Math.min(start, spans.pop()![0]);
+            for (const [before, after] of this.aroundPairs) {
+              if (
+                start >= before.length &&
+                end + after.length <= next.length &&
+                next.startsWith(before, start - before.length) &&
+                next.startsWith(after, end)
+              ) {
+                start -= before.length;
+                end += after.length;
+                absorbMarkers();
+                grew = true;
+                break;
+              }
+            }
+
+            while (spans.length > 0) {
+              const previous = spans.at(-1);
+
+              if (!previous || start > previous[1]) break;
+              spans.pop();
+              start = Math.min(start, previous[0]);
               grew = true;
             }
           }
@@ -320,16 +375,25 @@ export class Redactor {
     // Secrets that keep re-forming past the pass budget fail closed cleanly.
     return redactedMarker;
   }
-  get secrets() {
-    return [...this.values].sort((a, b) => b.length - a.length);
+  get secrets(): readonly string[] {
+    if (!this.compiled) this.text("");
+
+    return this.cachedSecrets;
   }
-  get maxLength() {
-    return Math.max(1, ...[...this.values].map((value) => value.length));
+  get maxLength(): number {
+    if (!this.compiled) this.text("");
+
+    return this.cachedMaxLength;
   }
   get overlapLeft(): readonly string[] {
     if (!this.compiled) this.text("");
 
     return this.leftPrefixes;
+  }
+  get streamHoldLeft(): readonly string[] {
+    if (!this.compiled) this.text("");
+
+    return this.holdLeft;
   }
   /** Map any thrown value to a scrubbed SandboxError. */
   error(cause: unknown, provider: string, sandboxId?: string): SandboxError {
@@ -341,7 +405,7 @@ export class Redactor {
 
     if (cause instanceof SandboxError) {
       // Adapters build these from native text, so scrub them too. Messages keep their lines and length: log tails live there.
-      return new SandboxError(scrubCredentials(this.text(cause.message)), {
+      const mapped = new SandboxError(scrubCredentials(this.text(cause.message)), {
         code: cause.code,
         retryable: cause.retryable,
         retryAfterMs: cause.retryAfterMs,
@@ -359,6 +423,10 @@ export class Redactor {
                 (text) => this.text(text),
               ),
       });
+
+      if (waitDeadlineErrors.has(cause)) waitDeadlineErrors.add(mapped);
+
+      return mapped;
     }
 
     // A raw failure reached the core, usually an SDK or adapter bug. Its scrubbed text is the only clue, so keep it in both places.
@@ -395,7 +463,7 @@ const credentialPatterns: [RegExp, string][] = [
   ],
 ];
 
-function scrubCredentials(text: string): string {
+export function scrubCredentials(text: string): string {
   for (const [pattern, replacement] of credentialPatterns)
     text = text.replace(pattern, replacement);
 

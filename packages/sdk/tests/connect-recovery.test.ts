@@ -200,14 +200,25 @@ describe("connectSandbox secret recovery", () => {
   });
 
   test("streaming run redaction holds fixed-point marker-overlap invariants and linear expansion", async () => {
-    const cases: Array<[string[], string]> = [
+    const cases: Array<[string[], string, string?]> = [
       [["D", "R", "]["], "DD"],
+      [["D", "R", "]["], "RR][", "[REDACTED]"],
+      [["D"], "[REDACTED]", "[REDACTED]"],
+      [["R"], "[REDACTED]", "[REDACTED]"],
+      [["ACTED"], "[REDACTED]", "[REDACTED]"],
+      [["D]X"], "[REDACTED]X", "[REDACTED]"],
+      [["REDACTED]X"], "AC[REDACTED]XZ", "AC[REDACTED]Z"],
+      [["D]X", "E[REDACTED]"], "[REDACTED]]X"],
       [["T[", "E"], "TE["],
       [["Q", "D]Z"], "Q" + "Z".repeat(100)],
       [["TED]XYZ"], "keep-before TED]XYZ" + "XYZ".repeat(550)],
+      [["[REDACTED]XYZ"], "keep-before [REDACTED]XYZ" + "XYZ".repeat(550)],
+      [["XYZ[REDACTED]"], "XYZ".repeat(550) + "XYZ[REDACTED] keep-after"],
+      [["X[REDACTED]Y", "A"], "keep-before " + "X".repeat(600) + "A" + "Y".repeat(600) + " tail"],
+      [["A[REDACTED]B", "SECRET"], "hello ASECRETB"],
     ];
 
-    for (const [secrets, payload] of cases) {
+    for (const [secrets, payload, expectedExact] of cases) {
       const provider = memory({
         handlers: {
           emit({ stdout }) {
@@ -233,11 +244,114 @@ describe("connectSandbox secret recovery", () => {
           for (const secret of secrets)
             if (!"[REDACTED]".includes(secret)) expect(text).not.toContain(secret);
 
+          if (expectedExact !== undefined) expect(text).toBe(expectedExact);
+
           if (payload.startsWith("keep-before ")) expect(text).toContain("keep-before ");
+
+          if (payload.endsWith(" keep-after")) expect(text).toContain(" keep-after");
+
+          if (payload.endsWith(" tail")) expect(text).toContain(" tail");
         }
       } finally {
         await box.destroy();
       }
+    }
+  });
+
+  test("streaming redaction preserves stdout/stderr arrival order, stream attribution, and stays linear on repeated left prefixes", async () => {
+    const orderProvider = memory({
+      handlers: {
+        order({ stdout, stderr }) {
+          stdout("ab");
+          stderr("x");
+          stdout("z");
+
+          return 0;
+        },
+        attrib({ stdout, stderr }) {
+          stdout("a");
+          stderr("bc!");
+
+          return 0;
+        },
+        flood({ stdout }) {
+          for (let i = 0; i < 10_000; i++) stdout("T");
+
+          return 0;
+        },
+      },
+    });
+
+    const box = await createSandbox(orderProvider, { secrets: { S1: "abc", S2: "T[" } });
+
+    try {
+      const ordered = await box.run("order");
+      expect(ordered.output).toBe("abxz");
+
+      const chunks: Array<{ stream: string; text: string }> = [];
+
+      for await (const chunk of box.run("attrib")) chunks.push(chunk);
+      expect(chunks.map((c) => `${c.stream}:${c.text}`).join("|")).toBe(
+        "stdout:[REDACTED]|stderr:!",
+      );
+
+      const t0 = Date.now();
+      const flooded = await box.run("flood");
+      expect(Date.now() - t0).toBeLessThan(2000);
+      expect(flooded.stdout).not.toContain("T[");
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("extension failure while unrecovered withholds error and preserves code, retryable, and retryAfterMs", async () => {
+    const base = memory();
+    let boxId = "";
+
+    const provider: Provider<
+      ReturnType<typeof base.native>,
+      never,
+      { demo: { fail(): Promise<void> } }
+    > = {
+      ...base,
+      capabilities: new Set(),
+      readSecretEnvironment: async () => {
+        throw new Error("vault unreachable");
+      },
+      extensions: {
+        demo: () => ({
+          fail: async () => {
+            throw new SandboxError("ext boom top-secret-xyz", {
+              code: "quota",
+              retryable: true,
+              retryAfterMs: 5000,
+            });
+          },
+        }),
+      },
+    };
+
+    const created = await createSandbox(provider, { secrets: { KEY: "top-secret-xyz" } });
+    boxId = created.id;
+    const reconnected = await connectSandbox(provider, boxId);
+
+    try {
+      let caught: Error | undefined;
+
+      try {
+        await reconnected.ext.demo.fail();
+      } catch (err) {
+        if (err instanceof Error) caught = err;
+      }
+
+      expect(caught).toMatchObject({
+        code: "quota",
+        retryable: true,
+        retryAfterMs: 5000,
+      });
+      expect(caught?.message).not.toContain("top-secret-xyz");
+    } finally {
+      await created.destroy();
     }
   });
 });

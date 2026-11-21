@@ -7,7 +7,7 @@ import type {
   TerminalOptions,
 } from "./provider.js";
 import type { CreateOptions, SandboxBase } from "./types.js";
-import { Redactor, SandboxError, invalid, withheldErrors, type ErrorCode } from "./errors.js";
+import { Redactor, SandboxError, invalid, scrubCredentials, withheldErrors } from "./errors.js";
 import { attachHandle, detachHandle, forgetSandbox, withKeyLock } from "./keys.js";
 import { makeRun, chunkRedactor, defaults, pathOf, secretRecoveryCommand } from "./run.js";
 import { quote } from "./shared/shell.js";
@@ -109,8 +109,8 @@ export async function makeHandle<N>(
       code: source?.code ?? "provider",
       retryable: source?.retryable ?? false,
       retryAfterMs: source?.retryAfterMs,
-      provider: hideIdentity ? "unknown" : redactor.text(provider.name),
-      sandboxId: hideIdentity ? undefined : redactor.text(info.id),
+      provider: hideIdentity ? "unknown" : scrubCredentials(redactor.text(provider.name)),
+      sandboxId: hideIdentity ? undefined : scrubCredentials(redactor.text(info.id)),
     });
 
     withheldErrors.add(wrapped);
@@ -162,7 +162,7 @@ export async function makeHandle<N>(
 
     if (result.timedOut || result.exitCode !== 0)
       throw makeWithheld(
-        "Secret recovery failed. Could not read the sandbox environment. Retry, or connect with recoverSecrets: false.",
+        "Secret recovery failed. Could not read the sandbox environment. Connect with recoverSecrets: false to bypass recovery.",
       );
 
     if (!wire) return undefined;
@@ -432,10 +432,10 @@ export async function makeHandle<N>(
   // usage(); a failure recovers first so its error is redacted, and is withheld when that is impossible.
   const ext: Record<string, ExtensionMethods> = {};
 
-  const withheld = (name: string, code: ErrorCode) =>
-    new SandboxError(
-      `Extension ${name} failed. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or connect with recoverSecrets enabled.`,
-      { code, provider: provider.name, sandboxId: info.id },
+  const withheld = (name: string, source?: SandboxError) =>
+    makeWithheld(
+      `Extension ${name} failed. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or connect with recoverSecrets: false.`,
+      source,
     );
 
   const factories: Readonly<
@@ -463,7 +463,7 @@ export async function makeHandle<N>(
           // A getter cannot wait for recovery.
           throw recovered
             ? redactor.error(error, provider.name, info.id)
-            : withheld(name, error instanceof SandboxError ? error.code : "provider");
+            : withheld(name, error instanceof SandboxError ? error : undefined);
         }
 
         // Each method keeps its object as `this`, so methods may call one another.
@@ -480,7 +480,7 @@ export async function makeHandle<N>(
 
                 throw recovered
                   ? redactor.error(error, provider.name, info.id)
-                  : withheld(name, error instanceof SandboxError ? error.code : "provider");
+                  : withheld(name, error instanceof SandboxError ? error : undefined);
               }
             },
           ]),

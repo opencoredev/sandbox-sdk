@@ -3,7 +3,7 @@ import type { Provider, Preview, NativeProcess } from "./provider.js";
 import type { Files } from "./files.js";
 import { encodeChunk, decodePage } from "./logs.js";
 import { parseLineCursor, parseProcessRecord, parseRestartRecord } from "./core/process-records.js";
-import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
+import { SandboxError, invalid, isNotFound, waitDeadlineErrors, type Redactor } from "./errors.js";
 import { setLongTimeout } from "./retry.js";
 import { defaults, pathOf, chunkRedactor } from "./run.js";
 import {
@@ -15,8 +15,7 @@ import {
   supervisorScript,
 } from "./shell/process-records.js";
 
-/** Timeout errors created by `ProcessHandle.wait()`'s own deadline timer. */
-export const waitDeadlineErrors = new WeakSet<SandboxError>();
+export { waitDeadlineErrors };
 
 /** A stable process name for a command: its program name plus a short FNV-1a hash of the full command. */
 export function defaultProcessName(command: string): string {
@@ -455,7 +454,8 @@ export function makeProcesses(
             pending[event.stream] += event.text;
 
             if (Buffer.byteLength(pending[event.stream]) > 65_536) {
-              const tail = Buffer.from(pending[event.stream]).subarray(-65_510);
+              const scrubbedPending = redactor.text(pending[event.stream]);
+              const tail = Buffer.from(scrubbedPending).subarray(-65_510);
               let start = 0;
 
               while (((tail[start] ?? 0) & 0xc0) === 0x80) start++;
@@ -463,7 +463,7 @@ export function makeProcesses(
             }
 
             if (pending[event.stream].endsWith("\n")) {
-              const text = pending[event.stream].slice(0, -1);
+              const text = redactor.text(pending[event.stream].slice(0, -1));
               pending[event.stream] = "";
               yield { text, stream: event.stream, cursor: checkpoint(event.cursor) };
             }
@@ -472,7 +472,7 @@ export function makeProcesses(
           if (!page.truncated && status !== "running" && status !== "starting") {
             for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[])
               if (pending[stream]) {
-                const text = pending[stream];
+                const text = redactor.text(pending[stream]);
                 pending[stream] = "";
                 yield { text, stream, cursor: checkpoint(cursor) };
               }
@@ -593,7 +593,11 @@ export function makeProcesses(
 
                   const left = deadline - Date.now();
 
-                  if (left <= 0) throw makeTimeoutError();
+                  if (left <= 0) {
+                    finish(() => reject(makeTimeoutError()));
+
+                    return null;
+                  }
 
                   await abortableDelay(Math.min(pollMs, left), signal);
                   pollMs = Math.min(pollMs * 2, waitPollMs.max);
