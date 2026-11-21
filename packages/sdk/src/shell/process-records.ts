@@ -239,7 +239,8 @@ export function supervisorScript(input: {
 
   return [
     `chmod 600 ${quote(input.sedPath)}`,
-    `trap 'code=$?; printf "%s" "$code" > ${file.exit}' EXIT`,
+    // The sed program holds the secrets verbatim; drop it before the exit record says the process is done.
+    `trap 'code=$?; rm -f ${quote(input.sedPath)}; printf "%s" "$code" > ${file.exit}' EXIT`,
     `trap 'exit 143' TERM`,
     `${appendFunction(input.dir)} rm -f ${file.stdout} ${file.stderr}`,
     `mkfifo ${file.stdout} ${file.stderr}`,

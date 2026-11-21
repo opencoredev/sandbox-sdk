@@ -426,3 +426,17 @@ test("wait() gives up at its deadline or on abort instead of polling forever", a
   await process.stop({ graceMs: 0 });
   expect(await process.wait({ timeoutMs: 5_000 })).toMatchObject({ exitCode: 143 });
 });
+
+test("the guest copy of the redaction program is removed when the process exits", async () => {
+  await using box = await createSandbox(await shellProvider(), {
+    secrets: { TOKEN: "s3cr3t-token" },
+  });
+
+  const sed = "/tmp/.sandbox-sdk/procs/print-token/redact.sed";
+
+  const process = await box.start("echo $TOKEN", { name: "print-token" });
+  await process.wait({ timeoutMs: 10_000 });
+
+  expect((await process.logs()).text).toBe("[REDACTED]\n");
+  expect(await box.files.exists(sed)).toBe(false);
+});

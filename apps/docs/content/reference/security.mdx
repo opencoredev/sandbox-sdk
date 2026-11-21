@@ -52,6 +52,8 @@ Redaction has limits:
 - Raw `box.files.read` is not redacted. The agent tools' `read_file` is.
 - A secret that a program transforms, for example base64-encoded, no longer matches and isn't redacted.
 
+To redact a background process's logs inside the sandbox, the SDK writes a `sed` program that contains each secret to `redact.sed` in the process's record directory, `/tmp/.sandbox-sdk/procs/<name>/` by default. The file is mode `600` and is removed when the process exits. A process killed with SIGKILL can leave it behind until the sandbox is destroyed, and a snapshot taken while a process runs includes it. The sandbox already holds the same secrets in its environment.
+
 Use `env` for values that are safe to show and `secrets` for everything else.
 
 ## Errors don't leak credentials
