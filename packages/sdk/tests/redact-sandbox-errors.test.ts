@@ -434,5 +434,55 @@ describe("Redactor.text redacts to a fixed point", () => {
     expect(Date.now() - t0).toBeLessThan(3_000);
     expect(unblocked.stdout).toBe("[REDACTED]");
     expect(unblocked.stderr).toBe("[REDACTED]");
+
+    const r15Provider: typeof provider = {
+      ...provider,
+      async exec(_id, input) {
+        if (input.command === "markerSuffixOverflow") {
+          input.onChunk?.({ stream: "stdout", text: "A" });
+          const pad = "b".repeat(1024);
+
+          for (let i = 0; i < 1100; i++) input.onChunk?.({ stream: "stderr", text: pad });
+
+          input.onChunk?.({ stream: "stdout", text: "X1" });
+          input.onChunk?.({ stream: "stdout", text: "X2" });
+
+          return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+        }
+
+        if (input.command === "pingPongUnblock") {
+          for (let i = 0; i < 4000; i++) {
+            input.onChunk?.({ stream: "stdout", text: "T" });
+            input.onChunk?.({ stream: "stderr", text: "T" });
+          }
+
+          input.onChunk?.({ stream: "stdout", text: " QZ" });
+          input.onChunk?.({ stream: "stderr", text: " QZ" });
+
+          return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+        }
+
+        return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+      },
+    };
+
+    await using suffixBox = await createSandbox(r15Provider, {
+      secrets: { A: "AB", B: "ED]X1X2", C: "]X1X2" },
+    });
+
+    const suffixOut = await suffixBox.run("markerSuffixOverflow", { maxOutputBytes: 2_000_000 });
+
+    expect(suffixOut.stdout).not.toContain("X1X2");
+
+    await using pingPongBox = await createSandbox(r15Provider, {
+      secrets: { A: "T[", B: "QZ" },
+    });
+
+    const t1 = Date.now();
+    const pingPongOut = await pingPongBox.run("pingPongUnblock");
+
+    expect(Date.now() - t1).toBeLessThan(2_000);
+    expect(pingPongOut.stdout).toBe(`${"T".repeat(4000)} [REDACTED]`);
+    expect(pingPongOut.stderr).toBe(`${"T".repeat(4000)} [REDACTED]`);
   });
 });

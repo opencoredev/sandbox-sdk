@@ -130,7 +130,9 @@ export class BufferCap {
         this.tailBytes += rest.length;
 
         while (this.tailBytes > tailLimit && this.tailHead < this.tailParts.length) {
-          const front = this.tailParts[this.tailHead]!;
+          const front = this.tailParts[this.tailHead];
+
+          if (!front) break;
           const excess = this.tailBytes - tailLimit;
 
           if (front.length <= excess) {
@@ -348,7 +350,7 @@ export function chunkRedactor(
         let cut = nextTail.length - maxTail;
         const snapped = snapBeforeMarker(nextTail, cut);
 
-        if (snapped < cut) cut = Math.min(nextTail.length, snapped + marker.length);
+        if (snapped < cut) cut = snapped;
         emittedTail[chunk.stream] = nextTail.slice(cut);
       } else {
         emittedTail[chunk.stream] = nextTail;
@@ -1009,7 +1011,7 @@ export function chunkRedactor(
         }
       }
 
-      if (headIdx > 0 || dirtyStats) {
+      const compactAndFlushPlans = () => {
         flushPlanDebts();
 
         if (headIdx > 0) {
@@ -1020,6 +1022,10 @@ export function chunkRedactor(
         dirtyStats = false;
         pruneEmpty();
         syncStats();
+      };
+
+      if (interleaved && (headIdx > 0 || dirtyStats)) {
+        compactAndFlushPlans();
       }
 
       const stallKey = interleaved ? "*" : first.stream;
@@ -1028,6 +1034,8 @@ export function chunkRedactor(
 
       if (
         !final &&
+        !dirtyStats &&
+        headIdx === 0 &&
         cleanKey === stallKey &&
         cleanLen > 0 &&
         selBytes <= 1_048_576 &&
@@ -1053,10 +1061,10 @@ export function chunkRedactor(
 
       const indices: number[] = [];
 
-      for (let i = 0; i < queue.length; i++) {
+      for (let i = headIdx; i < queue.length; i++) {
         const entry = queue[i];
 
-        if (entry && (interleaved || entry.stream === first.stream)) indices.push(i);
+        if (entry && entry.len && (interleaved || entry.stream === first.stream)) indices.push(i);
       }
 
       const selected: QueuedChunk[] = [];
@@ -1082,7 +1090,11 @@ export function chunkRedactor(
       if (!interleaved) {
         contiguousLen = 0;
 
-        for (const chunk of queue) {
+        for (let i = headIdx; i < queue.length; i++) {
+          const chunk = queue[i];
+
+          if (!chunk || !chunk.len) continue;
+
           if (chunk.stream !== first.stream) break;
           contiguousLen += chunk.len;
         }
@@ -1092,7 +1104,12 @@ export function chunkRedactor(
       const head = rawSafe === raw.length ? raw : raw.slice(0, rawSafe);
 
       const canReuseClean =
-        !final && cleanKey === stallKey && cleanLen > 0 && head.length >= cleanLen;
+        !final &&
+        !dirtyStats &&
+        headIdx === 0 &&
+        cleanKey === stallKey &&
+        cleanLen > 0 &&
+        head.length >= cleanLen;
 
       const tailWindow = canReuseClean
         ? head.slice(Math.max(0, cleanLen - redactor.maxLength))
@@ -1117,6 +1134,11 @@ export function chunkRedactor(
 
       if (redacted === head) {
         if (safe === 0) {
+          if (headIdx > 0 || dirtyStats) {
+            compactAndFlushPlans();
+            continue;
+          }
+
           if (!final && selectedBytes > 1_048_576) {
             dropped = true;
             replaceSelected(indices, marker);
@@ -1178,6 +1200,11 @@ export function chunkRedactor(
             segIdx: 0,
           };
 
+          continue;
+        }
+
+        if (headIdx > 0 || dirtyStats) {
+          compactAndFlushPlans();
           continue;
         }
 

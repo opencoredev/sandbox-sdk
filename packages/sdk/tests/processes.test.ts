@@ -816,3 +816,29 @@ test("non-stream startProcess stops hook, clears native entry, and marks status 
     await retry.stop({ graceMs: 0 }).catch(() => {});
   }
 });
+
+test("detached process logs redact secrets longer than 512 bytes split across 4 KB reader chunks", async () => {
+  const secret = "LONG_" + "S".repeat(590) + "MIDDLE" + "Q".repeat(590) + "_END";
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, { secrets: { BIG: secret } });
+
+  const proc = await box.start(
+    `node -e "process.stdout.write('x'.repeat(3500) + process.env.BIG + 'y'.repeat(200) + '\\n')"`,
+    { name: "big-secret-split" },
+  );
+
+  await proc.wait();
+
+  const full = await proc.logs();
+  const paged = await proc.logs({ maxBytes: 4100 });
+  const rawLog = await box.files.read("/tmp/.sandbox-sdk/procs/big-secret-split/out.log");
+
+  expect(full.text).toContain("[REDACTED]");
+  expect(full.text).not.toContain("LONG_SSSS");
+  expect(full.text).not.toContain("QQQQ_END");
+  expect(paged.text).not.toContain("LONG_SSSS");
+  expect(paged.text).not.toContain("QQQQ_END");
+  expect(rawLog).not.toContain("LONG_SSSS");
+  expect(rawLog).not.toContain("QQQQ_END");
+});

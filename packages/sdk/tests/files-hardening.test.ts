@@ -67,16 +67,18 @@ describe("files.upload and files.download report host filesystem failures", () =
   test("a directory upload without host tar is unsupported, not provider", async () => {
     await using box = await createSandbox(await shellProvider());
     const root = await mkdtemp(join(tmpdir(), "sandbox-sdk-upload-dir-"));
+    const emptyBin = await mkdtemp(join(tmpdir(), "sandbox-sdk-empty-bin-"));
     const path = process.env.PATH;
 
     try {
-      process.env.PATH = "";
+      process.env.PATH = emptyBin;
       await expect(box.files.upload(root, "/workspace/in")).rejects.toMatchObject({
         code: "unsupported",
         message: expect.stringContaining("tar is not installed"),
       });
     } finally {
       process.env.PATH = path;
+      await rm(emptyBin, { recursive: true, force: true });
       await rm(root, { recursive: true, force: true });
     }
   });

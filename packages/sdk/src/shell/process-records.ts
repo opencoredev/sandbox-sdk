@@ -134,17 +134,37 @@ export function recordSetupScript(input: { dir: string; cwd: string }): string {
   ].join("; ");
 }
 
+/** Maximum byte length of any single line across the configured secrets. */
+export function maxSecretLineBytes(secrets: readonly string[]): number {
+  let max = 0;
+
+  for (const value of secrets) {
+    for (const line of value.split("\n")) {
+      if (!line) continue;
+      const bytes = Buffer.byteLength(line);
+
+      if (bytes > max) max = bytes;
+    }
+  }
+
+  return max;
+}
+
 /** The sed program the stream readers apply to each chunk. Each secret line is replaced
- * whole, and each of its prefixes at a chunk's end and suffixes at its start, so a secret
- * split across two reads is still redacted. Existing and emitted `[REDACTED]` markers are
- * shielded using control bytes absent from every secret so neither literal markers nor
- * non-secret control bytes are mangled. */
+ * whole; for secrets up to 512 bytes, each prefix at a chunk's end and suffix at its start
+ * is also replaced so a secret split across two reads is redacted without holdback. When any
+ * secret line exceeds 512 bytes, the reader carries a trailing overlap window across chunks
+ * instead, keeping redact.sed bounded while redacting secrets of any length across chunks.
+ * Existing and emitted `[REDACTED]` markers are shielded using control bytes absent from
+ * every secret so neither literal markers nor non-secret control bytes are mangled. */
 export function redactionSedScript(secrets: readonly string[]): string {
   const lines = [...new Set(secrets.flatMap((value) => value.split("\n")).filter(Boolean))].sort(
     (a, b) => b.length - a.length,
   );
 
   if (lines.length === 0) return "\n";
+
+  const useCarryWindow = maxSecretLineBytes(lines) > 512;
 
   // Choose three distinct non-whitespace control bytes absent from all secrets:
   // `esc` escapes literal occurrences of itself (`esc` -> `esc + lit`), while
@@ -202,16 +222,15 @@ export function redactionSedScript(secrets: readonly string[]): string {
   for (const secret of lines) {
     rules.push(`s|${shield(secret)}|${replacement}|g`);
 
-    // Cap per-character chunk-boundary rules for huge secrets so redact.sed stays bounded.
-    const maxEdge = Math.min(secret.length - 1, secret.length > 512 ? 128 : secret.length - 1);
+    if (!useCarryWindow) {
+      for (let len = secret.length - 1; len >= 1; len--) {
+        const prefix = secret.slice(0, len);
+        const suffix = secret.slice(secret.length - len);
 
-    for (let len = maxEdge; len >= 1; len--) {
-      const prefix = secret.slice(0, len);
-      const suffix = secret.slice(secret.length - len);
+        if (prefix !== marker) rules.push(`s|${shield(prefix)}$|${replacement}|`);
 
-      if (prefix !== marker) rules.push(`s|${shield(prefix)}$|${replacement}|`);
-
-      if (suffix !== marker) rules.push(`s|^${shield(suffix)}|${replacement}|`);
+        if (suffix !== marker) rules.push(`s|^${shield(suffix)}|${replacement}|`);
+      }
     }
   }
 
@@ -312,19 +331,65 @@ function appendFunction(dir: string): string {
 
 /** A background subshell that reads one output FIFO and appends each line as a record.
  * It reads 4 KB at a time, then up to three more bytes so a UTF-8 character is never split,
- * and redacts with the sed script before anything reaches the log. A full line is recorded
- * under the upper-case marker, a trailing partial line under the lower-case one. */
-function streamReader(input: { marker: "O" | "E"; fifo: string; sedPath: string }): string {
+ * and redacts with the sed script before anything reaches the log. When `holdBytes > 0`,
+ * trailing bytes of an incomplete line are carried into the next read so secrets longer than
+ * 512 bytes are redacted in full across chunk boundaries. A full line is recorded under the
+ * upper-case marker, a trailing partial line under the lower-case one. */
+function streamReader(input: {
+  marker: "O" | "E";
+  fifo: string;
+  sedPath: string;
+  holdBytes: number;
+}): string {
+  const partialTailLines =
+    input.holdBytes > 0
+      ? [
+          `if [ -n "$chunk" ]`,
+          `then tlen=$(printf '%s' "$chunk" | wc -c)`,
+          `if [ "$tlen" -gt ${input.holdBytes} ]`,
+          `then elen=$((tlen-${input.holdBytes}))`,
+          `clen=${input.holdBytes}`,
+          `while [ "$elen" -gt 0 ]`,
+          `do b=$(printf '%s' "$chunk" | tail -c "$clen" | head -c 1 | od -An -tu1)`,
+          `b=\${b##* }`,
+          `if [ -n "$b" ] && [ "$b" -ge 128 ] && [ "$b" -lt 192 ]`,
+          `then elen=$((elen-1))`,
+          `clen=$((clen+1))`,
+          `else break`,
+          `fi`,
+          `done`,
+          `if [ "$elen" -gt 0 ]`,
+          `then emit=$(printf '%s' "$chunk" | head -c "$elen"; printf .)`,
+          `emit=\${emit%.}`,
+          `append ${input.marker.toLowerCase()} "$emit"`,
+          `fi`,
+          `carry=$(printf '%s' "$chunk" | tail -c "$clen"; printf .)`,
+          `carry=\${carry%.}`,
+          `else carry=$chunk`,
+          `fi`,
+          `fi`,
+        ]
+      : [`[ -z "$chunk" ] || append ${input.marker.toLowerCase()} "$chunk"`];
+
   return [
     `(nl=$(printf '\\nX')`,
     `nl=\${nl%X}`,
+    `carry=`,
     `while :`,
-    `do chunk=$(dd bs=4096 count=1 2>/dev/null; printf .)`,
+    `do raw=$(dd bs=4096 count=1 2>/dev/null; printf .)`,
+    `raw=\${raw%.}`,
+    `if [ -z "$raw" ]`,
+    `then if [ -n "$carry" ]`,
+    `then chunk=$(printf '%s\\n' "$carry" | sed -f ${quote(input.sedPath)}; printf .)`,
     `chunk=\${chunk%.}`,
-    `[ -n "$chunk" ] || break`,
+    `chunk=\${chunk%"$nl"}`,
+    `[ -z "$chunk" ] || append ${input.marker.toLowerCase()} "$chunk"`,
+    `fi`,
+    `break`,
+    `fi`,
     // Count the continuation bytes still owed by a multi-byte character at the chunk's end.
     `need=0`,
-    `for byte in $(printf '%s' "$chunk" | tail -c 4 | od -An -tu1)`,
+    `for byte in $(printf '%s' "$raw" | tail -c 4 | od -An -tu1)`,
     `do if [ "$byte" -ge 240 ]`,
     `then need=3`,
     `elif [ "$byte" -ge 224 ]`,
@@ -339,20 +404,22 @@ function streamReader(input: { marker: "O" | "E"; fifo: string; sedPath: string 
     `if [ "$need" -gt 0 ]`,
     `then rest=$(dd bs=1 count="$need" 2>/dev/null; printf .)`,
     `rest=\${rest%.}`,
-    `chunk="$chunk$rest"`,
+    `raw="$raw$rest"`,
     `fi`,
+    `chunk="$carry$raw"`,
+    `carry=`,
     // One chunk in, then end of input: no -u needed, and BusyBox sed (Alpine) has none.
     `chunk=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
     `chunk=\${chunk%.}`,
     `chunk=\${chunk%"$nl"}`,
-    `while [ -n "$chunk" ]`,
+    `while :`,
     `do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}`,
     `append ${input.marker} "$line"`,
     `chunk=\${chunk#*"$nl"};`,
-    `*) append ${input.marker.toLowerCase()} "$chunk"`,
-    `chunk=;`,
+    `*) break;`,
     `esac`,
     `done`,
+    ...partialTailLines,
     `done < ${quote(input.fifo)}) &`,
   ].join("; ");
 }
@@ -364,8 +431,10 @@ export function supervisorScript(input: {
   cwd: string;
   command: string;
   sedPath: string;
+  holdBytes?: number;
 }): string {
   const file = records(input.dir);
+  const holdBytes = input.holdBytes ?? 0;
 
   return [
     `chmod 600 ${quote(input.sedPath)}`,
@@ -374,8 +443,8 @@ export function supervisorScript(input: {
     `trap 'exit 143' TERM`,
     `${appendFunction(input.dir)} rm -f ${file.stdout} ${file.stderr}`,
     `mkfifo ${file.stdout} ${file.stderr}`,
-    `${streamReader({ marker: "O", fifo: `${input.dir}/stdout`, sedPath: input.sedPath })} out=$!`,
-    `${streamReader({ marker: "E", fifo: `${input.dir}/stderr`, sedPath: input.sedPath })} err=$!`,
+    `${streamReader({ marker: "O", fifo: `${input.dir}/stdout`, sedPath: input.sedPath, holdBytes })} out=$!`,
+    `${streamReader({ marker: "E", fifo: `${input.dir}/stderr`, sedPath: input.sedPath, holdBytes })} err=$!`,
     `{ cd ${quote(input.cwd)} && sh -c ${quote(input.command)}; } > ${file.stdout} 2> ${file.stderr}`,
     `code=$?`,
     `wait "$out" "$err"`,

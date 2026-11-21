@@ -9,6 +9,7 @@ import { defaults, pathOf, chunkRedactor } from "./run.js";
 import {
   detachedLaunchScript,
   logPageScript,
+  maxSecretLineBytes,
   recordExit,
   recordSetupScript,
   redactionSedScript,
@@ -907,11 +908,14 @@ export function makeProcesses(
             });
         } else if (launched) {
           // No resident daemon: a detached process group writes durable records itself.
+          const maxLineBytes = maxSecretLineBytes(redactor.secrets);
+
           const wrapper = supervisorScript({
             dir,
             cwd: pathOf(options.cwd),
             command,
             sedPath,
+            holdBytes: maxLineBytes > 512 ? maxLineBytes + 16 : 0,
           });
 
           try {
