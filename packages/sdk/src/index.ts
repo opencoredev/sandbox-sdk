@@ -20,6 +20,8 @@ import { forgetKey, forgetSandbox, knownKey, rememberKey, withKeyLock } from "./
 
 export { SandboxError } from "./errors.js";
 
+export { withRetry, type RetryOptions } from "./retry.js";
+
 export type { ErrorCode, ErrorOptions } from "./errors.js";
 
 export type {

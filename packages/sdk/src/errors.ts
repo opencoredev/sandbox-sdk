@@ -47,6 +47,8 @@ export interface ErrorOptions {
   retryable?: boolean;
   /** The next step, on its own. Default: a generic step for `code`. */
   hint?: string;
+  /** How long the provider asked callers to wait before retrying, from its `Retry-After`. */
+  retryAfterMs?: number;
   cause?: unknown;
 }
 
@@ -85,6 +87,8 @@ export class SandboxError extends Error {
   readonly provider: string;
   /** The sandbox involved, when there is one. */
   readonly sandboxId?: string;
+  /** How long the provider asked callers to wait before retrying, when it said. {@link withRetry} honours it. */
+  readonly retryAfterMs?: number;
   constructor(message: string, options: ErrorOptions) {
     super(message, { cause: options.cause });
     this.name = "SandboxError";
@@ -93,6 +97,7 @@ export class SandboxError extends Error {
     this.hint = options.hint ?? hints[options.code] ?? hints.provider;
     this.provider = options.provider ?? "unknown";
     this.sandboxId = options.sandboxId;
+    this.retryAfterMs = options.retryAfterMs;
   }
   static {
     // The published build is minified, so the class itself is named something like `e`. Node prints
@@ -179,6 +184,7 @@ export class Redactor {
       return new SandboxError(scrubCredentials(this.text(cause.message)), {
         code: cause.code,
         retryable: cause.retryable,
+        retryAfterMs: cause.retryAfterMs,
         hint: scrubCredentials(this.text(cause.hint)),
         provider,
         // Create paths know no ID yet; keep the one an adapter named, such as a box it could not delete.
