@@ -130,17 +130,41 @@ export function isNotFound(
   );
 }
 
+const redactedMarker = "[REDACTED]";
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** @internal Redacts registered secrets from text and errors. */
 export class Redactor {
   private values = new Set<string>();
+  private pattern: RegExp | undefined;
   add(values: Iterable<string>) {
-    for (const value of values) if (value) this.values.add(value);
+    for (const value of values)
+      if (value && !this.values.has(value)) {
+        this.values.add(value);
+        this.pattern = undefined;
+      }
   }
+  /**
+   * Replaces every registered secret with `[REDACTED]` in one left-to-right pass. The longest
+   * secret wins at each position, and a marker written by one match is never scanned again, so a
+   * secret that is part of `[REDACTED]` (such as `"RED"`) cannot mangle it. A marker already in
+   * the text is matched as a whole and kept, so redacting twice changes nothing.
+   */
   text(value: string): string {
-    for (const secret of [...this.values].sort((a, b) => b.length - a.length))
-      value = value.split(secret).join("[REDACTED]");
+    if (this.values.size === 0) return value;
 
-    return value;
+    if (!this.pattern) {
+      const alternatives = [...new Set([...this.values, redactedMarker])].sort(
+        (a, b) => b.length - a.length,
+      );
+
+      this.pattern = new RegExp(alternatives.map(escapeRegExp).join("|"), "g");
+    }
+
+    return value.replace(this.pattern, redactedMarker);
   }
   get secrets() {
     return [...this.values].sort((a, b) => b.length - a.length);

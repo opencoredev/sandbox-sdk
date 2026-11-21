@@ -201,3 +201,32 @@ describe("Redactor.error keeps adapter evidence valid, bounded JSON", () => {
 function isObjectWith(value: unknown): value is { providerMessage?: unknown } {
   return typeof value === "object" && value !== null;
 }
+
+describe("Redactor.text redacts in one pass", () => {
+  const redact = (secrets: string[], text: string) => {
+    const redactor = new Redactor();
+    redactor.add(secrets);
+
+    return redactor.text(text);
+  };
+
+  test("a secret inside the marker does not mangle an earlier replacement", () => {
+    expect(redact(["supersecret", "RED"], "token=supersecret")).toBe("token=[REDACTED]");
+  });
+
+  test("a one-letter secret that the marker contains is replaced only where it appears", () => {
+    expect(redact(["abc", "E"], "abc")).toBe("[REDACTED]");
+    expect(redact(["abc", "E"], "xEx abc")).toBe("x[REDACTED]x [REDACTED]");
+  });
+
+  test("the longest secret wins where secrets overlap, and regex characters are literal", () => {
+    expect(redact(["ab", "abcd"], "abcd ab")).toBe("[REDACTED] [REDACTED]");
+    expect(redact(["a.b(+)"], "a.b(+) axb(+)")).toBe("[REDACTED] axb(+)");
+  });
+
+  test("redaction is idempotent", () => {
+    const once = redact(["supersecret", "RED"], "supersecret RED");
+
+    expect(redact(["supersecret", "RED"], once)).toBe(once);
+  });
+});
