@@ -868,3 +868,44 @@ test("detached process with >512-byte secret flushes non-secret partial lines im
 
   expect(await box.files.exists("/tmp/.sandbox-sdk/procs/big-secret-ready/redact.txt")).toBe(false);
 });
+
+test("detached process redacts >512-byte secret overlapping shorter secret and left-marker secret across 4 KiB boundary", async () => {
+  const shortSecret = "OVERLAP_SHORT_KEY";
+  const longSecret = `${shortSecret}_${"L".repeat(1180)}_TAIL`;
+  const markerSecret = "LEADX[REDACTED]TAILY";
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: { SHORT: shortSecret, LONG: longSecret, MARKER: markerSecret },
+  });
+
+  const pad = "A".repeat(4096 - 300);
+
+  const proc = await box.start(
+    `printf '%s' "${pad}${longSecret}" && printf '\\n' && printf '%s' "${"B".repeat(4096 - 305)}LEADX${longSecret}TAILY"`,
+    { name: "overlap-boundary" },
+  );
+
+  await proc.wait();
+
+  const full = await proc.logs();
+  const rawLog = await box.files.read("/tmp/.sandbox-sdk/procs/overlap-boundary/out.log");
+
+  expect(full.text).toContain("[REDACTED]");
+  expect(full.text).not.toContain("OVERLAP_SHORT_KEY");
+  expect(full.text).not.toContain("LLLLLLLL");
+  expect(full.text).not.toContain("_TAIL");
+  expect(full.text).not.toContain("LEADX");
+  expect(full.text).not.toContain("TAILY");
+  expect(rawLog).not.toContain("OVERLAP_SHORT_KEY");
+  expect(rawLog).not.toContain("LLLLLLLL");
+  expect(rawLog).not.toContain("LEADX");
+  expect(rawLog).not.toContain("TAILY");
+
+  // Calling stop() on an already-exited process still cleans leftover redact artifacts.
+  await box.files.write("/tmp/.sandbox-sdk/procs/overlap-boundary/redact.sed", "dummy");
+  await box.files.write("/tmp/.sandbox-sdk/procs/overlap-boundary/redact.txt", "dummy");
+  await proc.stop();
+  expect(await box.files.exists("/tmp/.sandbox-sdk/procs/overlap-boundary/redact.sed")).toBe(false);
+  expect(await box.files.exists("/tmp/.sandbox-sdk/procs/overlap-boundary/redact.txt")).toBe(false);
+});

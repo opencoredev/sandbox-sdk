@@ -352,7 +352,7 @@ function streamReader(input: {
   const computeHold = input.secretsPath
     ? [
         `if command -v awk >/dev/null 2>&1`,
-        `then clen=$(printf '%s\\n' "$chunk" | LC_ALL=C awk 'FILENAME!="-"{if(length($0)>1)s[++n]=$0;next}{t=$0;tl=length(t);k=0;for(i=1;i<=n;i++){p=s[i];pl=length(p);m=tl<pl-1?tl:pl-1;for(j=m;j>k;j--){if(substr(t,tl-j+1,j)==substr(p,1,j)){k=j;break}}}print k}' ${quote(input.secretsPath)} - 2>/dev/null)`,
+        `then clen=$(printf '%s\\n' "$chunk" | LC_ALL=C awk 'BEGIN{mk="[REDACTED]";ml=length(mk)}FILENAME!="-"{if(length($0)>1)s[++n]=$0;p=index($0,mk);if(p>1)lb[++nlb]=substr($0,1,p-1);for(o=1;o<ml&&o<length($0);o++){if(substr(mk,1,o)==substr($0,length($0)-o+1,o))lb[++nlb]=substr($0,1,length($0)-o)}next}{t=$0;tl=length(t);k=0;for(i=1;i<=n;i++){p=s[i];pl=length(p);m=tl<pl-1?tl:pl-1;for(j=m;j>k;j--){if(substr(t,tl-j+1,j)==substr(p,1,j)){k=j;break}}}if(k>0&&nlb>0){c=1;while(c){c=0;r=tl-k;for(i=1;i<=nlb;i++){bl=length(lb[i]);if(bl>0&&bl<=r&&substr(t,r-bl+1,bl)==lb[i]){k+=bl;c=1;break}}}}print k}' ${quote(input.secretsPath)} - 2>/dev/null)`,
         `clen=\${clen:-${input.holdBytes}}`,
         `else clen=${input.holdBytes}`,
         `fi`,
@@ -366,7 +366,10 @@ function streamReader(input: {
           `then tlen=$(printf '%s' "$chunk" | wc -c)`,
           ...computeHold,
           `if [ "$clen" -le 0 ]`,
-          `then append ${input.marker.toLowerCase()} "$chunk"`,
+          `then emit=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
+          `emit=\${emit%.}`,
+          `emit=\${emit%"$nl"}`,
+          `[ -z "$emit" ] || append ${input.marker.toLowerCase()} "$emit"`,
           `elif [ "$tlen" -gt "$clen" ]`,
           `then elen=$((tlen-clen))`,
           `while [ "$elen" -gt 0 ]`,
@@ -381,7 +384,10 @@ function streamReader(input: {
           `if [ "$elen" -gt 0 ]`,
           `then emit=$(printf '%s' "$chunk" | head -c "$elen"; printf .)`,
           `emit=\${emit%.}`,
-          `append ${input.marker.toLowerCase()} "$emit"`,
+          `emit=$(printf '%s\\n' "$emit" | sed -f ${quote(input.sedPath)}; printf .)`,
+          `emit=\${emit%.}`,
+          `emit=\${emit%"$nl"}`,
+          `[ -z "$emit" ] || append ${input.marker.toLowerCase()} "$emit"`,
           `fi`,
           `carry=$(printf '%s' "$chunk" | tail -c "$clen"; printf .)`,
           `carry=\${carry%.}`,
@@ -389,7 +395,14 @@ function streamReader(input: {
           `fi`,
           `fi`,
         ]
-      : [`[ -z "$chunk" ] || append ${input.marker.toLowerCase()} "$chunk"`];
+      : [
+          `if [ -n "$chunk" ]`,
+          `then emit=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
+          `emit=\${emit%.}`,
+          `emit=\${emit%"$nl"}`,
+          `[ -z "$emit" ] || append ${input.marker.toLowerCase()} "$emit"`,
+          `fi`,
+        ];
 
   return [
     `(nl=$(printf '\\nX')`,
@@ -428,17 +441,22 @@ function streamReader(input: {
     `fi`,
     `chunk="$carry$raw"`,
     `carry=`,
-    // One chunk in, then end of input: no -u needed, and BusyBox sed (Alpine) has none.
-    `chunk=$(printf '%s\\n' "$chunk" | sed -f ${quote(input.sedPath)}; printf .)`,
-    `chunk=\${chunk%.}`,
-    `chunk=\${chunk%"$nl"}`,
+    // Redact complete lines in one sed pass; keep any partial trailing line raw so
+    // suffix-prefix carry matching runs before sed can rewrite an overlapping shorter secret.
+    `case "$chunk" in *"$nl"*) tail=\${chunk##*"$nl"}`,
+    `head=\${chunk%"$nl$tail"}`,
+    `head=$(printf '%s\\n' "$head" | sed -f ${quote(input.sedPath)}; printf .)`,
+    `head=\${head%.}`,
+    `head=\${head%"$nl"}`,
     `while :`,
-    `do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}`,
+    `do case "$head" in *"$nl"*) line=\${head%%"$nl"*}`,
     `append ${input.marker} "$line"`,
-    `chunk=\${chunk#*"$nl"};`,
-    `*) break;`,
+    `head=\${head#*"$nl"};`,
+    `*) append ${input.marker} "$head"; break;`,
     `esac`,
     `done`,
+    `chunk=$tail;`,
+    `esac`,
     ...partialTailLines,
     `done < ${quote(input.fifo)}) &`,
   ].join("; ");

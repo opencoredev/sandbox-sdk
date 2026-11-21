@@ -490,7 +490,18 @@ export function makeProcesses(
           const current = await info(name);
           status = current.status;
 
-          if (current.exitCode !== null) return;
+          if (current.exitCode !== null) {
+            await provider.files
+              .remove(id, `${dir}/redact.sed`, { recursive: false })
+              .catch(() => {});
+            await provider.files
+              .remove(id, `${dir}/redact.txt`, { recursive: false })
+              .catch(() => {});
+            ready = false;
+
+            return;
+          }
+
           const hook = native.get(name);
 
           if (hook) await hook.stop({ graceMs: options.graceMs ?? 1000 });
@@ -508,6 +519,7 @@ export function makeProcesses(
             .remove(id, `${dir}/redact.txt`, { recursive: false })
             .catch(() => {});
           status = "exited";
+          ready = false;
         }),
       restart: () =>
         safe(async () => {
@@ -769,6 +781,7 @@ export function makeProcesses(
             if (await files.exists(`${dir}/exit`)) await files.remove(`${dir}/exit`);
           } catch (error) {
             controller?.state("failed");
+            controller?.ready(false);
             await provider.files
               .remove(id, `${dir}/spec.json`, { recursive: false })
               .catch(() => {});
@@ -794,6 +807,7 @@ export function makeProcesses(
             controller?.ready(false);
           } else if (result.timedOut || result.exitCode !== 0) {
             controller?.state("failed");
+            controller?.ready(false);
             throw new SandboxError(
               "Process setup failed. Could not prepare durable records. Check that /tmp is writable and retry.",
               { code: "provider" },

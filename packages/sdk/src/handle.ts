@@ -110,7 +110,7 @@ export async function makeHandle<N>(
       retryable: source?.retryable ?? false,
       retryAfterMs: source?.retryAfterMs,
       provider: hideIdentity ? "unknown" : scrubCredentials(redactor.text(provider.name)),
-      sandboxId: hideIdentity ? undefined : scrubCredentials(redactor.text(info.id)),
+      sandboxId: hideIdentity || !recovered ? undefined : scrubCredentials(redactor.text(info.id)),
     });
 
     withheldErrors.add(wrapped);
