@@ -36,7 +36,7 @@ const llmsDetails = `**When to use Sandbox SDK.** Use it when server-side TypeSc
 - switch between Docker or agentOS on your own machine, E2B, Vercel Sandbox, Modal, Baseten, Daytona, Upstash Box, Railway, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, and Instabox without rewriting code;
 - test all of the above offline with the in-process \`memory()\` provider.
 
-It is not a hosted service: it calls each provider's HTTP API or SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server. It is not an isolation layer of its own: the provider supplies the security boundary.
+It is not a hosted service: it calls each provider's HTTP API or SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server, and it needs Node.js or Bun: the core imports Node built-ins such as \`node:child_process\` and \`node:fs\`, so edge runtimes such as Cloudflare Workers, Vercel Edge Functions, and Deno Deploy are not supported. It is not an isolation layer of its own: the provider supplies the security boundary.
 
 **How an agent should use it.**
 
