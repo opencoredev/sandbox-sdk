@@ -1,0 +1,203 @@
+---
+title: Archil
+seo:
+  title: Archil Sandboxes SDK in TypeScript
+description: Use Archil sandboxes from TypeScript through Archil's official disk SDK and one portable API. Exact keys, pause with memory, a terminal, network policies, sizes up to 32 vCPUs, and public previews.
+---
+
+`archil()` runs each sandbox as an Archil sandbox, a VM with its own root disk, through Archil's official TypeScript SDK, the `disk` npm package.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(archil())` and then `box.run`, `box.files`, `box.preview`, `box.pause` and `box.terminal`, and the same code runs on E2B or Modal when you swap the factory. Archil has no snapshots, templates or disk size through this API. The [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) gives you the `disk` `Sandbox` and `Archil` client when you need the rest.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk disk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk disk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk disk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk disk
+```
+
+  </Tab>
+</Tabs>
+
+The adapter is written against `disk` 1.12.1 and accepts `^1.12.1`. Create an API key in the Archil console and set `ARCHIL_API_KEY`, or pass `archil({ apiKey })`. Keys belong to one region. For a key outside `aws-us-east-1`, the default, set `ARCHIL_REGION` or pass `region`: `aws-us-west-2`, `aws-eu-west-1` or `gcp-us-central1`.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { archil } from "@opencoredev/sandbox-sdk/archil";
+
+await using box = await createSandbox(archil(), { timeoutMs: 30 * 60_000 });
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+`await using` deletes the sandbox when the block ends. `timeoutMs` is Archil's maximum lifetime. When it runs out, Archil pauses the sandbox instead of deleting it, so a sandbox your process forgot stops using compute but keeps its disk until you delete it.
+
+## What it supports
+
+| Feature                        | Support | Notes                                                          |
+| ------------------------------ | ------- | -------------------------------------------------------------- |
+| Commands and streaming         | Yes     | Separate stdout and stderr, stdin, exit codes                  |
+| Files                          | Yes     | Reads need `python3` in the image; the default image has it    |
+| Background processes           | Yes     |                                                                |
+| Preview URLs                   | Yes     | Public `https://` URLs; no ports to declare                    |
+| Pause and resume               | Yes     | Keeps memory and processes                                     |
+| Snapshots                      | No      |                                                                |
+| Templates                      | No      | Use `image` or `imageId`                                       |
+| Machine size                   | Partial | 1 to 32 vCPUs, 256 to 65536 MiB; no disk setting               |
+| Network policy                 | Yes     | `"none"` and allow lists; paid plans only                      |
+| Hard lifetime (`timeoutMs`)    | Yes     | 60 seconds to 24 hours, in whole seconds; pauses when it fires |
+| Idle timeout (`idleTimeoutMs`) | Yes     | Whole seconds, up to 24 hours; pauses when it fires            |
+| Keys                           | Exact   | Sandbox name is a hash of the key                              |
+| Terminal                       | Yes     | A login shell as root with `TERM=xterm-256color`               |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { archil } from "@opencoredev/sandbox-sdk/archil";
+
+await using box = await createSandbox(archil());
+const result = await box.run("ls -la", { cwd: "/tmp", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+Commands run in `/workspace` unless you pass `cwd`. The default image is Archil's `node:24-bookworm`, Debian with glibc, Node.js 24 and `python3`. A timeout or abort kills the command's process tree and waits for Archil to confirm it ended; if Archil never confirms, the command fails with `outcome_unknown`.
+
+## Pause, resume, and the idle timeout
+
+`box.pause()` pauses the VM with its memory, and `box.resume()` brings it back with its processes where they were. A paused sandbox accrues no compute charge.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { archil } from "@opencoredev/sandbox-sdk/archil";
+
+await using box = await createSandbox(archil(), { idleTimeoutMs: 10 * 60_000 });
+await box.run("echo started > /workspace/state");
+await box.pause();
+await box.resume();
+console.log((await box.run("cat /workspace/state")).stdout);
+```
+
+Archil pauses an idle sandbox by itself after 30 minutes, or after `idleTimeoutMs` when you pass one. A sandbox that paused itself wakes on its next command, so you don't need to call `resume()` first. `listSandboxes()` reports a paused or stopped sandbox as `"paused"` or `"stopped"` with the SDK label only, because its labels are in a file that can't be read until it runs again; filtering by your own labels leaves it out.
+
+## Terminal
+
+`box.terminal()` opens a PTY running a login shell as root.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { archil } from "@opencoredev/sandbox-sdk/archil";
+
+await using box = await createSandbox(archil());
+const terminal = await box.terminal({ cols: 120, rows: 30 });
+terminal.onData((text) => process.stdout.write(text));
+await terminal.write("uname -a\n");
+await terminal.close();
+```
+
+## Previews
+
+`box.preview(port)` exposes that port publicly and returns its `https://` URL. Nothing needs to be declared at creation, and anyone with the URL can open it.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { archil } from "@opencoredev/sandbox-sdk/archil";
+
+await using box = await createSandbox(archil(), { timeoutMs: 30 * 60_000 });
+await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
+const preview = await box.preview(8000);
+console.log(preview.url);
+```
+
+## Size, network, and lifetime
+
+| Preset   | vCPUs | Memory   |
+| -------- | ----- | -------- |
+| `small`  | 1     | 2048 MiB |
+| `medium` | 2     | 4096 MiB |
+| `large`  | 4     | 8192 MiB |
+
+An exact `size` takes 1 to 32 whole vCPUs and 256 to 65536 MiB in whole MiB, such as `{ cpu: 8, memoryMb: 16384 }`. Anything outside that fails with `unsupported`. The root disk is about 1 TB and can't be changed, so `diskGb` fails with `unsupported`. Without `size`, Archil's default is 1 vCPU and 2048 MiB.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { archil } from "@opencoredev/sandbox-sdk/archil";
+
+await using box = await createSandbox(archil(), {
+  size: { cpu: 4, memoryMb: 8192 },
+  network: { allow: ["registry.npmjs.org", "github.com"] },
+  timeoutMs: 60 * 60_000,
+});
+```
+
+`network: "none"` denies all outbound traffic, and `{ allow }` denies everything except the listed destinations. On Archil's free plan every sandbox already has outbound traffic denied, and a network policy fails with `unsupported` because the plan doesn't include it. Paid plans allow all outbound traffic unless you set a policy.
+
+`timeoutMs` takes 60 seconds to 24 hours and `idleTimeoutMs` up to 24 hours; both round up to whole seconds. A `timeoutMs` under a minute fails with `unsupported`. Both pause the sandbox when they fire.
+
+## Limits and cost
+
+Archil caps how many sandboxes run at once by plan: 5 on Free, 20 on Developer and 250 on Team. A create over the cap fails with `quota`. Compute is billed per vCPU-hour and GiB-hour while a sandbox runs; paused and stopped sandboxes accrue no compute, but the data on their disk is billed as storage until you delete them. See [Archil's billing docs](https://docs.archil.com/administration/billing.md) for current rates.
+
+## Configuration
+
+| Option    | Type                       | Default            | Env var          |
+| --------- | -------------------------- | ------------------ | ---------------- |
+| `apiKey`  | `string`                   |                    | `ARCHIL_API_KEY` |
+| `region`  | `string`                   | `aws-us-east-1`    | `ARCHIL_REGION`  |
+| `image`   | `string`, a public OCI ref | `node:24-bookworm` |                  |
+| `imageId` | `string`                   | None               |                  |
+
+`image` takes a public OCI image reference. `imageId` takes the ID of an image you built with Archil's image builds, and replaces `image` when both are set.
+
+## Limitations
+
+- No snapshots, snapshot restore (`from`) or templates.
+- No disk size: the root disk is fixed.
+- A network policy needs a paid plan; free-plan sandboxes have no outbound access.
+- `timeoutMs` under 60 seconds fails, and an expired lifetime pauses the sandbox rather than deleting it.
+- Labels of a paused or stopped sandbox can't be read until it runs again.
+
+## How it works
+
+- Every SDK sandbox is named `sbxsdk-` plus a UUID. A keyed sandbox is named `sbxsdk-k` plus 40 hex characters of the key's SHA-256. Archil names are unique per account, so the key is exact: concurrent creates with one key share one sandbox.
+- Archil keeps no labels on a sandbox, so the adapter writes the key and your `labels` to `/var/lib/sandbox-sdk/metadata.json` inside it at create. `list` and `connect` read that file.
+- Commands use Archil's process API over a WebSocket, which is why the adapter needs `disk` instead of calling `fetch`. Command input goes in 1 MiB pieces.
+- A create that fails after Archil made the sandbox deletes it before failing. If the delete isn't confirmed, create fails with `outcome_unknown` and names the sandbox.
+- `box.native` returns `{ sandbox, client }`, the `disk` `Sandbox` and the `Archil` client that loaded it. Connect to the sandbox first.
+- Errors keep only Archil's error name, HTTP status and error code, never its message, which can echo paths or commands.
+
+## Next steps
+
+- [Build an AI app builder](/guides/build-an-ai-app-builder)
+- [Machine size and network](/guides/machine-size-and-network)

@@ -10,6 +10,7 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Boxd } from "@boxd-sh/sdk";
 import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { TenkiSandbox } from "@tenkicloud/sandbox";
+import type { Archil as ArchilClient } from "disk";
 
 type Sdk = typeof Core;
 
@@ -70,6 +71,7 @@ const nativePackages = {
   baseten: "@basetenlabs/sandbox",
   instabox: "@insforge/instabox-sdk",
   beam: "@beamcloud/beam-js",
+  archil: "disk",
 } as const;
 
 /** A provider this script can measure. */
@@ -375,6 +377,33 @@ const providers = {
       },
     };
   },
+  async archil() {
+    const m: typeof import("@opencoredev/sandbox-sdk/archil") = await import(
+      moduleUrl("providers/archil/index.js")
+    );
+
+    const provider = m.archil();
+
+    // The floor is the official SDK's sandbox handle the adapter already holds.
+    return {
+      provider,
+      floor: (id) => {
+        const { sandbox } = provider.native(id);
+
+        return {
+          exec: async (command = "true") => {
+            const r = await sandbox.exec(command);
+
+            if (r.status !== "completed" || r.exitCode !== 0)
+              throw new Error(`exit ${r.exitCode ?? r.status}`);
+          },
+          write: async (path, data) => {
+            await sandbox.files.uploadFile(data, path);
+          },
+        };
+      },
+    };
+  },
 } satisfies Record<ProviderName, () => Promise<Loaded>>;
 
 interface NativeBox {
@@ -391,6 +420,8 @@ interface NativeClients {
   beam?: InstanceType<typeof import("@beamcloud/beam-js").Sandbox>;
   boxd?: Boxd;
   tenki?: TenkiSandbox;
+  /** One client for every native Archil create, as the adapter keeps one per provider. */
+  archil?: ArchilClient;
 }
 
 const nativeClients: NativeClients = {};
@@ -772,6 +803,50 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     admit(raw);
 
     const instance = await m.Sandbox.connect(id);
+
+    return raw;
+  }
+
+  if (name === "archil") {
+    const m: typeof import("disk") = await import(nativeUrl("disk"));
+
+    const client = (nativeClients.archil ??= new m.Archil({
+      apiKey: process.env.ARCHIL_API_KEY ?? "",
+      region: process.env.ARCHIL_REGION ?? "aws-us-east-1",
+    }));
+
+    // Archil keeps no labels; the name carries the run ID (lowercase, hyphens, at most 63
+    // characters). Same defaults as the adapter: Archil's node:24-bookworm, 1 vCPU / 2048 MiB.
+    // create waits until the sandbox runs, as the adapter's create does.
+    const box = await client.sandboxes.create({
+      name: `${runId}-native-${crypto.randomUUID().slice(0, 8)}`,
+    });
+
+    const raw = {
+      id: box.id,
+      exec: async () => {
+        const r = await box.exec("true");
+
+        if (r.status !== "completed" || r.exitCode !== 0)
+          throw new Error(`exit ${r.exitCode ?? r.status}`);
+      },
+      destroy: async () => {
+        await box.stop();
+        await box.delete();
+      },
+      exists: async () => {
+        try {
+          const found = await client.sandboxes.get(box.id);
+
+          return found.status !== "deleted";
+        } catch (error) {
+          if (error instanceof m.ArchilApiError && error.status === 404) return false;
+          throw error;
+        }
+      },
+    };
+
+    admit(raw);
 
     return raw;
   }

@@ -28,6 +28,20 @@ export function nativeCode(cause: unknown): string | undefined {
 // the account cannot do that.
 const planRequired = /_plan_required$/;
 
+// A plan's concurrent-sandbox cap (Free 5, Developer 20, Team 250) is an account limit, not a bad
+// key, whatever status carries it. Archil does not document the code, so any quota or limit code
+// on 402, 403 or 429 counts; a 400 such as an out-of-range size keeps its own meaning.
+const accountLimit = /quota|limit/i;
+
+function isAccountLimit(status: number | undefined, code: string | undefined) {
+  return (
+    status !== undefined &&
+    [402, 403, 429].includes(status) &&
+    code !== undefined &&
+    accountLimit.test(code)
+  );
+}
+
 /** An Archil failure as a SandboxError, keeping only the error's name, HTTP status and code. */
 export function archilError(cause: unknown, sandboxId?: string): SandboxError {
   if (cause instanceof SandboxError) return cause;
@@ -38,13 +52,15 @@ export function archilError(cause: unknown, sandboxId?: string): SandboxError {
   const mapped: ErrorCode =
     code !== undefined && planRequired.test(code)
       ? "unsupported"
-      : status !== undefined
-        ? statusCode(status)
-        : name === "AbortError"
-          ? "aborted"
-          : cause instanceof TypeError
-            ? "unavailable"
-            : "provider";
+      : isAccountLimit(status, code)
+        ? "quota"
+        : status !== undefined
+          ? statusCode(status)
+          : name === "AbortError"
+            ? "aborted"
+            : cause instanceof TypeError
+              ? "unavailable"
+              : "provider";
 
   // Archil's messages can echo paths and commands (file transfer errors quote the guest's
   // stderr), so only the name, status and code survive.

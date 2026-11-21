@@ -83,6 +83,7 @@ const allProviders = [
   "baseten",
   "instabox",
   "beam",
+  "archil",
 ];
 
 const listingSchema = z.object({

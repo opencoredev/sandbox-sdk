@@ -675,6 +675,9 @@ describe("account limits", () => {
     expect(accountRefusal({ provider: "baseten", size: 5, vcpu: 4 })).toBeNull();
     expect(accountRefusal({ provider: "baseten", size: 11, vcpu: 4 })).toMatch(/11 tasks/);
     expect(accountRefusal({ provider: "e2b", size: 50, vcpu: 4 })).toBeNull();
+    // Archil's Developer plan cap: 20 sandboxes at once, whatever their size.
+    expect(accountRefusal({ provider: "archil", size: 20, vcpu: 4 })).toBeNull();
+    expect(accountRefusal({ provider: "archil", size: 21, vcpu: 1 })).toMatch(/21 tasks/);
   });
 });
 
@@ -2354,6 +2357,10 @@ describe("a Modal create that fails without naming a sandbox", () => {
     // Elsewhere a refusal by code still allocated nothing.
     expect(allocationUnknown(failedCreate("e2b", "quota"))).toBe(false);
     expect(isAccountLimit(failedCreate("e2b", "quota"))).toBe(true);
+    // Archil's plan cap: the adapter's quota refusal names no sandbox, so it is an account limit.
+    expect(allocationUnknown(failedCreate("archil", "quota"))).toBe(false);
+    expect(isAccountLimit(failedCreate("archil", "quota"))).toBe(true);
+    expect(isAccountLimit(failedCreate("archil", "provider"))).toBe(false);
   });
 });
 

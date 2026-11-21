@@ -18,13 +18,14 @@ const cost = z.discriminatedUnion("kind", [
 
 /**
  * Disk an estimate assumes when the run's size gives none: Luxor's 5 GiB, none for Baseten (files
- * live in memory, and the cost suite mounts no volume, which is all its disk rate prices) or Beam
- * (sandbox disk is not billed), and 32 GiB otherwise.
+ * live in memory, and the cost suite mounts no volume, which is all its disk rate prices), Beam
+ * (sandbox disk is not billed) or Archil (disk data is billed as storage, outside the estimate),
+ * and 32 GiB otherwise.
  */
 function unsizedDiskGiB(provider: string) {
   if (provider === "tenki") return 5;
 
-  return provider === "baseten" || provider === "beam" ? 0 : 32;
+  return ["baseten", "beam", "archil"].includes(provider) ? 0 : 32;
 }
 
 export const costBillingSchema = z.object({
@@ -78,7 +79,7 @@ export function costPerTask(report: PublicationReport, provider: string): TaskCo
     usd: null,
     kind: estimate
       ? "estimate"
-      : ["daytona", "upstash", "modal"].includes(provider)
+      : ["daytona", "upstash", "modal", "archil"].includes(provider)
         ? "billed"
         : "metered",
     source: estimate

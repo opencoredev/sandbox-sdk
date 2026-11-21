@@ -124,6 +124,7 @@ export default defineConfig({
               root: "/providers/instabox",
               icon: "/integrations/instabox.svg",
             },
+            { label: "Archil", root: "/providers/archil", icon: "hard-drive" },
             { label: "Daytona", root: "/providers/daytona", icon: "/integrations/daytona.svg" },
             { label: "Upstash Box", root: "/providers/upstash", icon: "/integrations/upstash.svg" },
             { label: "Railway", root: "/providers/railway", icon: "/integrations/railway.svg" },

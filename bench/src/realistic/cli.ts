@@ -149,6 +149,7 @@ export const heldOpenProviders = [
   "modal",
   "vercel",
   "instabox",
+  "archil",
 ];
 
 /** Idle lengths of the held-open diagnostic, provider defaults, with the matched zero-wait twin. */

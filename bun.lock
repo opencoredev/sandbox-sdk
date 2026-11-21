@@ -107,6 +107,7 @@
         "@tenkicloud/sandbox": "^1.4.1",
         "@upstash/box": "^0.7.9",
         "@vercel/sandbox": "3.8.0",
+        "disk": "1.12.1",
         "e2b": "2.56.0",
         "freestyle": "0.2.20",
         "vitest": "^4.1.12",

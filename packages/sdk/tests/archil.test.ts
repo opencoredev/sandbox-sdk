@@ -185,6 +185,15 @@ describe("Archil errors", () => {
     expect(archilError(apiError(403, "sandbox_network_plan_required")).code).toBe("unsupported");
   });
 
+  test("a plan's sandbox cap is an account limit (quota), even on 403", () => {
+    expect(archilError(apiError(403, "sandbox_limit_exceeded")).code).toBe("quota");
+    expect(archilError(apiError(403, "concurrent_sandbox_quota")).code).toBe("quota");
+    expect(archilError(apiError(429, "sandbox_limit_reached")).code).toBe("quota");
+    // A 403 without a limit code is still a key problem, and a 400 keeps its meaning.
+    expect(archilError(apiError(403, "forbidden")).code).toBe("auth");
+    expect(archilError(apiError(400, "memory_limit_out_of_range")).code).toBe("invalid_argument");
+  });
+
   test("statuses map to the shared codes", () => {
     expect(archilError(apiError(401, "unauthorized")).code).toBe("auth");
     expect(archilError(apiError(429, "rate_limited")).code).toBe("quota");

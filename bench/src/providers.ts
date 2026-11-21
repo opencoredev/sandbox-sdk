@@ -15,6 +15,7 @@ const templateKeys = new Map([
   ["modal", "image"],
   ["baseten", "image"],
   ["beam", "image"],
+  ["archil", "image"],
   ["local", "image"],
 ]);
 
@@ -80,6 +81,7 @@ const credentials = new Map([
   ["modal", ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]],
   ["baseten", ["BASETEN_API_KEY"]],
   ["beam", ["BEAM_TOKEN", "BEAM_WORKSPACE_ID"]],
+  ["archil", ["ARCHIL_API_KEY"]],
 ]);
 
 const regionKeys = new Map([
@@ -88,6 +90,8 @@ const regionKeys = new Map([
   ["daytona", "DAYTONA_TARGET"],
   // Pins sandboxes at Modal's region price multiplier; loadProvider passes it to the adapter.
   ["modal", "MODAL_SANDBOX_REGION"],
+  // Archil keys are region-scoped; the adapter reads ARCHIL_REGION itself (default aws-us-east-1).
+  ["archil", "ARCHIL_REGION"],
 ]);
 
 // Providers whose region places the sandbox and sets its price, so the label and the placement
