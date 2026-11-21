@@ -1088,3 +1088,36 @@ test("carry-window detached reader preserves standalone blank lines when a secre
   const logs = await proc.logs();
   expect(logs.text).toBe("a\n\nb\n");
 });
+
+test("carry-window detached reader redacts repetitive >512B secrets wrapped across 3+ lines without trailing newline", async () => {
+  const periodic = Array.from(
+    { length: 1200 },
+    (_, i) => "abcdefghijklmnopqrstuvwxyz0123456789"[i % 36],
+  ).join("");
+
+  const constant = "k".repeat(1200);
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, {
+    secrets: { PERIODIC: periodic, CONSTANT: constant },
+  });
+
+  const procPeriodic = await box.start(`printf '%s' "$PERIODIC" | fold -w 80`, {
+    name: "wrap-periodic",
+  });
+
+  await procPeriodic.wait();
+  const periodicLogs = await procPeriodic.logs();
+  expect(periodicLogs.text).toContain("[REDACTED]");
+  expect(periodicLogs.text.replaceAll("\n", "")).not.toContain(periodic.slice(0, 80));
+  expect(periodicLogs.text.replaceAll("\n", "")).not.toContain(periodic.slice(400, 480));
+
+  const procConstant = await box.start(`printf '%s' "$CONSTANT" | fold -w 80`, {
+    name: "wrap-constant",
+  });
+
+  await procConstant.wait();
+  const constantLogs = await procConstant.logs();
+  expect(constantLogs.text).toContain("[REDACTED]");
+  expect(constantLogs.text.replaceAll("\n", "")).not.toContain("k".repeat(80));
+});

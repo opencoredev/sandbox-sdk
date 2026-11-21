@@ -184,7 +184,7 @@ A custom size sets Docker's CPU quota and memory directly; fractional CPUs work.
 | `capDrop`      | `string[]`     | None                          |               |
 | `securityOpt`  | `string[]`     | None                          |               |
 
-The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, and GNU `sed`. `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `apiTimeoutMs` is the idle limit for one Docker Engine request; raise it when a large image pull goes quiet for longer. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
+The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, `awk`, and GNU `sed`. `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `apiTimeoutMs` is the idle limit for one Docker Engine request; raise it when a large image pull goes quiet for longer. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
