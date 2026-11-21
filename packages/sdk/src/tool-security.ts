@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import type { Redactor } from "./errors.js";
+import { SandboxError, type Redactor } from "./errors.js";
 import type { OutputChunk, SandboxBase } from "./types.js";
 import { chunkRedactor } from "./run.js";
 
@@ -13,8 +13,9 @@ function redactorOf(box: SandboxBase<unknown>) {
   const redactor = redactors.get(box);
 
   if (!redactor)
-    throw new Error(
+    throw new SandboxError(
       "Unknown sandbox handle. Secret redaction cannot be guaranteed. Use createSandbox or connectSandbox.",
+      { code: "invalid_argument" },
     );
 
   return redactor;
