@@ -702,6 +702,11 @@ export function createHttpClient<Plane extends string>(
             cause,
           });
 
+    // The status lives on the error mapDefault built; carry it to the one that replaces it.
+    const status = statuses.get(mapped);
+
+    if (status && error !== mapped) statuses.set(error, status);
+
     if (failed.kind === "network" && !failed.sent) unsentFailures.add(error);
 
     return error;
