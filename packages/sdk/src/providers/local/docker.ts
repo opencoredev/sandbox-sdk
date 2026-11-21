@@ -110,8 +110,14 @@ export class Docker {
       );
 
     for (const value of [timeouts.apiTimeoutMs, timeouts.attachTimeoutMs])
-      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
-        throw failure("Docker timeouts must be positive whole milliseconds", "invalid_argument");
+      if (
+        value !== undefined &&
+        (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647)
+      )
+        throw failure(
+          "Docker timeouts must be positive whole milliseconds up to 2147483647",
+          "invalid_argument",
+        );
 
     this.socketPath = host.slice(7);
     this.apiTimeoutMs = timeouts.apiTimeoutMs ?? 600_000;

@@ -202,7 +202,7 @@ function isObjectWith(value: unknown): value is { providerMessage?: unknown } {
   return typeof value === "object" && value !== null;
 }
 
-describe("Redactor.text redacts in one pass", () => {
+describe("Redactor.text redacts to a fixed point", () => {
   const redact = (secrets: string[], text: string) => {
     const redactor = new Redactor();
     redactor.add(secrets);
@@ -224,9 +224,18 @@ describe("Redactor.text redacts in one pass", () => {
     expect(redact(["a.b(+)"], "a.b(+) axb(+)")).toBe("[REDACTED] axb(+)");
   });
 
-  test("redaction is idempotent", () => {
-    const once = redact(["supersecret", "RED"], "supersecret RED");
+  test("redaction is idempotent even across replacement-created marker boundaries", () => {
+    for (const [secrets, input] of [
+      [["supersecret", "RED"], "supersecret RED"],
+      [["TED]XYZ"], "TED]XYZXYZ"],
+      [["Q", "D]Z"], "QZ"],
+      [["RED", "D]Z"], "REDZ"],
+    ] as const) {
+      const once = redact([...secrets], input);
 
-    expect(redact(["supersecret", "RED"], once)).toBe(once);
+      for (const secret of secrets)
+        if (!"[REDACTED]".includes(secret)) expect(once).not.toContain(secret);
+      expect(redact([...secrets], once)).toBe(once);
+    }
   });
 });

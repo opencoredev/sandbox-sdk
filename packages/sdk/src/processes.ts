@@ -506,6 +506,19 @@ export function makeProcesses(
             const current = await info(name);
             const record = parseRestartRecord(await files.read(`${dir}/restart.json`), name);
             await start(record.command ?? current.command, record.options);
+          } else if (streams && provider.startProcess) {
+            const release = reserveStreamName(provider, id, name);
+
+            if (!release) invalid(`Process ${name} is already running`);
+
+            try {
+              if ((await files.exists(`${dir}/spec.json`)) && !(await files.exists(`${dir}/exit`)))
+                invalid(`Process ${name} is already running`);
+
+              await launch();
+            } finally {
+              release();
+            }
           } else await launch();
         }),
       wait: (options = {}) => {

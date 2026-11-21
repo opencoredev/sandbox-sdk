@@ -52,9 +52,17 @@ export async function withRetry<T>(
       if (!(error instanceof SandboxError) || attempt >= attempts || !retryIf(error, attempt))
         throw error;
 
-      const backoff = Math.random() * Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
+      const backoff =
+        baseDelayMs === 0
+          ? 0
+          : Math.random() * Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
 
-      await pause(Math.min(maxDelayMs, Math.max(backoff, error.retryAfterMs ?? 0)), options.signal);
+      const hinted =
+        error.retryAfterMs !== undefined && Number.isFinite(error.retryAfterMs)
+          ? Math.max(0, error.retryAfterMs)
+          : 0;
+
+      await pause(Math.min(maxDelayMs, Math.max(backoff, hinted)), options.signal);
     }
   }
 }
@@ -66,7 +74,8 @@ const maxTimerMs = 2_147_483_647;
  * delays >= 2^31 ms to 1 ms). Returns a cancel function.
  */
 export function setLongTimeout(fn: () => void, ms: number): () => void {
-  const deadline = Date.now() + ms;
+  const safeMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  const deadline = Date.now() + safeMs;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let cancelled = false;
 
@@ -75,7 +84,7 @@ export function setLongTimeout(fn: () => void, ms: number): () => void {
 
     const left = deadline - Date.now();
 
-    if (left <= 0) {
+    if (!(left > 0)) {
       fn();
 
       return;
@@ -84,7 +93,7 @@ export function setLongTimeout(fn: () => void, ms: number): () => void {
     timer = setTimeout(tick, Math.min(left, maxTimerMs));
   };
 
-  timer = setTimeout(tick, Math.min(Math.max(0, ms), maxTimerMs));
+  timer = setTimeout(tick, Math.min(safeMs, maxTimerMs));
 
   return () => {
     cancelled = true;

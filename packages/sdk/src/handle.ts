@@ -313,7 +313,7 @@ export async function makeHandle<N>(
 
         const makeTimeout = () => {
           const message = recovered
-            ? `Process wait timed out. ${handle.name} did not exit within ${timeoutMs} ms and may still be running. Call wait() again with a larger timeoutMs, or stop() it.`
+            ? `Process wait timed out. ${handle.name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`
             : `Process wait timed out after ${timeoutMs} ms while recovering sandbox secrets. Stopped waiting; call wait() again with a larger timeoutMs, or stop() the process.`;
 
           return redactor.error(
@@ -348,7 +348,20 @@ export async function makeHandle<N>(
               await direct(guard);
               finish(resolve);
             } catch (error) {
-              finish(() => reject(error));
+              finish(() =>
+                reject(
+                  recovered
+                    ? error
+                    : new SandboxError(
+                        "Process wait failed while recovering sandbox secrets. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or stop() the process.",
+                        {
+                          code: error instanceof SandboxError ? error.code : "provider",
+                          retryable: error instanceof SandboxError ? error.retryable : false,
+                          provider: "unknown",
+                        },
+                      ),
+                ),
+              );
             }
           })();
         });
@@ -359,7 +372,12 @@ export async function makeHandle<N>(
 
         if (remainingMs <= 0) throw makeTimeout();
 
-        return handle.wait({ ...options, timeoutMs: remainingMs });
+        try {
+          return await handle.wait({ ...options, timeoutMs: remainingMs });
+        } catch (error) {
+          if (error instanceof SandboxError && error.code === "timeout") throw makeTimeout();
+          throw error;
+        }
       },
     };
 

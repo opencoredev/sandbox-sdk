@@ -96,6 +96,40 @@ describe("withRetry", () => {
       });
     }
   });
+
+  test("ignores NaN retryAfterMs and handles zero-delay retries past attempt 1025 without hanging", async () => {
+    let nanCalls = 0;
+
+    const nanResult = await withRetry(
+      async () => {
+        nanCalls += 1;
+
+        if (nanCalls === 1) throw failure("unavailable", true, Number.NaN);
+
+        return "ok";
+      },
+      { attempts: 2, baseDelayMs: 0, maxDelayMs: 10 },
+    );
+
+    expect(nanResult).toBe("ok");
+    expect(nanCalls).toBe(2);
+
+    let zeroCalls = 0;
+
+    const zeroResult = await withRetry(
+      async () => {
+        zeroCalls += 1;
+
+        if (zeroCalls < 1026) throw failure("unavailable", true);
+
+        return "done";
+      },
+      { attempts: 1026, baseDelayMs: 0, maxDelayMs: 0 },
+    );
+
+    expect(zeroResult).toBe("done");
+    expect(zeroCalls).toBe(1026);
+  });
 });
 
 describe("retryAfterMs comes from the provider's Retry-After", () => {

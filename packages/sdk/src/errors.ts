@@ -113,14 +113,25 @@ export class SandboxError extends Error {
     const stack = this.stack ?? "";
     const frames = stack.indexOf("\n    at ") >= 0 ? stack.slice(stack.indexOf("\n    at ")) : "";
 
-    const fields = {
-      code: this.code,
-      provider: this.provider,
-      sandboxId: this.sandboxId,
-      retryable: this.retryable,
-      hint: this.hint,
-      cause: this.cause,
-    };
+    const fields =
+      this.retryAfterMs === undefined
+        ? {
+            code: this.code,
+            provider: this.provider,
+            sandboxId: this.sandboxId,
+            retryable: this.retryable,
+            hint: this.hint,
+            cause: this.cause,
+          }
+        : {
+            code: this.code,
+            provider: this.provider,
+            sandboxId: this.sandboxId,
+            retryable: this.retryable,
+            retryAfterMs: this.retryAfterMs,
+            hint: this.hint,
+            cause: this.cause,
+          };
 
     return `SandboxError [${this.code}]: ${this.message}${frames} ${inspect(fields, options)}`;
   }
@@ -156,10 +167,9 @@ export class Redactor {
   }
   /**
    * Replaces every registered secret with `[REDACTED]`. Secrets that are not substrings of
-   * `[REDACTED]` are matched first without exempting literal markers, so input like
-   * `[REDACTED]XYZ` cannot hide a secret `TED]XYZ` across the marker boundary. Any remaining
-   * secret that is a substring of `[REDACTED]` (such as `"RED"`) runs in a second pass that
-   * matches whole markers verbatim so redacting twice changes nothing.
+   * `[REDACTED]` run without exempting literal markers, while secrets inside `[REDACTED]` match
+   * whole markers verbatim. Passes repeat to a fixed point so neither literal markers nor
+   * replacement-created boundaries can retain a secret substring, and redacting twice is a no-op.
    */
   text(value: string): string {
     if (this.values.size === 0) return value;
@@ -188,9 +198,16 @@ export class Redactor {
       this.compiled = true;
     }
 
-    let result = this.primaryPattern ? value.replace(this.primaryPattern, redactedMarker) : value;
+    let result = value;
 
-    if (this.markerSubPattern) result = result.replace(this.markerSubPattern, redactedMarker);
+    for (let pass = 0; pass < 32; pass++) {
+      let next = this.primaryPattern ? result.replace(this.primaryPattern, redactedMarker) : result;
+
+      if (this.markerSubPattern) next = next.replace(this.markerSubPattern, redactedMarker);
+
+      if (next === result) break;
+      result = next;
+    }
 
     return result;
   }
