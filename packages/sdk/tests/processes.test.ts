@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { createSandbox, SandboxError } from "../src/index.js";
+import { connectSandbox, createSandbox, SandboxError } from "../src/index.js";
 import { memory } from "../src/memory.js";
 import { shellProvider } from "./shell-provider.js";
 
@@ -439,4 +439,50 @@ test("the guest copy of the redaction program is removed when the process exits"
 
   expect((await process.logs()).text).toBe("[REDACTED]\n");
   expect(await box.files.exists(sed)).toBe(false);
+});
+
+test("wait() bounds stalled secret recovery and redacts secrets in wait errors", async () => {
+  const provider = memory();
+  await using box = await createSandbox(provider, { secrets: { TOKEN: "s3cr3t-wait-name" } });
+  const running = await box.start("sleep 30", { name: "s3cr3t-wait-name" });
+
+  try {
+    let timedErr: unknown;
+
+    try {
+      await running.wait({ timeoutMs: 10 });
+    } catch (error) {
+      timedErr = error;
+    }
+
+    expect(timedErr).toMatchObject({
+      code: "timeout",
+      provider: provider.name,
+      sandboxId: box.id,
+    });
+    expect(String(timedErr)).not.toContain("s3cr3t-wait-name");
+
+    const attached = await connectSandbox(provider, box.id);
+    provider.readSecretEnvironment = () => new Promise(() => {});
+
+    try {
+      const reattachedProc = attached.process("s3cr3t-wait-name");
+      const started = Date.now();
+      await expect(reattachedProc.wait({ timeoutMs: 25 })).rejects.toMatchObject({
+        code: "timeout",
+        provider: provider.name,
+        sandboxId: box.id,
+      });
+      expect(Date.now() - started).toBeLessThan(1_000);
+      await expect(reattachedProc.wait({ signal: AbortSignal.abort() })).rejects.toMatchObject({
+        code: "aborted",
+        provider: provider.name,
+        sandboxId: box.id,
+      });
+    } finally {
+      await attached.close();
+    }
+  } finally {
+    await running.stop({ graceMs: 0 });
+  }
 });

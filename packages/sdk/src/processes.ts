@@ -84,7 +84,7 @@ export interface WaitOptions {
 }
 
 /** The default {@link ProcessHandle.wait} deadline. */
-const defaultWaitTimeoutMs = 30 * 60_000;
+export const defaultWaitTimeoutMs = 30 * 60_000;
 const waitPollMs = { first: 25, max: 1000 };
 
 export const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -481,15 +481,23 @@ export function makeProcesses(
         const signal = options.signal;
 
         const makeAbortedError = () =>
-          new SandboxError(
-            `Process wait aborted. ${name} is still running. Call wait() again with a fresh signal, or stop() it.`,
-            { code: "aborted" },
+          redactor.error(
+            new SandboxError(
+              `Process wait aborted. ${name} is still running. Call wait() again with a fresh signal, or stop() it.`,
+              { code: "aborted" },
+            ),
+            provider.name,
+            id,
           );
 
         const makeTimeoutError = () =>
-          new SandboxError(
-            `Process wait timed out. ${name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`,
-            { code: "timeout", retryable: true },
+          redactor.error(
+            new SandboxError(
+              `Process wait timed out. ${name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`,
+              { code: "timeout", retryable: true },
+            ),
+            provider.name,
+            id,
           );
 
         return new Promise((resolve, reject) => {

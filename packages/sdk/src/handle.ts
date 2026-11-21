@@ -15,7 +15,7 @@ import { isString } from "./shared/narrow.js";
 import { makeFiles, removeIfPresent } from "./files.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";
-import { makeProcesses, type ProcessHandle } from "./processes.js";
+import { defaultWaitTimeoutMs, makeProcesses, type ProcessHandle } from "./processes.js";
 
 /** Whether a parsed secret-names record is a list of environment variable names. */
 function isNameList(value: unknown): value is string[] {
@@ -289,10 +289,72 @@ export async function makeHandle<N>(
 
         return handle.restart();
       },
-      wait: async (options) => {
-        await direct(guard);
+      wait: async (options = {}) => {
+        const timeoutMs = options.timeoutMs ?? defaultWaitTimeoutMs;
 
-        return handle.wait(options);
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+          invalid("wait timeoutMs must be a positive, finite number");
+
+        const signal = options.signal;
+        const startedAt = Date.now();
+
+        const makeAborted = () =>
+          redactor.error(
+            new SandboxError(
+              `Process wait aborted. ${handle.name} is still running. Call wait() again with a fresh signal, or stop() it.`,
+              { code: "aborted" },
+            ),
+            provider.name,
+            info.id,
+          );
+
+        const makeTimeout = () =>
+          redactor.error(
+            new SandboxError(
+              `Process wait timed out. ${handle.name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`,
+              { code: "timeout", retryable: true },
+            ),
+            provider.name,
+            info.id,
+          );
+
+        if (signal?.aborted) throw makeAborted();
+
+        await new Promise<void>((resolve, reject) => {
+          let settled = false;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+
+          const finish = (cb: () => void) => {
+            if (settled) return;
+            settled = true;
+
+            if (timer !== undefined) clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            cb();
+          };
+
+          const onAbort = () => finish(() => reject(makeAborted()));
+
+          signal?.addEventListener("abort", onAbort, { once: true });
+          timer = setTimeout(() => finish(() => reject(makeTimeout())), timeoutMs);
+
+          void (async () => {
+            try {
+              await direct(guard);
+              finish(resolve);
+            } catch (error) {
+              finish(() => reject(error));
+            }
+          })();
+        });
+
+        if (signal?.aborted) throw makeAborted();
+
+        const remainingMs = timeoutMs - (Date.now() - startedAt);
+
+        if (remainingMs <= 0) throw makeTimeout();
+
+        return handle.wait({ ...options, timeoutMs: remainingMs });
       },
     };
 
