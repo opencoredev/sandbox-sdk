@@ -70,7 +70,7 @@ console.log(result.stdout);
 | Templates                      | Yes         | `buildTemplate` builds a Groundbox template                  |
 | Machine size                   | Yes         | Whole vCPUs, whole GiB of memory, and a disk size            |
 | Network policy                 | Yes         | `"none"` and allow lists with `*.` wildcards, IPv4 and CIDRs |
-| Hard lifetime (`timeoutMs`)    | Yes         | `timeout_minutes`, in whole minutes                          |
+| Hard lifetime (`timeoutMs`)    | Partial     | Whole minutes; checked again on resume and connect           |
 | Idle timeout (`idleTimeoutMs`) | Yes         | Pauses the sandbox; 30 seconds or more                       |
 | Keys                           | Best-effort | Stored as a metadata label; concurrent creates can race      |
 | Terminal                       | Yes         | A login shell on a terminal of its own, with `wait()`        |
@@ -115,15 +115,15 @@ A preview is private: send `preview.headers` (`x-groundbox-preview-token`) with 
 
 ## Pause, resume, and snapshots
 
-`box.pause()` pauses the VM with its memory and disk, so running processes continue after `box.resume()`. A paused sandbox pays only for storage. A command, file call or preview request to a paused sandbox wakes it, so code that reconnects needs no `resume()` first. `resume()` also boots a sandbox that was shut down with its disk kept.
+`box.pause()` pauses the VM with its memory and disk, so running processes continue after `box.resume()`. A paused sandbox pays only for storage. A command, file call or preview request to a paused sandbox wakes it, so code that reconnects needs no `resume()` first, unless the sandbox has a `timeoutMs` (see [lifetime](#size-image-network-and-lifetime)). `resume()` also boots a sandbox that was shut down with its disk kept.
 
-`box.snapshot()` keeps the sandbox's memory, disk and processes as a snapshot of your team (`snap_...`) that outlives the sandbox. Pass it as `from` to create a new sandbox from it, with its processes running. The new sandbox gets the snapshot's size, and another `size` is refused. Groundbox keeps a snapshot until you delete it with `deleteSnapshot(provider, id)`, or until it goes 30 days unused, so `expiresInMs` fails with `unsupported`.
+`box.snapshot()` keeps the sandbox's memory, disk and processes as a snapshot of your team (`snap_...`) that outlives the sandbox. Pass it as `from` to create a new sandbox from it, with its processes running. The new sandbox gets the snapshot's size, and another `size` is refused. Groundbox deletes a snapshot after 30 days without a restore, or when you delete it with `deleteSnapshot(provider, id)`. It takes no expiry of its own, so any `expiresInMs`, `0` included, fails with `unsupported`. Passing `size` with a snapshot also fails with `unsupported`.
 
 `box.ext.groundbox.fork()` copies a running sandbox, memory, files and processes, into a new one and resolves with its ID. Connect to it with `connectSandbox(provider, id)`.
 
 ## Templates
 
-`buildTemplate(groundbox(), spec)` builds a Groundbox template and waits until it is ready, passing each build log line to `onLog`. Its `id` (`tpl_...`) works as `from`, or as `groundbox({ template })`. A name that is taken gets a new version of that template. `image` is the base image (Groundbox's own image when left out), `run` are the build steps, run as root in order, `size` is the size the template's warm snapshot is taken at, and `env` and `workdir` apply to the build steps only. Sandboxes of exactly the template's size start from that warm snapshot.
+`buildTemplate(groundbox(), spec)` builds a Groundbox template and waits until it is ready, passing each build log line to `onLog`. Its `id` is the template pinned to the version just built (`tpl_...:2`), and works as `from` or as `groundbox({ template })`; the bare `tpl_...` follows the newest ready version. A name that is taken gets a new version of that template. `image` is the base image (Groundbox's own image when left out), `run` are the build steps, run as root in order, `size` is the size the template's warm snapshot is taken at, and `env` and `workdir` apply to the build steps only; a step runs only once its `workdir` exists. `size` takes whole vCPUs and whole GiB, like a sandbox's. Sandboxes of exactly the template's size start from that warm snapshot.
 
 ```ts
 import { buildTemplate, createSandbox } from "@opencoredev/sandbox-sdk";
@@ -153,7 +153,7 @@ An exact `size` takes whole vCPUs and whole GiB of memory, at most 4 GiB per vCP
 
 `network: "none"` gives the sandbox an empty egress allow list, and `{ allow: [...] }` lets it reach those hosts and nothing else. Entries are host names, `*.` wildcards, IPv4 addresses and networks.
 
-`idleTimeoutMs` pauses the sandbox after that long with no activity, in whole seconds, 30 or more. Without it, a sandbox never pauses by itself. `timeoutMs` deletes the sandbox whatever its state, rounded up to whole minutes; without it, Groundbox deletes a sandbox after 60 minutes.
+`idleTimeoutMs` pauses the sandbox after that long with no activity, in whole seconds, 30 or more. Without it, a sandbox never pauses by itself. `timeoutMs` deletes the sandbox, rounded up to whole minutes; without it, Groundbox deletes a sandbox after 60 minutes. Groundbox's own timer (`timeout_minutes`) starts again on every start or wake, so the adapter records the absolute end as the `sandbox-sdk-deadline` label and holds the sandbox to it: with a `timeoutMs`, a pause does not wake on request (call `resume()`), `resume()` sets the time that is left, and `resume()` or `connect` on a sandbox past its end deletes it and reports `not_found`. A sandbox left paused past its end stays until one of those runs, or until Groundbox deletes long-paused sandboxes.
 
 ## Configuration
 
@@ -175,13 +175,16 @@ An exact `size` takes whole vCPUs and whole GiB of memory, at most 4 GiB per vCP
 - One command runs for at most an hour.
 - A streamed run needs a WebSocket that sends headers (Node.js 22 or Bun); without one, runs are buffered.
 - Labels take names of 1 to 64 characters and values of at most 512.
+- `timeoutMs` is enforced by Groundbox while the sandbox runs and by the adapter on `resume()` and `connect`; a paused sandbox past its end is deleted on the next of those.
+- Snapshots take no expiry: Groundbox deletes one after 30 days without a restore.
+- An aborted or timed-out command whose kill can't be confirmed fails with `outcome_unknown`.
 
 ## How it works
 
 - The adapter calls `https://api.groundbox.dev/v1` with your key as a bearer token, through the SDK's shared HTTP client: every request names the SDK in `User-Agent`, reads and keyed writes are retried on `429` and `5xx`, and a write whose answer was lost is `outcome_unknown`. Create, snapshot, fork and template builds carry an `Idempotency-Key`, so a retry never starts a second sandbox.
 - At create, the adapter makes `/workspace` for the command user and checks the tools the SDK needs. If that fails, it deletes the sandbox before it throws. The sandbox's `env` becomes Groundbox's sandbox `env`, which every command gets, so a reconnect can read the secrets' names back.
 - Your `labels` become Groundbox metadata, and a key is stored as the `sandbox-sdk-key` label.
-- A command's first line carries a marker. Groundbox runs a command under a supervisor that can outlive its request, so on a timeout or abort the adapter finds the command by that marker and kills it, with everything it started. A streamed run sends `kill` on the WebSocket instead and waits for the exit.
+- A command's first line carries a marker. Groundbox runs a command under a supervisor that can outlive its request, so on a timeout or abort the adapter finds the command by that marker, kills it with everything it started, and reads back what it printed. When the list or the kill fails, or the command never shows up, the run fails with `outcome_unknown` instead of reporting a timeout. A streamed run sends `kill` on the WebSocket instead and waits for the exit.
 - `box.native` is a [`NativeApi`](/reference/native) on Groundbox's API: `box.native.request("GET", "/sandboxes/{id}/usage")`, where `{id}` fills from the sandbox. `box.native.sdk(() => import("@groundbox/sdk"))` gives the official client and its handle on the sandbox, if you install `@groundbox/sdk` yourself. `provider.api` is the same with no sandbox bound.
 - `box.usage()` adds the sandbox's vCPUs, memory and disk, and `costUsd`, Groundbox's own meter of its compute and paused storage so far.
 - Errors keep only Groundbox's HTTP status, error code and request ID, never its message, which can echo paths or request data.

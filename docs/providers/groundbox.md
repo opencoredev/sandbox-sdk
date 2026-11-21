@@ -36,10 +36,10 @@ label (names of 1 to 64 characters and values of at most 512, else
 `unsupported`), the size as `cpus`, `memory_gb` and `disk_gb`, `network` as
 `allow_hosts` (`"none"` is an empty list), `idleTimeoutMs` as
 `idle_timeout_seconds` (30 or more, rounded up) and `timeoutMs` as
-`timeout_minutes` (rounded up). The sandbox `env` goes as the sandbox's `env`,
+`timeout_minutes` (rounded up), with its absolute end in the `sandbox-sdk-deadline` label. Groundbox restarts `timeout_minutes` on every start or wake, so with `timeoutMs` and `idleTimeoutMs` the create sends `wake_on_request: false`, `pause()` does the same, `resume()` PATCHes `timeout_minutes` to what is left, and `resume()` or `connect` on a sandbox past its end deletes it and fails `not_found`. The sandbox `env` goes as the sandbox's `env`,
 which every command gets, so a reconnect can read secrets back. `from` is a kept
-snapshot (`snap_...`, sent with no size, so the sandbox keeps the snapshot's) or
-else a template. The create carries an `Idempotency-Key`, so the client retries
+snapshot (`snap_...`; a `size` with it fails with `unsupported`, as the sandbox keeps
+the snapshot's) or else a template. The create carries an `Idempotency-Key`, so the client retries
 it on `429`, `5xx` and lost connections without starting a second sandbox. A
 sandbox that answers `queued` or `starting` is polled until it runs. Then the
 adapter makes `/workspace` for the command user (`runner`, with `sudo -n`
@@ -58,9 +58,13 @@ An awaited command is one `POST /v1/sandboxes/{id}/exec` with `timeout_s` set
 to the client deadline plus one second, at most 3600; a longer `timeoutMs` fails
 with `unsupported`. Its first line is a marker comment. Groundbox runs the
 command under a supervisor that can outlive the request, so when the call is
-aborted or times out, the adapter lists the sandbox's running commands, kills
+aborted or times out, the adapter lists the sandbox's commands, kills
 the one whose line starts with the marker (`POST .../commands/{exec}/kill`,
-SIGKILL to everything it started) and returns `timedOut`. Input up to 512 KiB
+SIGKILL to everything it started), reads back its output and returns `timedOut`.
+A failed list or kill, a command still running after the kill, or one that never
+shows up within 3 seconds fails with `outcome_unknown`. A `timed_out` answer
+keeps its output. An abort during a large stdin upload deletes the staged file
+and returns `timedOut`; stdin frames on the stream never split a surrogate pair. Input up to 512 KiB
 goes inline; larger input is written to `/tmp/.sandbox-sdk` and redirected. A
 streamed run (`for await`) opens `GET /v1/sandboxes/{id}/exec/stream`, a
 WebSocket with the key in the upgrade's `Authorization` header, sends `start`,
@@ -73,15 +77,20 @@ list), `/files/stat` and `/files/mkdir`. A 404 whose message is not about the
 sandbox is `file_not_found`; the message is read for that and never kept.
 `remove` of a missing path is `file_not_found`.
 
-`pause()` pauses the VM with its memory, with `wake_on_request: true`, so a
-command, file call or preview wakes it; `resume()` resumes it, or boots a
+`pause()` pauses the VM with its memory, with `wake_on_request: true` (false with
+a hard lifetime), so a command, file call or preview wakes it; `resume()` resumes it, or boots a
 sandbox that was shut down with its disk kept (`start`). Both poll until the
 sandbox is `paused` or `running`. `snapshot()` keeps a snapshot
-(`POST /v1/snapshots`, with an `Idempotency-Key`) and polls it until `ready`.
+(`POST /v1/snapshots`, with an `Idempotency-Key`) and polls it until `ready`; a
+snapshot that fails or times out is deleted on a fresh deadline, and the error
+names it when that delete fails. Any `expiresInMs`, `0` included, fails with
+`unsupported`: Groundbox deletes a snapshot after 30 days without a restore.
 `deleteSnapshot()` reads the snapshot first, since deleting a deleted snapshot
 answers 200 again. `buildTemplate()` creates the template, or a new version of
 it when the name is taken (409), and follows its build log until it ends; build
-`env` and `workdir` go in front of each `run` step. `previewUrl()` creates a
+`env` and `workdir` go in front of each `run` step, and the step runs only once
+`mkdir -p` and `cd` succeed. `size` is checked like a sandbox's. The returned ID
+pins the version built (`tpl_...:<version>`). `previewUrl()` creates a
 private preview and returns its share token as the `x-groundbox-preview-token`
 header with its expiry, cached until an hour before it expires;
 `publicPreviews: true` asks for public ones. `box.ext.groundbox.fork()` forks
