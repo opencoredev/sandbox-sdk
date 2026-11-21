@@ -1,4 +1,6 @@
 import { describe, expect, test } from "vitest";
+import { SandboxError } from "../src/errors.js";
+import { parseProcessRecord, parseRestartRecord } from "../src/core/process-records.js";
 import { decodeNative } from "../src/shared/native-error.js";
 
 describe("decodeNative reads gRPC metadata in every client shape", () => {
@@ -48,5 +50,19 @@ describe("decodeNative reads gRPC metadata in every client shape", () => {
     };
 
     expect(decodeNative({ metadata: hostile }).metadata).toEqual(new Map());
+  });
+});
+
+describe("process record parsers reject corrupt records as SandboxError", () => {
+  test.each([
+    ["spec.json", () => parseProcessRecord("{not json")],
+    ["restart.json", () => parseRestartRecord("{not json", "web")],
+    [
+      "restart.json with a bad log pattern",
+      () => parseRestartRecord(JSON.stringify({ readiness: { log: "(" } }), "web"),
+    ],
+  ])("%s", (_name, parse) => {
+    expect(parse).toThrow(SandboxError);
+    expect(parse).toThrow(expect.objectContaining({ code: "invalid_argument" }));
   });
 });
