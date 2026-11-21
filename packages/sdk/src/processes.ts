@@ -749,17 +749,26 @@ export function makeProcesses(
         if (streams && provider.startProcess) {
           controller?.state("starting");
           controller?.ready(false);
-          await files.write(`${dir}/spec.json`, spec);
-          await files.write(`${dir}/restart.json`, restart);
 
-          const priorBase = (await files.exists(`${dir}/base`))
-            ? Number(await files.read(`${dir}/base`)) + (await files.stat(`${dir}/out.log`)).size
-            : 0;
+          try {
+            await files.write(`${dir}/spec.json`, spec);
+            await files.write(`${dir}/restart.json`, restart, { mode: 0o600 });
 
-          await files.write(`${dir}/out.log`, "");
-          await files.write(`${dir}/base`, String(priorBase));
+            const priorBase = (await files.exists(`${dir}/base`))
+              ? Number(await files.read(`${dir}/base`)) + (await files.stat(`${dir}/out.log`)).size
+              : 0;
 
-          if (await files.exists(`${dir}/exit`)) await files.remove(`${dir}/exit`);
+            await files.write(`${dir}/out.log`, "");
+            await files.write(`${dir}/base`, String(priorBase));
+
+            if (await files.exists(`${dir}/exit`)) await files.remove(`${dir}/exit`);
+          } catch (error) {
+            controller?.state("failed");
+            await provider.files
+              .remove(id, `${dir}/spec.json`, { recursive: false })
+              .catch(() => {});
+            throw error;
+          }
         } else {
           const result = await exec(
             recordSetupScript({ dir, cwd: pathOf(options.cwd) }),
@@ -844,15 +853,37 @@ export function makeProcesses(
             void drain().catch(() => controller?.state("failed"));
           });
 
-          const hook = await provider.startProcess(id, {
-            command,
-            cwd: pathOf(options.cwd),
-            env: { ...env, ...options.env, ...defaults },
-            onChunk: (chunk) => filter.push(chunk),
-          });
+          let hook: Awaited<ReturnType<NonNullable<Provider["startProcess"]>>>;
+
+          try {
+            hook = await provider.startProcess(id, {
+              command,
+              cwd: pathOf(options.cwd),
+              env: { ...env, ...options.env, ...defaults },
+              onChunk: (chunk) => filter.push(chunk),
+            });
+          } catch (error) {
+            controller?.state("failed");
+            await provider.files
+              .remove(id, `${dir}/spec.json`, { recursive: false })
+              .catch(() => {});
+            throw error;
+          }
 
           native.set(options.name, hook);
-          await files.write(`${dir}/pid`, String(hook.pid));
+
+          try {
+            await files.write(`${dir}/pid`, String(hook.pid));
+          } catch (error) {
+            native.delete(options.name);
+            controller?.state("failed");
+            await hook.stop({ graceMs: 0 }).catch(() => {});
+            await provider.files
+              .remove(id, `${dir}/spec.json`, { recursive: false })
+              .catch(() => {});
+            throw error;
+          }
+
           const exited = hook.wait();
           // Only a race signal for start(); the chain below records a failed wait.
           hookExit = exited.then(
@@ -1055,7 +1086,23 @@ export function makeProcesses(
         for (let offset = 0; offset < directories.length; offset += 4) {
           const batch = directories.slice(offset, offset + 4);
           const names = batch.map((entry) => posix.basename(entry.path));
-          result.push(...(await Promise.all(names.map((name) => info(name)))));
+
+          const settled = await Promise.all(
+            names.map(async (name) => {
+              try {
+                return await info(name);
+              } catch (error) {
+                if (
+                  error instanceof SandboxError &&
+                  (await isAbsent(error, `${root}/${name}/spec.json`))
+                )
+                  return undefined;
+                throw error;
+              }
+            }),
+          );
+
+          for (const entry of settled) if (entry) result.push(entry);
         }
 
         return result;

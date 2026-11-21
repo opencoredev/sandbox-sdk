@@ -709,7 +709,41 @@ test("redactionSedScript redacts overlapping, marker-substring, and control-byte
       "pre [REDACTED] [REDACTED] [REDACTED] post",
     );
     expect(runSed(["]["], "[REDACTED][REDACTED]")).toBe("[REDACTED]");
+    expect(runSed(["A[REDACTED]B[REDACTED]C"], "x A[REDACTED]B[REDACTED]C y")).toBe(
+      "x [REDACTED] y",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("stream-mode failed start cleans up spec.json for retry and processes() ignores empty leftover dirs", async () => {
+  const provider = memory();
+  await using box = await createSandbox(provider);
+
+  const originalStart = provider.startProcess?.bind(provider);
+  let failOnce = true;
+
+  provider.startProcess = async (...args) => {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error("boom");
+    }
+
+    if (!originalStart) throw new Error("missing startProcess");
+
+    return originalStart(...args);
+  };
+
+  await expect(box.start("sleep 30", { name: "retry-stream" })).rejects.toThrow("boom");
+  expect(await box.files.exists("/tmp/.sandbox-sdk/procs/retry-stream/spec.json")).toBe(false);
+  expect(await box.processes()).toEqual([]);
+
+  const proc = await box.start("sleep 30", { name: "retry-stream" });
+
+  try {
+    expect((await box.processes()).map((entry) => entry.name)).toEqual(["retry-stream"]);
+  } finally {
+    await proc.stop({ graceMs: 0 });
   }
 });

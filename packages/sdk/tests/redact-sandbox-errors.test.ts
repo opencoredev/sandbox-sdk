@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { createSandbox, SandboxError } from "../src/index.js";
-import { Redactor, evidenceCause } from "../src/errors.js";
+import { Redactor, evidenceCause, scrubCredentials } from "../src/errors.js";
 import { memory } from "../src/memory.js";
 
 const causeText = (error: SandboxError) => String(error.cause);
@@ -245,5 +245,57 @@ describe("Redactor.text redacts to a fixed point", () => {
         if (!"[REDACTED]".includes(secret)) expect(once).not.toContain(secret);
       expect(redact([...secrets], once)).toBe(once);
     }
+  });
+
+  test("redacts JSON-escaped quoted Bearer tokens", () => {
+    const out = scrubCredentials('failed: Bearer \\"LEAK_123\\"');
+    const jsonOut = scrubCredentials('{"headers":{"Authorization":"Bearer \\"LEAK_123\\""}}');
+
+    expect(out).toBe("failed: Bearer [REDACTED]");
+    expect(jsonOut).not.toContain("LEAK_123");
+    expect(jsonOut).toContain("[REDACTED]");
+  });
+
+  test("streams stay linear on 1-byte stalled runs and set truncated when >1 MiB is dropped", async () => {
+    const provider = memory({
+      handlers: {
+        oneByteSame({ stdout }) {
+          for (let i = 0; i < 39_960; i += 1) stdout("T");
+
+          return 0;
+        },
+        oneByteAlt({ stdout, stderr }) {
+          for (let i = 0; i < 20_040; i += 1) {
+            stdout("T");
+            stderr("T");
+          }
+
+          return 0;
+        },
+        hugeStalled({ stdout, stderr }) {
+          stdout("A");
+
+          for (let i = 0; i < 1_100; i += 1) stderr("x".repeat(1_024));
+
+          return 0;
+        },
+      },
+    });
+
+    await using box = await createSandbox(provider, { secrets: { TOK: "T".repeat(120) } });
+
+    const t0 = Date.now();
+    const same = await box.run("oneByteSame");
+    const alt = await box.run("oneByteAlt");
+
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(same.output).toBe("[REDACTED]".repeat(333));
+    expect(alt.output).toBe("[REDACTED]".repeat(334));
+
+    await using stallBox = await createSandbox(provider, { secrets: { S: "AB" } });
+    const huge = await stallBox.run("hugeStalled", { maxOutputBytes: 2_000_000 });
+
+    expect(huge.truncated).toBe(true);
+    expect(huge.stdout).toBe("[REDACTED]");
   });
 });

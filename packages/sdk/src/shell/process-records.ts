@@ -109,7 +109,7 @@ export function recordSetupScript(input: { dir: string; cwd: string }): string {
   const file = records(input.dir);
 
   return [
-    `mkdir -p ${file.dir} || exit 1`,
+    `(umask 077; mkdir -p ${file.dir}) || exit 1`,
     // The lock makes the running check and the record writes one step, so two concurrent
     // starts under one name cannot both pass the check.
     ...lockLines(file.lock),
@@ -203,12 +203,16 @@ export function redactionSedScript(secrets: readonly string[]): string {
 
   if (esc && lit && placeholder) {
     const marker = "[REDACTED]";
+    const shield = (value: string) => value.split(marker).map(sedEscape).join(placeholder);
     const rightSuffixes = new Set<string>();
     const leftPrefixes = new Set<string>();
     const aroundPairs: [string, string][] = [];
+    const markerContainingSecrets: string[] = [];
 
     for (const secret of lines) {
       if (marker.includes(secret)) continue;
+
+      if (secret.includes(marker)) markerContainingSecrets.push(secret);
       const limit = Math.min(secret.length - 1, marker.length);
 
       for (let overlap = 1; overlap <= limit; overlap++) {
@@ -235,16 +239,20 @@ export function redactionSedScript(secrets: readonly string[]): string {
 
     const absorbRules: string[] = [];
 
+    for (const secret of markerContainingSecrets) {
+      absorbRules.push(`s|${shield(secret)}|${placeholder}|g`);
+    }
+
     for (const [before, after] of aroundPairs) {
-      absorbRules.push(`s|${sedEscape(before)}${placeholder}${sedEscape(after)}|${placeholder}|g`);
+      absorbRules.push(`s|${shield(before)}${placeholder}${shield(after)}|${placeholder}|g`);
     }
 
     for (const suffix of [...rightSuffixes].sort((a, b) => b.length - a.length)) {
-      absorbRules.push(`s|${placeholder}${sedEscape(suffix)}|${placeholder}|g`);
+      absorbRules.push(`s|${placeholder}${shield(suffix)}|${placeholder}|g`);
     }
 
     for (const prefix of [...leftPrefixes].sort((a, b) => b.length - a.length)) {
-      absorbRules.push(`s|${sedEscape(prefix)}${placeholder}|${placeholder}|g`);
+      absorbRules.push(`s|${shield(prefix)}${placeholder}|${placeholder}|g`);
     }
 
     if (spansAdjacentMarkers) {

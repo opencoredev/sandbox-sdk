@@ -99,33 +99,74 @@ function trackRun(provider: string, id: string) {
 }
 
 export class BufferCap {
-  private head = Buffer.alloc(0);
-  private tail = Buffer.alloc(0);
+  private headParts: Buffer[] = [];
+  private headBytes = 0;
+  private tailParts: Buffer[] = [];
+  private tailHead = 0;
+  private tailBytes = 0;
   total = 0;
   constructor(readonly limit: number) {}
   add(text: string) {
     const data = Buffer.from(text);
     this.total += data.length;
     const headSize = Math.ceil(this.limit / 2);
-    const take = Math.min(data.length, headSize - this.head.length);
+    const tailLimit = this.limit - headSize;
+    const take = Math.min(data.length, headSize - this.headBytes);
 
-    if (take > 0) this.head = Buffer.concat([this.head, data.subarray(0, take)]);
-    this.tail = Buffer.concat([this.tail, data.subarray(Math.max(0, take))]);
+    if (take > 0) {
+      this.headParts.push(take === data.length ? data : data.subarray(0, take));
+      this.headBytes += take;
+    }
 
-    if (this.tail.length > this.limit - headSize)
-      this.tail = this.tail.subarray(this.tail.length - (this.limit - headSize));
+    const rest = take > 0 ? data.subarray(take) : data;
+
+    if (rest.length > 0 && tailLimit > 0) {
+      if (rest.length >= tailLimit) {
+        this.tailParts = [rest.subarray(rest.length - tailLimit)];
+        this.tailHead = 0;
+        this.tailBytes = tailLimit;
+      } else {
+        this.tailParts.push(rest);
+        this.tailBytes += rest.length;
+
+        while (this.tailBytes > tailLimit && this.tailHead < this.tailParts.length) {
+          const front = this.tailParts[this.tailHead]!;
+          const excess = this.tailBytes - tailLimit;
+
+          if (front.length <= excess) {
+            this.tailBytes -= front.length;
+            this.tailHead += 1;
+          } else {
+            this.tailParts[this.tailHead] = front.subarray(excess);
+            this.tailBytes -= excess;
+          }
+        }
+
+        if (this.tailHead > 1024 && this.tailHead * 2 >= this.tailParts.length) {
+          this.tailParts = this.tailParts.slice(this.tailHead);
+          this.tailHead = 0;
+        }
+      }
+    }
   }
   get truncated() {
     return this.total > this.limit;
   }
   text() {
-    if (!this.truncated) return Buffer.concat([this.head, this.tail]).toString();
+    const headBuf = this.headParts.length
+      ? Buffer.concat(this.headParts, this.headBytes)
+      : Buffer.alloc(0);
+
+    const tailSlice = this.tailHead ? this.tailParts.slice(this.tailHead) : this.tailParts;
+    const tailBuf = tailSlice.length ? Buffer.concat(tailSlice, this.tailBytes) : Buffer.alloc(0);
+
+    if (!this.truncated) return Buffer.concat([headBuf, tailBuf]).toString();
     // Decode the head in streaming mode to discard an incomplete trailing code point.
-    const head = new TextDecoder().decode(this.head, { stream: true });
+    const head = new TextDecoder().decode(headBuf, { stream: true });
     let start = 0;
 
-    while (start < this.tail.length && ((this.tail[start] ?? 0) & 0xc0) === 0x80) start++;
-    const tail = this.tail.subarray(start).toString();
+    while (start < tailBuf.length && ((tailBuf[start] ?? 0) & 0xc0) === 0x80) start++;
+    const tail = tailBuf.subarray(start).toString();
 
     return (
       head +
@@ -207,17 +248,65 @@ export function chunkRedactor(
   interface QueuedChunk {
     stream: OutputChunk["stream"];
     text: string;
+    parts?: string[];
+    len: number;
     bytes: number;
   }
 
   const queue: QueuedChunk[] = [];
   let queuedBytes = 0;
+  let dropped = false;
   let cleanKey = "";
   let cleanLen = 0;
   const holdZeroAt = new Set<number>();
+  const streamLen: Record<OutputChunk["stream"], number> = { stdout: 0, stderr: 0 };
+  const streamBytes: Record<OutputChunk["stream"], number> = { stdout: 0, stderr: 0 };
+  let totalLen = 0;
+  const stallTail: Record<OutputChunk["stream"], string> = { stdout: "", stderr: "" };
+  let stallTailAll = "";
   const emittedTail: Record<OutputChunk["stream"], string> = { stdout: "", stderr: "" };
   let markerAdjSecret: boolean | undefined;
   let markerAdjSecretsLen = -1;
+
+  function tailKeep(): number {
+    let maxLeft = 0;
+
+    for (const p of redactor.streamChainLeft) if (p.length > maxLeft) maxLeft = p.length;
+
+    for (const p of redactor.streamHoldLeft) if (p.length > maxLeft) maxLeft = p.length;
+
+    return redactor.maxLength + marker.length * 2 + maxLeft + 2;
+  }
+
+  function materialize(chunk: QueuedChunk): string {
+    if (chunk.parts) {
+      chunk.text = chunk.text ? chunk.text + chunk.parts.join("") : chunk.parts.join("");
+      chunk.parts = undefined;
+    }
+
+    return chunk.text;
+  }
+
+  function syncStats() {
+    streamLen.stdout = 0;
+    streamLen.stderr = 0;
+    streamBytes.stdout = 0;
+    streamBytes.stderr = 0;
+    totalLen = 0;
+    stallTail.stdout = "";
+    stallTail.stderr = "";
+    stallTailAll = "";
+    const keep = tailKeep();
+
+    for (const entry of queue) {
+      const text = materialize(entry);
+      streamLen[entry.stream] += text.length;
+      streamBytes[entry.stream] += entry.bytes;
+      totalLen += text.length;
+      stallTail[entry.stream] = (stallTail[entry.stream] + text).slice(-keep);
+      stallTailAll = (stallTailAll + text).slice(-keep);
+    }
+  }
 
   function hasAdjacentMarkerSecret(): boolean {
     const count = redactor.secrets.length;
@@ -272,6 +361,8 @@ export function chunkRedactor(
     const nextBytes = text ? Buffer.byteLength(text) : 0;
     queuedBytes += nextBytes - chunk.bytes;
     chunk.text = text;
+    chunk.parts = undefined;
+    chunk.len = text.length;
     chunk.bytes = nextBytes;
   }
 
@@ -303,7 +394,7 @@ export function chunkRedactor(
     return pos;
   }
 
-  function safePrefixLength(text: string, useHoldZero: boolean) {
+  function safePrefixLength(text: string, useHoldZero: boolean, offset = 0) {
     const secrets = redactor.secrets;
     const windowStart = Math.max(0, text.length - (redactor.maxLength - 1));
     let safe = text.length;
@@ -317,7 +408,7 @@ export function chunkRedactor(
       }
     }
 
-    if (safe === text.length) return { safe: text.length, pulledFrom: -1 };
+    if (safe === text.length) return { safe: offset + text.length, pulledFrom: -1 };
 
     safe = snapBeforeMarker(text, safe);
     const initialSafe = safe;
@@ -333,8 +424,8 @@ export function chunkRedactor(
         let pulled = true;
 
         while (pulled && safe > 0) {
-          if (useHoldZero && holdZeroAt.has(safe)) {
-            return { safe: 0, pulledFrom: initialSafe };
+          if (useHoldZero && holdZeroAt.has(offset + safe)) {
+            return { safe: 0, pulledFrom: offset + initialSafe };
           }
 
           pulled = false;
@@ -357,8 +448,8 @@ export function chunkRedactor(
       }
 
       if (safe > 0 && partialLeft.length > 0) {
-        if (useHoldZero && holdZeroAt.has(safe)) {
-          return { safe: 0, pulledFrom: initialSafe };
+        if (useHoldZero && holdZeroAt.has(offset + safe)) {
+          return { safe: 0, pulledFrom: offset + initialSafe };
         }
 
         for (const prefix of partialLeft) {
@@ -373,10 +464,19 @@ export function chunkRedactor(
 
     const snapped = snapBeforeMarker(text, safe);
 
-    return {
-      safe: snapped,
-      pulledFrom: snapped === 0 && initialSafe > 0 ? initialSafe : -1,
-    };
+    if (snapped === 0) {
+      if (offset === 0 || (useHoldZero && holdZeroAt.has(offset))) {
+        return { safe: 0, pulledFrom: initialSafe > 0 ? offset + initialSafe : -1 };
+      }
+
+      return { safe: offset, pulledFrom: -1 };
+    }
+
+    if (useHoldZero && holdZeroAt.has(offset + snapped)) {
+      return { safe: 0, pulledFrom: initialSafe > 0 ? offset + initialSafe : -1 };
+    }
+
+    return { safe: offset + snapped, pulledFrom: -1 };
   }
 
   /** Emit a slice `[start, end)` of `head` attributed to the original chunks' streams. */
@@ -580,9 +680,10 @@ export function chunkRedactor(
 
       if (prev && prev.stream === stream) {
         prev.text += text;
+        prev.len += text.length;
         prev.bytes += Buffer.byteLength(text);
       } else {
-        out.push({ stream, text, bytes: Buffer.byteLength(text) });
+        out.push({ stream, text, len: text.length, bytes: Buffer.byteLength(text) });
       }
     };
 
@@ -660,7 +761,7 @@ export function chunkRedactor(
 
   function pruneEmpty() {
     for (let index = queue.length - 1; index >= 0; index--)
-      if (!queue[index]?.text) queue.splice(index, 1);
+      if (!queue[index]?.len) queue.splice(index, 1);
   }
 
   function drain(final = false) {
@@ -668,6 +769,35 @@ export function chunkRedactor(
       const first = queue[0];
 
       if (!first) break;
+
+      const stallKey = interleaved ? "*" : first.stream;
+      const rawLen = interleaved ? totalLen : streamLen[first.stream];
+      const selBytes = interleaved ? queuedBytes : streamBytes[first.stream];
+
+      if (
+        !final &&
+        cleanKey === stallKey &&
+        cleanLen > 0 &&
+        selBytes <= 1_048_576 &&
+        queuedBytes <= 1_048_576
+      ) {
+        const tail = interleaved ? stallTailAll : stallTail[first.stream];
+        const tailRawSafe = rawPrefixLength(tail);
+        const fastRawSafe = rawLen - (tail.length - tailRawSafe);
+        const headTail = tailRawSafe === tail.length ? tail : tail.slice(0, tailRawSafe);
+        const baseOffset = fastRawSafe - headTail.length;
+
+        if (fastRawSafe >= cleanLen && baseOffset <= cleanLen && !redactor.hasMatch(headTail)) {
+          const fastSafe = safePrefixLength(headTail, true, baseOffset);
+
+          if (fastSafe.safe === 0) {
+            cleanLen = fastRawSafe;
+
+            if (fastSafe.pulledFrom >= 0) holdZeroAt.add(fastSafe.pulledFrom);
+            break;
+          }
+        }
+      }
 
       const indices: number[] = [];
 
@@ -684,6 +814,7 @@ export function chunkRedactor(
         const entry = queue[idx];
 
         if (entry) {
+          materialize(entry);
           selected.push(entry);
           selectedBytes += entry.bytes;
         }
@@ -701,13 +832,12 @@ export function chunkRedactor(
 
         for (const chunk of queue) {
           if (chunk.stream !== first.stream) break;
-          contiguousLen += chunk.text.length;
+          contiguousLen += chunk.len;
         }
       }
 
       const rawSafe = final ? raw.length : rawPrefixLength(raw);
       const head = rawSafe === raw.length ? raw : raw.slice(0, rawSafe);
-      const stallKey = interleaved ? "*" : first.stream;
 
       const canReuseClean =
         !final && cleanKey === stallKey && cleanLen > 0 && head.length >= cleanLen;
@@ -736,9 +866,11 @@ export function chunkRedactor(
       if (redacted === head) {
         if (safe === 0) {
           if (!final && selectedBytes > 1_048_576) {
+            dropped = true;
             replaceSelected(indices, marker);
             pruneEmpty();
             resetStall();
+            syncStats();
             break;
           }
 
@@ -752,11 +884,13 @@ export function chunkRedactor(
 
           // A stalled stream must not retain arbitrary output from another stream.
           // Conservatively redact its ambiguous prefix, preserving arrival order.
+          dropped = true;
           emitSafe({ stream: first.stream, text: marker });
           const removed = queue.shift();
 
           if (removed) queuedBytes -= removed.bytes;
           resetStall();
+          syncStats();
           continue;
         }
 
@@ -829,6 +963,7 @@ export function chunkRedactor(
             if (frontOut) emitSafe({ stream: first.stream, text: frontOut });
             consumeFrom(indices, consumed);
             pruneEmpty();
+            syncStats();
             continue;
           }
         }
@@ -838,8 +973,10 @@ export function chunkRedactor(
         const heldRaw = raw.slice(rawSafe);
 
         if (!final && Buffer.byteLength(heldRedacted) + Buffer.byteLength(heldRaw) > 1_048_576) {
+          dropped = true;
           replaceSelected(indices, marker);
           pruneEmpty();
+          syncStats();
           break;
         }
 
@@ -889,7 +1026,12 @@ export function chunkRedactor(
 
             if (frontHeld) {
               const bytes = Buffer.byteLength(frontHeld);
-              queue.unshift({ stream: first.stream, text: frontHeld, bytes });
+              queue.unshift({
+                stream: first.stream,
+                text: frontHeld,
+                len: frontHeld.length,
+                bytes,
+              });
               queuedBytes += bytes;
             }
           } else {
@@ -901,6 +1043,7 @@ export function chunkRedactor(
       }
 
       pruneEmpty();
+      syncStats();
 
       if (!final && safe === 0) break;
     }
@@ -916,13 +1059,21 @@ export function chunkRedactor(
 
       if (!chunk.text) return;
       const bytes = Buffer.byteLength(chunk.text);
+      const keep = tailKeep();
+      streamLen[chunk.stream] += chunk.text.length;
+      streamBytes[chunk.stream] += bytes;
+      totalLen += chunk.text.length;
+      stallTail[chunk.stream] = (stallTail[chunk.stream] + chunk.text).slice(-keep);
+      stallTailAll = (stallTailAll + chunk.text).slice(-keep);
       const prev = queue.at(-1);
 
       if (prev && prev.stream === chunk.stream) {
-        prev.text += chunk.text;
+        if (prev.parts) prev.parts.push(chunk.text);
+        else prev.parts = [chunk.text];
+        prev.len += chunk.text.length;
         prev.bytes += bytes;
       } else {
-        queue.push({ stream: chunk.stream, text: chunk.text, bytes });
+        queue.push({ stream: chunk.stream, text: chunk.text, len: chunk.text.length, bytes });
       }
 
       queuedBytes += bytes;
@@ -930,6 +1081,9 @@ export function chunkRedactor(
     },
     flush() {
       drain(true);
+    },
+    get truncated() {
+      return dropped;
     },
   };
 }
@@ -1042,7 +1196,12 @@ export function makeRun(
           stderr: stderr.text(),
           output: output.text(),
           durationMs: Date.now() - started,
-          truncated: stdout.truncated || stderr.truncated || output.truncated,
+          truncated:
+            stdout.truncated ||
+            stderr.truncated ||
+            output.truncated ||
+            filter.truncated ||
+            interleaved.truncated,
           timedOut,
           cwd,
           command: redactor.text(command),

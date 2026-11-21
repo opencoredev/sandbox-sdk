@@ -94,15 +94,8 @@ const capabilityMethods = [
   ["templates", ["buildTemplate"]],
 ] as const satisfies readonly (readonly [Capability, readonly (keyof Provider)[]])[];
 
-function isCallable<T>(value: T): boolean {
-  const tag = Object.prototype.toString.call(value);
-
-  return (
-    tag === "[object Function]" ||
-    tag === "[object AsyncFunction]" ||
-    tag === "[object GeneratorFunction]" ||
-    tag === "[object AsyncGeneratorFunction]"
-  );
+function isCallable<T>(value: T): value is NonNullable<T> {
+  return typeof value === "function";
 }
 
 function validate(provider: Provider, options: CreateOptions) {
