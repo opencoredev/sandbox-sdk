@@ -200,16 +200,69 @@ export class Redactor {
 
     let result = value;
 
-    for (let pass = 0; pass < 32; pass++) {
-      let next = this.primaryPattern ? result.replace(this.primaryPattern, redactedMarker) : result;
+    for (let pass = 0; pass < 512; pass++) {
+      let next = result;
+
+      if (this.primaryPattern) {
+        const markers: [number, number][] = [];
+        let pos = next.indexOf(redactedMarker);
+
+        while (pos !== -1) {
+          markers.push([pos, pos + redactedMarker.length]);
+          pos = next.indexOf(redactedMarker, pos + redactedMarker.length);
+        }
+
+        const spans: [number, number][] = [];
+        this.primaryPattern.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        let markerIndex = 0;
+
+        while ((match = this.primaryPattern.exec(next)) !== null) {
+          let start = match.index;
+          let end = start + match[0].length;
+
+          while (markerIndex < markers.length) {
+            const marker = markers[markerIndex];
+
+            if (!marker || marker[1] > start) break;
+            markerIndex++;
+          }
+
+          for (let index = markerIndex; index < markers.length; index++) {
+            const marker = markers[index];
+
+            if (!marker || marker[0] >= end) break;
+            start = Math.min(start, marker[0]);
+            end = Math.max(end, marker[1]);
+          }
+
+          const prev = spans[spans.length - 1];
+
+          if (prev && start < prev[1]) prev[1] = Math.max(prev[1], end);
+          else spans.push([start, end]);
+        }
+
+        if (spans.length > 0) {
+          let out = "";
+          let cursor = 0;
+
+          for (const [start, end] of spans) {
+            out += next.slice(cursor, start) + redactedMarker;
+            cursor = end;
+          }
+
+          next = out + next.slice(cursor);
+        }
+      }
 
       if (this.markerSubPattern) next = next.replace(this.markerSubPattern, redactedMarker);
 
-      if (next === result) break;
+      if (next === result) return result;
       result = next;
     }
 
-    return result;
+    // Secrets that keep re-forming past the pass budget fail closed cleanly.
+    return redactedMarker;
   }
   get secrets() {
     return [...this.values].sort((a, b) => b.length - a.length);

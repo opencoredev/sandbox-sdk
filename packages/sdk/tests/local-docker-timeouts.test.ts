@@ -111,4 +111,7 @@ test("apiTimeoutMs bounds a Docker API call and is validated", async () => {
   expect(() => local({ dockerHost: host, apiTimeoutMs: 0 })).toThrowError(
     expect.objectContaining({ code: "invalid_argument" }),
   );
+  expect(() => local({ dockerHost: host, apiTimeoutMs: 2_147_483_648 })).toThrowError(
+    expect.objectContaining({ code: "invalid_argument" }),
+  );
 });

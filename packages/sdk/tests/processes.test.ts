@@ -559,3 +559,118 @@ test("Redactor blocks marker-boundary secret bypasses and redacts error metadata
   expect(caught.message).not.toContain("TED]XYZ");
   expect(caught.provider).toBe("[REDACTED]");
 });
+
+test("fresh-handle wait preserves provider timeouts, closed errors, and withholds unrecovered failures", async () => {
+  const provider = memory();
+
+  await using box = await createSandbox(provider, {
+    secrets: { SECRET_WAIT: "secret-wait-value" },
+  });
+
+  const running = await box.start("sleep 30", { name: "wait-edge" });
+
+  try {
+    // 1. Provider timeout during polling is preserved instead of rewritten as wait deadline expiry.
+    const connected = await connectSandbox(provider, box.id);
+    const proc = connected.process("wait-edge");
+    const baseStat = provider.files.stat.bind(provider.files);
+    let statCalls = 0;
+
+    provider.files.stat = async (id: string, path: string) => {
+      statCalls += 1;
+
+      if (statCalls >= 2)
+        throw new SandboxError("provider stat HTTP timeout", { code: "timeout", retryable: true });
+
+      return baseStat(id, path);
+    };
+
+    try {
+      let caught: unknown;
+
+      try {
+        await proc.wait({ timeoutMs: 600_000 });
+      } catch (error) {
+        caught = error;
+      }
+
+      if (!(caught instanceof SandboxError)) throw new Error("expected SandboxError");
+
+      expect(caught).toMatchObject({ code: "timeout" });
+      expect(caught.message).not.toContain("did not exit within 600000 ms");
+    } finally {
+      provider.files.stat = baseStat;
+      await connected.close();
+    }
+
+    // 2. Closed handle error before recovery is rethrown directly, not disguised as recovery failure.
+    const closedHandle = await connectSandbox(provider, box.id);
+    const closedProc = closedHandle.process("wait-edge");
+    await closedHandle.close();
+
+    await expect(closedProc.wait({ timeoutMs: 1_000 })).rejects.toMatchObject({
+      code: "not_found",
+      message: expect.stringContaining("Sandbox handle is closed"),
+    });
+
+    // 3. Unrecovered secret-recovery failure is withheld with provider "unknown" and no sandboxId.
+    const failing = await connectSandbox(provider, box.id);
+    const failingProc = failing.process("wait-edge");
+    const baseReadSecret = provider.readSecretEnvironment?.bind(provider);
+
+    provider.readSecretEnvironment = async () => {
+      throw new SandboxError("raw failure leaking secret-wait-value", {
+        code: "unavailable",
+        retryable: true,
+        provider: provider.name,
+        sandboxId: box.id,
+      });
+    };
+
+    try {
+      let withheld: unknown;
+
+      try {
+        await failingProc.wait({ timeoutMs: 1_000 });
+      } catch (error) {
+        withheld = error;
+      }
+
+      if (!(withheld instanceof SandboxError)) throw new Error("expected SandboxError");
+
+      expect(withheld).toMatchObject({ code: "unavailable", provider: "unknown" });
+      expect(withheld.sandboxId).toBeUndefined();
+      expect(withheld.message).not.toContain("secret-wait-value");
+    } finally {
+      provider.readSecretEnvironment = baseReadSecret;
+      await failing.close();
+    }
+  } finally {
+    await running.stop({ graceMs: 0 });
+  }
+});
+
+test("restart() shares cross-handle stream reservations with concurrent start()", async () => {
+  const provider = memory();
+  await using box1 = await createSandbox(provider);
+  const proc = await box1.start("sleep 30", { name: "restart-race" });
+  const box2 = await connectSandbox(provider, box1.id);
+
+  try {
+    await proc.stop({ graceMs: 0 });
+
+    const results = await Promise.allSettled([
+      proc.restart(),
+      box2.start("sleep 30", { name: "restart-race" }),
+    ]);
+
+    expect(results.filter((entry) => entry.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((entry) => entry.status === "rejected")).toHaveLength(1);
+  } finally {
+    await box1
+      .process("restart-race")
+      .stop({ graceMs: 0 })
+      .catch(() => {});
+    await box2.close();
+  }
+});

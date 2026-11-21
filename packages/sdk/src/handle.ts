@@ -348,9 +348,14 @@ export async function makeHandle<N>(
               await direct(guard);
               finish(resolve);
             } catch (error) {
+              const isClosed =
+                (closed || destroyed) &&
+                error instanceof SandboxError &&
+                error.code === "not_found";
+
               finish(() =>
                 reject(
-                  recovered
+                  recovered || isClosed
                     ? error
                     : new SandboxError(
                         "Process wait failed while recovering sandbox secrets. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or stop() the process.",
@@ -375,7 +380,12 @@ export async function makeHandle<N>(
         try {
           return await handle.wait({ ...options, timeoutMs: remainingMs });
         } catch (error) {
-          if (error instanceof SandboxError && error.code === "timeout") throw makeTimeout();
+          if (
+            error instanceof SandboxError &&
+            error.code === "timeout" &&
+            error.message.startsWith("Process wait timed out.")
+          )
+            throw makeTimeout();
           throw error;
         }
       },

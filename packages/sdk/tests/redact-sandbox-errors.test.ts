@@ -225,13 +225,21 @@ describe("Redactor.text redacts to a fixed point", () => {
   });
 
   test("redaction is idempotent even across replacement-created marker boundaries", () => {
-    for (const [secrets, input] of [
-      [["supersecret", "RED"], "supersecret RED"],
-      [["TED]XYZ"], "TED]XYZXYZ"],
-      [["Q", "D]Z"], "QZ"],
-      [["RED", "D]Z"], "REDZ"],
+    for (const [secrets, input, expected] of [
+      [["supersecret", "RED"], "supersecret RED", "[REDACTED] [REDACTED]"],
+      [["TED]XYZ"], "TED]XYZXYZ", "[REDACTED]"],
+      [["TED]XYZ"], `TED]XYZ${"XYZ".repeat(40)}`, "[REDACTED]"],
+      [["Q", "D]Z"], `Q${"Z".repeat(100)}`, "[REDACTED]"],
+      [["RED", "D]Z"], "REDZ", "[REDACTED]"],
+      [["T[", "E"], "TE[", "[REDACTED]["],
+      [["]C", "A"], "[REDACTED]C", "[REDACTED]"],
+      [["][", "R"], "R][", "[REDACTED]"],
+      [["D", "]["], "DD", "[REDACTED]"],
+      [["D", "R", "]["], "DD", "[REDACTED]"],
     ] as const) {
       const once = redact([...secrets], input);
+
+      expect(once).toBe(expected);
 
       for (const secret of secrets)
         if (!"[REDACTED]".includes(secret)) expect(once).not.toContain(secret);

@@ -161,6 +161,14 @@ describe("retryAfterMs comes from the provider's Retry-After", () => {
 
     expect(error).toMatchObject({ code: "quota", retryable: true, retryAfterMs: 3_000 });
     // The core re-wraps adapter errors to redact them; the hint to wait survives.
-    expect(new Redactor().error(error, "acme")).toMatchObject({ retryAfterMs: 3_000 });
+    const redacted = new Redactor().error(error, "acme");
+    expect(redacted).toMatchObject({ retryAfterMs: 3_000 });
+
+    const { inspect } = await import("node:util");
+    expect(inspect(redacted)).toContain("retryAfterMs: 3000");
+    expect(inspect(new SandboxError("zero", { code: "quota", retryAfterMs: 0 }))).toContain(
+      "retryAfterMs: 0",
+    );
+    expect(inspect(new SandboxError("none", { code: "quota" }))).not.toContain("retryAfterMs");
   });
 });

@@ -58,9 +58,11 @@ export async function withRetry<T>(
           : Math.random() * Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
 
       const hinted =
-        error.retryAfterMs !== undefined && Number.isFinite(error.retryAfterMs)
-          ? Math.max(0, error.retryAfterMs)
-          : 0;
+        error.retryAfterMs === undefined || Number.isNaN(error.retryAfterMs)
+          ? 0
+          : error.retryAfterMs === Number.POSITIVE_INFINITY
+            ? maxDelayMs
+            : Math.max(0, error.retryAfterMs);
 
       await pause(Math.min(maxDelayMs, Math.max(backoff, hinted)), options.signal);
     }
