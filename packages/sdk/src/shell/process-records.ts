@@ -150,6 +150,13 @@ export function maxSecretLineBytes(secrets: readonly string[]): number {
   return max;
 }
 
+/** Deduplicated non-empty secret lines for exact suffix-prefix boundary matching in stream readers. */
+export function secretLinesText(secrets: readonly string[]): string {
+  const lines = [...new Set(secrets.flatMap((value) => value.split("\n")).filter(Boolean))];
+
+  return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
+}
+
 /** The sed program the stream readers apply to each chunk. Each secret line is replaced
  * whole; for secrets up to 512 bytes, each prefix at a chunk's end and suffix at its start
  * is also replaced so a secret split across two reads is redacted without holdback. When any
@@ -340,15 +347,28 @@ function streamReader(input: {
   fifo: string;
   sedPath: string;
   holdBytes: number;
+  secretsPath?: string;
 }): string {
+  const computeHold = input.secretsPath
+    ? [
+        `if command -v awk >/dev/null 2>&1`,
+        `then clen=$(printf '%s\\n' "$chunk" | LC_ALL=C awk 'FILENAME!="-"{if(length($0)>1)s[++n]=$0;next}{t=$0;tl=length(t);k=0;for(i=1;i<=n;i++){p=s[i];pl=length(p);m=tl<pl-1?tl:pl-1;for(j=m;j>k;j--){if(substr(t,tl-j+1,j)==substr(p,1,j)){k=j;break}}}print k}' ${quote(input.secretsPath)} - 2>/dev/null)`,
+        `clen=\${clen:-${input.holdBytes}}`,
+        `else clen=${input.holdBytes}`,
+        `fi`,
+      ]
+    : [`clen=${input.holdBytes}`];
+
   const partialTailLines =
     input.holdBytes > 0
       ? [
           `if [ -n "$chunk" ]`,
           `then tlen=$(printf '%s' "$chunk" | wc -c)`,
-          `if [ "$tlen" -gt ${input.holdBytes} ]`,
-          `then elen=$((tlen-${input.holdBytes}))`,
-          `clen=${input.holdBytes}`,
+          ...computeHold,
+          `if [ "$clen" -le 0 ]`,
+          `then append ${input.marker.toLowerCase()} "$chunk"`,
+          `elif [ "$tlen" -gt "$clen" ]`,
+          `then elen=$((tlen-clen))`,
           `while [ "$elen" -gt 0 ]`,
           `do b=$(printf '%s' "$chunk" | tail -c "$clen" | head -c 1 | od -An -tu1)`,
           `b=\${b##* }`,
@@ -432,19 +452,21 @@ export function supervisorScript(input: {
   command: string;
   sedPath: string;
   holdBytes?: number;
+  secretsPath?: string;
 }): string {
   const file = records(input.dir);
   const holdBytes = input.holdBytes ?? 0;
+  const secretsCleanup = input.secretsPath ? ` ${quote(input.secretsPath)}` : "";
 
   return [
-    `chmod 600 ${quote(input.sedPath)}`,
+    `chmod 600 ${quote(input.sedPath)}${secretsCleanup}`,
     // The sed program holds the secrets verbatim; drop it before the exit record says the process is done.
-    `trap ${quote(`code=$?; rm -f ${quote(input.sedPath)}; printf "%s" "$code" > ${file.exit}`)} EXIT`,
+    `trap ${quote(`code=$?; rm -f ${quote(input.sedPath)}${secretsCleanup}; printf "%s" "$code" > ${file.exit}`)} EXIT`,
     `trap 'exit 143' TERM`,
     `${appendFunction(input.dir)} rm -f ${file.stdout} ${file.stderr}`,
     `mkfifo ${file.stdout} ${file.stderr}`,
-    `${streamReader({ marker: "O", fifo: `${input.dir}/stdout`, sedPath: input.sedPath, holdBytes })} out=$!`,
-    `${streamReader({ marker: "E", fifo: `${input.dir}/stderr`, sedPath: input.sedPath, holdBytes })} err=$!`,
+    `${streamReader({ marker: "O", fifo: `${input.dir}/stdout`, sedPath: input.sedPath, holdBytes, secretsPath: input.secretsPath })} out=$!`,
+    `${streamReader({ marker: "E", fifo: `${input.dir}/stderr`, sedPath: input.sedPath, holdBytes, secretsPath: input.secretsPath })} err=$!`,
     `{ cd ${quote(input.cwd)} && sh -c ${quote(input.command)}; } > ${file.stdout} 2> ${file.stderr}`,
     `code=$?`,
     `wait "$out" "$err"`,

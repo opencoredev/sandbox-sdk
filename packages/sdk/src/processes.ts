@@ -13,6 +13,7 @@ import {
   recordExit,
   recordSetupScript,
   redactionSedScript,
+  secretLinesText,
   supervisorScript,
 } from "./shell/process-records.js";
 
@@ -503,6 +504,9 @@ export function makeProcesses(
           await provider.files
             .remove(id, `${dir}/redact.sed`, { recursive: false })
             .catch(() => {});
+          await provider.files
+            .remove(id, `${dir}/redact.txt`, { recursive: false })
+            .catch(() => {});
           status = "exited";
         }),
       restart: () =>
@@ -788,12 +792,13 @@ export function makeProcesses(
             launched = false;
             controller?.state("failed");
             controller?.ready(false);
-          } else if (result.timedOut || result.exitCode !== 0)
+          } else if (result.timedOut || result.exitCode !== 0) {
+            controller?.state("failed");
             throw new SandboxError(
               "Process setup failed. Could not prepare durable records. Check that /tmp is writable and retry.",
               { code: "provider" },
             );
-          else {
+          } else {
             controller?.state("starting");
             controller?.ready(false);
           }
@@ -909,6 +914,7 @@ export function makeProcesses(
         } else if (launched) {
           // No resident daemon: a detached process group writes durable records itself.
           const maxLineBytes = maxSecretLineBytes(redactor.secrets);
+          const secretsPath = maxLineBytes > 512 ? `${dir}/redact.txt` : undefined;
 
           const wrapper = supervisorScript({
             dir,
@@ -916,6 +922,7 @@ export function makeProcesses(
             command,
             sedPath,
             holdBytes: maxLineBytes > 512 ? maxLineBytes + 16 : 0,
+            secretsPath,
           });
 
           try {
@@ -923,10 +930,23 @@ export function makeProcesses(
 
             if (!provider.files.writeSupportsMode) {
               await files.write(sedPath, sed, { mode: 0o600 });
+
+              if (secretsPath) {
+                await files.write(secretsPath, secretLinesText(redactor.secrets), { mode: 0o600 });
+              }
             } else {
               await provider.files.write(id, sedPath, new TextEncoder().encode(sed), {
                 mode: 0o600,
               });
+
+              if (secretsPath) {
+                await provider.files.write(
+                  id,
+                  secretsPath,
+                  new TextEncoder().encode(secretLinesText(redactor.secrets)),
+                  { mode: 0o600 },
+                );
+              }
             }
 
             if (provider.startProcess) {
@@ -992,6 +1012,11 @@ export function makeProcesses(
             native.delete(options.name);
             controller?.state("failed");
             await provider.files.remove(id, sedPath, { recursive: false }).catch(() => {});
+
+            if (secretsPath) {
+              await provider.files.remove(id, secretsPath, { recursive: false }).catch(() => {});
+            }
+
             await provider.files
               .remove(id, `${dir}/spec.json`, { recursive: false })
               .catch(() => {});
@@ -1026,11 +1051,14 @@ export function makeProcesses(
 
           if (exited && page.truncated) continue;
 
-          if (exited)
+          if (exited) {
+            const current = await info(options.name);
+            controller?.state(current.status);
             throw new SandboxError(
-              `Process exited before readiness. Exit ${(await info(options.name)).exitCode}. Check the last logs: ${lastLines()}`,
+              `Process exited before readiness. Exit ${current.exitCode}. Check the last logs: ${lastLines()}`,
               { code: "process_exited" },
             );
+          }
 
           if ("log" in options.ready) {
             options.ready.log.lastIndex = 0;

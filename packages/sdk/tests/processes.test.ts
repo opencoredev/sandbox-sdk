@@ -841,4 +841,30 @@ test("detached process logs redact secrets longer than 512 bytes split across 4 
   expect(paged.text).not.toContain("QQQQ_END");
   expect(rawLog).not.toContain("LONG_SSSS");
   expect(rawLog).not.toContain("QQQQ_END");
+  expect(await box.files.exists("/tmp/.sandbox-sdk/procs/big-secret-split/redact.txt")).toBe(false);
+});
+
+test("detached process with >512-byte secret flushes non-secret partial lines immediately for log readiness", async () => {
+  const secret = "S600_" + "Z".repeat(595);
+  const provider = await shellProvider();
+
+  await using box = await createSandbox(provider, { secrets: { BIG: secret } });
+
+  const startedAt = Date.now();
+
+  const proc = await box.start("printf 'Listening on :3000'; sleep 10", {
+    name: "big-secret-ready",
+    ready: { log: /Listening on :3000/ },
+    readyTimeoutMs: 5_000,
+  });
+
+  try {
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    const logs = await proc.logs();
+    expect(logs.text).toContain("Listening on :3000");
+  } finally {
+    await proc.stop({ graceMs: 0 }).catch(() => {});
+  }
+
+  expect(await box.files.exists("/tmp/.sandbox-sdk/procs/big-secret-ready/redact.txt")).toBe(false);
 });
