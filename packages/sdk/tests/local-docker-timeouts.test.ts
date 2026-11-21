@@ -1,5 +1,5 @@
 // The Docker Engine client's timeouts, against a fake Engine on a unix socket.
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { ClientRequest, createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,6 +38,25 @@ async function fakeEngine(handle: (req: IncomingMessage, res: ServerResponse) =>
 }
 
 test("an exec attached without an upgrade may stay silent past the attach timeout", async () => {
+  // Rescale any large nonzero ClientRequest timeout (such as main's 30 s default) to 100 ms so a
+  // missing clear-timeout on the plain-200 response path fails this test within 400 ms.
+  const originalSetTimeout = ClientRequest.prototype.setTimeout;
+  ClientRequest.prototype.setTimeout = function (
+    this: ClientRequest,
+    msecs: number,
+    callback?: () => void,
+  ) {
+    const scaled = msecs >= 1_000 ? 100 : msecs;
+
+    return callback
+      ? originalSetTimeout.call(this, scaled, callback)
+      : originalSetTimeout.call(this, scaled);
+  };
+
+  cleanup.push(async () => {
+    ClientRequest.prototype.setTimeout = originalSetTimeout;
+  });
+
   const host = await fakeEngine((req, res) => {
     if (req.url?.endsWith("/containers/box/exec")) return res.end(JSON.stringify({ Id: "exec-1" }));
 

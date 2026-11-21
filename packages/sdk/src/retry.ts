@@ -60,6 +60,8 @@ export async function withRetry<T>(
 }
 
 function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+
   return new Promise<void>((resolve) => {
     const done = () => {
       clearTimeout(timer);
@@ -70,5 +72,7 @@ function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
     const timer = setTimeout(done, ms);
 
     signal?.addEventListener("abort", done, { once: true });
+
+    if (signal?.aborted) done();
   });
 }

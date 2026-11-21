@@ -313,17 +313,39 @@ export function makeFiles(
   const watchers = new Set<() => void>();
   const execHost = promisify(execFile);
 
-  // Directory transfers shell out to the host's tar; a missing binary is a setup problem, not a provider failure.
-  const hostExec = async (...args: Parameters<typeof execHost>) => {
+  // Directory transfers shell out to the host's tar; a missing binary or local permission denial
+  // is a host problem, not a provider failure.
+  const hostExec = async (
+    file: string,
+    args: readonly string[],
+    options?: { timeout?: number },
+  ) => {
     try {
-      return await execHost(...args);
+      return await execHost(file, args, {
+        ...options,
+        env: { ...process.env, LC_ALL: "C" },
+      });
     } catch (error) {
       if (hasErrno(error, "ENOENT"))
         throw new SandboxError(
-          `Directory transfer failed. ${args[0]} is not installed on this machine.`,
+          `Directory transfer failed. ${file} is not installed on this machine.`,
           {
             code: "unsupported",
-            hint: `Install ${args[0]} on the host, or transfer single files.`,
+            hint: `Install ${file} on the host, or transfer single files.`,
+          },
+        );
+
+      const stderr = isObject(error) && "stderr" in error ? String(error.stderr) : "";
+
+      if (
+        hasErrno(error, "EACCES", "EPERM") ||
+        /permission denied|operation not permitted/i.test(stderr)
+      )
+        throw new SandboxError(
+          `Directory transfer failed. Local permission denied while running ${file}.`,
+          {
+            code: "auth",
+            hint: "Check local permissions on the source and target paths.",
           },
         );
 

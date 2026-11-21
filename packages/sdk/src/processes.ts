@@ -472,44 +472,93 @@ export function makeProcesses(
             await start(record.command ?? current.command, record.options);
           } else await launch();
         }),
-      wait: (options = {}) =>
-        safe(async () => {
-          const timeoutMs = options.timeoutMs ?? defaultWaitTimeoutMs;
+      wait: (options = {}) => {
+        const timeoutMs = options.timeoutMs ?? defaultWaitTimeoutMs;
 
-          if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
-            invalid("wait timeoutMs must be a positive, finite number");
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+          invalid("wait timeoutMs must be a positive, finite number");
 
-          const deadline = Date.now() + timeoutMs;
-          let pollMs = waitPollMs.first;
+        const signal = options.signal;
 
-          while (!(await files.exists(`${dir}/exit`))) {
-            if (options.signal?.aborted)
-              throw new SandboxError(
-                `Process wait aborted. ${name} is still running. Call wait() again with a fresh signal, or stop() it.`,
-                { code: "aborted" },
-              );
+        const makeAbortedError = () =>
+          new SandboxError(
+            `Process wait aborted. ${name} is still running. Call wait() again with a fresh signal, or stop() it.`,
+            { code: "aborted" },
+          );
 
-            const left = deadline - Date.now();
+        const makeTimeoutError = () =>
+          new SandboxError(
+            `Process wait timed out. ${name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`,
+            { code: "timeout", retryable: true },
+          );
 
-            if (left <= 0)
-              throw new SandboxError(
-                `Process wait timed out. ${name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`,
-                { code: "timeout", retryable: true },
-              );
+        return new Promise((resolve, reject) => {
+          let settled = false;
+          let timer: ReturnType<typeof setTimeout> | undefined;
 
-            await abortableDelay(Math.min(pollMs, left), options.signal);
-            pollMs = Math.min(pollMs * 2, waitPollMs.max);
+          const finish = (cb: () => void) => {
+            if (settled) return;
+            settled = true;
+
+            if (timer !== undefined) clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            cb();
+          };
+
+          const onAbort = () => finish(() => reject(makeAbortedError()));
+
+          if (signal?.aborted) {
+            onAbort();
+
+            return;
           }
 
-          const current = await info(name);
-          status = current.status;
+          signal?.addEventListener("abort", onAbort, { once: true });
+          timer = setTimeout(() => finish(() => reject(makeTimeoutError())), timeoutMs);
 
-          return {
-            exitCode: current.exitCode,
-            signal:
-              current.exitCode === 143 ? "SIGTERM" : current.exitCode === 137 ? "SIGKILL" : null,
-          };
-        }),
+          const deadline = Date.now() + timeoutMs;
+
+          void (async () => {
+            try {
+              const result = await safe(async () => {
+                let pollMs = waitPollMs.first;
+
+                while (!settled && !(await files.exists(`${dir}/exit`))) {
+                  if (settled) return null;
+
+                  const left = deadline - Date.now();
+
+                  if (left <= 0) throw makeTimeoutError();
+
+                  await abortableDelay(Math.min(pollMs, left), signal);
+                  pollMs = Math.min(pollMs * 2, waitPollMs.max);
+                }
+
+                if (settled) return null;
+
+                const current = await info(name);
+
+                if (settled) return null;
+                status = current.status;
+
+                return {
+                  exitCode: current.exitCode,
+                  signal:
+                    current.exitCode === 143
+                      ? "SIGTERM"
+                      : current.exitCode === 137
+                        ? "SIGKILL"
+                        : null,
+                };
+              });
+
+              if (result !== null) finish(() => resolve(result));
+            } catch (error) {
+              finish(() => reject(error));
+            }
+          })();
+        });
+      },
     };
 
     handles.set(name, handle);
