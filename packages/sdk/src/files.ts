@@ -202,8 +202,38 @@ try:
     if n>=mx:sys.exit(0)
 except Exception:sys.exit(70)`;
 
-// Text the guest compares as UTF-8 bytes must decode to itself: no lone surrogates, BOM or replacement character.
 const gitObjectId = /^[0-9a-f]{40,64}$/;
+
+/** A Node system error, such as `ENOENT` from `fs` or `child_process`. */
+function hasErrno(error: unknown, ...codes: string[]): error is { code: string } {
+  return isObject(error) && "code" in error && isString(error.code) && codes.includes(error.code);
+}
+
+/**
+ * Runs a host filesystem call for upload or download. A missing path becomes `file_not_found`
+ * and a permission failure becomes `auth`, instead of a raw Node error the core reports as `provider`.
+ */
+async function onHost<T>(path: string, action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    if (hasErrno(error, "ENOENT", "ENOTDIR"))
+      throw new SandboxError(`Local path not found. ${path} does not exist on this machine.`, {
+        code: "file_not_found",
+        hint: "Check the local path. Relative local paths resolve against the current directory.",
+      });
+
+    if (hasErrno(error, "EACCES", "EPERM"))
+      throw new SandboxError(`Local path access denied. This process cannot use ${path}.`, {
+        code: "auth",
+        hint: "Check the local path's permissions for the user running this process.",
+      });
+
+    throw error;
+  }
+}
+
+// Text the guest compares as UTF-8 bytes must decode to itself: no lone surrogates, BOM or replacement character.
 const byteExact = (text: string) => !/\p{Cs}|[\uFEFF\uFFFD]/u.test(text);
 
 // A path with a lone surrogate names different bytes in the guest than through the RPC path.
@@ -281,7 +311,25 @@ export function makeFiles(
 ): Files & Disposable {
   const fs = provider.files;
   const watchers = new Set<() => void>();
-  const hostExec = promisify(execFile);
+  const execHost = promisify(execFile);
+
+  // Directory transfers shell out to the host's tar; a missing binary is a setup problem, not a provider failure.
+  const hostExec = async (...args: Parameters<typeof execHost>) => {
+    try {
+      return await execHost(...args);
+    } catch (error) {
+      if (hasErrno(error, "ENOENT"))
+        throw new SandboxError(
+          `Directory transfer failed. ${args[0]} is not installed on this machine.`,
+          {
+            code: "unsupported",
+            hint: `Install ${args[0]} on the host, or transfer single files.`,
+          },
+        );
+
+      throw error;
+    }
+  };
 
   async function remote(command: string) {
     const result = await provider.exec(id, {
@@ -712,7 +760,9 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       safe(async () => {
         const root = resolve(source);
 
-        if (fs.transfer !== "files" && (await local.lstat(root)).isDirectory()) {
+        const rootStat = await onHost(root, () => local.lstat(root));
+
+        if (fs.transfer !== "files" && rootStat.isDirectory()) {
           const temporary = await local.mkdtemp(resolve(tmpdir(), "sandbox-sdk-upload-"));
           const archive = `/tmp/.sandbox-sdk/upload-${crypto.randomUUID()}.tar`;
 
@@ -743,14 +793,14 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
         }
 
         async function visit(src: string, dest: string) {
-          const stat = await local.lstat(src);
+          const stat = await onHost(src, () => local.lstat(src));
 
           if (stat.isSymbolicLink()) invalid("Uploading symlinks is unsupported");
 
           if (stat.isDirectory()) {
             await fs.mkdir(id, pathOf(dest));
 
-            for (const entry of await local.readdir(src))
+            for (const entry of await onHost(src, () => local.readdir(src)))
               if (
                 !options?.ignore?.some(
                   (pattern) =>
@@ -758,7 +808,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
                 )
               )
                 await visit(resolve(src, entry), posix.join(dest, entry));
-          } else await write(dest, new Uint8Array(await local.readFile(src)));
+          } else await write(dest, new Uint8Array(await onHost(src, () => local.readFile(src))));
         }
 
         await visit(root, target);
@@ -776,7 +826,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
             );
             const localArchive = resolve(temporary, "files.tar");
             await local.writeFile(localArchive, await fs.read(id, archive));
-            await local.mkdir(resolve(target), { recursive: true });
+            await onHost(target, () => local.mkdir(resolve(target), { recursive: true }));
             await hostExec(
               "tar",
               [
@@ -804,13 +854,17 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
           if (stat.type === "symlink") invalid("Downloading symlinks is unsupported");
 
           if (stat.type === "directory") {
-            await local.mkdir(dest, { recursive: true });
+            await onHost(dest, () => local.mkdir(dest, { recursive: true }));
 
             for (const entry of await fs.list(id, src))
               await visit(entry.path, resolve(dest, posix.basename(entry.path)));
           } else {
-            await local.mkdir(resolve(dest, ".."), { recursive: true });
-            await local.writeFile(dest, await fs.read(id, src));
+            const data = await fs.read(id, src);
+
+            await onHost(dest, async () => {
+              await local.mkdir(resolve(dest, ".."), { recursive: true });
+              await local.writeFile(dest, data);
+            });
           }
         }
 
