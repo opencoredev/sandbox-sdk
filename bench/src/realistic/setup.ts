@@ -292,6 +292,25 @@ export const providerSetups: readonly ProviderSetup[] = [
     },
   },
   {
+    // Groundbox: the default is 2 vCPU / 4 GiB on Groundbox's Ubuntu 24.04 image (glibc, Node and
+    // Python preinstalled); same-machine asks for 4 vCPU / 8 GiB. There is no idle pause unless
+    // asked for. https://groundbox.dev/docs/sandboxes.md
+    name: "groundbox",
+    adapter: "groundbox",
+    product: null,
+    lifetime: true,
+    pricingKey: "groundbox",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 59),
+        tooSmall: {},
+      },
+      default: { vcpu: 2, provisioned: size(2, 4, 59), tooSmall: {} },
+    },
+  },
+  {
     // Baseten (limits as of 2026-11-13): memory sets CPU, 2 GiB per vCPU up to 4. Baseten holds a
     // sandbox's files in its memory, so the build's workspace goes on an 8 GiB volume (the
     // account's cap, 2026-11-16), as Baseten advised: without one, its node_modules sat in RAM and

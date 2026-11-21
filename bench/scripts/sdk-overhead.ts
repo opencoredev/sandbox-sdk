@@ -69,6 +69,7 @@ const nativePackages = {
   superserve: "@superserve/sdk",
   baseten: "@basetenlabs/sandbox",
   instabox: "@insforge/instabox-sdk",
+  groundbox: "@groundbox/sdk",
   beam: "@beamcloud/beam-js",
 } as const;
 
@@ -343,6 +344,34 @@ const providers = {
           },
         };
       },
+    };
+  },
+  async groundbox() {
+    const m: typeof import("@opencoredev/sandbox-sdk/groundbox") = await import(
+      moduleUrl("providers/groundbox/index.js")
+    );
+
+    const provider = m.groundbox();
+
+    // The adapter calls the REST API itself; the floor is Groundbox's official SDK, one client.
+    const client = once(async () => {
+      const native: typeof import("@groundbox/sdk") = await import(nativeUrl("@groundbox/sdk"));
+
+      return new native.Groundbox();
+    });
+
+    return {
+      provider,
+      floor: (id) => ({
+        exec: async (command = "true") => {
+          const r = await (await client()).run_command(id, command, { timeout_s: 60 });
+
+          if (r.exit_code !== 0) throw new Error(`exit ${r.exit_code}`);
+        },
+        write: async (path, data) => {
+          await (await client()).write_file(id, path, data);
+        },
+      }),
     };
   },
   async beam() {
@@ -720,6 +749,38 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
           return true;
         } catch (error) {
           if (error instanceof m.InstaboxError && error.status === 404) return false;
+          throw error;
+        }
+      },
+    };
+  }
+
+  if (name === "groundbox") {
+    const m: typeof import("@groundbox/sdk") = await import(nativeUrl("@groundbox/sdk"));
+    const client = new m.Groundbox();
+
+    // The adapter's create waits until the sandbox runs; create_sandbox usually answers running.
+    let box = await client.create_sandbox({ metadata: label, timeout_minutes: 10 });
+
+    if (box.status !== "running") box = await client.wait_for_sandbox(box.id, { timeout_s: 120 });
+
+    return {
+      id: box.id,
+      exec: async () => {
+        const r = await client.run_command(box.id, "true", { timeout_s: 60 });
+
+        if (r.exit_code !== 0) throw new Error(`exit ${r.exit_code}`);
+      },
+      destroy: async () => {
+        await client.delete_sandbox(box.id);
+      },
+      exists: async () => {
+        try {
+          const status = (await client.get_sandbox(box.id)).status;
+
+          return status !== "stopped" && status !== "failed";
+        } catch (error) {
+          if (error instanceof m.GroundboxError && error.status === 404) return false;
           throw error;
         }
       },

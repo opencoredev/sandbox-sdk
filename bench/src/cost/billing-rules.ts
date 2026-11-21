@@ -107,6 +107,8 @@ const docs = {
   freestyle: "https://www.freestyle.sh/pricing",
   tenki: "https://luxor.ai/pricing",
   baseten: "https://www.baseten.co/pricing/",
+  groundbox: "https://groundbox.dev/pricing",
+  groundboxUsage: "https://api.groundbox.dev/v1/sandboxes/{id}/usage",
   instabox: "https://instabox.sh/docs/account/pricing.md",
   instaboxBilling: "https://instabox.sh/docs/account/billing.md",
   instaboxUsage: "https://api.instabox.sh/v1/machines/{id}/usage",
@@ -387,6 +389,38 @@ export const billingRules: readonly BillingRule[] = [
     notes: [
       "The usage API is a meter (running seconds at published rates), not an invoice; the account ledger is rated hourly and is not split per machine.",
       "Plan fee, monthly credits and egress within the plan's allowance excluded.",
+    ],
+  },
+  {
+    provider: "groundbox",
+    product: null,
+    pricingKey: "groundbox",
+    tariff: known({ kind: "per-unit", charges: "allocation" }, docs.groundbox),
+    billingStarts: unknown(
+      "Compute is billed while the VM runs; whether that starts at the create request or at boot is not stated",
+    ),
+    billingStops: unknown("Compute stops when the VM stops; the event is not named"),
+    incrementSeconds: known(1, `${docs.groundbox} (billed by the second)`),
+    minimumSeconds: unknown("No minimum stated"),
+    perStartFeeUSD: unknown("No creation fee listed; absence is not confirmation"),
+    keepsCharging: known(
+      ["disk", "snapshots"],
+      `${docs.groundbox} (paused or shut down: storage only, $0.05/GB-month; kept snapshots the same)`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known("included", `${docs.groundboxUsage} (cost_micros includes paused storage)`),
+    settledChargeSource: known(
+      "Per-sandbox usage meter, readable after deletion",
+      docs.groundboxUsage,
+    ),
+    reportedKind: "metered",
+    attribution: "per-sandbox",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "The usage API is Groundbox's own per-sandbox meter, not an invoice.",
+      "Memory up to 4 GiB per vCPU is included in the vCPU price, so only vCPU-seconds are priced.",
+      "Plan fee, included usage and tax excluded.",
     ],
   },
   {

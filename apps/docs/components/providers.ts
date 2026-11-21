@@ -8,6 +8,7 @@ export const PROVIDERS = {
   modal: { name: "Modal", logo: "/integrations/modal.svg" },
   baseten: { name: "Baseten", logo: "/integrations/baseten.svg" },
   instabox: { name: "Instabox", logo: "/integrations/instabox.svg" },
+  groundbox: { name: "Groundbox", logo: "/integrations/groundbox.svg" },
   daytona: { name: "Daytona", logo: "/integrations/daytona.svg" },
   upstash: { name: "Upstash Box", logo: "/integrations/upstash.svg" },
   railway: { name: "Railway", logo: "/integrations/railway.svg" },

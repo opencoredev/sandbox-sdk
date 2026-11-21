@@ -1,0 +1,192 @@
+---
+title: Groundbox
+seo:
+  title: Groundbox Sandbox SDK in TypeScript
+description: Use Groundbox sandbox VMs from TypeScript through Groundbox's REST API and one portable API. Pause and resume with memory, snapshots, templates, a terminal, egress allow lists, exact sizes and previews, with no extra package.
+---
+
+`groundbox()` runs each sandbox as a [Groundbox](https://groundbox.dev) sandbox, a Linux VM of its own with dedicated cores, by calling Groundbox's REST API directly. There is no other package to install.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(groundbox())` and then `box.run`, `box.files`, `box.preview`, `box.pause`, `box.snapshot` and `box.terminal`, and the same code runs on E2B or Daytona when you swap the factory. The [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) calls any other Groundbox endpoint with the adapter's key.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+</Tabs>
+
+Create an API key (`gbx_...`) in the Groundbox dashboard, or with `groundbox login`, and set `GROUNDBOX_API_KEY`, or pass `groundbox({ apiKey })`. `buildTemplate` needs a key that may write templates.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { groundbox } from "@opencoredev/sandbox-sdk/groundbox";
+
+await using box = await createSandbox(groundbox(), { timeoutMs: 30 * 60_000 });
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+`await using` deletes the sandbox when the block ends. `timeoutMs` becomes Groundbox's `timeout_minutes`, which deletes the sandbox 30 minutes after creation, a backstop if your process dies first.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                        |
+| ------------------------------ | ----------- | ------------------------------------------------------------ |
+| Commands and streaming         | Yes         | One request per command; live output over a WebSocket        |
+| Files                          | Yes         | Up to 100 MB per file                                        |
+| Background processes           | Yes         |                                                              |
+| Preview URLs                   | Yes         | Private by default, opened with a token header               |
+| Pause and resume               | Yes         | Pauses the VM with its memory                                |
+| Snapshots                      | Yes         | Memory, disk and processes; `deleteSnapshot` works           |
+| Templates                      | Yes         | `buildTemplate` builds a Groundbox template                  |
+| Machine size                   | Yes         | Whole vCPUs, whole GiB of memory, and a disk size            |
+| Network policy                 | Yes         | `"none"` and allow lists with `*.` wildcards, IPv4 and CIDRs |
+| Hard lifetime (`timeoutMs`)    | Yes         | `timeout_minutes`, in whole minutes                          |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Pauses the sandbox; 30 seconds or more                       |
+| Keys                           | Best-effort | Stored as a metadata label; concurrent creates can race      |
+| Terminal                       | Yes         | A login shell on a terminal of its own, with `wait()`        |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { groundbox } from "@opencoredev/sandbox-sdk/groundbox";
+
+await using box = await createSandbox(groundbox());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+An awaited `box.run` is one `POST /v1/sandboxes/{id}/exec`, which answers with the output once the command ends. Iterating a run opens Groundbox's exec stream, a WebSocket, so chunks arrive in the order the command wrote them. The stream needs a WebSocket that can send headers, which Node.js 22 and Bun have. The default image is Ubuntu 24.04 with Node.js, Python, Go, Rust, a JDK, Docker and the usual tools; commands run as the `runner` user, with passwordless `sudo`. One command runs for at most an hour; start longer jobs with `box.start`. Command input up to 512 KiB is sent with the request, and anything larger is uploaded as a file first.
+
+## Background processes and previews
+
+`box.preview(port)` gives the port an `https://` URL. Nothing needs to be declared at creation, and asking again for the same port returns the same URL. The app must listen on `0.0.0.0`.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { groundbox } from "@opencoredev/sandbox-sdk/groundbox";
+
+await using box = await createSandbox(groundbox(), { timeoutMs: 30 * 60_000 });
+await box.start("python3 -m http.server 8000 --bind 0.0.0.0", {
+  name: "web",
+  ready: { port: 8000 },
+});
+const preview = await box.preview(8000);
+await fetch(preview.url, { headers: preview.headers });
+```
+
+A preview is private: send `preview.headers` (`x-groundbox-preview-token`) with every request. The token works for 24 hours, until `preview.expiresAt`; the adapter asks for a fresh one when less than an hour is left. Pass `groundbox({ publicPreviews: true })` for URLs anyone can open, with no header, for webhooks or sharing.
+
+## Pause, resume, and snapshots
+
+`box.pause()` pauses the VM with its memory and disk, so running processes continue after `box.resume()`. A paused sandbox pays only for storage. A command, file call or preview request to a paused sandbox wakes it, so code that reconnects needs no `resume()` first. `resume()` also boots a sandbox that was shut down with its disk kept.
+
+`box.snapshot()` keeps the sandbox's memory, disk and processes as a snapshot of your team (`snap_...`) that outlives the sandbox. Pass it as `from` to create a new sandbox from it, with its processes running. The new sandbox gets the snapshot's size, and another `size` is refused. Groundbox keeps a snapshot until you delete it with `deleteSnapshot(provider, id)`, or until it goes 30 days unused, so `expiresInMs` fails with `unsupported`.
+
+`box.ext.groundbox.fork()` copies a running sandbox, memory, files and processes, into a new one and resolves with its ID. Connect to it with `connectSandbox(provider, id)`.
+
+## Templates
+
+`buildTemplate(groundbox(), spec)` builds a Groundbox template and waits until it is ready, passing each build log line to `onLog`. Its `id` (`tpl_...`) works as `from`, or as `groundbox({ template })`. A name that is taken gets a new version of that template. `image` is the base image (Groundbox's own image when left out), `run` are the build steps, run as root in order, `size` is the size the template's warm snapshot is taken at, and `env` and `workdir` apply to the build steps only. Sandboxes of exactly the template's size start from that warm snapshot.
+
+```ts
+import { buildTemplate, createSandbox } from "@opencoredev/sandbox-sdk";
+import { groundbox } from "@opencoredev/sandbox-sdk/groundbox";
+
+const provider = groundbox();
+const template = await buildTemplate(provider, {
+  name: "node-pnpm",
+  image: "node:22-bookworm",
+  run: ["npm install -g pnpm"],
+  size: { cpu: 4, memoryMb: 8192 },
+});
+await using box = await createSandbox(provider, { from: template.id, size: "medium" });
+```
+
+## Size, image, network, and lifetime
+
+| Preset   | vCPUs | Memory    |
+| -------- | ----- | --------- |
+| `small`  | 2     | 4096 MiB  |
+| `medium` | 4     | 8192 MiB  |
+| `large`  | 8     | 16384 MiB |
+
+An exact `size` takes whole vCPUs and whole GiB of memory, at most 4 GiB per vCPU, which the vCPU price includes. `{ cpu: 4, memoryMb: 8192, diskGb: 40 }` also sets the least disk size. A size Groundbox can't give is refused, never rounded. Without `size`, a sandbox gets 2 vCPU / 4 GiB.
+
+`groundbox({ template })` picks the template for new sandboxes, by ID, name or `name:version`. Without it, Groundbox uses your team's default template, else its own image. `groundbox({ image })` starts sandboxes from a Docker image instead, such as `node:22-bookworm`; the first sandbox from an image waits while it becomes a disk.
+
+`network: "none"` gives the sandbox an empty egress allow list, and `{ allow: [...] }` lets it reach those hosts and nothing else. Entries are host names, `*.` wildcards, IPv4 addresses and networks.
+
+`idleTimeoutMs` pauses the sandbox after that long with no activity, in whole seconds, 30 or more. Without it, a sandbox never pauses by itself. `timeoutMs` deletes the sandbox whatever its state, rounded up to whole minutes; without it, Groundbox deletes a sandbox after 60 minutes.
+
+## Configuration
+
+| Option               | Type      | Default                        | Env var             |
+| -------------------- | --------- | ------------------------------ | ------------------- |
+| `apiKey`             | `string`  |                                | `GROUNDBOX_API_KEY` |
+| `baseUrl`            | `string`  | `https://api.groundbox.dev/v1` | `GROUNDBOX_API_URL` |
+| `template`           | `string`  | your team's default            |                     |
+| `image`              | `string`  |                                |                     |
+| `publicPreviews`     | `boolean` | `false`                        |                     |
+| `requestTimeoutMs`   | `number`  | 60 seconds                     |                     |
+| `operationTimeoutMs` | `number`  | 10 minutes                     |                     |
+
+`operationTimeoutMs` bounds a create until the sandbox runs, and each pause, resume and snapshot.
+
+## Limitations
+
+- Keys are best-effort: two clients creating with one key at once can make two sandboxes.
+- One command runs for at most an hour.
+- A streamed run needs a WebSocket that sends headers (Node.js 22 or Bun); without one, runs are buffered.
+- Labels take names of 1 to 64 characters and values of at most 512.
+
+## How it works
+
+- The adapter calls `https://api.groundbox.dev/v1` with your key as a bearer token, through the SDK's shared HTTP client: every request names the SDK in `User-Agent`, reads and keyed writes are retried on `429` and `5xx`, and a write whose answer was lost is `outcome_unknown`. Create, snapshot, fork and template builds carry an `Idempotency-Key`, so a retry never starts a second sandbox.
+- At create, the adapter makes `/workspace` for the command user and checks the tools the SDK needs. If that fails, it deletes the sandbox before it throws. The sandbox's `env` becomes Groundbox's sandbox `env`, which every command gets, so a reconnect can read the secrets' names back.
+- Your `labels` become Groundbox metadata, and a key is stored as the `sandbox-sdk-key` label.
+- A command's first line carries a marker. Groundbox runs a command under a supervisor that can outlive its request, so on a timeout or abort the adapter finds the command by that marker and kills it, with everything it started. A streamed run sends `kill` on the WebSocket instead and waits for the exit.
+- `box.native` is a [`NativeApi`](/reference/native) on Groundbox's API: `box.native.request("GET", "/sandboxes/{id}/usage")`, where `{id}` fills from the sandbox. `box.native.sdk(() => import("@groundbox/sdk"))` gives the official client and its handle on the sandbox, if you install `@groundbox/sdk` yourself. `provider.api` is the same with no sandbox bound.
+- `box.usage()` adds the sandbox's vCPUs, memory and disk, and `costUsd`, Groundbox's own meter of its compute and paused storage so far.
+- Errors keep only Groundbox's HTTP status, error code and request ID, never its message, which can echo paths or request data.
+
+## Next steps
+
+- [Machine size and network](/guides/machine-size-and-network)
+- [Dev servers and previews](/guides/dev-servers-and-previews)

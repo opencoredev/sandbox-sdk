@@ -336,6 +336,7 @@ const lookupKeys = new Map([
   ["modal", "MODAL_TOKEN_SECRET"],
   ["baseten", "BASETEN_API_KEY"],
   ["instabox", "INSTABOX_API_KEY"],
+  ["groundbox", "GROUNDBOX_API_KEY"],
   ["beam", "BEAM_TOKEN"],
 ]);
 
@@ -484,6 +485,23 @@ export async function lookupSandbox(
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
 
           return nativeInfo.parse(await response.json());
+        }
+
+        case "groundbox": {
+          // GET only: it never wakes or resumes the sandbox. A deleted sandbox still answers, as
+          // `stopped` (ended for good; one shut down with its disk kept is `shut_down`).
+          const response = await fetch(
+            `${process.env.GROUNDBOX_API_URL ?? "https://api.groundbox.dev/v1"}/sandboxes/${encodeURIComponent(id)}`,
+            { headers: { Authorization: `Bearer ${process.env.GROUNDBOX_API_KEY ?? ""}` }, signal },
+          );
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+          const info = nativeInfo.parse(await response.json());
+
+          return info.status === "stopped" || info.status === "failed"
+            ? { id: info.id, status: "terminated" }
+            : info;
         }
 
         case "superserve": {

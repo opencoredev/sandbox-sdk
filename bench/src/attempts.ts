@@ -18,6 +18,7 @@ export const cloudProviders = [
   "baseten",
   "instabox",
   "beam",
+  "groundbox",
 ];
 
 export const mainTests = [

@@ -61,6 +61,9 @@ const defaults: DefaultAllocations = {
   baseten: { cpu: 2, memoryGiB: 4, diskGiB: 0 },
   // agent-browser default: 4 vCPU / 8 GiB, 20 GiB /data (where /workspace lives) plus a 16 GiB system disk.
   instabox: { cpu: 4, memoryGiB: 8, diskGiB: 20 },
+  // Groundbox's default 2 vCPU / 4 GiB. disk_gb defaults to 20 as the least; the default image's root
+  // disk is larger (59 GiB measured in the guest, 2026-11-20) and is not billed while running.
+  groundbox: { cpu: 2, memoryGiB: 4, diskGiB: 59 },
   // Beam's TypeScript SDK default, 1 CPU and 128 MiB; sandbox disk is not billed.
   beam: { cpu: 1, memoryGiB: 0.125, diskGiB: 0 },
 };
