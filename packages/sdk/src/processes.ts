@@ -413,7 +413,7 @@ export function makeProcesses(
       const offset = base + start + decoded.offset;
 
       return {
-        events: decoded.events.map((event) => ({ ...event, text: redactor.text(event.text) })),
+        events: decoded.events,
         nextCursor: String(offset),
         truncated: (requested ?? base) < base || offset < base + size,
       };
@@ -782,7 +782,7 @@ export function makeProcesses(
             );
           else {
             const sed = redactionSedScript(redactor.secrets);
-            await provider.files.write(id, sedPath, new TextEncoder().encode(sed));
+            await provider.files.write(id, sedPath, new TextEncoder().encode(sed), { mode: 0o600 });
             controller?.state("starting");
             controller?.ready(false);
           }
@@ -882,48 +882,53 @@ export function makeProcesses(
             sedPath,
           });
 
-          if (provider.startProcess) {
-            const hook = await provider.startProcess(id, {
-              command: wrapper,
-              cwd: "/workspace",
-              env: { ...env, ...options.env, ...defaults },
-              onChunk() {},
-            });
-
-            native.set(options.name, hook);
-            await files.write(`${dir}/pid`, String(hook.pid));
-
-            const exited = hook.wait().then((result) => {
-              early = result.exitCode ?? 137;
-
-              return result;
-            });
-
-            // Only a race signal for start(); the chain below records a failed wait.
-            hookExit = exited.catch(() => {});
-            void exited
-              .then(async (result) => {
-                if (!(await files.exists(`${dir}/exit`)))
-                  await files.write(`${dir}/exit`, String(result.exitCode ?? 137));
-              })
-              .catch(async () => {
-                // Nothing awaits this chain. Record exit 1 if the sandbox still takes writes.
-                await files.write(`${dir}/exit`, "1").catch(() => {});
+          try {
+            if (provider.startProcess) {
+              const hook = await provider.startProcess(id, {
+                command: wrapper,
+                cwd: "/workspace",
+                env: { ...env, ...options.env, ...defaults },
+                onChunk() {},
               });
-          } else {
-            // Without readiness, wait up to ~100 ms in the guest for a command that exits at once.
-            let wire = "";
 
-            await exec(
-              detachedLaunchScript({ dir, supervisor: wrapper, waitForExit: !options.ready }),
-              options.env,
-              undefined,
-              (text) => {
-                wire += text;
-              },
-            );
+              native.set(options.name, hook);
+              await files.write(`${dir}/pid`, String(hook.pid));
 
-            if (/^\d+$/.test(wire.trim())) early = Number(wire.trim());
+              const exited = hook.wait().then((result) => {
+                early = result.exitCode ?? 137;
+
+                return result;
+              });
+
+              // Only a race signal for start(); the chain below records a failed wait.
+              hookExit = exited.catch(() => {});
+              void exited
+                .then(async (result) => {
+                  if (!(await files.exists(`${dir}/exit`)))
+                    await files.write(`${dir}/exit`, String(result.exitCode ?? 137));
+                })
+                .catch(async () => {
+                  // Nothing awaits this chain. Record exit 1 if the sandbox still takes writes.
+                  await files.write(`${dir}/exit`, "1").catch(() => {});
+                });
+            } else {
+              // Without readiness, wait up to ~100 ms in the guest for a command that exits at once.
+              let wire = "";
+
+              await exec(
+                detachedLaunchScript({ dir, supervisor: wrapper, waitForExit: !options.ready }),
+                options.env,
+                undefined,
+                (text) => {
+                  wire += text;
+                },
+              );
+
+              if (/^\d+$/.test(wire.trim())) early = Number(wire.trim());
+            }
+          } catch (error) {
+            await provider.files.remove(id, sedPath, { recursive: false }).catch(() => {});
+            throw error;
           }
         }
 

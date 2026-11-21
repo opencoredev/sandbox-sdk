@@ -138,10 +138,15 @@ export function recordSetupScript(input: { dir: string; cwd: string }): string {
  * whole, and each of its prefixes at a chunk's end and suffixes at its start, so a secret
  * split across two reads is still redacted. */
 export function redactionSedScript(secrets: readonly string[]): string {
+  const lines = secrets.flatMap((value) => value.split("\n")).filter(Boolean);
+  const placeholder = "\u001e";
+  const hasInsideMarker = lines.some((secret) => "[REDACTED]".includes(secret));
+  const canShield = hasInsideMarker && lines.every((secret) => !secret.includes(placeholder));
   const rules: string[] = [];
 
-  for (const secret of secrets.flatMap((value) => value.split("\n"))) {
-    if (!secret) continue;
+  if (canShield) rules.push(`s|\\[REDACTED\\]|${placeholder}|g`);
+
+  for (const secret of lines) {
     rules.push(`s|${sedEscape(secret)}|[REDACTED]|g`);
 
     for (let index = 0; index < secret.length - 1; index++) {
@@ -149,6 +154,8 @@ export function redactionSedScript(secrets: readonly string[]): string {
       rules.push(`s|^${sedEscape(secret.slice(index + 1))}|[REDACTED]|`);
     }
   }
+
+  if (canShield) rules.push(`s|${placeholder}|[REDACTED]|g`);
 
   return rules.join("\n") + "\n";
 }

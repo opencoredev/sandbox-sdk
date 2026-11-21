@@ -215,50 +215,57 @@ describe("connectSandbox secret recovery", () => {
       [["[REDACTED]XYZ"], "keep-before [REDACTED]XYZ" + "XYZ".repeat(550)],
       [["XYZ[REDACTED]"], "XYZ".repeat(550) + "XYZ[REDACTED] keep-after"],
       [["X[REDACTED]Y", "A"], "keep-before " + "X".repeat(600) + "A" + "Y".repeat(600) + " tail"],
+      [["X[REDACTED]Y", "A"], "X".repeat(247) + "A" + "Y".repeat(247)],
+      [["T["], "T".repeat(300) + "["],
+      [["sk-["], "sk-".repeat(300) + "sk-["],
       [["A[REDACTED]B", "SECRET"], "hello ASECRETB"],
     ];
 
-    for (const [secrets, payload, expectedExact] of cases) {
-      const provider = memory({
-        handlers: {
-          emit({ stdout }) {
-            for (const ch of payload) stdout(ch);
+    for (const chunkSize of [1, 3, 7, 64, 1000]) {
+      for (const [secrets, payload, expectedExact] of cases) {
+        const provider = memory({
+          handlers: {
+            emit({ stdout }) {
+              for (let i = 0; i < payload.length; i += chunkSize) {
+                stdout(payload.slice(i, i + chunkSize));
+              }
 
-            return 0;
+              return 0;
+            },
           },
-        },
-      });
+        });
 
-      const box = await createSandbox(provider, {
-        secrets: Object.fromEntries(secrets.map((value, i) => [`S_${i}`, value])),
-      });
+        const box = await createSandbox(provider, {
+          secrets: Object.fromEntries(secrets.map((value, i) => [`S_${i}`, value])),
+        });
 
-      try {
-        const result = await box.run("emit");
-        const streamed: string[] = [];
+        try {
+          const result = await box.run("emit");
+          const streamed: string[] = [];
 
-        for await (const chunk of box.run("emit")) streamed.push(chunk.text);
-        const joined = streamed.join("");
+          for await (const chunk of box.run("emit")) streamed.push(chunk.text);
+          const joined = streamed.join("");
 
-        for (const text of [result.stdout, result.output, joined]) {
-          for (const secret of secrets)
-            if (!"[REDACTED]".includes(secret)) expect(text).not.toContain(secret);
+          for (const text of [result.stdout, result.output, joined]) {
+            for (const secret of secrets)
+              if (!"[REDACTED]".includes(secret)) expect(text).not.toContain(secret);
 
-          if (expectedExact !== undefined) expect(text).toBe(expectedExact);
+            if (expectedExact !== undefined) expect(text).toBe(expectedExact);
 
-          if (payload.startsWith("keep-before ")) expect(text).toContain("keep-before ");
+            if (payload.startsWith("keep-before ")) expect(text).toContain("keep-before ");
 
-          if (payload.endsWith(" keep-after")) expect(text).toContain(" keep-after");
+            if (payload.endsWith(" keep-after")) expect(text).toContain(" keep-after");
 
-          if (payload.endsWith(" tail")) expect(text).toContain(" tail");
+            if (payload.endsWith(" tail")) expect(text).toContain(" tail");
+          }
+        } finally {
+          await box.destroy();
         }
-      } finally {
-        await box.destroy();
       }
     }
   });
 
-  test("streaming redaction preserves stdout/stderr arrival order, stream attribution, and stays linear on repeated left prefixes", async () => {
+  test("streaming redaction preserves stdout/stderr arrival order, stream attribution, and stays linear without dropping non-secrets", async () => {
     const orderProvider = memory({
       handlers: {
         order({ stdout, stderr }) {
@@ -268,25 +275,53 @@ describe("connectSandbox secret recovery", () => {
 
           return 0;
         },
+        orderRedactLater({ stdout, stderr }) {
+          stdout("ab");
+          stderr("x");
+          stdout("zabc");
+
+          return 0;
+        },
+        orderSpanTail({ stdout, stderr }) {
+          stdout("ab");
+          stderr("x");
+          stdout("cTAIL");
+
+          return 0;
+        },
         attrib({ stdout, stderr }) {
           stdout("a");
           stderr("bc!");
 
           return 0;
         },
+        attribMulti({ stdout, stderr }) {
+          stdout("a");
+          stderr("bcMIDDLEdef!");
+
+          return 0;
+        },
         flood({ stdout }) {
-          for (let i = 0; i < 10_000; i++) stdout("T");
+          for (let i = 0; i < 20_000; i++) stdout("T");
 
           return 0;
         },
       },
     });
 
-    const box = await createSandbox(orderProvider, { secrets: { S1: "abc", S2: "T[" } });
+    const box = await createSandbox(orderProvider, {
+      secrets: { S1: "abc", S2: "T[", S3: "def" },
+    });
 
     try {
       const ordered = await box.run("order");
       expect(ordered.output).toBe("abxz");
+
+      const orderedLater = await box.run("orderRedactLater");
+      expect(orderedLater.output).toBe("abxz[REDACTED]");
+
+      const orderedSpan = await box.run("orderSpanTail");
+      expect(orderedSpan.output).toBe("[REDACTED]xTAIL");
 
       const chunks: Array<{ stream: string; text: string }> = [];
 
@@ -295,12 +330,61 @@ describe("connectSandbox secret recovery", () => {
         "stdout:[REDACTED]|stderr:!",
       );
 
+      const multi: Array<{ stream: string; text: string }> = [];
+
+      for await (const chunk of box.run("attribMulti")) multi.push(chunk);
+      expect(multi.map((c) => `${c.stream}:${c.text}`).join("|")).toBe(
+        "stdout:[REDACTED]|stderr:MIDDLE|stderr:[REDACTED]|stderr:!",
+      );
+
       const t0 = Date.now();
       const flooded = await box.run("flood");
-      expect(Date.now() - t0).toBeLessThan(2000);
-      expect(flooded.stdout).not.toContain("T[");
+      expect(Date.now() - t0).toBeLessThan(1000);
+      expect(flooded.stdout).toBe("T".repeat(20_000));
     } finally {
       await box.destroy();
+    }
+  });
+
+  test("batch redaction stays O(n) on dense marker chains and process logs preserve literal markers with inside-marker secrets", async () => {
+    const chainProvider = memory({
+      handlers: {
+        dense({ stdout }) {
+          stdout(("Xy9" + "[REDACTED]").repeat(40_000));
+
+          return 0;
+        },
+        literalMarker({ stdout }) {
+          for (const ch of "[REDACTED]") stdout(ch);
+          stdout("\n");
+
+          return 0;
+        },
+      },
+    });
+
+    const denseBox = await createSandbox(chainProvider, { secrets: { S: "]Xy9[" } });
+
+    try {
+      const t0 = Date.now();
+      const dense = await denseBox.run("dense");
+      expect(Date.now() - t0).toBeLessThan(500);
+      expect(dense.stdout).toBe("Xy9[REDACTED]");
+    } finally {
+      await denseBox.destroy();
+    }
+
+    const logBox = await createSandbox(chainProvider, {
+      secrets: { A: "D", B: "R", C: "][" },
+    });
+
+    try {
+      const proc = await logBox.start("literalMarker", { name: "lit" });
+      await proc.wait({ timeoutMs: 5000 });
+      const logs = await proc.logs();
+      expect(logs.text).toBe("[REDACTED]\n");
+    } finally {
+      await logBox.destroy();
     }
   });
 

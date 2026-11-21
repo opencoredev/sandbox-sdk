@@ -215,7 +215,8 @@ export class Redactor {
           if (redactedMarker.startsWith(secret.slice(secret.length - overlap))) {
             const prefix = secret.slice(0, secret.length - overlap);
             left.add(prefix);
-            hold.add(prefix);
+
+            for (let len = 1; len <= prefix.length; len++) hold.add(prefix.slice(0, len));
           }
         }
 
@@ -227,7 +228,9 @@ export class Redactor {
           const before = secret.slice(0, markerAt);
           const after = secret.slice(markerAt + redactedMarker.length);
 
-          if (before) hold.add(before);
+          if (before) {
+            for (let len = 1; len <= before.length; len++) hold.add(before.slice(0, len));
+          }
 
           if (before && after) around.push([before, after]);
 
@@ -271,28 +274,58 @@ export class Redactor {
         const spans: [number, number][] = [];
         this.primaryPattern.lastIndex = 0;
         let match: RegExpExecArray | null;
-        let markerIndex = 0;
+        let scanMarker = 0;
 
         while ((match = this.primaryPattern.exec(next)) !== null) {
           let start = match.index;
           let end = start + match[0].length;
 
+          while (scanMarker < markers.length && (markers[scanMarker]?.[1] ?? 0) <= start) {
+            scanMarker++;
+          }
+
+          let leftMarker = scanMarker;
+          let rightMarker = scanMarker;
+
           const absorbMarkers = () => {
-            while (markerIndex > 0 && (markers[markerIndex - 1]?.[1] ?? 0) > start) markerIndex--;
+            let expanded = true;
 
-            while (markerIndex < markers.length) {
-              const marker = markers[markerIndex];
+            while (expanded) {
+              expanded = false;
 
-              if (!marker || marker[1] > start) break;
-              markerIndex++;
-            }
+              while (leftMarker > 0 && (markers[leftMarker - 1]?.[1] ?? 0) > start) {
+                leftMarker--;
+                const marker = markers[leftMarker];
 
-            for (let index = markerIndex; index < markers.length; index++) {
-              const marker = markers[index];
+                if (marker) {
+                  if (marker[0] < start) {
+                    start = marker[0];
+                    expanded = true;
+                  }
 
-              if (!marker || marker[0] >= end) break;
-              start = Math.min(start, marker[0]);
-              end = Math.max(end, marker[1]);
+                  if (marker[1] > end) {
+                    end = marker[1];
+                    expanded = true;
+                  }
+                }
+              }
+
+              while (rightMarker < markers.length && (markers[rightMarker]?.[0] ?? 0) < end) {
+                const marker = markers[rightMarker];
+                rightMarker++;
+
+                if (marker) {
+                  if (marker[0] < start) {
+                    start = marker[0];
+                    expanded = true;
+                  }
+
+                  if (marker[1] > end) {
+                    end = marker[1];
+                    expanded = true;
+                  }
+                }
+              }
             }
           };
 
@@ -344,11 +377,13 @@ export class Redactor {
               if (!previous || start > previous[1]) break;
               spans.pop();
               start = Math.min(start, previous[0]);
+              absorbMarkers();
               grew = true;
             }
           }
 
           spans.push([start, end]);
+          scanMarker = rightMarker;
 
           if (this.primaryPattern.lastIndex < end) this.primaryPattern.lastIndex = end;
         }
@@ -374,6 +409,28 @@ export class Redactor {
 
     // Secrets that keep re-forming past the pass budget fail closed cleanly.
     return redactedMarker;
+  }
+  hasMatch(value: string): boolean {
+    if (this.values.size === 0 || !value) return false;
+
+    if (!this.compiled) this.text("");
+
+    if (this.primaryPattern) {
+      this.primaryPattern.lastIndex = 0;
+
+      if (this.primaryPattern.test(value)) return true;
+    }
+
+    if (this.markerSubPattern) {
+      this.markerSubPattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+
+      while ((match = this.markerSubPattern.exec(value)) !== null) {
+        if (match[0] !== redactedMarker) return true;
+      }
+    }
+
+    return false;
   }
   get secrets(): readonly string[] {
     if (!this.compiled) this.text("");
