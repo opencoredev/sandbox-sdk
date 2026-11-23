@@ -75,6 +75,22 @@ export const pricing: PriceTable = {
     notes:
       "Published usage rates: $0.004/vCPU-hour and $0.00225/GiB-hour of memory, per second while running (not while starting, paused or stopped). Paid plans include disk (Builder 1 TiB across machines), beyond that $0.08/GiB-month; each machine's 20 GiB /data is counted as included. Plan fee and monthly credits ($20 Pro, $100 Builder) and egress ($0.02/GiB beyond the plan's) excluded. Default agent-browser template is 4 vCPU / 8 GiB.",
   },
+  styne: {
+    ...base,
+    cpuSecond: 0,
+    memoryGiBSecond: 0,
+    diskGiBSecond: 0,
+    tiers: [
+      { cpu: 2, memoryGiB: 4, hourly: 0.016 },
+      { cpu: 4, memoryGiB: 8, hourly: 0.032 },
+      { cpu: 8, memoryGiB: 16, hourly: 0.064 },
+      { cpu: 16, memoryGiB: 32, hourly: 0.128 },
+    ],
+    retrieved: "2026-11-23",
+    source: "https://docs.styne.ai/billing",
+    notes:
+      "Published per-size rates from 2026-11-20 after the plan's included VM hours: small (2 vCPU, 4 GB) $0.016/hour, default (4, 8) $0.032, large (8, 16) $0.064, xlarge (16, 32) $0.128, metered per second while running; disk comes with the size; paused or sleeping VMs cost $0 and snapshot storage is $0 today. Estimates only: Styne has no per-sandbox billing API (GET /v1/run/usage is daily account totals). Plan fees ($20, $99, $499 a month) and their included hours excluded.",
+  },
   superserve: {
     ...base,
     cpuSecond: 0.0504 / 3600,
@@ -306,6 +322,8 @@ export const defaultCompute: ComputeTable = {
   vercel: { cpu: 2, memoryGiB: 4 },
   baseten: { cpu: 2, memoryGiB: 4 },
   instabox: { cpu: 4, memoryGiB: 8 },
+  // Styne's base template: the default size, 4 vCPU / 8 GiB.
+  styne: { cpu: 4, memoryGiB: 8 },
   // Beam's TypeScript SDK default: 1 CPU, 128 MiB.
   beam: { cpu: 1, memoryGiB: 0.125 },
 };

@@ -49,6 +49,45 @@ const runId = `sbx57-${Date.now().toString(36)}`;
 const label = { "sdk-overhead-run": runId };
 const moduleUrl = (path: string) => pathToFileURL(resolve(sdkRoot, "dist", path)).href;
 
+/**
+ * Styne's REST API with the run's key, as the floor and raw creates call it. Styne has no peer SDK:
+ * its official `styne-sdk` is not what the adapter replaces, so the floor is the API itself.
+ */
+async function styneCall(
+  path: string,
+  init: { method?: string; body?: BodyInit; json?: object } = {},
+) {
+  const response = await fetch(`${process.env.STYNE_API_URL ?? "https://api.styne.ai"}${path}`, {
+    method: init.method ?? "GET",
+    headers: {
+      Authorization: `Bearer ${process.env.STYNE_API_KEY ?? ""}`,
+      "Content-Type": init.json === undefined ? "application/octet-stream" : "application/json",
+    },
+    body: init.json === undefined ? init.body : JSON.stringify(init.json),
+  });
+
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw Object.assign(new Error(`Styne ${path.split("/")[1]} failed: HTTP ${response.status}`), {
+      status: response.status,
+    });
+  }
+
+  return response;
+}
+
+/** One command to its end through `POST /sandboxes/{id}/commands`; a non-zero exit throws. */
+async function styneRun(id: string, command: string) {
+  const response = await styneCall(`/sandboxes/${encodeURIComponent(id)}/commands`, {
+    method: "POST",
+    json: { argv: ["sh", "-c", command], timeoutMs },
+  });
+
+  const result = z.object({ exitCode: z.number().nullable() }).parse(await response.json());
+
+  if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}`);
+}
+
 const nativeUrl = (name: string) =>
   import.meta.resolve(name, pathToFileURL(resolve(sdkRoot, "package.json")).href);
 
@@ -70,6 +109,8 @@ const nativePackages = {
   baseten: "@basetenlabs/sandbox",
   instabox: "@insforge/instabox-sdk",
   beam: "@beamcloud/beam-js",
+  // A direct-HTTP provider with no SDK of its own: the floor is fetch against its REST API.
+  styne: null,
 } as const;
 
 /** A provider this script can measure. */
@@ -373,6 +414,30 @@ const providers = {
           },
         };
       },
+    };
+  },
+  async styne() {
+    const m: typeof import("@opencoredev/sandbox-sdk/styne") = await import(
+      moduleUrl("providers/styne/index.js")
+    );
+
+    const template = templates.get("styne");
+    const provider = m.styne(template === undefined ? {} : { template });
+
+    // The adapter calls the REST API itself; the floor is the same API with plain fetch.
+    return {
+      provider,
+      floor: (id) => ({
+        exec: (command = "true") => styneRun(id, command),
+        write: async (path, data) => {
+          await (
+            await styneCall(
+              `/sandboxes/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`,
+              { method: "PUT", body: new Uint8Array(data) },
+            )
+          ).body?.cancel();
+        },
+      }),
     };
   },
 } satisfies Record<ProviderName, () => Promise<Loaded>>;
@@ -776,16 +841,61 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     return raw;
   }
 
+  if (name === "styne") {
+    // Same template and lifetime as the adapter's defaults: base, one hour.
+    const created = z.object({ sandboxID: z.string() }).parse(
+      await (
+        await styneCall("/sandboxes", {
+          method: "POST",
+          json: { templateID: templates.get(name) ?? "base", metadata: label, timeout: 3600 },
+        })
+      ).json(),
+    );
+
+    const id = created.sandboxID;
+
+    return {
+      id,
+      exec: () => styneRun(id, "true"),
+      destroy: async () => {
+        try {
+          await (
+            await styneCall(`/sandboxes/${encodeURIComponent(id)}`, { method: "DELETE" })
+          ).body?.cancel();
+        } catch (error) {
+          // A second delete answers 404, an ended sandbox 410.
+          if (!styneGone.safeParse(error).success) throw error;
+        }
+      },
+      exists: async () => {
+        try {
+          await (await styneCall(`/sandboxes/${encodeURIComponent(id)}`)).body?.cancel();
+
+          return true;
+        } catch (error) {
+          if (styneGone.safeParse(error).success) return false;
+          throw error;
+        }
+      },
+    };
+  }
+
   throw new Error(`Unknown provider ${name}`);
 }
+
+/** Styne's answer for a sandbox that is gone: 404, or 410 while it still remembers it. */
+const styneGone = z.object({ status: z.union([z.literal(404), z.literal(410)]) });
 
 async function initCost(name: ProviderName): Promise<OpResult> {
   const pkg = nativePackages[name];
 
   const sample = async (ours: boolean) => {
+    // A provider with no SDK of its own has nothing to import: its baseline is the empty program.
     const code = ours
       ? `const t=performance.now(); await import(${JSON.stringify(moduleUrl("index.js"))}); const m=await import(${JSON.stringify(moduleUrl(`providers/${name}/index.js`))}); m[${JSON.stringify(name)}](${JSON.stringify(templates.has(name) ? { template: templates.get(name) } : {})}); console.log(performance.now()-t);`
-      : `const t=performance.now(); await import(${JSON.stringify(nativeUrl(pkg))}); console.log(performance.now()-t);`;
+      : pkg === null
+        ? "const t=performance.now(); console.log(performance.now()-t);"
+        : `const t=performance.now(); await import(${JSON.stringify(nativeUrl(pkg))}); console.log(performance.now()-t);`;
 
     const output = execFileSync(process.execPath, ["--eval", code], {
       encoding: "utf8",

@@ -44,6 +44,7 @@ import { local } from "../../../packages/sdk/src/providers/local/index.ts";
 import { createModalProvider } from "../../../packages/sdk/src/providers/modal/provider.ts";
 import { createRailwayProvider } from "../../../packages/sdk/src/providers/railway/provider.ts";
 import { sandboxer } from "../../../packages/sdk/src/providers/sandboxer/index.ts";
+import { styne } from "../../../packages/sdk/src/providers/styne/index.ts";
 import { superserve } from "../../../packages/sdk/src/providers/superserve/index.ts";
 import { createTenkiProvider } from "../../../packages/sdk/src/providers/tenki/provider.ts";
 import { createUpstashProvider } from "../../../packages/sdk/src/providers/upstash/provider.ts";
@@ -65,7 +66,7 @@ async function stubTransport(): Promise<never> {
 
 const realFetch = globalThis.fetch;
 
-/** E2B, Daytona, Freestyle, Instabox, Superserve, Boat and Sandboxer reach their API through the global
+/** E2B, Daytona, Freestyle, Instabox, Styne, Superserve, Boat and Sandboxer reach their API through the global
  * fetch, so it stands in for them. */
 const stubFetch: typeof fetch = async () => {
   transportCalls += 1;
@@ -145,6 +146,7 @@ const subjects: readonly Subject[] = [
     column: "Instabox",
     build: () => instabox({ apiKey: offlineKey, baseUrl: "https://offline.invalid" }),
   },
+  { column: "Styne", build: () => styne({ apiKey: offlineKey }) },
   { column: "Memory", build: () => memory() },
 ];
 
@@ -279,6 +281,12 @@ const rows: readonly Row[] = [
       "Fixed steps": [
         accepts({ size: { cpu: 2, memoryMb: 8192 } }),
         rejects({ size: { cpu: 3, memoryMb: 12_288 } }),
+      ],
+      "Four sizes": [
+        accepts({ size: { cpu: 2, memoryMb: 4096 } }),
+        accepts({ size: { cpu: 16, memoryMb: 32_768, diskGb: 251 } }),
+        rejects({ size: { cpu: 2, memoryMb: 8192 } }),
+        rejects({ size: { cpu: 2, memoryMb: 4096, diskGb: 20 } }),
       ],
       No: [
         rejects({ size: { cpu: 2, memoryMb: 4096 } }),

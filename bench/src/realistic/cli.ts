@@ -149,6 +149,7 @@ export const heldOpenProviders = [
   "modal",
   "vercel",
   "instabox",
+  "styne",
 ];
 
 /** Idle lengths of the held-open diagnostic, provider defaults, with the matched zero-wait twin. */
@@ -298,9 +299,11 @@ export async function loadSlotProvider(
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
-  // Modal's factory lifetime for creates without one; each attempt also passes its own below.
+  // Modal's and Styne's factory lifetime for creates without one; each attempt also passes its own below.
   const lifetime: Record<string, number> =
-    setup.adapter === "modal" ? { modal: slotMs + 15 * 60_000 } : {};
+    setup.adapter === "modal" || setup.adapter === "styne"
+      ? { [setup.adapter]: slotMs + 15 * 60_000 }
+      : {};
 
   const loaded = await loadProvider(setup.adapter, process.env, undefined, {
     template: config.template ? { [setup.adapter]: config.template } : {},

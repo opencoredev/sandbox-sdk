@@ -139,6 +139,10 @@
       "types": "./dist/providers/instabox/index.d.ts",
       "default": "./dist/providers/instabox/index.js"
     },
+    "./styne": {
+      "types": "./dist/providers/styne/index.d.ts",
+      "default": "./dist/providers/styne/index.js"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

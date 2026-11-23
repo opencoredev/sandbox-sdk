@@ -61,6 +61,7 @@ import {
   snapshotCleaner,
   undeletableSnapshots,
   createNamedDaytonaSnapshot,
+  createNamedStyneSnapshot,
   snapshotsFromSource,
   deleteProvenSnapshot,
 } from "./snapshots.js";
@@ -1385,7 +1386,7 @@ export async function runV2(
                 );
               };
 
-              if (["daytona", "superserve"].includes(p.name)) {
+              if (["daytona", "superserve", "styne"].includes(p.name)) {
                 owned.set(`${p.name}/snapshot-source/${active.id}`, {
                   provider: p.name,
                   id: active.id,
@@ -1394,8 +1395,9 @@ export async function runV2(
                   snapshotProof,
                 });
 
-                if (p.name === "daytona") {
-                  snapshotId = `bench-${config.run.slice(0, 25)}-${crypto.randomUUID().slice(0, 8)}`;
+                // Named and journaled before the request, so a lost answer still names it for cleanup.
+                if (p.name === "daytona" || p.name === "styne") {
+                  snapshotId = `bench-${config.run.slice(0, 25).replace(/[^A-Za-z0-9._-]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`;
                   owned.set(`${p.name}/snapshot/${snapshotId}`, {
                     provider: p.name,
                     id: snapshotId,
@@ -1439,9 +1441,11 @@ export async function runV2(
               let snap: { id: string };
 
               try {
-                snap = snapshotId
-                  ? await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId)
-                  : await p.provider.snapshot(active.id);
+                snap = !snapshotId
+                  ? await p.provider.snapshot(active.id)
+                  : p.name === "styne"
+                    ? await createNamedStyneSnapshot(active.id, snapshotId)
+                    : await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId);
               } finally {
                 snapshotClock.finish();
               }

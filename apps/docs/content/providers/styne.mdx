@@ -1,0 +1,171 @@
+---
+title: Styne
+seo:
+  title: Styne Sandbox SDK in TypeScript
+description: Use Styne microVMs from TypeScript through Styne's REST API and one portable API. Pause and resume with memory, named snapshots, four sizes, no-network sandboxes, and token-protected previews, with no extra package.
+---
+
+`styne()` runs each sandbox as a [Styne](https://styne.ai) microVM by calling Styne's REST API directly. There is no other package to install.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(styne())` and then `box.run`, `box.files`, `box.preview`, `box.pause` and `box.snapshot`, and the same code runs on E2B or Daytona when you swap the factory. Styne has no host allow list and no terminal through this API. The [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) calls any other Styne route with your key.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+</Tabs>
+
+Create an API key on the **API keys** page of the Styne dashboard and set `STYNE_API_KEY`, or pass `styne({ apiKey })`.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { styne } from "@opencoredev/sandbox-sdk/styne";
+
+await using box = await createSandbox(styne(), { timeoutMs: 30 * 60_000 });
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+`await using` deletes the sandbox when the block ends. `timeoutMs` becomes Styne's `timeout`, which ends the sandbox after 30 minutes of running time, a backstop if your process dies first.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                          |
+| ------------------------------ | ----------- | -------------------------------------------------------------- |
+| Commands and streaming         | Yes         | NDJSON stream; live output                                     |
+| Files                          | Yes         | `/workspace` on the sandbox's own disk, 51 GiB on `base`       |
+| Background processes           | Yes         |                                                                |
+| Preview URLs                   | Yes         | `https://<port>-<id>.ash.styne.ai` with a traffic token header |
+| Pause and resume               | Yes         | Keeps memory and processes; three pause tiers                  |
+| Snapshots                      | Yes         | Named, kept until deleted; `deleteSnapshot` works              |
+| Templates                      | No          | Pass a Styne template with `template` instead                  |
+| Machine size                   | Partial     | Four fixed sizes, 2/4 to 16/32 vCPU/GiB                        |
+| Network policy                 | Partial     | `"none"` works; host allow lists fail with `unsupported`       |
+| Hard lifetime (`timeoutMs`)    | Yes         | 1 second to 24 hours of running time                           |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Puts the sandbox to sleep; 1 second to 1 hour                  |
+| Keys                           | Best-effort | Stored as metadata; concurrent creates can race                |
+| Terminal                       | No          |                                                                |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { styne } from "@opencoredev/sandbox-sdk/styne";
+
+await using box = await createSandbox(styne());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+The `base` template is Debian 12 with Python 3, Node.js, git and curl, and commands run as root. A timeout or an abort kills the command's whole process group before `run()` returns, with the output it wrote so far.
+
+## Background processes and previews
+
+`box.preview(port)` returns the port's URL and the `e2b-traffic-access-token` header it needs. Nothing needs to be declared at creation. Send the headers with every request:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { styne } from "@opencoredev/sandbox-sdk/styne";
+
+await using box = await createSandbox(styne(), { timeoutMs: 30 * 60_000 });
+await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
+const preview = await box.preview(8000);
+const page = await fetch(preview.url, { headers: preview.headers });
+console.log(page.status);
+```
+
+Without the header a port answers 401. Create the provider with `styne({ public: true })` to serve every port to anyone with the URL instead; `preview()` then returns no headers. A paused sandbox does not serve its ports.
+
+## Pause, resume, and snapshots
+
+`box.pause()` keeps the sandbox's memory, so running processes continue after `box.resume()`. A paused sandbox costs nothing and its lifetime clock stops. `styne({ pauseTier })` picks where Styne keeps it: `memory` (the default, fastest resume), `standby` or `archived`. Pausing a paused sandbox, or resuming a running one, succeeds.
+
+`box.snapshot()` saves the sandbox's memory and disk under a name and returns that name as the snapshot ID. Pass it as `from` to start a new sandbox exactly where the saved one was. The new sandbox has the snapshot's size, so `size` fails with `unsupported`. Snapshots are kept until you delete them with `deleteSnapshot(provider, id)`, so `expiresInMs` fails with `unsupported`. Run `sync` before a snapshot when you want its files on disk.
+
+## Size, template, and lifetime
+
+| Preset   | Styne size | vCPUs | Memory    | Disk    |
+| -------- | ---------- | ----- | --------- | ------- |
+| `small`  | `small`    | 2     | 4096 MiB  | 51 GiB  |
+| `medium` | `default`  | 4     | 8192 MiB  | 51 GiB  |
+| `large`  | `large`    | 8     | 16384 MiB | 111 GiB |
+
+`{ cpu: 16, memoryMb: 32768 }` asks for `xlarge` (251 GiB disk), which Styne's Scale plan offers. Any other exact size fails with `unsupported`, and so does a `diskGb` other than the size's own disk. Without `size`, a sandbox gets the `base` template's 4 vCPU / 8 GiB.
+
+`styne({ template })` picks the template for new sandboxes. A template other than `base` has a fixed size, so `size` fails with `unsupported` next to it.
+
+`timeoutMs` ends the sandbox after that much running time, from 1 second to 24 hours. Styne stops the clock while a sandbox is paused or asleep. Without it, the adapter asks for 1 hour, or `styne({ timeoutMs })`; Styne's own default is 5 minutes.
+
+Styne puts a running sandbox to sleep by itself when nothing you started runs inside it, and it wakes on the next call. `idleTimeoutMs`, from 1 second to 1 hour, makes it sleep after that long without calls or connections even while a process runs; the process stops until something wakes the sandbox.
+
+`network: "none"` blocks all outbound traffic, IPv4 and IPv6, and DNS. An `{ allow }` list fails with `unsupported`: once all traffic is denied, Styne's own `allowOut` opens neither hosts nor addresses (checked on 2026-11-23). An empty `{ allow: [] }` means `"none"`.
+
+## Configuration
+
+| Option             | Type      | Default                | Env var         |
+| ------------------ | --------- | ---------------------- | --------------- |
+| `apiKey`           | `string`  |                        | `STYNE_API_KEY` |
+| `baseUrl`          | `string`  | `https://api.styne.ai` | `STYNE_API_URL` |
+| `template`         | `string`  | `base`                 |                 |
+| `region`           | `string`  | Styne's, `ash`         |                 |
+| `timeoutMs`        | `number`  | 1 hour                 |                 |
+| `public`           | `boolean` | `false`                |                 |
+| `pauseTier`        | `string`  | `memory`               |                 |
+| `requestTimeoutMs` | `number`  | 60 seconds             |                 |
+
+## Limitations
+
+- No host allow lists; `network` is `"all"` or `"none"`.
+- Four sizes only, with the disk that comes with each.
+- Keys are best-effort: two clients creating with one key at once can make two sandboxes.
+- No terminal or template builds.
+
+## How it works
+
+- The adapter calls `https://api.styne.ai` with your key as `Authorization: Bearer`. Creates, pauses, resumes and snapshots carry an `Idempotency-Key`, so a retried request is applied once. If a create's answer is lost, the adapter sends it again with the same key, and Styne returns the sandbox the first request made.
+- Commands stream as NDJSON from `POST /sandboxes/{id}/exec`. Closing that stream does not stop a command on Styne, so on a timeout or abort the adapter kills the command's process group in the guest before `run()` returns. A cancel that arrives before the command reports its PID still finds it, and a command it beats to the guest never starts.
+- At create, the adapter makes `/workspace`, which Styne's image lacks. Styne's file API creates new files and folders as `user` while commands run as root, so the adapter also marks every directory safe for git; without that, git refuses a repository in a folder the file API made. If this step fails, the adapter deletes the sandbox before it throws, and names it in an `outcome_unknown` error when the delete is not confirmed.
+- File reads and writes use Styne's file routes. Listing, stat, mkdir and remove run as one guest command each, so `remove` without `recursive` refuses a directory with files in it; Styne's own delete is always recursive.
+- Your `labels` become Styne metadata, and a key is stored as `sandbox-sdk-key`. `connectSandbox` reads the sandbox with a `GET`; Styne's connect route would wake a paused sandbox and extend its lifetime.
+- A sandbox that ended answers `410`, which the SDK reports as `not_found`, so a stale key creates a new sandbox. A write answered with a `5xx` Styne does not document as a refusal is `outcome_unknown`. Errors keep Styne's HTTP status and `error_code`, never its message.
+- `box.native` is a [`NativeApi`](/reference/native) on Styne's API with `{id}` bound to the sandbox: `box.native.request("GET", "/sandboxes/{id}/metrics")`. `styne().api` has no sandbox bound, for calls such as `api.request("GET", "/snapshots")`.
+
+## Next steps
+
+- [Machine size and network](/guides/machine-size-and-network)
+- [Dev servers and previews](/guides/dev-servers-and-previews)

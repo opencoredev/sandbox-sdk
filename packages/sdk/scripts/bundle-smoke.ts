@@ -48,6 +48,7 @@ const fakes = {
   baseten: `{ apiKey: "smoke-key" }`,
   beam: `{ token: "smoke-token", workspaceId: "smoke-workspace", requestTimeoutMs: 5000 }`,
   instabox: `{ apiKey: "ibk_smoke", requestTimeoutMs: 5000 }`,
+  styne: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
 };
 
 // Beam's create probe gets a gateway port of its own, and counts only connections to it, so a late

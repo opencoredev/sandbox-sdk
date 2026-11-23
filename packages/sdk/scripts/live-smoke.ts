@@ -75,6 +75,10 @@ const registry = {
     env: [["INSTABOX_API_KEY"]],
     load: async () => (await import("../src/providers/instabox/index.js")).instabox(),
   },
+  styne: {
+    env: [["STYNE_API_KEY"]],
+    load: async () => (await import("../src/providers/styne/index.js")).styne(),
+  },
   boxd: {
     env: [["BOXD_API_KEY"]],
     load: async () => (await import("../src/providers/boxd/index.js")).boxd(),

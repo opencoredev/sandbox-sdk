@@ -1,7 +1,13 @@
 import { z } from "zod";
 import type { DaytonaNative } from "@opencoredev/sandbox-sdk/daytona";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
-import { localDocker, lookupError, nativeModules, type NativeModules } from "./existence.js";
+import {
+  localDocker,
+  lookupError,
+  nativeModules,
+  styneBase,
+  type NativeModules,
+} from "./existence.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
 
@@ -46,6 +52,21 @@ async function withModal<T>(
   }
 }
 
+/** Styne's API with the bench's key. Snapshot calls never need the source sandbox to be running. */
+function styneFetch(path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+
+  headers.set("Authorization", `Bearer ${process.env.STYNE_API_KEY ?? ""}`);
+
+  if (init.body !== undefined) headers.set("Content-Type", "application/json");
+
+  return fetch(`${styneBase()}${path}`, { ...init, headers });
+}
+
+function httpError(message: string, status: number) {
+  return Object.assign(new Error(message), { status });
+}
+
 function instaboxBase() {
   return process.env.INSTABOX_API_URL ?? "https://api.instabox.sh";
 }
@@ -87,6 +108,20 @@ export async function snapshotCleaner(
 
     return async (id) => {
       await Snapshot.deleteById(id);
+    };
+  }
+
+  if (name === "styne") {
+    // A snapshot is deleted by its name, also after the source sandbox is gone.
+    return async (id) => {
+      const response = await styneFetch(`/snapshots/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+
+      await response.body?.cancel();
+
+      if (!response.ok && response.status !== 404)
+        throw httpError("Styne snapshot delete failed", response.status);
     };
   }
 
@@ -191,6 +226,45 @@ export async function createNamedDaytonaSnapshot(
   return { id: name };
 }
 
+/**
+ * A Styne snapshot under a name the run journaled before the request, so a lost answer still names
+ * the snapshot to delete. The name is the snapshot's portable ID.
+ */
+export async function createNamedStyneSnapshot(sandboxId: string, name: string) {
+  const response = await styneFetch(`/sandboxes/${encodeURIComponent(sandboxId)}/snapshots`, {
+    method: "POST",
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    body: JSON.stringify({ name }),
+  });
+
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw httpError("Styne snapshot failed", response.status);
+  }
+
+  const saved = z.object({ name: z.string() }).parse(await response.json());
+
+  if (saved.name !== name) throw new Error("Styne snapshot name mismatch");
+
+  return { id: name };
+}
+
+/** Styne's snapshots of one sandbox, which it lists also after the sandbox is gone. */
+async function snapshotsFromStyneSandbox(sourceSandboxId: string) {
+  const response = await styneFetch(`/sandboxes/${encodeURIComponent(sourceSandboxId)}/snapshots`);
+
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw httpError("Styne snapshot listing failed", response.status);
+  }
+
+  return z
+    .array(z.object({ name: z.string(), sandboxID: z.string() }))
+    .parse(await response.json())
+    .filter((snapshot) => snapshot.sandboxID === sourceSandboxId)
+    .map((snapshot) => ({ id: snapshot.name, name: snapshot.name }));
+}
+
 /** Narrow recovery query for snapshots of a sandbox whose run ownership was already established. */
 export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
   const snapshots = await daytonaSnapshots();
@@ -214,6 +288,8 @@ export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
 
 /** Query only a source sandbox already recorded in the run ownership journal. */
 export async function snapshotsFromSource(provider: string, sourceSandboxId: string) {
+  if (provider === "styne") return snapshotsFromStyneSandbox(sourceSandboxId);
+
   if (provider !== "superserve") return snapshotsFromDaytonaSandbox(sourceSandboxId);
 
   const { Snapshot } = await nativeModules.load("@superserve/sdk");
@@ -311,6 +387,23 @@ export async function inspectSnapshot(
         break;
       }
 
+      case "styne": {
+        const response = await styneFetch(`/snapshots/${encodeURIComponent(id)}`);
+
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw httpError("Snapshot metadata unavailable", response.status);
+        }
+
+        // Styne names the source `sandboxID`; the shared schema reads `sandboxId`.
+        const styne = z
+          .object({ name: z.string(), sandboxID: z.string().nullish() })
+          .parse(await response.json());
+
+        info = { name: styne.name, sandboxId: styne.sandboxID };
+        break;
+      }
+
       case "upstash": {
         const response = await fetch(
           `${process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com"}/v2/box/snapshots`,
@@ -383,7 +476,9 @@ export async function inspectSnapshot(
 
     // These APIs expose provenance: unreadable or cleared source fields cannot authorize deletion.
     if (
-      ["daytona", "superserve", "tenki", "freestyle", "upstash", "instabox"].includes(name) &&
+      ["daytona", "superserve", "tenki", "freestyle", "upstash", "instabox", "styne"].includes(
+        name,
+      ) &&
       !parent
     )
       throw new Error("Snapshot source metadata unavailable");

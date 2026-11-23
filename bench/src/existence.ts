@@ -36,7 +36,8 @@ export const lookupSchema = z.object({
 
 export type LookupEvidence = z.infer<typeof lookupSchema>;
 
-const terminal = new Set(["deleted", "destroyed", "terminated"]);
+// Styne's state for an ended sandbox, which it answers with 410 until it forgets the sandbox.
+const terminal = new Set(["deleted", "destroyed", "terminated", "killed"]);
 
 function redact(value: string) {
   for (const [key, secret] of Object.entries(process.env))
@@ -337,7 +338,16 @@ const lookupKeys = new Map([
   ["baseten", "BASETEN_API_KEY"],
   ["instabox", "INSTABOX_API_KEY"],
   ["beam", "BEAM_TOKEN"],
+  ["styne", "STYNE_API_KEY"],
 ]);
+
+/** The fields of Styne's `GET /sandboxes/{id}` the lookup reads. */
+const styneSandbox = z.object({ sandboxID: z.string(), state: z.string() });
+
+/** Styne's base URL, as the adapter resolves it. */
+export function styneBase() {
+  return (process.env.STYNE_API_URL ?? "https://api.styne.ai").replace(/\/+$/, "");
+}
 
 /** Beam's gateway container listing, as the existence check reads it. */
 const beamContainers = z.object({
@@ -471,6 +481,28 @@ export async function lookupSandbox(
           const response = await new BoatApi(config).get({ sandboxId: id });
 
           return nativeInfo.parse(response.sandbox);
+        }
+
+        case "styne": {
+          // GET only: Styne's POST /connect would wake a paused sandbox and move its deadline.
+          const response = await fetch(`${styneBase()}/sandboxes/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${process.env.STYNE_API_KEY ?? ""}` },
+            signal,
+          });
+
+          // Every 410 is an ended sandbox (sandbox_ended, sandbox_timeout, node_loss, agent_exit),
+          // answered until Styne forgets it and answers 404.
+          if (response.status === 410) {
+            await response.body?.cancel();
+
+            return { sandboxId: id, state: "killed" };
+          }
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+          const body = styneSandbox.parse(await response.json());
+
+          return { sandboxId: body.sandboxID, state: body.state };
         }
 
         case "instabox": {
