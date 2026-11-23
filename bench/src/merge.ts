@@ -178,13 +178,15 @@ export function classifyFailure(
     return "provider-account-limit";
 
   // Archil refuses a create over the plan's concurrent-sandbox cap; the adapter reports it as
-  // quota, before anything is allocated, so no sandbox is named.
+  // quota, before anything is allocated, so no sandbox is named, verified or not (a quota error
+  // about a sandbox that exists, such as on a refresh, is the provider's).
   if (
     sample.provider === "archil" &&
     (!stressCohort || cohort.member === "cold") &&
     /(^|\/)cold$/.test(sample.scenario) &&
     sample.outcome.code === "quota" &&
-    sample.outcome.sandboxId === undefined
+    sample.outcome.sandboxId === undefined &&
+    sample.outcome.unverifiedSandboxId === undefined
   )
     return "provider-account-limit";
 

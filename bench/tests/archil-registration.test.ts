@@ -117,6 +117,17 @@ describe("Archil failures", () => {
       expect(classifyFailure(failed(scenario, { code: "quota", cause: { httpStatus: 403 } }))).toBe(
         "provider-account-limit",
       );
+    // A quota error about a sandbox that was allocated (its ID unverified) is not a refusal.
+    for (const scenario of ["cold", "survival-5/cold"])
+      expect(
+        classifyFailure(
+          failed(scenario, {
+            code: "quota",
+            unverifiedSandboxId: "sbx-2",
+            cause: { httpStatus: 403 },
+          }),
+        ),
+      ).toBe("provider-operation");
   });
 });
 
