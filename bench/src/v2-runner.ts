@@ -1679,6 +1679,27 @@ export async function runV2(
             if (metric === "network-mbps" && config["omit-network-download"]) continue;
             const value = probe.kind === "success" ? probe.result.metrics[metric] : undefined;
 
+            // A documented capability gap (Instabox blocks 1.1.1.1:443, so tcp-ms never connects) is not
+            // a provider failure. A value the probe did return is still recorded.
+            const notAvailable =
+              probe.kind === "success" && value === undefined
+                ? collectionPolicy().notRun.find(
+                    (rule) =>
+                      rule.provider === p.name &&
+                      (rule.track ?? "default") === config.track &&
+                      rule.suite === "main" &&
+                      rule.scenario === metric,
+                  )
+                : undefined;
+
+            if (notAvailable) {
+              const info = report.providers.find((v) => v.name === p.name);
+
+              if (info && !info.note.includes(`${metric} documented not-run`))
+                info.note += `; ${metric} documented not-run: ${notAvailable.reason}`;
+              continue;
+            }
+
             const outcome: Outcome =
               probe.kind !== "success"
                 ? source.outcome
