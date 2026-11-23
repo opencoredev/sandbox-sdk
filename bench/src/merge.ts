@@ -181,7 +181,7 @@ export function classifyFailure(
   // quota, before anything is allocated, so no sandbox is named.
   if (
     sample.provider === "archil" &&
-    !stressCohort &&
+    (!stressCohort || cohort.member === "cold") &&
     /(^|\/)cold$/.test(sample.scenario) &&
     sample.outcome.code === "quota" &&
     sample.outcome.sandboxId === undefined

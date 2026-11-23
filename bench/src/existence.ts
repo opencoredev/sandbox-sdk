@@ -486,10 +486,15 @@ export async function lookupSandbox(
 
         case "archil": {
           // A plain GET: it never wakes a paused sandbox, unlike a command. A deleted one reads
-          // "deleted" until Archil drops it, then 404.
+          // "deleted" until Archil drops it, then 404. Key and region are the adapter instance's,
+          // so a key for another region never reads a live sandbox as gone.
+          const { apiKey, region } = connectionOf(provider, "archil");
+
+          if (!apiKey) throw new Error("Native lookup credentials unavailable");
+
           const response = await fetch(
-            `${archilControlUrl(process.env)}/api/sandboxes/${encodeURIComponent(id)}`,
-            { headers: { Authorization: `Bearer ${process.env.ARCHIL_API_KEY ?? ""}` }, signal },
+            `${archilControlUrl({ ARCHIL_REGION: region })}/api/sandboxes/${encodeURIComponent(id)}`,
+            { headers: { Authorization: `Bearer ${apiKey}` }, signal },
           );
 
           if (!response.ok)

@@ -112,6 +112,11 @@ describe("Archil failures", () => {
     );
     expect(classifyFailure(failed("cold", { code: "provider" }))).toBe("provider-operation");
     expect(classifyFailure(failed("exec", { code: "quota" }))).toBe("provider-operation");
+    // The same refusal in a stress cohort, whatever HTTP status carried it (Archil uses 403).
+    for (const scenario of ["cpu-burst-5/cold", "survival-5/cold"])
+      expect(classifyFailure(failed(scenario, { code: "quota", cause: { httpStatus: 403 } }))).toBe(
+        "provider-account-limit",
+      );
   });
 });
 

@@ -158,7 +158,7 @@ function resolve(name: string, options: ConnectionOptions): Connection {
       return {
         name,
         config: {
-          apiKey: options.apiKey ?? env.ARCHIL_API_KEY,
+          apiKey: (options.apiKey ?? env.ARCHIL_API_KEY)?.trim() || undefined,
           region: options.region ?? env.ARCHIL_REGION ?? "aws-us-east-1",
         },
       };
