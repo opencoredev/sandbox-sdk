@@ -10,6 +10,7 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Boxd } from "@boxd-sh/sdk";
 import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { TenkiSandbox } from "@tenkicloud/sandbox";
+import type { Archil as ArchilClient } from "disk";
 
 type Sdk = typeof Core;
 
@@ -70,6 +71,7 @@ const nativePackages = {
   baseten: "@basetenlabs/sandbox",
   instabox: "@insforge/instabox-sdk",
   beam: "@beamcloud/beam-js",
+  archil: "disk",
 } as const;
 
 /** A provider this script can measure. */
@@ -375,6 +377,33 @@ const providers = {
       },
     };
   },
+  async archil() {
+    const m: typeof import("@opencoredev/sandbox-sdk/archil") = await import(
+      moduleUrl("providers/archil/index.js")
+    );
+
+    const provider = m.archil();
+
+    // The floor is the official SDK's sandbox handle the adapter already holds.
+    return {
+      provider,
+      floor: (id) => {
+        const { sandbox } = provider.native(id);
+
+        return {
+          exec: async (command = "true") => {
+            const r = await sandbox.exec(command);
+
+            if (r.status !== "completed" || r.exitCode !== 0)
+              throw new Error(`exit ${r.exitCode ?? r.status}`);
+          },
+          write: async (path, data) => {
+            await sandbox.files.uploadFile(data, path);
+          },
+        };
+      },
+    };
+  },
 } satisfies Record<ProviderName, () => Promise<Loaded>>;
 
 interface NativeBox {
@@ -391,6 +420,8 @@ interface NativeClients {
   beam?: InstanceType<typeof import("@beamcloud/beam-js").Sandbox>;
   boxd?: Boxd;
   tenki?: TenkiSandbox;
+  /** One client for every native Archil create, as the adapter keeps one per provider. */
+  archil?: ArchilClient;
 }
 
 const nativeClients: NativeClients = {};
@@ -433,6 +464,59 @@ async function quietly<T>(action: () => Promise<T>): Promise<T> {
     return await action();
   } finally {
     Object.assign(console, original);
+  }
+}
+
+/** Stops an Archil sandbox without waiting on a stop that never settles: at most 60 s, then delete. */
+/** Deletes within 60 s; a delete still unanswered then is left to the final cleanup sweep. */
+async function deleteBounded(box: import("disk").Sandbox) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const outcome = await Promise.race([
+      box.delete().then(() => "deleted" as const),
+      new Promise<"late">((resolve) => {
+        timer = setTimeout(() => resolve("late"), 60_000);
+      }),
+    ]);
+
+    if (outcome === "late") throw new Error(`Archil delete of ${box.id} was not answered in 60 s`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function stopBounded(box: import("disk").Sandbox) {
+  const deadline = Date.now() + 60_000;
+
+  // Each request gets what is left of the deadline, so a stalled call can't hold cleanup. The timer
+  // is cleared once the race settles, so it never keeps a finished run alive.
+  const within = async (action: Promise<unknown>): Promise<void> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      await Promise.race([
+        action.then(
+          () => {},
+          () => {},
+        ),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  await within(box.stop({ wait: false }));
+
+  while (
+    Date.now() < deadline &&
+    !["stopped", "exited", "failed", "deleted"].includes(box.status)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await within(box.refresh());
   }
 }
 
@@ -772,6 +856,91 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     admit(raw);
 
     const instance = await m.Sandbox.connect(id);
+
+    return raw;
+  }
+
+  if (name === "archil") {
+    const m: typeof import("disk") = await import(nativeUrl("disk"));
+
+    const client = (nativeClients.archil ??= new m.Archil({
+      apiKey: process.env.ARCHIL_API_KEY ?? "",
+      region: process.env.ARCHIL_REGION ?? "aws-us-east-1",
+    }));
+
+    // Archil keeps no labels; the name carries the run ID (lowercase, hyphens, at most 63
+    // characters). Same defaults as the adapter: Archil's node:24-bookworm, 1 vCPU / 2048 MiB.
+    // Allocate without waiting, as the adapter does, so the ID is admitted for cleanup before the
+    // readiness poll can fail; the poll stays inside this create's timing.
+    const nativeName = `${runId}-native-${crypto.randomUUID().slice(0, 8)}`;
+    let box: Awaited<ReturnType<typeof client.sandboxes.create>>;
+
+    try {
+      box = await client.sandboxes.create({ name: nativeName }, { wait: false });
+    } catch (error) {
+      // A refusal made nothing. A lost answer may still have allocated: the name is this create's
+      // alone, so find it, admit it for cleanup and fail this create.
+      if (error instanceof m.ArchilApiError && error.status < 500) throw error;
+      const found = (await client.sandboxes.list()).find((native) => native.name === nativeName);
+
+      if (found)
+        admit({
+          id: found.id,
+          exec: async () => {
+            throw new Error("Archil create answer was lost");
+          },
+          destroy: async () => {
+            await stopBounded(found);
+            await deleteBounded(found);
+          },
+          exists: async () => {
+            try {
+              return (await client.sandboxes.get(found.id)).status !== "deleted";
+            } catch (cause) {
+              if (cause instanceof m.ArchilApiError && cause.status === 404) return false;
+              throw cause;
+            }
+          },
+        });
+      throw error;
+    }
+
+    const raw = {
+      id: box.id,
+      exec: async () => {
+        const r = await box.exec("true");
+
+        if (r.status !== "completed" || r.exitCode !== 0)
+          throw new Error(`exit ${r.exitCode ?? r.status}`);
+      },
+      destroy: async () => {
+        // A sandbox that already stopped or failed refuses stop; delete it either way.
+        await stopBounded(box);
+        await deleteBounded(box);
+      },
+      exists: async () => {
+        try {
+          const found = await client.sandboxes.get(box.id);
+
+          return found.status !== "deleted";
+        } catch (error) {
+          if (error instanceof m.ArchilApiError && error.status === 404) return false;
+          throw error;
+        }
+      },
+    };
+
+    admit(raw);
+
+    const deadline = Date.now() + 180_000;
+
+    while (box.status === "pending") {
+      if (Date.now() > deadline) throw new Error("Archil sandbox did not start in time");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await box.refresh();
+    }
+
+    if (box.status !== "running") throw new Error(`Archil sandbox did not start (${box.status})`);
 
     return raw;
   }

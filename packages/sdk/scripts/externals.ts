@@ -11,6 +11,7 @@ export const externalPackages: readonly string[] = [
   "@beamcloud/beam-js",
   "@boatdev/sdk",
   "@boxd-sh/sdk",
+  "disk",
   "@daytonaio/sdk",
   "@daytona/api-client",
   "@daytona/toolbox-api-client",
