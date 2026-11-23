@@ -334,6 +334,26 @@ describe("Archil create", () => {
     }
   });
 
+  test("a sandbox that falls asleep during its marker read is left out, not a failed reap", async () => {
+    const p = provider();
+    const box = await createSandbox(p, { labels: { group: "asleep-mid-read" } });
+
+    try {
+      archilState.pauseOnCommand = "metadata.json";
+      expect(
+        await reapSandboxes(p, {
+          labels: { group: "asleep-mid-read" },
+          idleOnly: true,
+          olderThanMs: 0,
+        }),
+      ).toBe(0);
+      expect(archilState.sandboxes.get(box.id)?.status).toBe("paused");
+    } finally {
+      archilState.pauseOnCommand = undefined;
+      await box.destroy();
+    }
+  });
+
   test("disposing a handle connected while its keyed sandbox slept closes it", async () => {
     const p = provider();
     const keyed = await createSandbox(p, { key: `dispose-${crypto.randomUUID()}` });

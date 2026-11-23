@@ -16,6 +16,7 @@ import type {
   Terminal,
   TerminalOptions,
 } from "../../provider.js";
+import { SandboxError } from "../../errors.js";
 import { loadPeer } from "../../peer.js";
 import { secretRecoveryCommand } from "../../run.js";
 import { files, python, type Guest } from "../../shared/guest.js";
@@ -436,7 +437,20 @@ export function createArchilProvider(
     // The SDK's name format stands in for the core's own label; the rest waits until it runs again.
     if (state !== "running") return { info: { ...base, labels: { ...sdkLabel } }, readable: false };
     boxes.set(box.id, box);
-    const marker = await markerOf(box.id);
+    let marker: Marker | undefined;
+
+    try {
+      marker = await markerOf(box.id);
+    } catch (error) {
+      // It went to sleep during the read: report it asleep and unread, as if listed that way.
+      if (!(error instanceof SandboxError) || error.code !== "unavailable") throw error;
+      await box.refresh();
+      const now = stateOf(box.status);
+
+      if (now === undefined) return undefined;
+
+      return { info: { ...base, state: now, labels: { ...sdkLabel } }, readable: false };
+    }
 
     if (!marker) return undefined;
 
@@ -749,17 +763,21 @@ export function createArchilProvider(
         let woke: "paused" | "stopped" | undefined;
         let woken = false;
 
-        // At most one restore runs, bounded, however many exits ask for it.
-        let restoring: Promise<unknown> | undefined;
+        // At most one restore runs, however many exits ask for it. It waits for a wake still in flight
+        // to land first, so a slow resume can't arrive after it; callers wait at most 30 s for it.
+        let pendingWake: Promise<void> | undefined;
+        let restoring: Promise<void> | undefined;
 
-        const restore = () =>
-          (restoring ??= bounded(
-            (async () => {
-              if (woke === "paused") await box.pause().catch(() => {});
-              else if (woke === "stopped") await box.stop().catch(() => {});
-            })(),
-            30_000,
-          ));
+        const restore = () => {
+          restoring ??= (async () => {
+            await pendingWake?.catch(() => {});
+
+            if (woke === "paused") await box.pause().catch(() => {});
+            else if (woke === "stopped") await box.stop().catch(() => {});
+          })();
+
+          return bounded(restoring, 30_000);
+        };
 
         for (;;) {
           if (stateOf(box.status) === undefined) return gone();
@@ -768,13 +786,13 @@ export function createArchilProvider(
             if (box.status !== "running" && box.status !== "pending" && !woken) {
               woken = true;
               woke = box.status === "paused" || box.status === "pausing" ? "paused" : "stopped";
-              const waking = wake(box);
+              pendingWake = wake(box);
 
               try {
-                await within(waking, box.id);
+                await within(pendingWake, box.id);
               } catch (error) {
                 // A wake still in flight at the deadline is undone once it lands.
-                void waking.then(restore, () => {});
+                void restore();
                 throw error;
               }
 

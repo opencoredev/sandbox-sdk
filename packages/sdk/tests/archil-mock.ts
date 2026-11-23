@@ -35,6 +35,8 @@ interface ArchilState {
   refuseNextCreate: number | undefined;
   /** New sandboxes start pending and then end in this state on their first refresh. */
   settleTo: Status | undefined;
+  /** Pause the sandbox just as a command containing this text starts, once. */
+  pauseOnCommand: string | undefined;
 }
 
 export const archilState: ArchilState = {
@@ -47,6 +49,7 @@ export const archilState: ArchilState = {
   dropOutputAbove: undefined,
   refuseNextCreate: undefined,
   settleTo: undefined,
+  pauseOnCommand: undefined,
 };
 
 class FakeProcess implements ArchilProcess {
@@ -164,6 +167,11 @@ class FakeSandbox {
   ) {}
   async run(command: string, options: ArchilRunOptions = {}) {
     if (this.status === "deleted") throw new FakeApiError("Sandbox not found", 404, "not_found");
+
+    if (archilState.pauseOnCommand !== undefined && command.includes(archilState.pauseOnCommand)) {
+      archilState.pauseOnCommand = undefined;
+      this.status = "paused";
+    }
 
     if (this.status !== "running")
       throw new FakeApiError("Sandbox is not running", 409, "sandbox_not_running");
