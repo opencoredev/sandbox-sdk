@@ -234,7 +234,16 @@ export async function execute({
       // The start may still land and run the command: give it the kill window, then stop it.
       const late = await bounded(starting, killConfirmMs);
 
-      if (late === "late") throw unconfirmed();
+      if (late === "late") {
+        // The handle may still arrive after the caller hears outcome_unknown: stop it then.
+        void starting.then(async (landed) => {
+          if (!landed.ok) return;
+          await terminate(landed.process);
+          await disconnect(landed.process);
+        });
+
+        throw unconfirmed();
+      }
 
       // A refused start ran nothing; an unknown one stays unknown.
       if (!late.ok) {

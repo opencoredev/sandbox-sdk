@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { describe, expect, test } from "vitest";
 import { createSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { archilError } from "../src/providers/archil/errors.js";
@@ -152,6 +155,26 @@ describe("Archil exec deadlines", () => {
     expect(result).toEqual({ exitCode: null, timedOut: true });
     expect(calls.kills).toBe(1);
   });
+
+  test(
+    "a start that lands after the kill window is still stopped",
+    { timeout: 30_000 },
+    async () => {
+      const { process, calls } = scripted();
+
+      await expect(
+        execute({
+          runner: {
+            run: () => new Promise((resolve) => setTimeout(() => resolve(process), 11_000)),
+          },
+          sandboxId: "box",
+          input: input({ timeoutMs: 10 }),
+        }),
+      ).rejects.toMatchObject({ code: "outcome_unknown" });
+
+      await expect.poll(() => calls.kills, { timeout: 5000 }).toBe(1);
+    },
+  );
 
   test(
     "a start that never lands is outcome_unknown, not a timeout",
@@ -346,6 +369,46 @@ describe("Archil create", () => {
       expect(b.labels).toMatchObject({ who: "first" });
     } finally {
       await a.destroy();
+    }
+  });
+
+  test("a keyed lookup of a sandbox still pending waits for its marker", async () => {
+    const key = `pending-${crypto.randomUUID()}`;
+    const name = `sbxsdk-k${createHash("sha256").update(key).digest("hex").slice(0, 40)}`;
+    const box = await addForeign(name, "pending");
+
+    setTimeout(async () => {
+      const marker = box.guest.rewrite("/var/lib/sandbox-sdk/metadata.json");
+      await mkdir(dirname(marker), { recursive: true });
+      await writeFile(marker, JSON.stringify({ key, labels: { who: "creator" } }));
+    }, 300);
+
+    try {
+      expect(await provider().find(key)).toMatchObject({
+        id: box.id,
+        state: "running",
+        labels: { who: "creator" },
+      });
+    } finally {
+      archilState.sandboxes.delete(box.id);
+      await box.guest.destroy();
+    }
+  });
+
+  test("a keyed lookup of a sandbox deleted during setup finds nothing", async () => {
+    const key = `gone-${crypto.randomUUID()}`;
+    const name = `sbxsdk-k${createHash("sha256").update(key).digest("hex").slice(0, 40)}`;
+    const box = await addForeign(name, "pending");
+
+    setTimeout(() => {
+      box.status = "deleted";
+      archilState.sandboxes.delete(box.id);
+    }, 300);
+
+    try {
+      expect(await provider().find(key)).toBeUndefined();
+    } finally {
+      await box.guest.destroy();
     }
   });
 

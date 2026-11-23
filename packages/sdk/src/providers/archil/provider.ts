@@ -611,44 +611,46 @@ export function createArchilProvider(
         const box = (await (await api()).sandboxes.list()).find((native) => native.name === name);
 
         if (!box) return undefined;
-        const state = stateOf(box.status);
-
-        if (state === undefined) return undefined;
         boxes.set(box.id, box);
 
-        // A stopped sandbox cold-boots from its disk; a paused one wakes on its first command.
-        if (state === "stopped") await box.start();
-
-        if (box.status !== "running")
-          return {
-            id: box.id,
-            key,
-            labels: { ...sdkLabel },
-            state: "paused",
-            createdAt: box.createdAt.getTime(),
-          };
-
-        // A running sandbox without its marker is still being set up by its creator, who deletes it
-        // if setup fails. Wait for the marker, or for the sandbox to go.
-        const deadline = Date.now() + markerWaitMs;
+        // A stopped sandbox cold-boots from its disk; a paused one wakes on its first command. A
+        // pending or running sandbox without its marker is still being set up by its creator, who
+        // deletes it if setup fails: wait for the marker, or for the sandbox to go.
+        const deadline = Date.now() + readyTimeoutMs + markerWaitMs;
+        let started = false;
 
         for (;;) {
-          const marker = await markerOf(box.id).catch(() => undefined);
+          const now = stateOf(box.status);
 
-          if (marker)
-            return {
-              id: box.id,
-              key,
-              labels: marker.labels,
-              state: "running",
-              createdAt: box.createdAt.getTime(),
-            };
-          await box.refresh().catch(() => {});
-
-          if (stateOf(box.status) === undefined) {
+          if (now === undefined) {
             boxes.delete(box.id);
 
             return undefined;
+          }
+
+          if (box.status === "paused" || box.status === "pausing")
+            return {
+              id: box.id,
+              key,
+              labels: { ...sdkLabel },
+              state: "paused",
+              createdAt: box.createdAt.getTime(),
+            };
+
+          if ((box.status === "stopped" || box.status === "exited") && !started) {
+            started = true;
+            await box.start({ wait: false });
+          } else if (box.status === "running") {
+            const marker = await markerOf(box.id).catch(() => undefined);
+
+            if (marker)
+              return {
+                id: box.id,
+                key,
+                labels: marker.labels,
+                state: "running",
+                createdAt: box.createdAt.getTime(),
+              };
           }
 
           if (Date.now() > deadline)
@@ -658,6 +660,16 @@ export function createArchilProvider(
               box.id,
             );
           await sleep(500);
+
+          try {
+            await box.refresh();
+          } catch (error) {
+            // Deleted meanwhile: the creator's setup failed, so the key is free again.
+            if (nativeStatus(error) !== 404) throw error;
+            boxes.delete(box.id);
+
+            return undefined;
+          }
         }
       }),
     connect: (id) =>
