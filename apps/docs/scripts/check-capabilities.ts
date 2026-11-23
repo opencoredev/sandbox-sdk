@@ -33,6 +33,7 @@ import {
   createAgentosProvider,
   createRegistry,
 } from "../../../packages/sdk/src/providers/agentos/provider.ts";
+import { createArchilProvider } from "../../../packages/sdk/src/providers/archil/provider.ts";
 import { createBasetenProvider } from "../../../packages/sdk/src/providers/baseten/provider.ts";
 import { boat } from "../../../packages/sdk/src/providers/boat/index.ts";
 import { createBoxdProvider } from "../../../packages/sdk/src/providers/boxd/provider.ts";
@@ -144,6 +145,10 @@ const subjects: readonly Subject[] = [
   {
     column: "Instabox",
     build: () => instabox({ apiKey: offlineKey, baseUrl: "https://offline.invalid" }),
+  },
+  {
+    column: "Archil",
+    build: () => createArchilProvider({ apiKey: offlineKey }, stubTransport),
   },
   { column: "Memory", build: () => memory() },
 ];

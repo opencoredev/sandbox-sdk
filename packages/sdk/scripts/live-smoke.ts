@@ -71,6 +71,10 @@ const registry = {
     env: [["BEAM_TOKEN"], ["BEAM_WORKSPACE_ID"]],
     load: async () => (await import("../src/providers/beam/index.js")).beam(),
   },
+  archil: {
+    env: [["ARCHIL_API_KEY"]],
+    load: async () => (await import("../src/providers/archil/index.js")).archil(),
+  },
   instabox: {
     env: [["INSTABOX_API_KEY"]],
     load: async () => (await import("../src/providers/instabox/index.js")).instabox(),

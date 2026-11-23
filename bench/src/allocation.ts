@@ -59,6 +59,12 @@ const presets: SizePresets = {
     medium: { cpu: 2, memoryGiB: 4 },
     large: { cpu: 4, memoryGiB: 8 },
   },
+  // The Archil adapter's presets.
+  archil: {
+    small: { cpu: 1, memoryGiB: 2 },
+    medium: { cpu: 2, memoryGiB: 4 },
+    large: { cpu: 4, memoryGiB: 8 },
+  },
 };
 
 const standardPresets = {
