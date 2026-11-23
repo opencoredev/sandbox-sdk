@@ -226,8 +226,9 @@ export async function terminate(
     try {
       await target.wait();
     } catch (error) {
-      // The end can't arrive on a connection Archil already closed: confirm it on a new one.
-      if (runner?.attach === undefined || process.id === undefined) throw error;
+      // The end can't arrive on a connection Archil already closed: confirm it on a new one. Closes
+      // start without being waited for, so a close that stalls never stretches the window.
+      if (runner?.attach === undefined || process.id === undefined || expired) throw error;
 
       confirm = await runner.attach(process.id, {
         offset: target.cursor,
@@ -235,7 +236,7 @@ export async function terminate(
       });
 
       if (expired) {
-        await disconnect(confirm);
+        void disconnect(confirm);
 
         return;
       }
@@ -243,7 +244,7 @@ export async function terminate(
       try {
         await confirm.wait();
       } finally {
-        await disconnect(confirm);
+        void disconnect(confirm);
       }
     }
   })();
@@ -252,7 +253,7 @@ export async function terminate(
     if ((await bounded(ended, killConfirmMs)) !== "late") return true;
     expired = true;
 
-    if (confirm) await disconnect(confirm);
+    if (confirm) void disconnect(confirm);
 
     return false;
   } catch {
@@ -600,9 +601,11 @@ export async function collect(
 
   // The live connection: a new one replaces it when Archil closes it before the exit (waitThrough).
   let process = started;
-  // Set once this call settles or gives up: no new connection starts, a late one is closed, late
-  // output dropped.
+  // Set once the helper gave up (deadline) or settled: no new connection starts and late output is
+  // dropped. A connection that lands meanwhile still becomes the live one, so the stop can confirm on it.
   let done = false;
+  // Set in the final cleanup: a connection that lands after it is closed on arrival.
+  let closed = false;
   // The newest new connection, landed or not: a stop confirms the end on it (terminate).
   let attaching: Promise<ArchilProcess> | undefined;
 
@@ -653,7 +656,7 @@ export async function collect(
           },
           {
             onProcess: (next) => {
-              if (done) void disconnect(next);
+              if (closed) void disconnect(next);
               else process = next;
             },
             onAttaching: (next) => {
@@ -698,6 +701,7 @@ export async function collect(
     throw archilError(error, sandboxId);
   } finally {
     done = true;
+    closed = true;
     await disconnect(process);
   }
 }

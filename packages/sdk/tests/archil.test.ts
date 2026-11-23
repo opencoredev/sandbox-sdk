@@ -479,6 +479,43 @@ describe("Archil connections closed before the exit", () => {
     }
   });
 
+  test("a helper timing out during a reattach confirms the kill on the recovery connection", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      const marker = `helper-timeout-${crypto.randomUUID()}`;
+
+      // The recovery attach lands after the helper's deadline; any second attach would miss the window.
+      archilState.closeConnection = { command: marker, bytes: 500 };
+      archilState.attachDelays = [1500, 20_000];
+      // The kill's end comes after the recovery connection lands.
+      archilState.killDelayMs = 2000;
+      archilState.attached = [];
+
+      const runner = {
+        run: (command: string, options: ArchilRunOptions) => fake.run(command, options),
+        attach: (id: string, options: { offset: number; onOutput?: (o: ArchilOutput) => void }) =>
+          fake.attach(id, options),
+      };
+
+      await expect(
+        collect(runner, box.id, `head -c 4000 /dev/zero | tr '\\0' y; sleep 30 # ${marker}`, {
+          timeoutMs: 500,
+        }),
+      ).rejects.toMatchObject({ code: "timeout" });
+      expect(archilState.attached).toHaveLength(1);
+      expect(archilState.attached[0]?.disconnected).toBe(true);
+    } finally {
+      archilState.closeConnection = undefined;
+      archilState.attachDelays = [];
+      archilState.killDelayMs = 0;
+      await box.destroy();
+    }
+  });
+
   test("a helper whose connection Archil closes early still returns its whole output", async () => {
     const box = await createSandbox(provider());
 

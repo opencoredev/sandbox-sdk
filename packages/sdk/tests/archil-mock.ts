@@ -349,6 +349,8 @@ class FakeSandbox {
         detached = true;
         record.disconnected = true;
         target.listeners.delete(send);
+        // Like disk's handle: a disconnected connection no longer reports the end.
+        closeMine();
       },
     };
   }
