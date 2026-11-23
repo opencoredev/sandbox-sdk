@@ -184,6 +184,21 @@ await using box = await createSandbox(provider, { idleTimeoutMs: 15 * 60_000 });
 
 To keep data across sandboxes, mount a [Daytona volume](https://www.daytona.io/docs/en/volumes) with the factory's `volumes` option. Every sandbox that provider creates mounts it. Each entry is `{ volumeId, mountPath, subpath? }`, the same shape as `VolumeMount` in Daytona's own SDK. `volumeId` takes the volume's ID or its name, and `subpath` mounts only that prefix of the volume instead of all of it.
 
+The adapter doesn't create volumes, and a volume must be in the `ready` state before a sandbox can mount it. Create one in the Daytona Dashboard, with Daytona's own SDK, or through the factory's `api`, then read it back with `GET /volumes/{volumeId}` until its state is `ready`:
+
+```ts
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+const { api } = daytona();
+const created = await api.request<{ id: string }>("POST", "/volumes", {
+  body: { name: "my-volume" },
+});
+const volume = await api.request<{ state: string }>("GET", `/volumes/${created.id}`);
+console.log(volume.state); // "ready" once it can be mounted
+```
+
+Then mount it:
+
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { daytona } from "@opencoredev/sandbox-sdk/daytona";
@@ -194,18 +209,6 @@ const provider = daytona({
 
 await using box = await createSandbox(provider);
 await box.files.write("/data/notes.txt", "still here in the next sandbox\n");
-```
-
-The adapter doesn't create volumes. Make one first in the Daytona Dashboard, with Daytona's SDK (`daytona.volume.get("my-volume", true)` creates it if it's missing), or through the factory's `api`, and mount it once its state is `ready`:
-
-```ts
-import { daytona } from "@opencoredev/sandbox-sdk/daytona";
-
-const provider = daytona();
-const volume = await provider.api.request<{ id: string; state: string }>("POST", "/volumes", {
-  body: { name: "my-volume" },
-});
-console.log(volume.id, volume.state);
 ```
 
 ## Configuration
