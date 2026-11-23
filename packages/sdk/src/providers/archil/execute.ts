@@ -397,14 +397,43 @@ export async function collect(
 
   const process = started;
 
-  try {
-    await bounded(writeStdin(process, options.stdin), Math.max(0, deadline - Date.now()));
-    const result = await bounded(process.wait(), Math.max(0, deadline - Date.now()));
+  const timedOut = async () => {
+    if (!(await terminate(process)))
+      return failure(
+        "Archil guest operation timed out and could not be stopped",
+        "outcome_unknown",
+        sandboxId,
+      );
 
-    if (result === "late") {
-      await terminate(process);
-      throw failure("Archil guest operation timed out", "timeout", sandboxId);
+    return failure("Archil guest operation timed out", "timeout", sandboxId);
+  };
+
+  try {
+    // A helper still taking input at the deadline is stopped, whatever it already reported.
+    const fed = await bounded(
+      writeStdin(process, options.stdin),
+      Math.max(0, deadline - Date.now()),
+    );
+
+    if (fed === "late") throw await timedOut();
+
+    let result: ArchilProcessResult | "late";
+
+    try {
+      result = await bounded(process.wait(), Math.max(0, deadline - Date.now()));
+    } catch {
+      // A broken stream leaves the helper running (it may be writing a file): stop it before the
+      // caller can retry, and say so when the stop is not confirmed.
+      if (!(await terminate(process)))
+        throw failure(
+          "Archil helper stream broke and the helper could not be stopped",
+          "outcome_unknown",
+          sandboxId,
+        );
+      throw failure("Archil helper stream broke; the helper was stopped", "provider", sandboxId);
     }
+
+    if (result === "late") throw await timedOut();
 
     gaps.tail(process.cursor);
     const size = stdout.reduce((total, part) => total + part.length, 0);

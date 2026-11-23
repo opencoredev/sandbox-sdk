@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import { connectSandbox, createSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { archilError } from "../src/providers/archil/errors.js";
 import {
+  collect,
   execute,
   type ArchilProcess,
   type ArchilProcessResult,
@@ -189,6 +190,49 @@ describe("Archil exec deadlines", () => {
       ).rejects.toMatchObject({ code: "outcome_unknown" });
     },
   );
+});
+
+describe("Archil helper commands", () => {
+  test("a helper still taking input at the deadline is stopped and times out", async () => {
+    const { process, calls } = scripted({ result: { status: "completed", exitCode: 0 } });
+    process.sendInput = () => new Promise(() => {});
+
+    await expect(
+      collect({ run: async () => process }, "box", "cat > /dev/null", {
+        stdin: new Uint8Array(10),
+        timeoutMs: 50,
+      }),
+    ).rejects.toMatchObject({ code: "timeout" });
+    expect(calls.kills).toBe(1);
+  });
+
+  test("a helper whose stream breaks is stopped before the failure is returned", async () => {
+    const { process, calls } = scripted();
+    const wait = process.wait.bind(process);
+    let broken = false;
+
+    // The stream breaks once; the kill that follows is then confirmed.
+    process.wait = () => {
+      if (broken) return wait();
+      broken = true;
+
+      return Promise.reject(new Error("Process connection closed"));
+    };
+
+    await expect(collect({ run: async () => process }, "box", "true")).rejects.toMatchObject({
+      code: "provider",
+    });
+    expect(calls.kills).toBe(1);
+  });
+
+  test("a helper whose stream breaks and whose kill is unconfirmed is outcome_unknown", async () => {
+    const { process } = scripted({ killConfirms: false });
+    process.wait = () => Promise.reject(new Error("Process connection closed"));
+
+    await expect(collect({ run: async () => process }, "box", "true")).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+  });
 });
 
 describe("Archil output gaps", () => {
