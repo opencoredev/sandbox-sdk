@@ -197,6 +197,7 @@ Archil caps how many sandboxes run at once by plan: 5 on Free, 20 on Developer a
 - Archil keeps no labels on a sandbox, so the adapter writes the key and your `labels` to `/var/lib/sandbox-sdk/metadata.json` inside it at create. `list` and `connect` read that file.
 - Commands use Archil's process API over a WebSocket, which is why the adapter needs `disk` instead of calling `fetch`. Command input goes in 1 MiB pieces.
 - A create that fails after Archil made the sandbox deletes it before failing. If the delete isn't confirmed, create fails with `outcome_unknown` and names the sandbox.
+- `destroy()` stops and deletes within 2 minutes. If the sandbox wasn't stopped by then, it fails with `timeout` and the sandbox still exists; if a delete was sent but not confirmed, it fails with `outcome_unknown`, because Archil's client may still retry it.
 - `box.native` returns `{ sandbox, client }`, the `disk` `Sandbox` and the `Archil` client that loaded it. Connect to the sandbox first.
 - Errors keep only Archil's error name, HTTP status and error code, never its message, which can echo paths or commands.
 

@@ -496,6 +496,22 @@ describe("Archil create", () => {
     }
   });
 
+  test("a symlink through a regular file and .. is refused, as the kernel refuses it", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run(
+        "mkdir -p nf && echo keep > nf/target && touch nf/branch && ln -s branch/../target nf/link",
+      );
+      await expect(box.files.write("nf/link", "x")).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+      expect((await box.run("cat nf/target")).stdout).toBe("keep\n");
+    } finally {
+      await box.destroy();
+    }
+  });
+
   test("a write to a FIFO is refused and leaves it in place", async () => {
     const box = await createSandbox(provider());
 
@@ -572,9 +588,7 @@ describe("Archil create", () => {
     try {
       const start = Date.now();
 
-      const refused = expect(p.destroy(info.id)).rejects.toMatchObject({
-        code: "outcome_unknown",
-      });
+      const refused = expect(p.destroy(info.id)).rejects.toMatchObject({ code: "timeout" });
 
       await vi.advanceTimersByTimeAsync(125_000);
       await refused;
@@ -1055,6 +1069,37 @@ describe("Archil create", () => {
     expect(fake.status).toBe("failed");
     await connected.destroy();
     expect(archilState.sandboxes.has(box.id)).toBe(false);
+  });
+
+  test("a keyed sandbox deleted while a lookup wakes it is gone: a replacement is created", async () => {
+    const key = `deleted-wake-${crypto.randomUUID()}`;
+    const first = await createSandbox(provider(), { key });
+    await first.close();
+    const fake = archilState.sandboxes.get(first.id);
+
+    if (!fake) throw new Error("fake sandbox missing");
+    fake.status = "paused";
+    const proto: Pick<typeof fake, "resume"> = Object.getPrototypeOf(fake);
+    const realResume = proto.resume;
+
+    // Deleted by someone else while waking: its name is free again.
+    proto.resume = async function (this: typeof fake) {
+      this.status = "deleted";
+      archilState.sandboxes.delete(this.id);
+
+      return this;
+    };
+
+    try {
+      const again = await createSandbox(provider(), { key });
+
+      expect(again.id).not.toBe(first.id);
+      await again.destroy();
+    } finally {
+      proto.resume = realResume;
+      archilState.sandboxes.delete(first.id);
+      await fake.guest.destroy();
+    }
   });
 
   test("a keyed lookup of a sandbox still pending waits for its marker", async () => {

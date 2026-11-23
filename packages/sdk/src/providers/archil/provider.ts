@@ -226,8 +226,9 @@ function matches(info: SandboxInfo, labels: Labels) {
 
 // Writes stdin to the path in $SANDBOX_SDK_PATH (bytes, exactly as given), with argv[1] as an octal
 // mode or "" to keep an existing file's mode (644 for a new file), making its directory first.
-// A symlink is followed one hop at a time to its final target (a loop exits 22), and the target's
-// parent is resolved as the kernel would (`link/../x` through a linked directory) before staging.
+// A symlink is followed one hop at a time to its final target (a loop exits 22). The target's
+// parent is created and checked as given, so the kernel judges `x/..` (a file `x` exits 24), and only
+// then resolved for staging (`link/../x` through a linked directory lands where the kernel puts it).
 // An existing directory exits 21 and any other non-regular file (a FIFO, a device) exits 23, both
 // checked again once stdin is staged, so a change mid-write is caught too. stdin is staged beside
 // the target and renamed over it only once complete, so a failed write (a full disk, a broken
@@ -251,10 +252,13 @@ const writeSource = [
   " if n>40: no(22,'too many levels of symbolic links')",
   " p=os.path.join(os.path.dirname(p),os.readlink(p))",
   "if not os.path.basename(p): no(21,'is a directory')",
-  "d=os.path.realpath(os.path.dirname(p) or b'.')",
+  "d=os.path.dirname(p) or b'.'",
+  "try: os.makedirs(d,exist_ok=True)",
+  "except (FileExistsError,NotADirectoryError): no(24,'a parent is not a directory')",
+  "if not os.path.isdir(d): no(24,'a parent is not a directory')",
+  "d=os.path.realpath(d)",
   "p=os.path.join(d,os.path.basename(p))",
   "check(p)",
-  "os.makedirs(d,exist_ok=True)",
   "fd,t=tempfile.mkstemp(dir=d,prefix=b'.sandbox-sdk-write.')",
   "try:",
   " with os.fdopen(fd,'wb') as f:",
@@ -394,6 +398,9 @@ export function createArchilProvider(
       if (box.status !== "running") throw error;
     }
 
+    // Deleted meanwhile: gone, so a keyed lookup can create a replacement.
+    if (stateOf(box.status) === undefined) throw failure("Sandbox not found", "not_found", box.id);
+
     // A sandbox that failed while settling, or whose resume or start answered failed, isn't awake.
     // resume and start apply Archil's answer to `box`, so this needs no further request.
     if (box.status !== "running")
@@ -455,6 +462,9 @@ export function createArchilProvider(
 
         if (result.exitCode === 23)
           throw failure("Path is not a regular file", "invalid_argument", id);
+
+        if (result.exitCode === 24)
+          throw failure("A parent of the path is not a directory", "invalid_argument", id);
 
         if (result.exitCode !== 0) throw failure("File write failed", "provider", id);
       },
@@ -571,12 +581,15 @@ export function createArchilProvider(
     return { info: { ...base, key: marker.key, labels: marker.labels }, readable: true };
   }
 
-  /** Deletes a sandbox, stopping it first. True once it is gone. */
-  async function remove(c: Archil, id: string): Promise<boolean> {
+  /**
+   * Deletes a sandbox, stopping it first. "gone" once it is; "late" when the deadline passed before
+   * a delete was sent (the sandbox stays); "unconfirmed" when a delete was in flight at the deadline
+   * (Archil's client may still retry it, so it may yet be deleted).
+   */
+  async function remove(c: Archil, id: string): Promise<"gone" | "late" | "unconfirmed"> {
     const deadline = Date.now() + 120_000;
 
-    // Every request is bounded by what is left of the deadline, and none starts after it: a stalled
-    // call, or a deadline already past, reports false.
+    // Every request is bounded by what is left of the deadline, and none starts after it.
     const within = async <T>(action: () => Promise<T>): Promise<T | "late"> =>
       Date.now() >= deadline ? "late" : bounded(action(), deadline - Date.now());
 
@@ -586,32 +599,32 @@ export function createArchilProvider(
       try {
         box = await within(() => c.sandboxes.get(id));
       } catch (error) {
-        if ([400, 404].includes(nativeStatus(error) ?? 0)) return true;
+        if ([400, 404].includes(nativeStatus(error) ?? 0)) return "gone";
         throw error;
       }
 
-      if (box === "late") return false;
+      if (box === "late") return "late";
 
-      if (box.status === "deleting" || box.status === "deleted") return true;
+      if (box.status === "deleting" || box.status === "deleted") return "gone";
 
       try {
         // A non-waiting stop, polled below under the deadline: a sandbox stuck stopping can't hang it.
         if (!["stopped", "exited", "failed", "stopping"].includes(box.status))
-          if ((await within(() => box.stop({ wait: false }))) === "late") return false;
+          if ((await within(() => box.stop({ wait: false }))) === "late") return "late";
 
         if (["stopped", "exited", "failed"].includes(box.status)) {
-          if ((await within(() => box.delete())) === "late") return false;
+          if ((await within(() => box.delete())) === "late") return "unconfirmed";
 
-          return true;
+          return "gone";
         }
       } catch (error) {
-        if (nativeStatus(error) === 404) return true;
+        if (nativeStatus(error) === 404) return "gone";
 
         // 409 while a pause, resume or start is still settling.
         if (nativeStatus(error) !== 409) throw error;
       }
 
-      if (Date.now() >= deadline) return false;
+      if (Date.now() >= deadline) return "late";
 
       await new Promise((resolve) => setTimeout(resolve, Math.min(500, deadline - Date.now())));
     }
@@ -854,9 +867,9 @@ export function createArchilProvider(
             );
 
           // The sandbox exists and is billed: settle the failure only once it is gone.
-          const cleaned = await remove(c, box.id).catch(() => false);
+          const cleaned = await remove(c, box.id).catch(() => "late" as const);
 
-          if (!cleaned)
+          if (cleaned !== "gone")
             throw failure(
               `Sandbox ${box.id} did not become usable and could not be deleted; delete it before retrying`,
               "outcome_unknown",
@@ -976,6 +989,8 @@ export function createArchilProvider(
           } catch (error) {
             // Deleted meanwhile: the creator's setup failed, so the key is free again.
             if (nativeStatus(error) === 404) return gone();
+
+            if (error instanceof SandboxError && error.code === "not_found") return gone();
             // Unproven either way: the only rollback is for a marker that proves another key.
             throw error;
           }
@@ -1020,8 +1035,17 @@ export function createArchilProvider(
         boxes.delete(id);
         await detachTerminals(id);
 
+        const removed = await remove(c, id);
+
+        if (removed === "late")
+          throw failure(
+            "Sandbox was not stopped and deleted within 2 minutes; it still exists, destroy it again",
+            "timeout",
+            id,
+          );
+
         // Archil's client may still retry a delete after the deadline, so the outcome is unknown.
-        if (!(await remove(c, id)))
+        if (removed === "unconfirmed")
           throw failure(
             "Sandbox deletion was not confirmed within 2 minutes; it may still complete",
             "outcome_unknown",
