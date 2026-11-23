@@ -128,9 +128,11 @@ function lifetimeFor(timeoutMs: number | undefined, ports: readonly number[] | u
       "unsupported",
     );
 
-  const seconds = Math.ceil(timeoutMs / 1000);
+  // Rounded down, so the hard limit is never longer than asked, and at most a second under 24 hours,
+  // so a sandbox with a lifetime is always told apart from one without (Archil's default is 24 h).
+  const seconds = Math.min(Math.floor(timeoutMs / 1000), archilMaxLifetimeSeconds - 1);
 
-  if (seconds < 60 || seconds > 86_400)
+  if (timeoutMs < 60_000 || timeoutMs > archilMaxLifetimeSeconds * 1000)
     throw failure("Archil sandbox lifetimes are 60 seconds to 24 hours", "unsupported");
 
   return seconds;
@@ -168,8 +170,10 @@ function stateOf(status: SandboxStatus): SandboxInfo["state"] | undefined {
     case "stopping":
     case "stopped":
     case "exited":
-      return "stopped";
+    // A sandbox that failed at runtime still holds its name and disk: it is reachable (connect, destroy)
+    // but never woken or adopted by a keyed lookup, which reports it instead.
     case "failed":
+      return "stopped";
     case "deleting":
     case "deleted":
       return undefined;
@@ -223,11 +227,12 @@ function matches(info: SandboxInfo, labels: Labels) {
 // Writes stdin to argv[1] in place (the inode and its mode survive), making its directory first.
 // Stages stdin beside the target and renames it over the target only once it is complete, so a
 // failed write (a full disk, a broken stream) leaves the old file whole. Without a mode, an
-// existing file's mode carries over.
+// existing file's mode carries over. A symlink is written through to its target, and a
+// directory is refused (exit 21) rather than receiving the staged file.
 const writeProgram = (mode: number | undefined) =>
-  `set -e; p="$SANDBOX_SDK_PATH"; d="$(dirname -- "$p")"; mkdir -p -- "$d"; t="$(mktemp "$d/.sandbox-sdk-write.XXXXXX")"; trap 'rm -f -- "$t"' EXIT; cat > "$t"; ${
+  `set -e; p="$SANDBOX_SDK_PATH"; if [ -L "$p" ]; then p="$(readlink -f -- "$p")"; fi; if [ -d "$p" ]; then echo "is a directory" >&2; exit 21; fi; d="$(dirname -- "$p")"; mkdir -p -- "$d"; t="$(mktemp "$d/.sandbox-sdk-write.XXXXXX")"; trap 'rm -f -- "$t"' EXIT; cat > "$t"; ${
     mode === undefined
-      ? `if [ -e "$p" ]; then chmod --reference="$p" -- "$t"; else chmod 644 -- "$t"; fi`
+      ? `if [ -e "$p" ]; then chmod "$(stat -c %a -- "$p")" -- "$t"; else chmod 644 -- "$t"; fi`
       : `chmod ${mode.toString(8)} -- "$t"`
   }; mv -f -- "$t" "$p"; trap - EXIT`;
 
@@ -385,6 +390,8 @@ export function createArchilProvider(
           stdin: bytes,
         });
 
+        if (result.exitCode === 21) throw failure("Path is a directory", "invalid_argument", id);
+
         if (result.exitCode !== 0) throw failure("File write failed", "provider", id);
       },
       read: async (path, range) => {
@@ -504,25 +511,31 @@ export function createArchilProvider(
   async function remove(c: Archil, id: string): Promise<boolean> {
     const deadline = Date.now() + 120_000;
 
+    // Every request is bounded by what is left of the deadline: a stalled call reports false.
+    const within = async <T>(action: Promise<T>): Promise<T | "late"> =>
+      bounded(action, Math.max(0, deadline - Date.now()));
+
     for (;;) {
-      let box: Sandbox;
+      let box: Sandbox | "late";
 
       try {
-        box = await c.sandboxes.get(id);
+        box = await within(c.sandboxes.get(id));
       } catch (error) {
         if ([400, 404].includes(nativeStatus(error) ?? 0)) return true;
         throw error;
       }
+
+      if (box === "late") return false;
 
       if (box.status === "deleting" || box.status === "deleted") return true;
 
       try {
         // A non-waiting stop, polled below under the deadline: a sandbox stuck stopping can't hang it.
         if (!["stopped", "exited", "failed", "stopping"].includes(box.status))
-          await box.stop({ wait: false });
+          if ((await within(box.stop({ wait: false }))) === "late") return false;
 
         if (["stopped", "exited", "failed"].includes(box.status)) {
-          await box.delete();
+          if ((await within(box.delete())) === "late") return false;
 
           return true;
         }
@@ -845,6 +858,14 @@ export function createArchilProvider(
 
         for (;;) {
           if (stateOf(box.status) === undefined) return gone();
+
+          // Its name stays taken, and its marker can't be read: say so, so the caller can destroy it.
+          if (box.status === "failed")
+            throw failure(
+              `Sandbox ${box.id} under this key failed on Archil; destroy it (connectSandbox(provider, id).destroy()) and retry`,
+              "unavailable",
+              box.id,
+            );
 
           try {
             if (box.status !== "running" && box.status !== "pending" && !woken) {

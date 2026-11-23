@@ -316,7 +316,8 @@ export async function execute({
         return stopped;
       }
 
-      await fed;
+      // Input still in flight to a process that already exited changes nothing: don't wait for it.
+      void fed;
       flush();
       const { result } = outcome;
 
@@ -403,16 +404,18 @@ export async function collect(
   if (started === "late") {
     // The helper may already run (a write's cat may be truncating its target): settle only once it is
     // known stopped, or say the outcome is unknown.
-    const landed = await bounded(
-      starting.then(
-        (late) => late,
-        () => undefined,
-      ),
-      killConfirmMs,
-    );
+    const settled = (async () => {
+      try {
+        return { ok: true as const, process: await starting };
+      } catch (error) {
+        return { ok: false as const, error: archilError(error, sandboxId) };
+      }
+    })();
 
-    if (landed === undefined)
-      throw failure("Archil guest operation timed out starting", "timeout", sandboxId);
+    const landed = await bounded(settled, killConfirmMs);
+
+    // A start refused outright ran nothing; one whose answer was lost keeps outcome_unknown.
+    if (landed !== "late" && !landed.ok) throw landed.error;
 
     if (landed === "late")
       throw failure(
@@ -422,14 +425,14 @@ export async function collect(
       );
 
     try {
-      if (!(await terminate(landed)))
+      if (!(await terminate(landed.process)))
         throw failure(
           "Archil guest operation timed out and could not be stopped",
           "outcome_unknown",
           sandboxId,
         );
     } finally {
-      await disconnect(landed);
+      await disconnect(landed.process);
     }
 
     throw failure("Archil guest operation timed out starting", "timeout", sandboxId);

@@ -469,15 +469,26 @@ async function quietly<T>(action: () => Promise<T>): Promise<T> {
 
 /** Stops an Archil sandbox without waiting on a stop that never settles: at most 60 s, then delete. */
 async function stopBounded(box: import("disk").Sandbox) {
-  await box.stop({ wait: false }).catch(() => {});
   const deadline = Date.now() + 60_000;
+
+  // Each request gets what is left of the deadline, so a stalled call can't hold cleanup.
+  const within = (action: Promise<unknown>): Promise<void> =>
+    Promise.race([
+      action.then(
+        () => {},
+        () => {},
+      ),
+      new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
+    ]);
+
+  await within(box.stop({ wait: false }));
 
   while (
     Date.now() < deadline &&
     !["stopped", "exited", "failed", "deleted"].includes(box.status)
   ) {
     await new Promise((resolve) => setTimeout(resolve, 500));
-    await box.refresh().catch(() => {});
+    await within(box.refresh());
   }
 }
 

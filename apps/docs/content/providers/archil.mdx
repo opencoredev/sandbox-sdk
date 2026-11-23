@@ -165,7 +165,7 @@ await using box = await createSandbox(archil(), {
 
 `network: "none"` denies all outbound traffic, and `{ allow }` denies everything except the listed destinations. On Archil's free plan every sandbox already has outbound traffic denied, and a network policy fails with `unsupported` because the plan doesn't include it. Paid plans allow all outbound traffic unless you set a policy.
 
-`timeoutMs` takes 60 seconds to 24 hours and `idleTimeoutMs` up to 24 hours; both round up to whole seconds. A `timeoutMs` under a minute fails with `unsupported`. Both pause the sandbox when they fire. Because traffic to a public port resumes a paused sandbox with a fresh lifetime, `timeoutMs` with `ports`, or `box.preview()` on a sandbox created with `timeoutMs`, fails with `unsupported`.
+`timeoutMs` takes 60 seconds to 24 hours and rounds down to whole seconds, so the hard limit is never longer than you asked (24 hours becomes 23:59:59); `idleTimeoutMs` takes up to 24 hours and rounds up. A `timeoutMs` under a minute fails with `unsupported`. Both pause the sandbox when they fire. Because traffic to a public port resumes a paused sandbox with a fresh lifetime, `timeoutMs` with `ports`, or `box.preview()` on a sandbox created with `timeoutMs`, fails with `unsupported`.
 
 ## Limits and cost
 
@@ -189,6 +189,7 @@ Archil caps how many sandboxes run at once by plan: 5 on Free, 20 on Developer a
 - A network policy needs a paid plan; free-plan sandboxes have no outbound access.
 - `timeoutMs` under 60 seconds fails, and an expired lifetime pauses the sandbox rather than deleting it.
 - A paused or stopped sandbox is left out of `listSandboxes()` and `reapSandboxes()` until it runs again.
+- A sandbox that failed at runtime keeps its name. Creating with its `key` fails with `unavailable` naming it; `connectSandbox(archil(), id)` then `destroy()` frees the key.
 
 ## How it works
 

@@ -237,6 +237,20 @@ describe("Archil helper commands", () => {
 });
 
 describe("Archil helper starts", () => {
+  test("a helper start that fails after the deadline keeps its own error", async () => {
+    await expect(
+      collect(
+        {
+          run: () =>
+            new Promise((_, reject) => setTimeout(() => reject(new Error("socket hang up")), 100)),
+        },
+        "box",
+        "true",
+        { timeoutMs: 10 },
+      ),
+    ).rejects.toMatchObject({ code: "outcome_unknown" });
+  });
+
   test("a helper start that lands after the deadline is stopped before the timeout is reported", async () => {
     const { process, calls } = scripted();
 
@@ -407,6 +421,31 @@ describe("Archil create", () => {
       await expect(p.previewUrl(info.id, 3000)).rejects.toMatchObject({ code: "unsupported" });
     } finally {
       await p.destroy(info.id);
+    }
+  });
+
+  test("a 24-hour timeoutMs is still a lifetime: previews are refused", async () => {
+    const p = provider();
+    const info = await p.create({ labels: {}, timeoutMs: 86_400_000 });
+
+    try {
+      await expect(p.previewUrl(info.id, 3000)).rejects.toMatchObject({ code: "unsupported" });
+    } finally {
+      await p.destroy(info.id);
+    }
+  });
+
+  test("a write to a directory is refused, and a write to a symlink goes to its target", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run("mkdir -p dir && echo old > real && ln -s real link");
+      await expect(box.files.write("dir", "x")).rejects.toMatchObject({ code: "invalid_argument" });
+      expect((await box.run("ls -a dir")).stdout).toBe(".\n..\n");
+      await box.files.write("link", "new");
+      expect((await box.run("readlink link; cat real")).stdout).toBe("real\nnew");
+    } finally {
+      await box.destroy();
     }
   });
 
@@ -840,6 +879,24 @@ describe("Archil create", () => {
     } finally {
       await first.destroy();
     }
+  });
+
+  test("a keyed sandbox that failed at runtime is reported by key and can be destroyed by ID", async () => {
+    const p = provider();
+    const key = `failed-run-${crypto.randomUUID()}`;
+    const box = await createSandbox(p, { key, labels: { team: "f" } });
+    await box.close();
+    const fake = archilState.sandboxes.get(box.id);
+
+    if (!fake) throw new Error("fake sandbox missing");
+    fake.status = "failed";
+
+    await expect(createSandbox(provider(), { key })).rejects.toMatchObject({ code: "unavailable" });
+    expect(fake.status).toBe("failed");
+
+    const connected = await connectSandbox(provider(), box.id);
+    await connected.destroy();
+    expect(archilState.sandboxes.has(box.id)).toBe(false);
   });
 
   test("a keyed lookup of a sandbox still pending waits for its marker", async () => {

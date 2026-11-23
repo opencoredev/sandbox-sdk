@@ -272,6 +272,7 @@ class FakeArchil {
 
       const box = new FakeSandbox(guest.id, request.name ?? guest.id, guest);
       box.env = { ...request.env };
+      box.maxTtlSeconds = request.maxTtlSeconds ?? 86_400;
       box.status = "running";
       archilState.sandboxes.set(box.id, box);
 
