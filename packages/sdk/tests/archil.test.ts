@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { connectSandbox, createSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { archilError } from "../src/providers/archil/errors.js";
 import {
@@ -449,6 +449,51 @@ describe("Archil create", () => {
     }
   });
 
+  test("a symlink to a name ending in a newline writes that file, not its sibling", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run("mkdir -p nl && echo sib > nl/real && printf x > \"nl/real\n\" && ln -s \"real\n\" nl/link");
+      await box.files.write("nl/link", "new");
+      expect((await box.run("cat nl/real; cat \"nl/real\n\"")).stdout).toBe("sib\nnew");
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("a symlink whose target's parent is missing creates it; a symlink loop is refused", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run("mkdir -p sl && ln -s gone/deep/file sl/link && ln -s loop2 sl/loop1 && ln -s loop1 sl/loop2");
+      await box.files.write("sl/link", "made");
+      expect((await box.run("cat sl/gone/deep/file; readlink sl/link")).stdout).toBe(
+        "madegone/deep/file\n",
+      );
+      await expect(box.files.write("sl/loop1", "x")).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("a write to a hard-linked file updates every link and leaves no staging file", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run("mkdir -p hl && echo old > hl/a && ln hl/a hl/b && chmod 600 hl/a");
+      await box.files.write("hl/a", "new");
+      expect((await box.run("cat hl/b; stat -c %a hl/a; ls -a hl")).stdout).toBe(
+        "new600\n.\n..\na\nb\n",
+      );
+      await box.files.write("hl/b", "again", { mode: 0o640 });
+      expect((await box.run("cat hl/a; stat -c %a hl/a")).stdout).toBe("again640\n");
+    } finally {
+      await box.destroy();
+    }
+  });
+
   test("an overwrite without a mode keeps the file's mode and leaves no staging file", async () => {
     const box = await createSandbox(provider());
 
@@ -459,6 +504,37 @@ describe("Archil create", () => {
       expect((await box.run("stat -c %a bin/tool; ls -a bin")).stdout).toBe("755\n.\n..\ntool\n");
     } finally {
       await box.destroy();
+    }
+  });
+
+  test("destroy with a stalled stop reports failure at its deadline and sends nothing after it", async () => {
+    const p = provider();
+    const info = await p.create({ labels: {} });
+    const fake = archilState.sandboxes.get(info.id);
+
+    if (!fake) throw new Error("fake sandbox missing");
+    const calls: number[] = [];
+    const realStop = fake.stop.bind(fake);
+    fake.stop = async () => {
+      calls.push(Date.now());
+
+      return new Promise<never>(() => {});
+    };
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+
+    try {
+      const start = Date.now();
+      const refused = expect(p.destroy(info.id)).rejects.toMatchObject({ code: "provider" });
+
+      await vi.advanceTimersByTimeAsync(125_000);
+      await refused;
+      expect(calls.length).toBe(1);
+      expect(calls.every((at) => at - start < 120_000)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      fake.stop = realStop;
+      await p.destroy(info.id);
     }
   });
 
@@ -767,7 +843,20 @@ describe("Archil create", () => {
 
     try {
       // Its attempt ID can't be read from a guest that never ran, so it may be another client's.
-      await expect(createSandbox(provider(), { key })).rejects.toBeInstanceOf(Error);
+      const failed = new Set(archilState.sandboxes.keys());
+
+      const lost = await createSandbox(provider(), { key }).catch((cause: unknown) => cause);
+
+      const id = [...archilState.sandboxes.keys()].find((known) => !failed.has(known));
+
+      expect(id).toBeDefined();
+      expect(lost).toMatchObject({ code: "outcome_unknown", sandboxId: id });
+
+      // A later keyed lookup names it, so it can be destroyed.
+      await expect(createSandbox(provider(), { key })).rejects.toMatchObject({
+        code: "unavailable",
+        sandboxId: id,
+      });
       expect(archilState.sandboxes.size).toBe(before + 1);
     } finally {
       archilState.settleTo = undefined;
@@ -895,6 +984,8 @@ describe("Archil create", () => {
     expect(fake.status).toBe("failed");
 
     const connected = await connectSandbox(provider(), box.id);
+    await expect(connected.resume()).rejects.toMatchObject({ code: "unavailable" });
+    expect(fake.status).toBe("failed");
     await connected.destroy();
     expect(archilState.sandboxes.has(box.id)).toBe(false);
   });

@@ -224,17 +224,52 @@ function matches(info: SandboxInfo, labels: Labels) {
   return Object.entries(labels).every(([key, value]) => info.labels[key] === value);
 }
 
-// Writes stdin to argv[1] in place (the inode and its mode survive), making its directory first.
-// Stages stdin beside the target and renames it over the target only once it is complete, so a
-// failed write (a full disk, a broken stream) leaves the old file whole. Without a mode, an
-// existing file's mode carries over. A symlink is written through to its target, and a
-// directory is refused (exit 21) rather than receiving the staged file.
+// Writes stdin to the path in $SANDBOX_SDK_PATH (bytes, exactly as given), with argv[1] as an octal
+// mode or "" to keep an existing file's mode (644 for a new file), making its directory first.
+// A symlink is followed one hop at a time to its final target, whose missing parents are created;
+// a loop exits 22. stdin is staged beside the target and renamed over it only once complete, so a
+// failed write (a full disk, a broken stream) leaves the old file whole, and rename(2) refuses a
+// directory even one created mid-write (exit 21). A file with other hard links is copied over in
+// place once fully staged, so its links keep sharing it; only a failure during that copy can leave
+// it partial.
+const writeSource = [
+  "import os,sys,stat,tempfile",
+  "p=os.environb[b'SANDBOX_SDK_PATH']",
+  "m=sys.argv[1]",
+  "n=0",
+  "while os.path.islink(p):",
+  " n+=1",
+  " if n>40: sys.stderr.write('too many levels of symbolic links\\n'); sys.exit(22)",
+  " p=os.path.join(os.path.dirname(p),os.readlink(p))",
+  "if os.path.isdir(p): sys.stderr.write('is a directory\\n'); sys.exit(21)",
+  "d=os.path.dirname(p) or b'.'",
+  "os.makedirs(d,exist_ok=True)",
+  "try: st=os.stat(p)",
+  "except FileNotFoundError: st=None",
+  "fd,t=tempfile.mkstemp(dir=d,prefix=b'.sandbox-sdk-write.')",
+  "try:",
+  " with os.fdopen(fd,'wb') as f:",
+  "  while True:",
+  "   b=sys.stdin.buffer.read(1048576)",
+  "   if not b: break",
+  "   f.write(b)",
+  " if st is not None and stat.S_ISREG(st.st_mode) and st.st_nlink>1:",
+  "  with open(t,'rb') as s, open(p,'wb') as f:",
+  "   while True:",
+  "    b=s.read(1048576)",
+  "    if not b: break",
+  "    f.write(b)",
+  "  if m: os.chmod(p,int(m,8))",
+  " else:",
+  "  os.chmod(t,int(m,8) if m else stat.S_IMODE(st.st_mode) if st else 0o644)",
+  "  try: os.rename(t,p)",
+  "  except IsADirectoryError: sys.stderr.write('is a directory\\n'); sys.exit(21)",
+  "finally:",
+  " if os.path.lexists(t): os.unlink(t)",
+].join("\n");
+
 const writeProgram = (mode: number | undefined) =>
-  `set -e; p="$SANDBOX_SDK_PATH"; if [ -L "$p" ]; then p="$(readlink -f -- "$p")"; fi; if [ -d "$p" ]; then echo "is a directory" >&2; exit 21; fi; d="$(dirname -- "$p")"; mkdir -p -- "$d"; t="$(mktemp "$d/.sandbox-sdk-write.XXXXXX")"; trap 'rm -f -- "$t"' EXIT; cat > "$t"; ${
-    mode === undefined
-      ? `if [ -e "$p" ]; then chmod "$(stat -c %a -- "$p")" -- "$t"; else chmod 644 -- "$t"; fi`
-      : `chmod ${mode.toString(8)} -- "$t"`
-  }; mv -f -- "$t" "$p"; trap - EXIT`;
+  python(writeSource, mode === undefined ? "" : mode.toString(8));
 
 // Prints argv[3] bytes of regular file argv[1] from offset argv[2] (-1: to the end); exit 3 if absent.
 const readProgram =
@@ -392,6 +427,9 @@ export function createArchilProvider(
 
         if (result.exitCode === 21) throw failure("Path is a directory", "invalid_argument", id);
 
+        if (result.exitCode === 22)
+          throw failure("Path is a symlink loop", "invalid_argument", id);
+
         if (result.exitCode !== 0) throw failure("File write failed", "provider", id);
       },
       read: async (path, range) => {
@@ -511,15 +549,16 @@ export function createArchilProvider(
   async function remove(c: Archil, id: string): Promise<boolean> {
     const deadline = Date.now() + 120_000;
 
-    // Every request is bounded by what is left of the deadline: a stalled call reports false.
-    const within = async <T>(action: Promise<T>): Promise<T | "late"> =>
-      bounded(action, Math.max(0, deadline - Date.now()));
+    // Every request is bounded by what is left of the deadline, and none starts after it: a stalled
+    // call, or a deadline already past, reports false.
+    const within = async <T>(action: () => Promise<T>): Promise<T | "late"> =>
+      Date.now() >= deadline ? "late" : bounded(action(), deadline - Date.now());
 
     for (;;) {
       let box: Sandbox | "late";
 
       try {
-        box = await within(c.sandboxes.get(id));
+        box = await within(() => c.sandboxes.get(id));
       } catch (error) {
         if ([400, 404].includes(nativeStatus(error) ?? 0)) return true;
         throw error;
@@ -532,10 +571,10 @@ export function createArchilProvider(
       try {
         // A non-waiting stop, polled below under the deadline: a sandbox stuck stopping can't hang it.
         if (!["stopped", "exited", "failed", "stopping"].includes(box.status))
-          if ((await within(box.stop({ wait: false }))) === "late") return false;
+          if ((await within(() => box.stop({ wait: false }))) === "late") return false;
 
         if (["stopped", "exited", "failed"].includes(box.status)) {
-          if ((await within(box.delete())) === "late") return false;
+          if ((await within(() => box.delete())) === "late") return false;
 
           return true;
         }
@@ -546,9 +585,9 @@ export function createArchilProvider(
         if (nativeStatus(error) !== 409) throw error;
       }
 
-      if (Date.now() > deadline) return false;
+      if (Date.now() >= deadline) return false;
 
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(500, deadline - Date.now())));
     }
   }
 
@@ -984,8 +1023,19 @@ export function createArchilProvider(
       }),
     resume: (id) =>
       safe(id, async () => {
+        const box = await sandbox(id);
+        await box.refresh();
+
+        // A sandbox that failed at runtime can't be resumed here: say so rather than report success.
+        if (box.status === "failed")
+          throw failure(
+            `Sandbox ${id} failed on Archil and can't be resumed; destroy it and create another`,
+            "unavailable",
+            id,
+          );
+
         // Archil refuses a resume while the pause is still settling.
-        await wake(await sandbox(id));
+        await wake(box);
       }),
     terminal: (id, terminalOptions) => safe(id, () => terminal(id, terminalOptions)),
     native(id) {

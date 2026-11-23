@@ -468,18 +468,46 @@ async function quietly<T>(action: () => Promise<T>): Promise<T> {
 }
 
 /** Stops an Archil sandbox without waiting on a stop that never settles: at most 60 s, then delete. */
+/** Deletes within 60 s; a delete still unanswered then is left to the final cleanup sweep. */
+async function deleteBounded(box: import("disk").Sandbox) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const outcome = await Promise.race([
+      box.delete().then(() => "deleted" as const),
+      new Promise<"late">((resolve) => {
+        timer = setTimeout(() => resolve("late"), 60_000);
+      }),
+    ]);
+
+    if (outcome === "late") throw new Error(`Archil delete of ${box.id} was not answered in 60 s`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function stopBounded(box: import("disk").Sandbox) {
   const deadline = Date.now() + 60_000;
 
-  // Each request gets what is left of the deadline, so a stalled call can't hold cleanup.
-  const within = (action: Promise<unknown>): Promise<void> =>
-    Promise.race([
-      action.then(
-        () => {},
-        () => {},
-      ),
-      new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
-    ]);
+  // Each request gets what is left of the deadline, so a stalled call can't hold cleanup. The timer
+  // is cleared once the race settles, so it never keeps a finished run alive.
+  const within = async (action: Promise<unknown>): Promise<void> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      await Promise.race([
+        action.then(
+          () => {},
+          () => {},
+        ),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 
   await within(box.stop({ wait: false }));
 
@@ -863,7 +891,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
           },
           destroy: async () => {
             await stopBounded(found);
-            await found.delete();
+            await deleteBounded(found);
           },
           exists: async () => {
             try {
@@ -888,7 +916,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
       destroy: async () => {
         // A sandbox that already stopped or failed refuses stop; delete it either way.
         await stopBounded(box);
-        await box.delete();
+        await deleteBounded(box);
       },
       exists: async () => {
         try {

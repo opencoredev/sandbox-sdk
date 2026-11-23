@@ -209,7 +209,10 @@ export async function createSandbox(
         const pending = provider.create(request).catch(async (error) => {
           // A native unique-name conflict can race the initial lookup on another client.
           if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) {
-            const existing = await provider.find(options.key);
+            // The create's own error (often outcome_unknown) says more than a failed follow-up lookup.
+            const existing = await provider.find(options.key).catch(() => {
+              throw error;
+            });
 
             if (existing) {
               created = false;
