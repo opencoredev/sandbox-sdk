@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { describe, expect, test } from "vitest";
 import { createSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
@@ -374,6 +374,81 @@ describe("Archil create", () => {
       expect(b.labels).toMatchObject({ who: winner });
     } finally {
       await a.destroy();
+    }
+  });
+
+  test("a second keyed client redacts the creator's secrets", async () => {
+    const key = `secret-${crypto.randomUUID()}`;
+    const secret = `s3cr3t-${crypto.randomUUID()}`;
+
+    const [a, b] = await Promise.all([
+      createSandbox(provider(), { key, secrets: { SMOKE_TOKEN: secret } }),
+      createSandbox(provider(), { key, secrets: { SMOKE_TOKEN: secret } }),
+    ]);
+
+    try {
+      const other = a.created ? b : a;
+      // A third client passes no secrets: it can only learn them from the record setup wrote.
+      const third = await createSandbox(provider(), { key });
+      expect((await other.run('printf %s "$SMOKE_TOKEN"')).stdout).not.toContain(secret);
+      expect((await third.run('printf %s "$SMOKE_TOKEN"')).stdout).not.toContain(secret);
+    } finally {
+      await a.destroy();
+    }
+  });
+
+  test("the secret names are recorded before the marker that makes a sandbox findable", async () => {
+    const p = provider();
+
+    const info = await p.create({
+      labels: {},
+      secretNames: ["SMOKE_TOKEN"],
+      env: { SMOKE_TOKEN: "x" },
+    });
+
+    try {
+      const box = archilState.sandboxes.get(info.id);
+
+      if (!box) throw new Error("fake sandbox missing");
+
+      const record = await readFile(
+        box.guest.rewrite("/tmp/.sandbox-sdk/secret-names.json"),
+        "utf8",
+      );
+
+      expect(JSON.parse(record)).toEqual(["SMOKE_TOKEN"]);
+    } finally {
+      await p.destroy(info.id);
+    }
+  });
+
+  test("a keyed name whose marker holds another key is not this key's sandbox", async () => {
+    const key = `foreign-${crypto.randomUUID()}`;
+    const name = `sbxsdk-k${createHash("sha256").update(key).digest("hex").slice(0, 40)}`;
+    const box = await addForeign(name, "paused");
+    const marker = box.guest.rewrite("/var/lib/sandbox-sdk/metadata.json");
+    await mkdir(dirname(marker), { recursive: true });
+    await writeFile(marker, JSON.stringify({ key: "someone-else", labels: {} }));
+
+    try {
+      expect(await provider().find(key)).toBeUndefined();
+    } finally {
+      archilState.sandboxes.delete(box.id);
+      await box.guest.destroy();
+    }
+  });
+
+  test("a keyed create whose lost answer hides a failed boot deletes it", async () => {
+    const key = `failed-${crypto.randomUUID()}`;
+    archilState.dropNextCreateAnswer = true;
+    archilState.settleTo = "failed";
+    const before = archilState.sandboxes.size;
+
+    try {
+      await expect(createSandbox(provider(), { key })).rejects.toBeInstanceOf(Error);
+      expect(archilState.sandboxes.size).toBe(before);
+    } finally {
+      archilState.settleTo = undefined;
     }
   });
 

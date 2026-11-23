@@ -44,6 +44,8 @@ bun add @opencoredev/sandbox-sdk disk
 
 The adapter is written against `disk` 1.12.1 and accepts `^1.12.1`. Create an API key in the Archil console and set `ARCHIL_API_KEY`, or pass `archil({ apiKey })`. Keys belong to one region. For a key outside `aws-us-east-1`, the default, set `ARCHIL_REGION` or pass `region`: `aws-us-west-2`, `aws-eu-west-1` or `gcp-us-central1`.
 
+If you bundle your app, keep `disk` external. It loads its HTTP client, `undici`, with a computed `import()` the first time it sends a request, so a bundle that inlines `disk` can't find it. The adapter then fails with `unavailable` and says so.
+
 ## Quickstart
 
 ```ts

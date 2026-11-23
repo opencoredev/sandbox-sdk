@@ -840,7 +840,14 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
             await found.stop().catch(() => {});
             await found.delete();
           },
-          exists: async () => true,
+          exists: async () => {
+            try {
+              return (await client.sandboxes.get(found.id)).status !== "deleted";
+            } catch (cause) {
+              if (cause instanceof m.ArchilApiError && cause.status === 404) return false;
+              throw cause;
+            }
+          },
         });
       throw error;
     }

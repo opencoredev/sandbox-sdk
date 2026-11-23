@@ -192,6 +192,7 @@ export async function createSandbox(
           .create({
             ...input,
             env: { ...options.env, ...secrets },
+            secretNames: Object.keys(secrets ?? {}),
             labels: { ...options.labels, ...sdkLabel },
           })
           .catch(async (error) => {

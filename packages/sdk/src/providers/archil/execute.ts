@@ -262,6 +262,12 @@ export async function execute({
         await disconnect(late.process);
       }
 
+      for (const stream of ["stdout", "stderr"] as const) emit(stream, decoders[stream].decode());
+      const tail = gaps.tail(late.process.cursor);
+
+      if (tail > 0)
+        emit("stdout", `\n[sandbox-sdk: Archil's output stream skipped the last ${tail} bytes]\n`);
+
       return stopped;
     }
 

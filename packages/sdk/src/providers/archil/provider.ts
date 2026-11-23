@@ -20,7 +20,7 @@ import { loadPeer } from "../../peer.js";
 import { files, python, type Guest } from "../../shared/guest.js";
 import { isObject, isString, isStringRecord } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
-import { archilError, failure, nativeStatus, notRunning } from "./errors.js";
+import { archilError, failure, isTransportMissing, nativeStatus, notRunning } from "./errors.js";
 import {
   bounded,
   collect,
@@ -171,9 +171,13 @@ function stateOf(status: SandboxStatus): SandboxInfo["state"] | undefined {
  */
 const markerPath = "/var/lib/sandbox-sdk/metadata.json";
 
+// Where the core records secret names (src/handle.ts).
+const secretNamesPath = "/tmp/.sandbox-sdk/secret-names.json";
+
 // Makes the default working directory, then publishes the marker atomically, in one process. The
 // marker is last: a keyed lookup that sees it knows setup finished.
-const setupCommand = `mkdir -p /workspace /var/lib/sandbox-sdk && printf '%s' "$SANDBOX_SDK_MARKER" > ${markerPath}.tmp && mv -f ${markerPath}.tmp ${markerPath}`;
+// The core's secret-names record goes first: a client that sees the marker can always recover them.
+const setupCommand = `mkdir -p /workspace /var/lib/sandbox-sdk /tmp/.sandbox-sdk && printf '%s' "$SANDBOX_SDK_SECRET_NAMES" > ${secretNamesPath}.tmp && mv -f ${secretNamesPath}.tmp ${secretNamesPath} && printf '%s' "$SANDBOX_SDK_MARKER" > ${markerPath}.tmp && mv -f ${markerPath}.tmp ${markerPath}`;
 
 interface Marker {
   key?: string;
@@ -482,7 +486,9 @@ export function createArchilProvider(
       },
     );
 
+    // Observed at once, so a stream that drops before anyone waits is not an unhandled rejection.
     const ended = process.wait();
+    ended.catch(() => {});
 
     return {
       write: (data) => safe(id, () => process.sendInput(data)),
@@ -494,9 +500,12 @@ export function createArchilProvider(
       },
       close: () =>
         safe(id, async () => {
-          if (!(await terminate(process)))
-            throw failure("Terminal could not be closed", "outcome_unknown", id);
-          await disconnect(process);
+          try {
+            if (!(await terminate(process)))
+              throw failure("Terminal could not be closed", "outcome_unknown", id);
+          } finally {
+            await disconnect(process);
+          }
         }),
       wait: () =>
         safe(id, async () => {
@@ -554,8 +563,9 @@ export function createArchilProvider(
         } catch (error) {
           const status = nativeStatus(error);
 
-          // A 4xx refusal made nothing (a name conflict included: the core looks the key up again).
-          if (status !== undefined && status < 500) throw error;
+          // A 4xx refusal made nothing (a name conflict included: the core looks the key up again),
+          // and neither did a transport that never loaded.
+          if ((status !== undefined && status < 500) || isTransportMissing(error)) throw error;
 
           // No answer, or a 5xx: the create may have landed. The name is this attempt's alone
           // unless keyed; absence right after is not proof, so it stays unknown.
@@ -603,7 +613,10 @@ export function createArchilProvider(
           }
 
           const prepared = await collect(runner(box.id), box.id, setupCommand, {
-            env: { SANDBOX_SDK_MARKER: marker },
+            env: {
+              SANDBOX_SDK_MARKER: marker,
+              SANDBOX_SDK_SECRET_NAMES: JSON.stringify(input.secretNames ?? []),
+            },
           });
 
           if (prepared.exitCode !== 0) throw failure("Sandbox setup failed", "provider", box.id);
@@ -618,8 +631,19 @@ export function createArchilProvider(
         } catch (error) {
           boxes.delete(box.id);
 
-          // Not proven to be this create's: leave it to its owner.
-          if (adopted) throw archilError(error, box.id);
+          if (adopted) {
+            // A sandbox that failed to boot is no use to anyone: delete it whoever made it.
+            if (box.status === "failed") await remove(c, box.id).catch(() => false);
+            else
+              // Not proven to be this create's (it never ran, or the caller gave up): leave it to its
+              // owner, and name it so the caller can reconcile.
+              throw failure(
+                `Sandbox creation outcome is unknown; sandbox ${box.id} may be this create's; delete it if no other client uses this key`,
+                "outcome_unknown",
+                box.id,
+              );
+            throw archilError(error, box.id);
+          }
 
           // The sandbox exists and is billed: settle the failure only once it is gone.
           const cleaned = await remove(c, box.id).catch(() => false);
@@ -636,28 +660,25 @@ export function createArchilProvider(
     find: (key) =>
       safe(undefined, async () => {
         const name = keyedName(key);
-        const box = (await (await api()).sandboxes.list()).find((native) => native.name === name);
-
-        if (!box) return undefined;
-        boxes.set(box.id, box);
-
-        // A stopped sandbox cold-boots from its disk; a paused one wakes on its first command. A
-        // pending or running sandbox without its marker is still being set up by its creator, who
-        // deletes it if setup fails: wait for the marker, or for the sandbox to go.
-        const deadline = Date.now() + readyTimeoutMs + markerWaitMs;
-        let started = false;
-
-        const late = () =>
-          failure("Keyed sandbox is still being set up by another client", "timeout", box.id);
-
         // One deadline covers every native call, so no single stalled request outlasts it.
-        const within = async <T>(action: Promise<T>): Promise<T> => {
+        const deadline = Date.now() + readyTimeoutMs + markerWaitMs;
+
+        const late = (id?: string) =>
+          failure("Keyed sandbox is still being set up by another client", "timeout", id);
+
+        const within = async <T>(action: Promise<T>, id?: string): Promise<T> => {
           const result = await bounded(action, Math.max(0, deadline - Date.now()));
 
-          if (result === "late") throw late();
+          if (result === "late") throw late(id);
 
           return result;
         };
+
+        const c = await api();
+        const box = (await within(c.sandboxes.list())).find((native) => native.name === name);
+
+        if (!box) return undefined;
+        boxes.set(box.id, box);
 
         const gone = () => {
           boxes.delete(box.id);
@@ -665,24 +686,29 @@ export function createArchilProvider(
           return undefined;
         };
 
+        // A stopped or paused sandbox is started or resumed: only a running one can show the marker
+        // that proves it is this key's. A pending or running one without it is still being set up
+        // by its creator, who deletes it if setup fails: wait for the marker, or for it to go.
+        let woken = false;
+
         for (;;) {
           if (stateOf(box.status) === undefined) return gone();
 
-          if (box.status === "paused" || box.status === "pausing")
-            return {
-              id: box.id,
-              key,
-              labels: { ...sdkLabel },
-              state: "paused",
-              createdAt: box.createdAt.getTime(),
-            };
-
           try {
-            if ((box.status === "stopped" || box.status === "exited") && !started) {
-              started = true;
-              await within(box.start({ wait: false }));
-            } else if (box.status === "running") {
-              const marker = await within(markerOf(box.id).catch(() => undefined));
+            if (box.status !== "running" && box.status !== "pending" && !woken) {
+              woken = true;
+              await within(wake(box), box.id);
+              continue;
+            }
+
+            if (box.status === "running") {
+              const marker = await within(
+                markerOf(box.id).catch(() => undefined),
+                box.id,
+              );
+
+              // A marker for another key means the name is not this key's sandbox.
+              if (marker && marker.key !== key) return gone();
 
               if (marker)
                 return {
@@ -694,9 +720,9 @@ export function createArchilProvider(
                 };
             }
 
-            if (Date.now() > deadline) throw late();
+            if (Date.now() > deadline) throw late(box.id);
             await sleep(500);
-            await within(box.refresh());
+            await within(box.refresh(), box.id);
           } catch (error) {
             // Deleted meanwhile: the creator's setup failed, so the key is free again.
             if (nativeStatus(error) === 404) return gone();

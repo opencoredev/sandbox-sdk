@@ -42,9 +42,38 @@ function isAccountLimit(status: number | undefined, code: string | undefined) {
   );
 }
 
+/**
+ * `disk` loads its HTTP transport, undici, with a computed `import()` on first use, so a bundle
+ * that inlines `disk` cannot resolve it (undici is `disk`'s own dependency, not a top-level one).
+ * Nothing was sent when this fails.
+ */
+export function isTransportMissing(cause: unknown): boolean {
+  for (let current = cause, depth = 0; isObject(current) && depth < 3; depth++) {
+    if (
+      "code" in current &&
+      current.code === "ERR_MODULE_NOT_FOUND" &&
+      current instanceof Error &&
+      current.message.includes("'undici'")
+    )
+      return true;
+    current = "cause" in current ? current.cause : undefined;
+  }
+
+  return false;
+}
+
+const transportHint =
+  "Keep disk external when bundling (it loads undici at run time), or install undici next to the bundle.";
+
 /** An Archil failure as a SandboxError, keeping only the error's name, HTTP status and code. */
 export function archilError(cause: unknown, sandboxId?: string): SandboxError {
   if (cause instanceof SandboxError) return cause;
+
+  if (isTransportMissing(cause))
+    return new SandboxError(
+      `disk could not load its undici dependency in this bundle. ${transportHint}`,
+      { code: "unavailable", provider: "archil", sandboxId, hint: transportHint },
+    );
   const status = nativeStatus(cause);
   const code = nativeCode(cause);
   const name = cause instanceof Error ? cause.name : undefined;

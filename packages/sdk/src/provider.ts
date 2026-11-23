@@ -35,6 +35,12 @@ export interface CreateInput {
   key?: string;
   size?: "small" | "medium" | "large" | { cpu: number; memoryMb: number; diskGb?: number };
   env?: Record<string, string>;
+  /**
+   * The names in `env` that are secrets. The core records them in the sandbox after create; an
+   * adapter that publishes its own readiness marker writes the same record first, so a second
+   * client that finds the sandbox can always recover them.
+   */
+  secretNames?: readonly string[];
   network?: "all" | "none" | { allow: string[] };
   ports?: number[];
   idleTimeoutMs?: number;
