@@ -358,15 +358,20 @@ describe("Archil create", () => {
 
   test("a keyed lookup during setup waits for the creator's marker", async () => {
     const key = `race-${crypto.randomUUID()}`;
-    const first = provider();
-    const created = createSandbox(first, { key, labels: { who: "first" } });
-    // A second client looks the key up while the first may still be setting up.
-    const second = createSandbox(provider(), { key });
-    const [a, b] = await Promise.all([created, second]);
+
+    // Two clients race for one key; either may win the name. The other must wait for the winner's
+    // setup and see its labels, never a half-made sandbox.
+    const [a, b] = await Promise.all([
+      createSandbox(provider(), { key, labels: { who: "a" } }),
+      createSandbox(provider(), { key, labels: { who: "b" } }),
+    ]);
 
     try {
       expect(b.id).toBe(a.id);
-      expect(b.labels).toMatchObject({ who: "first" });
+      expect([a.created, b.created].filter(Boolean)).toHaveLength(1);
+      const winner = a.created ? "a" : "b";
+      expect(a.labels).toMatchObject({ who: winner });
+      expect(b.labels).toMatchObject({ who: winner });
     } finally {
       await a.destroy();
     }
@@ -412,14 +417,63 @@ describe("Archil create", () => {
     }
   });
 
-  test("a paused sandbox lists only without a label filter", async () => {
+  test("a paused sandbox, whose marker cannot be read, is never listed or reaped", async () => {
     const p = provider();
     const box = await createSandbox(p, { labels: { group: "paused-list" } });
 
     try {
       await archilState.sandboxes.get(box.id)?.pause();
       expect(await listSandboxes(p, { labels: { group: "paused-list" } })).toEqual([]);
-      expect((await listSandboxes(p)).map((info) => info.id)).toContain(box.id);
+      expect((await listSandboxes(p)).map((info) => info.id)).not.toContain(box.id);
+      await reapSandboxes(p, { olderThanMs: 0 });
+      expect(archilState.sandboxes.has(box.id)).toBe(true);
+      // An explicit ID still connects: the caller vouches for it.
+      expect((await p.connect(box.id)).state).toBe("paused");
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("a foreign paused sandbox in the SDK's exact name format is not reaped", async () => {
+    const p = provider();
+    const foreign = await addForeign(`sbxsdk-${crypto.randomUUID()}`, "paused");
+
+    try {
+      await reapSandboxes(p, { olderThanMs: 0 });
+      expect(archilState.sandboxes.has(foreign.id)).toBe(true);
+    } finally {
+      archilState.sandboxes.delete(foreign.id);
+      await foreign.guest.destroy();
+    }
+  });
+
+  test("explicit resume waits for a pause still settling", async () => {
+    const p = provider();
+    const box = await createSandbox(p);
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      fake.status = "pausing";
+      setTimeout(() => {
+        fake.status = "paused";
+      }, 300);
+      await p.resume?.(box.id);
+      expect(fake.status).toBe("running");
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("a keyed create whose answer is lost adopts only its own sandbox", async () => {
+    const key = `lost-${crypto.randomUUID()}`;
+    archilState.dropNextCreateAnswer = true;
+    const box = await createSandbox(provider(), { key, labels: { who: "lost" } });
+
+    try {
+      expect(box.created).toBe(true);
+      expect((await box.run("echo ok")).stdout).toBe("ok\n");
     } finally {
       await box.destroy();
     }

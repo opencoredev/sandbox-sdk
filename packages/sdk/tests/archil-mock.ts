@@ -10,7 +10,7 @@ import type {
 } from "../src/providers/archil/execute.js";
 import { MockGuest } from "./mock-guest.js";
 
-type Status = "pending" | "running" | "paused" | "stopped" | "failed" | "deleted";
+type Status = "pending" | "running" | "pausing" | "paused" | "stopped" | "failed" | "deleted";
 
 class FakeApiError extends Error {
   override name = "ArchilApiError";
@@ -56,9 +56,17 @@ class FakeProcess implements ArchilProcess {
   #killed = false;
   #timedOut = false;
 
-  constructor(guest: MockGuest, command: string, options: ArchilRunOptions) {
+  constructor(
+    guest: MockGuest,
+    command: string,
+    options: ArchilRunOptions,
+    sandboxEnv: Record<string, string> = {},
+  ) {
     const env = Object.fromEntries(
-      Object.entries(options.env ?? {}).map(([key, value]) => [key, guest.rewrite(value)]),
+      Object.entries({ ...sandboxEnv, ...options.env }).map(([key, value]) => [
+        key,
+        guest.rewrite(value),
+      ]),
     );
 
     this.#child = spawn("sh", ["-c", guest.rewrite(command)], {
@@ -97,6 +105,7 @@ class FakeProcess implements ArchilProcess {
           }, options.timeoutSeconds * 1000);
 
     this.#ended = new Promise((resolve) => {
+      this.#child.on("exit", () => this.#group("SIGKILL"));
       this.#child.on("close", (code) => {
         clearTimeout(timer);
 
@@ -131,7 +140,8 @@ class FakeProcess implements ArchilProcess {
 }
 
 class FakeSandbox {
-  status: Status = "running";
+  status: Status = "pending";
+  env: Record<string, string> = {};
   readonly createdAt = new Date();
   readonly files = {
     downloadFile: async (path: string, write: (chunk: Uint8Array) => void) => {
@@ -153,7 +163,7 @@ class FakeSandbox {
       throw new FakeApiError("Sandbox is not running", 409, "sandbox_not_running");
     archilState.runs.push(command);
 
-    return new FakeProcess(this.guest, command, options);
+    return new FakeProcess(this.guest, command, options, this.env);
   }
   async refresh() {
     if (this.status === "deleted") throw new FakeApiError("Sandbox not found", 404, "not_found");
@@ -178,6 +188,9 @@ class FakeSandbox {
     return this;
   }
   async resume() {
+    // Archil refuses a resume until the pause has settled.
+    if (this.status !== "paused" && this.status !== "running")
+      throw new FakeApiError("Sandbox is not paused", 409, "sandbox_not_paused");
     this.status = "running";
 
     return this;
@@ -218,6 +231,8 @@ class FakeArchil {
       }
 
       const box = new FakeSandbox(guest.id, request.name ?? guest.id, guest);
+      box.env = { ...request.env };
+      box.status = "running";
       archilState.sandboxes.set(box.id, box);
 
       if (archilState.settleTo !== undefined) box.status = "pending";

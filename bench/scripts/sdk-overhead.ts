@@ -819,10 +819,31 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     // characters). Same defaults as the adapter: Archil's node:24-bookworm, 1 vCPU / 2048 MiB.
     // Allocate without waiting, as the adapter does, so the ID is admitted for cleanup before the
     // readiness poll can fail; the poll stays inside this create's timing.
-    const box = await client.sandboxes.create(
-      { name: `${runId}-native-${crypto.randomUUID().slice(0, 8)}` },
-      { wait: false },
-    );
+    const nativeName = `${runId}-native-${crypto.randomUUID().slice(0, 8)}`;
+    let box: Awaited<ReturnType<typeof client.sandboxes.create>>;
+
+    try {
+      box = await client.sandboxes.create({ name: nativeName }, { wait: false });
+    } catch (error) {
+      // A refusal made nothing. A lost answer may still have allocated: the name is this create's
+      // alone, so find it, admit it for cleanup and fail this create.
+      if (error instanceof m.ArchilApiError && error.status < 500) throw error;
+      const found = (await client.sandboxes.list()).find((native) => native.name === nativeName);
+
+      if (found)
+        admit({
+          id: found.id,
+          exec: async () => {
+            throw new Error("Archil create answer was lost");
+          },
+          destroy: async () => {
+            await found.stop().catch(() => {});
+            await found.delete();
+          },
+          exists: async () => true,
+        });
+      throw error;
+    }
 
     const raw = {
       id: box.id,
@@ -833,7 +854,8 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
           throw new Error(`exit ${r.exitCode ?? r.status}`);
       },
       destroy: async () => {
-        await box.stop();
+        // A sandbox that already stopped or failed refuses stop; delete it either way.
+        await box.stop().catch(() => {});
         await box.delete();
       },
       exists: async () => {

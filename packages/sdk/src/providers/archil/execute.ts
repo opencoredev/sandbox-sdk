@@ -101,7 +101,8 @@ export function inDirectory(cwd: string, command: string): string {
   return `cd -- ${quote(cwd)} || exit 1\n(\n${command}\n)\nc=$?\n${settle}\nexit "$c"`;
 }
 
-function bounded<T>(promise: Promise<T>, ms: number): Promise<T | "late"> {
+/** The promise, or "late" once `ms` pass first. */
+export function bounded<T>(promise: Promise<T>, ms: number): Promise<T | "late"> {
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   return Promise.race([
@@ -238,8 +239,12 @@ export async function execute({
         // The handle may still arrive after the caller hears outcome_unknown: stop it then.
         void starting.then(async (landed) => {
           if (!landed.ok) return;
-          await terminate(landed.process);
-          await disconnect(landed.process);
+
+          try {
+            await terminate(landed.process);
+          } finally {
+            await disconnect(landed.process);
+          }
         });
 
         throw unconfirmed();
@@ -251,14 +256,27 @@ export async function execute({
         throw late.error;
       }
 
-      if (!(await terminate(late.process))) throw unconfirmed();
-      await disconnect(late.process);
+      try {
+        if (!(await terminate(late.process))) throw unconfirmed();
+      } finally {
+        await disconnect(late.process);
+      }
 
       return stopped;
     }
 
     if (!first.ok) throw first.error;
     const { process } = first;
+
+    // Decoded text still held and bytes lost after the last delivered message, once the process is known ended.
+    const flush = () => {
+      for (const stream of ["stdout", "stderr"] as const) emit(stream, decoders[stream].decode());
+      // The exit event carries the final cursor: bytes after the last delivered message were lost.
+      const tail = gaps.tail(process.cursor);
+
+      if (tail > 0)
+        emit("stdout", `\n[sandbox-sdk: Archil's output stream skipped the last ${tail} bytes]\n`);
+    };
 
     try {
       // A command that exits without reading its input refuses the rest; its result still stands.
@@ -277,6 +295,7 @@ export async function execute({
       if (outcome.kind !== "exit") {
         // A broken stream leaves the command running; it settles only once the command is stopped.
         if (!(await terminate(process))) throw unconfirmed();
+        flush();
 
         if (outcome.kind === "broken" && !cancelled)
           throw failure(
@@ -289,13 +308,7 @@ export async function execute({
       }
 
       await fed;
-
-      for (const stream of ["stdout", "stderr"] as const) emit(stream, decoders[stream].decode());
-      // The exit event carries the final cursor: bytes after the last delivered message were lost.
-      const tail = gaps.tail(process.cursor);
-
-      if (tail > 0)
-        emit("stdout", `\n[sandbox-sdk: Archil's output stream skipped the last ${tail} bytes]\n`);
+      flush();
       const { result } = outcome;
 
       if (result.status === "timed_out") return stopped;

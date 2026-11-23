@@ -22,6 +22,7 @@ import { isObject, isString, isStringRecord } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
 import { archilError, failure, nativeStatus, notRunning } from "./errors.js";
 import {
+  bounded,
   collect,
   disconnect,
   execute,
@@ -67,6 +68,10 @@ const sdkName =
 
 // The label the core stamps on every sandbox it creates.
 const sdkLabel: Labels = { "sandbox-sdk": "1" };
+
+// The guest variable each create sets to its own attempt ID, and the command that prints it.
+const attemptVariable = "SANDBOX_SDK_ATTEMPT";
+const readAttempt = `printf '%s' "$SANDBOX_SDK_ATTEMPT"`;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -513,6 +518,8 @@ export function createArchilProvider(
         if (input.from !== undefined)
           throw failure("Archil adapter has no snapshot restore", "unsupported");
 
+        const attempt = crypto.randomUUID();
+
         const request: CreateSandboxRequest = {
           name: input.key === undefined ? `${prefix}${crypto.randomUUID()}` : keyedName(input.key),
           ...machineFor(input.size),
@@ -521,7 +528,8 @@ export function createArchilProvider(
               ? {}
               : { baseImage: options.image }
             : { imageId: options.imageId }),
-          env: input.env,
+          // Each create's own ID, readable in the guest: proof of which create made a keyed sandbox.
+          env: { ...input.env, [attemptVariable]: attempt },
           network: networkFor(input.network),
           ports: input.ports?.length ? [...input.ports] : undefined,
           maxTtlSeconds: lifetimeFor(input.timeoutMs),
@@ -538,6 +546,7 @@ export function createArchilProvider(
           );
 
         let box: Sandbox;
+        let adopted = false;
 
         try {
           // Allocate without waiting, so the ID is held before anything else can fail.
@@ -555,8 +564,11 @@ export function createArchilProvider(
             .then((all) => all.find((native) => native.name === request.name))
             .catch(() => undefined);
 
-          if (!found || input.key !== undefined) throw unknown();
+          if (!found) throw unknown();
           box = found;
+          // A keyed name may belong to another client's create: adopt it only once its attempt ID
+          // proves it is this one, and never delete it before then.
+          adopted = input.key !== undefined;
         }
 
         const marker = JSON.stringify({ key: input.key, labels: input.labels } satisfies Marker);
@@ -577,6 +589,19 @@ export function createArchilProvider(
             throw failure(`Sandbox did not start (${box.status})`, "provider", box.id);
           boxes.set(box.id, box);
 
+          if (adopted) {
+            const seen = await collect(runner(box.id, false), box.id, readAttempt, {
+              timeoutMs: 30_000,
+            }).catch(() => undefined);
+
+            if (seen === undefined || seen.exitCode !== 0) throw unknown();
+
+            // Another client's create holds the name: the core looks the key up and finds theirs.
+            if (new TextDecoder().decode(seen.stdout) !== attempt)
+              throw failure("Another client created this keyed sandbox first", "provider", box.id);
+            adopted = false;
+          }
+
           const prepared = await collect(runner(box.id), box.id, setupCommand, {
             env: { SANDBOX_SDK_MARKER: marker },
           });
@@ -592,6 +617,9 @@ export function createArchilProvider(
           };
         } catch (error) {
           boxes.delete(box.id);
+
+          // Not proven to be this create's: leave it to its owner.
+          if (adopted) throw archilError(error, box.id);
 
           // The sandbox exists and is billed: settle the failure only once it is gone.
           const cleaned = await remove(c, box.id).catch(() => false);
@@ -619,14 +647,26 @@ export function createArchilProvider(
         const deadline = Date.now() + readyTimeoutMs + markerWaitMs;
         let started = false;
 
+        const late = () =>
+          failure("Keyed sandbox is still being set up by another client", "timeout", box.id);
+
+        // One deadline covers every native call, so no single stalled request outlasts it.
+        const within = async <T>(action: Promise<T>): Promise<T> => {
+          const result = await bounded(action, Math.max(0, deadline - Date.now()));
+
+          if (result === "late") throw late();
+
+          return result;
+        };
+
+        const gone = () => {
+          boxes.delete(box.id);
+
+          return undefined;
+        };
+
         for (;;) {
-          const now = stateOf(box.status);
-
-          if (now === undefined) {
-            boxes.delete(box.id);
-
-            return undefined;
-          }
+          if (stateOf(box.status) === undefined) return gone();
 
           if (box.status === "paused" || box.status === "pausing")
             return {
@@ -637,38 +677,30 @@ export function createArchilProvider(
               createdAt: box.createdAt.getTime(),
             };
 
-          if ((box.status === "stopped" || box.status === "exited") && !started) {
-            started = true;
-            await box.start({ wait: false });
-          } else if (box.status === "running") {
-            const marker = await markerOf(box.id).catch(() => undefined);
-
-            if (marker)
-              return {
-                id: box.id,
-                key,
-                labels: marker.labels,
-                state: "running",
-                createdAt: box.createdAt.getTime(),
-              };
-          }
-
-          if (Date.now() > deadline)
-            throw failure(
-              "Keyed sandbox is still being set up by another client",
-              "timeout",
-              box.id,
-            );
-          await sleep(500);
-
           try {
-            await box.refresh();
+            if ((box.status === "stopped" || box.status === "exited") && !started) {
+              started = true;
+              await within(box.start({ wait: false }));
+            } else if (box.status === "running") {
+              const marker = await within(markerOf(box.id).catch(() => undefined));
+
+              if (marker)
+                return {
+                  id: box.id,
+                  key,
+                  labels: marker.labels,
+                  state: "running",
+                  createdAt: box.createdAt.getTime(),
+                };
+            }
+
+            if (Date.now() > deadline) throw late();
+            await sleep(500);
+            await within(box.refresh());
           } catch (error) {
             // Deleted meanwhile: the creator's setup failed, so the key is free again.
-            if (nativeStatus(error) !== 404) throw error;
-            boxes.delete(box.id);
-
-            return undefined;
+            if (nativeStatus(error) === 404) return gone();
+            throw error;
           }
         }
       }),
@@ -684,8 +716,6 @@ export function createArchilProvider(
     list: (labels) =>
       safe(undefined, async () => {
         const result: SandboxInfo[] = [];
-        // Only labels beyond the core's own need a marker read.
-        const filtered = Object.keys(labels).some((name) => !(name in sdkLabel));
 
         const candidates = (await (await api()).sandboxes.list()).filter(
           (box) => sdkName.test(box.name) && stateOf(box.status) !== undefined,
@@ -697,9 +727,10 @@ export function createArchilProvider(
             candidates.slice(i, i + 8).map((box) => infoOf(box).catch(() => undefined)),
           );
 
+          // A paused or stopped sandbox cannot prove it is this SDK's without waking it, and a name
+          // alone proves nothing, so it is left out: reaping never deletes one it cannot verify.
           for (const found of infos)
-            if (found && (found.readable || !filtered) && matches(found.info, labels))
-              result.push(found.info);
+            if (found?.readable && matches(found.info, labels)) result.push(found.info);
         }
 
         return result;
@@ -724,11 +755,8 @@ export function createArchilProvider(
       }),
     resume: (id) =>
       safe(id, async () => {
-        const box = await sandbox(id);
-        await box.refresh();
-
-        if (box.status === "running") return;
-        await box.resume();
+        // Archil refuses a resume while the pause is still settling.
+        await wake(await sandbox(id));
       }),
     terminal: (id, terminalOptions) => safe(id, () => terminal(id, terminalOptions)),
     native(id) {

@@ -109,7 +109,7 @@ await box.resume();
 console.log((await box.run("cat /workspace/state")).stdout);
 ```
 
-Archil pauses an idle sandbox by itself after 30 minutes, or after `idleTimeoutMs` when you pass one. A sandbox that paused itself wakes on its next command, so you don't need to call `resume()` first. `listSandboxes()` reports a paused or stopped sandbox as `"paused"` or `"stopped"` with the SDK label only, because its labels are in a file that can't be read until it runs again; filtering by your own labels leaves it out.
+Archil pauses an idle sandbox by itself after 30 minutes, or after `idleTimeoutMs` when you pass one. A sandbox that paused itself wakes on its next command, so you don't need to call `resume()` first. `listSandboxes()` and `reapSandboxes()` leave out a paused or stopped sandbox: the file that proves it is the SDK's, with its key and labels, can't be read until it runs again, and a name alone is not proof. `connectSandbox(archil(), id)` still reaches it by ID. A paused sandbox accrues no compute charge, but its disk is billed until you delete it.
 
 ## Terminal
 
@@ -186,7 +186,7 @@ Archil caps how many sandboxes run at once by plan: 5 on Free, 20 on Developer a
 - No disk size: the root disk is fixed.
 - A network policy needs a paid plan; free-plan sandboxes have no outbound access.
 - `timeoutMs` under 60 seconds fails, and an expired lifetime pauses the sandbox rather than deleting it.
-- Labels of a paused or stopped sandbox can't be read until it runs again.
+- A paused or stopped sandbox is left out of `listSandboxes()` and `reapSandboxes()` until it runs again.
 
 ## How it works
 
