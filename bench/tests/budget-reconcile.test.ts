@@ -1,13 +1,14 @@
 // PR 75 re-review (P2): the budget's final reconciliation priced a sandbox's life past its
 // iteration's charge as a fresh lifetime, so it charged Vercel's one-minute minimum and creation
 // fee twice. An offline Vercel fixture gone within a minute reported $0.0056812, not $0.0028406.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
-import type { ExecInput, ExecResult } from "@opencoredev/sandbox-sdk/provider";
+import type { ExecInput, ExecResult, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { budgetUSD, estimateCost } from "../src/pricing.js";
+import * as snapshots from "../src/snapshots.js";
 import { parseV2 } from "../src/v2-config.js";
 import { writeV2 } from "../src/v2-report.js";
 import { chargeBeyond, runV2, type Charge } from "../src/v2-runner.js";
@@ -63,11 +64,32 @@ describe("chargeBeyond prices the whole observed life, less what was charged", (
   it("is null when the observed life cannot be priced", () => {
     expect(chargeBeyond({ since: 0, chargedUntil: 1_000, price: () => null }, 5_000)).toBeNull();
   });
+
+  it("subtracts explicit chargedUSD when provided and clamps at zero", () => {
+    // Restore booked for 45 s ($0.0028406), observed gone at 65 s ($0.0056806): adds one minute.
+    expect(
+      chargeBeyond(
+        { since: 65_000, chargedUntil: 110_000, chargedUSD: oneMinute, price: vercelPrice },
+        130_000,
+      ),
+    ).toBeCloseTo(0.1704 / 60, 12);
+
+    // Unbooked sandbox (chargedUSD: 0) that outlives its iteration pays its full observed life.
+    expect(
+      chargeBeyond({ since: 0, chargedUntil: 10_000, chargedUSD: 0, price: vercelPrice }, 65_000),
+    ).toBeCloseTo(vercelPrice(65_000) ?? 0, 12);
+
+    // Already over-booked sandbox clamps at zero.
+    expect(
+      chargeBeyond({ since: 0, chargedUntil: 10_000, chargedUSD: 1, price: vercelPrice }, 65_000),
+    ).toBe(0);
+  });
 });
 
 const dirs: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
@@ -174,6 +196,119 @@ describe("runV2 charges a Vercel sandbox gone within a minute once", () => {
     } finally {
       await settle;
 
+      for (const s of await backing.list({})) await destroy(s.id);
+    }
+  }, 30_000);
+
+  it("tracks a restored sandbox on its own clock and basis when it outlives its booked minute", async () => {
+    const backing = memory();
+    const destroy = backing.destroy.bind(backing);
+    const realNow = performance.now.bind(performance);
+    let offset = 0;
+
+    let sourceId = "";
+    let restoredId = "";
+    let snapshotDeleted = false;
+    let sourceDestroyed = false;
+    let restoreCleared = false;
+
+    vi.spyOn(performance, "now").mockImplementation(() => realNow() + offset);
+    vi.spyOn(snapshots.snapshotMetadata, "inspect").mockImplementation(async () => ({
+      exists: !snapshotDeleted,
+      sourceId,
+    }));
+    vi.spyOn(snapshots, "snapshotsFromSource").mockImplementation(async () =>
+      snapshotDeleted ? [] : [{ id: "snap-1" }],
+    );
+    vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {
+      snapshotDeleted = true;
+    });
+
+    const vercel: Provider = {
+      ...backing,
+      capabilities: new Set(["snapshot"]),
+      create: async (input) => {
+        const info = await backing.create(input);
+
+        if (input.from) restoredId = info.id;
+        else sourceId = info.id;
+
+        return info;
+      },
+      exec: async (id: string, input: ExecInput): Promise<ExecResult> => {
+        if (!input.command.includes("BENCH_FINGERPRINT")) return backing.exec(id, input);
+
+        // Restore runs 45 s (1st billed minute: $0.0028406) from t=10 s to t=55 s.
+        if (id === restoredId) offset += 45_000;
+        input.onChunk({ stream: "stdout", text: JSON.stringify(fingerprint) });
+
+        return { exitCode: 0, timedOut: false };
+      },
+      snapshot: async () => {
+        offset += 10_000;
+
+        return { id: "snap-1" };
+      },
+      // Source ends at t=65 s (2nd billed minute: $0.0056806); restore lingers past its 45 s
+      // booking and disappears at t=75 s (65 s after restoreStart, crossing into its 2nd minute).
+      destroy: async (id) => {
+        if (id === sourceId) {
+          offset += 10_000;
+          await destroy(id);
+          sourceDestroyed = true;
+        }
+      },
+      list: async (labels) => {
+        if (sourceDestroyed && restoredId && !restoreCleared) {
+          restoreCleared = true;
+          offset += 10_000;
+          await destroy(restoredId);
+        }
+
+        return backing.list(labels);
+      },
+    };
+
+    const out = await mkdtemp(join(tmpdir(), "bench-budget-restore-"));
+    dirs.push(out);
+
+    try {
+      const report = await runV2(
+        [
+          {
+            kind: "ready",
+            name: "vercel",
+            region: null,
+            cloud: false,
+            provider: boundFake(vercel),
+          },
+        ],
+        parseV2([
+          "--providers",
+          "vercel",
+          "--run",
+          "budget-restore-reconcile",
+          "--out",
+          out,
+          "--runs",
+          "1",
+          "--bursts",
+          "",
+          "--scenarios",
+          "snapshot",
+          "--timeout-ms",
+          "5000",
+        ]),
+        (r) => writeV2(r, out),
+      );
+
+      const budget = report.budgets.vercel;
+
+      expect(budget?.openLiabilities).toBeUndefined();
+      // Source: 2 min + fee ($0.0056806). Restore: booked 45 s ($0.0028406), gone at 65 s (+$0.00284).
+      // Total: $0.0113612 (before the fix, restore shared source's charge and stayed at $0.0085212).
+      expect(budget?.estimatedUSD).toBeCloseTo(0.0113612, 10);
+    } finally {
       for (const s of await backing.list({})) await destroy(s.id);
     }
   }, 30_000);

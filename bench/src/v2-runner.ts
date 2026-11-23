@@ -381,11 +381,13 @@ export async function fingerprinted(candidates: readonly LoadedProvider[]): Prom
  * What a sandbox's iteration charged the budget for it: its life from `since` to `chargedUntil`,
  * at `price` for a whole lifetime of a given length (billing minimum and creation fee included).
  * `chargedUntil` is `since` when nothing was charged (a sandbox no iteration claimed) and
- * `Infinity` while its iteration is still open.
+ * `Infinity` while its iteration is still open. When `chargedUSD` is set, it holds the exact USD
+ * booked to the budget for this sandbox; otherwise the charged part is priced at `chargedUntil - since`.
  */
 export type Charge = {
   since: number;
   chargedUntil: number;
+  chargedUSD?: number;
   price: (lifetimeMs: number) => number | null;
 };
 
@@ -402,7 +404,11 @@ export function chargeBeyond(charge: Charge, end: number): number | null {
   if (whole === null) return null;
 
   const charged =
-    charge.chargedUntil > charge.since ? charge.price(charge.chargedUntil - charge.since) : 0;
+    charge.chargedUSD !== undefined
+      ? charge.chargedUSD
+      : charge.chargedUntil > charge.since
+        ? charge.price(charge.chargedUntil - charge.since)
+        : 0;
 
   // An unpriceable charged part is taken as nothing: the guard over-charges, never under.
   return Math.max(0, whole - (charged ?? 0));
@@ -958,13 +964,22 @@ export async function runV2(
     /** Remove one of this iteration's sandboxes; a stress sandbox's cleanup ends by its reserve. */
     const removeOwn = (id: string) => remove(p, id, undefined, cleanupEndBy);
 
-    // Priced once the iteration ends; until then a sandbox's charge is open.
-    const charge: Charge = { since: lifeStart, chargedUntil: Infinity, price: () => null };
+    // Priced once the iteration ends; until then each sandbox's charge is open.
+    const sourceCharge: Charge = { since: lifeStart, chargedUntil: Infinity, price: () => null };
+    let currentRestoreCharge: Charge | undefined;
+
+    const restoreCharges: {
+      charge: Charge;
+      end: number;
+      durationMs: number;
+      fingerprint: Fingerprint | null;
+      cost: number | null;
+    }[] = [];
 
     /** Record a sandbox this iteration created, for cleanup and for pricing. */
-    const own = (id: string) => {
+    const own = (id: string, sandboxCharge: Charge = sourceCharge) => {
       ids.add(id);
-      charges.set(`${p.name}/${id}`, charge);
+      charges.set(`${p.name}/${id}`, sandboxCharge);
     };
 
     /** A cleanup wait: the step timeout, cut to what is left of a stress sandbox's reserve. */
@@ -1138,7 +1153,7 @@ export async function runV2(
                 if (restore) restores.identify(restore, info.id, "alive");
                 createEvidence.sandboxId = info.id;
                 createEvidence.stage = "ownership-persist";
-                own(info.id);
+                own(info.id, input.from ? (currentRestoreCharge ?? sourceCharge) : sourceCharge);
 
                 if (input.from) restoredId = info.id;
                 owned.set(`${p.name}/${info.id}`, {
@@ -1240,7 +1255,10 @@ export async function runV2(
 
                     if (restore) restores.identify(restore, nativeId, "alive");
                     createEvidence.sandboxId = nativeId;
-                    own(nativeId);
+                    own(
+                      nativeId,
+                      input.from ? (currentRestoreCharge ?? sourceCharge) : sourceCharge,
+                    );
 
                     if (allocation) allocated(allocation.app, allocation.id, nativeId);
 
@@ -2042,6 +2060,14 @@ export async function runV2(
             let restored: Sandbox | undefined;
             const restoreStart = performance.now();
 
+            const restoreCharge: Charge = {
+              since: restoreStart,
+              chargedUntil: Infinity,
+              price: () => null,
+            };
+
+            currentRestoreCharge = restoreCharge;
+
             try {
               if (snapshotReady) {
                 createClock = new PhaseClock();
@@ -2118,7 +2144,8 @@ export async function runV2(
                 }
 
                 await measureDestroy("restore-destroy", restoreId);
-                const restoredMs = performance.now() - restoreStart;
+                const restoreEnd = performance.now();
+                const restoredMs = restoreEnd - restoreStart;
                 restoredDurationMs += restoredMs;
 
                 const cost = estimateCost(
@@ -2129,6 +2156,13 @@ export async function runV2(
                 );
 
                 restoredCost = restoredCost === null || cost === null ? null : restoredCost + cost;
+                restoreCharges.push({
+                  charge: restoreCharge,
+                  end: restoreEnd,
+                  durationMs: restoredMs,
+                  fingerprint: restoredFingerprint,
+                  cost,
+                });
 
                 for (const sample of report.samples) {
                   if (
@@ -2192,6 +2226,7 @@ export async function runV2(
                 owned.delete(`${p.name}/snapshot/${id}`);
                 await persist();
               });
+              currentRestoreCharge = undefined;
             }
           }
 
@@ -2563,20 +2598,29 @@ export async function runV2(
           if (index === reconnectedHandles.length - 1) await reconnectedTo?.close();
           await previous.close();
         });
-      const duration = performance.now() - lifeStart;
+      const sourceEnd = performance.now();
+      const duration = sourceEnd - lifeStart;
 
-      charge.chargedUntil = lifeStart + duration;
+      const priceFor = (targetFp: Fingerprint | null) => {
+        const basis = reservationResources(p.name, targetFp ?? state.fp, allocation.requestedSize);
 
-      charge.price = (ms) => {
-        const usd = estimateCost(
-          p.name,
-          ms,
-          reservationResources(p.name, fp ?? state.fp, allocation.requestedSize),
-          p.region,
-        );
+        return (ms: number) => {
+          const usd = estimateCost(p.name, ms, basis, p.region);
 
-        return usd === null ? null : budgetUSD(p.name, usd);
+          return usd === null ? null : budgetUSD(p.name, usd);
+        };
       };
+
+      const sourcePrice = priceFor(fp);
+      sourceCharge.chargedUntil = sourceEnd;
+      sourceCharge.price = sourcePrice;
+
+      const restorePrices = restoreCharges.map((r) => priceFor(r.fingerprint ?? fp));
+
+      for (const [i, r] of restoreCharges.entries()) {
+        r.charge.chargedUntil = r.end;
+        r.charge.price = restorePrices[i] ?? sourcePrice;
+      }
 
       const sourceCost = estimateCost(p.name, duration, priced(fp), p.region);
 
@@ -2586,32 +2630,77 @@ export async function runV2(
       // A lower-bound estimate would under-charge the guard, so it charges the reservation's resources.
       const lowerBound = pricedResources(p.name, fp, allocation.requestedSize)?.bound === "lower";
 
-      if (cost !== null && lowerBound)
-        state.estimatedUSD += budgetUSD(
-          p.name,
-          estimateCost(
-            p.name,
-            duration + restoredDurationMs,
-            reservationResources(p.name, fp, allocation.requestedSize),
-            p.region,
-          ) ?? reserve,
+      if (cost !== null && lowerBound) {
+        const sourceBooked = sourcePrice(duration);
+
+        const restoreBooked = restoreCharges.map((r, i) =>
+          (restorePrices[i] ?? sourcePrice)(r.durationMs),
         );
-      else if (cost !== null) state.estimatedUSD += budgetUSD(p.name, cost);
-      else if (p.cloud) {
+
+        if (sourceBooked !== null && restoreBooked.every((usd) => usd !== null)) {
+          sourceCharge.chargedUSD = sourceBooked;
+          state.estimatedUSD += sourceBooked;
+
+          for (const [i, r] of restoreCharges.entries()) {
+            const booked = restoreBooked[i] ?? 0;
+            r.charge.chargedUSD = booked;
+            state.estimatedUSD += booked;
+          }
+        } else {
+          sourceCharge.chargedUSD = reserve;
+          state.estimatedUSD += reserve;
+
+          for (const r of restoreCharges) r.charge.chargedUSD = 0;
+        }
+      } else if (cost !== null) {
+        const sourceBooked = sourceCost === null ? 0 : budgetUSD(p.name, sourceCost);
+        sourceCharge.chargedUSD = sourceBooked;
+        state.estimatedUSD += sourceBooked;
+
+        for (const r of restoreCharges) {
+          const booked = r.cost === null ? 0 : budgetUSD(p.name, r.cost);
+          r.charge.chargedUSD = booked;
+          state.estimatedUSD += booked;
+        }
+      } else if (p.cloud) {
         // An unpriced iteration (usually a failed create) is charged for its measured
         // duration at conservative resources; it must not end the provider's run.
-        const settled = settledBudgetUSD(
+        const sourceSettled = settledBudgetUSD(
           p.name,
-          duration + restoredDurationMs,
+          duration,
           fp ? resources(fp) : null,
           state.fp ? resources(state.fp) : null,
         );
 
-        if (settled !== null) state.estimatedUSD += settled;
-        else {
+        const restoreSettled = restoreCharges.map((r) =>
+          settledBudgetUSD(
+            p.name,
+            r.durationMs,
+            r.fingerprint ? resources(r.fingerprint) : null,
+            fp ? resources(fp) : state.fp ? resources(state.fp) : null,
+          ),
+        );
+
+        if (sourceSettled !== null && restoreSettled.every((usd) => usd !== null)) {
+          sourceCharge.chargedUSD = sourceSettled;
+          state.estimatedUSD += sourceSettled;
+
+          for (const [i, r] of restoreCharges.entries()) {
+            const booked = restoreSettled[i] ?? 0;
+            r.charge.chargedUSD = booked;
+            state.estimatedUSD += booked;
+          }
+        } else {
+          sourceCharge.chargedUSD = reserve;
           state.estimatedUSD += reserve;
+
+          for (const r of restoreCharges) r.charge.chargedUSD = 0;
           state.stop ??= "Unknown cost/resources; reserved estimate charged to budget";
         }
+      } else {
+        sourceCharge.chargedUSD = 0;
+
+        for (const r of restoreCharges) r.charge.chargedUSD = 0;
       }
 
       const lifetime = await add(
@@ -2933,6 +3022,7 @@ export async function runV2(
     const unclaimed: Charge = {
       since: runStart,
       chargedUntil: runStart,
+      chargedUSD: 0,
       price: (ms) => {
         const usd = estimateCost(
           p.name,
