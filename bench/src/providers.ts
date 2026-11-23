@@ -317,6 +317,7 @@ const providerMembers = {
   previewMode: (target) => target.previewMode,
   inlineActivity: (target) => target.inlineActivity,
   procActivity: (target) => target.procActivity,
+  recordsSecretNames: (target) => target.recordsSecretNames,
   commandShell: (target) => target.commandShell,
   processRecordRoot: (target) => target.processRecordRoot,
   capabilities: (target) => target.capabilities,
