@@ -43,6 +43,7 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  * here from the same options and variables their adapters read.
  */
 export interface Connections {
+  archil: ArchilConfig;
   baseten: BasetenConfig;
   beam: BeamConfig;
   boat: BoatConfig;
@@ -58,6 +59,12 @@ export interface Connections {
   tenki: TenkiConfig;
   upstash: UpstashConfig;
   vercel: VercelConfig;
+}
+
+/** What `archil()` connects with (`connectClient` in the Archil adapter): key and region. */
+export interface ArchilConfig {
+  readonly apiKey: string | undefined;
+  readonly region: string;
 }
 
 /** The Docker socket `local()` talks to (`new Docker(options.dockerHost)` in the local adapter). */
@@ -106,6 +113,7 @@ const connectionOptions = z.object({
   jwtToken: z.string().optional(),
   organizationId: z.string().optional(),
   projectId: z.string().optional(),
+  region: z.string().optional(),
   target: z.string().optional(),
   teamId: z.string().optional(),
   token: z.string().optional(),
@@ -145,6 +153,15 @@ function resolve(name: string, options: ConnectionOptions): Connection {
   const env = process.env;
 
   switch (name) {
+    case "archil":
+      // As the adapter resolves them: the option, then the environment, then Archil's default.
+      return {
+        name,
+        config: {
+          apiKey: options.apiKey ?? env.ARCHIL_API_KEY,
+          region: options.region ?? env.ARCHIL_REGION ?? "aws-us-east-1",
+        },
+      };
     case "baseten":
       return { name, config: basetenConfig(options) };
     case "beam":
@@ -199,6 +216,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
 /** A connection keyed by its provider, for typed reads by name. */
 function byName(connection: Connection): Partial<Connections> {
   switch (connection.name) {
+    case "archil":
+      return { archil: connection.config };
     case "baseten":
       return { baseten: connection.config };
     case "beam":

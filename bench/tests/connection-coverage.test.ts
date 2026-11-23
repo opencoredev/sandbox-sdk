@@ -21,6 +21,8 @@ const hex = /^[0-9a-f]{16}$/;
 
 /** Everything a provider's connection reads from the environment, cleared for each test. */
 const connectionEnv = [
+  "ARCHIL_API_KEY",
+  "ARCHIL_REGION",
   "BEAM_TOKEN",
   "BEAM_WORKSPACE_ID",
   "DOCKER_HOST",
