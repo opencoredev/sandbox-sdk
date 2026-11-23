@@ -332,12 +332,20 @@ export async function reapRun(
             (r) => r.provider === p.name && r.kind === "snapshot" && r.id === snapshot.id,
           );
 
+          const previousResources = journal ? [...journal.resources] : null;
+
           if (journal) {
             journal.resources = journal.resources.filter((r) => !earlier.includes(r));
             journal.resources.push(item);
           }
 
-          await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+          try {
+            await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+          } catch (error) {
+            if (journal && previousResources) journal.resources = previousResources;
+            throw error;
+          }
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,
@@ -377,8 +385,15 @@ export async function reapRun(
             confirmed = withoutKey;
 
             if (journal) {
+              const previousResources = [...journal.resources];
               journal.resources = journal.resources.map((r) => (r === entry ? confirmed : r));
-              await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+
+              try {
+                await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+              } catch (error) {
+                journal.resources = previousResources;
+                throw error;
+              }
             }
           }
 

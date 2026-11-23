@@ -1507,7 +1507,8 @@ export async function runV2(
               }
 
               snapshotId = snap.id;
-              snapshotReady = true;
+              const previous = owned.get(`${p.name}/snapshot/${snap.id}`);
+
               owned.set(`${p.name}/snapshot/${snap.id}`, {
                 provider: p.name,
                 id: snap.id,
@@ -1515,7 +1516,16 @@ export async function runV2(
                 parent: active.id,
                 snapshotProof,
               });
-              await persist();
+
+              try {
+                await persist();
+              } catch (error) {
+                if (previous) owned.set(`${p.name}/snapshot/${snap.id}`, previous);
+                throw error;
+              }
+
+              snapshotReady = true;
+              saveKey = undefined;
 
               if (signal.aborted) {
                 await clean?.(snap.id);
@@ -1722,7 +1732,13 @@ export async function runV2(
                   if (current?.idempotencyKey !== undefined) {
                     const { idempotencyKey: _, ...withoutKey } = current;
                     owned.set(`${p.name}/snapshot/${id}`, withoutKey);
-                    await persist();
+
+                    try {
+                      await persist();
+                    } catch (error) {
+                      owned.set(`${p.name}/snapshot/${id}`, current);
+                      throw error;
+                    }
                   }
 
                   snapshotReady = true;
@@ -2401,7 +2417,13 @@ export async function runV2(
             const { idempotencyKey: _, ...withoutKey } = item;
             confirmed = withoutKey;
             owned.set(`${p.name}/snapshot/${item.id}`, confirmed);
-            await persist();
+
+            try {
+              await persist();
+            } catch (error) {
+              owned.set(`${p.name}/snapshot/${item.id}`, item);
+              throw error;
+            }
           }
 
           await deleteProvenSnapshot(
@@ -2442,6 +2464,8 @@ export async function runV2(
         for (const snapshot of await deadline(config["timeout-ms"], () =>
           snapshotsFromSource(p.name, item.id, journaledSnapshots(owned.values(), p.name, item.id)),
         )) {
+          const previous = owned.get(`${p.name}/snapshot/${snapshot.id}`);
+
           owned.set(`${p.name}/snapshot/${snapshot.id}`, {
             provider: p.name,
             id: snapshot.id,
@@ -2449,7 +2473,15 @@ export async function runV2(
             parent: item.id,
             snapshotProof: proof,
           });
-          await persist();
+
+          try {
+            await persist();
+          } catch (error) {
+            if (previous) owned.set(`${p.name}/snapshot/${snapshot.id}`, previous);
+            else owned.delete(`${p.name}/snapshot/${snapshot.id}`);
+            throw error;
+          }
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,
