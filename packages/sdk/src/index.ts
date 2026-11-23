@@ -1,4 +1,5 @@
 import type {
+  CreateInput,
   Provider,
   Capability,
   SandboxInfo,
@@ -196,27 +197,29 @@ export async function createSandbox(
           ...input
         } = options;
 
-        const pending = provider
-          .create({
-            ...input,
-            env: { ...options.env, ...secrets },
-            secretNames: Object.keys(secrets ?? {}),
-            labels: { ...options.labels, ...sdkLabel },
-          })
-          .catch(async (error) => {
-            // A native unique-name conflict can race the initial lookup on another client.
-            if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) {
-              const existing = await provider.find(options.key);
+        const request: CreateInput = {
+          ...input,
+          env: { ...options.env, ...secrets },
+          labels: { ...options.labels, ...sdkLabel },
+        };
 
-              if (existing) {
-                created = false;
+        // Only an adapter that records secret names itself is told which env entries they are.
+        if (provider.recordsSecretNames) request.secretNames = Object.keys(secrets ?? {});
 
-                return existing;
-              }
+        const pending = provider.create(request).catch(async (error) => {
+          // A native unique-name conflict can race the initial lookup on another client.
+          if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) {
+            const existing = await provider.find(options.key);
+
+            if (existing) {
+              created = false;
+
+              return existing;
             }
+          }
 
-            throw error;
-          });
+          throw error;
+        });
 
         if (options.signal) {
           const signal = options.signal;
@@ -308,6 +311,10 @@ export async function connectSandbox(
     const info = await provider.connect(id);
     const { makeHandle } = await import("./handle.js");
 
+    // A sleeping sandbox's key can't be read on such a provider, so it may be keyed: disposal closes
+    // the handle rather than destroy what may be someone's keyed sandbox.
+    const unread = provider.readsMetadataOnlyWhenRunning === true && info.state !== "running";
+
     return await makeHandle(
       provider,
       info,
@@ -315,6 +322,7 @@ export async function connectSandbox(
       { ...options, key: info.key },
       redactor,
       options.recoverSecrets ?? true,
+      unread,
     );
   } catch (error) {
     throw redactor.error(error, provider.name, id);
@@ -514,11 +522,18 @@ async function sandboxActivity(provider: Provider, id: string): Promise<"idle" |
 
   try {
     // Markers still count on procActivity adapters: an older client may have written one.
-    const [processes, runs, scanned] = await Promise.all([
-      box.processes(),
-      runMarkers(box),
-      procScanBusy(provider, id),
-    ]);
+    const probes = Promise.all([box.processes(), runMarkers(box), procScanBusy(provider, id)]);
+    let found: Awaited<typeof probes>;
+
+    try {
+      found = await probes;
+    } catch (error) {
+      // A probe refused because the sandbox went to sleep mid-check proves nothing: leave it alone.
+      if (provider.readsMetadataOnlyWhenRunning) return "busy";
+      throw error;
+    }
+
+    const [processes, runs, scanned] = found;
 
     const live = processes.some(
       (process) => process.status === "running" || process.status === "starting",

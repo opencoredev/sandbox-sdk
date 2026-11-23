@@ -303,11 +303,9 @@ export function createArchilProvider(
   }
 
   /**
-   * A runner for the sandbox. With `wake`, it wakes the sandbox once when Archil refuses a process
-   * because it is not running: an idle or lifetime expiry pauses it on its own. Metadata reads run
-   * without it, so listing never resumes a sandbox.
+   * A runner for the sandbox. A paused or stopped sandbox is refused with a resume hint, never woken.
    */
-  function runner(id: string, waking = true): ArchilRunner {
+  function runner(id: string): ArchilRunner {
     return {
       run: async (command, runOptions) => {
         const box = await sandbox(id);
@@ -315,10 +313,15 @@ export function createArchilProvider(
         try {
           return await box.run(command, runOptions);
         } catch (error) {
-          if (!waking || !notRunning(error)) throw error;
-          await wake(box);
+          if (!notRunning(error)) throw error;
 
-          return box.run(command, runOptions);
+          // Never woken implicitly: a wake from an internal check (reaping, listing) would undo
+          // Archil's own idle pause. The caller decides.
+          throw failure(
+            "Sandbox is paused or stopped (Archil pauses an idle sandbox after idleTimeoutMs, 30 minutes by default). Call box.resume() first",
+            "unavailable",
+            id,
+          );
         }
       },
     };
@@ -411,7 +414,7 @@ export function createArchilProvider(
 
   /** Reads a running sandbox's marker. Undefined when it has none: not made by this SDK, or still being made. */
   async function markerOf(id: string): Promise<Marker | undefined> {
-    const result = await collect(runner(id, false), id, `cat -- ${quote(markerPath)}`, {
+    const result = await collect(runner(id), id, `cat -- ${quote(markerPath)}`, {
       timeoutMs: 30_000,
     });
 
@@ -657,7 +660,7 @@ export function createArchilProvider(
           boxes.set(box.id, box);
 
           if (adopted) {
-            const seen = await collect(runner(box.id, false), box.id, readAttempt, {
+            const seen = await collect(runner(box.id), box.id, readAttempt, {
               timeoutMs: 30_000,
             }).catch(() => undefined);
 
@@ -746,10 +749,17 @@ export function createArchilProvider(
         let woke: "paused" | "stopped" | undefined;
         let woken = false;
 
-        const restore = async () => {
-          if (woke === "paused") await box.pause().catch(() => {});
-          else if (woke === "stopped") await box.stop().catch(() => {});
-        };
+        // At most one restore runs, bounded, however many exits ask for it.
+        let restoring: Promise<unknown> | undefined;
+
+        const restore = () =>
+          (restoring ??= bounded(
+            (async () => {
+              if (woke === "paused") await box.pause().catch(() => {});
+              else if (woke === "stopped") await box.stop().catch(() => {});
+            })(),
+            30_000,
+          ));
 
         for (;;) {
           if (stateOf(box.status) === undefined) return gone();
@@ -779,7 +789,7 @@ export function createArchilProvider(
 
               // A marker for another key means the name is not this key's sandbox.
               if (marker && marker.key !== key) {
-                await bounded(restore(), 30_000);
+                await restore();
 
                 return gone();
               }
@@ -796,7 +806,7 @@ export function createArchilProvider(
 
             if (Date.now() > deadline) {
               // Woken and still unproven: put it back as it was.
-              await bounded(restore(), 30_000);
+              await restore();
               throw late(box.id);
             }
 
@@ -806,7 +816,7 @@ export function createArchilProvider(
             // Deleted meanwhile: the creator's setup failed, so the key is free again.
             if (nativeStatus(error) === 404) return gone();
             // Any other exit after a wake leaves the sandbox unverified: put it back, bounded.
-            await bounded(restore(), 30_000);
+            await restore();
             throw error;
           }
         }

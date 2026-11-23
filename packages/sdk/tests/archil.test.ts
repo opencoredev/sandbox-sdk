@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { describe, expect, test } from "vitest";
-import { createSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
+import { connectSandbox, createSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { archilError } from "../src/providers/archil/errors.js";
 import {
   execute,
@@ -315,12 +315,65 @@ describe("Archil create", () => {
     }
   });
 
-  test("a paused sandbox wakes on its next command", async () => {
+  test("a command on a paused sandbox fails with a resume hint and wakes nothing", async () => {
     const box = await createSandbox(provider());
 
     try {
       await archilState.sandboxes.get(box.id)?.pause();
+      await expect(box.run("echo awake")).rejects.toMatchObject({
+        code: "unavailable",
+        message: expect.stringContaining("box.resume()"),
+      });
+      expect(archilState.sandboxes.get(box.id)?.status).toBe("paused");
+
+      if (!("resume" in box)) throw new Error("pause capability missing");
+      await box.resume();
       expect((await box.run("echo awake")).stdout).toBe("awake\n");
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("disposing a handle connected while its keyed sandbox slept closes it", async () => {
+    const p = provider();
+    const keyed = await createSandbox(p, { key: `dispose-${crypto.randomUUID()}` });
+
+    try {
+      await keyed.close();
+      await archilState.sandboxes.get(keyed.id)?.pause();
+
+      {
+        await using connected = await connectSandbox(provider(), keyed.id);
+        expect(connected.key).toBeUndefined();
+      }
+
+      expect(archilState.sandboxes.has(keyed.id)).toBe(true);
+    } finally {
+      await keyed.destroy();
+    }
+  });
+
+  test("idle-only reaping leaves a sandbox that went to sleep during the check alone", async () => {
+    const p = provider();
+    const box = await createSandbox(p, { labels: { group: "sleeps-mid-check" } });
+    const connect = p.connect.bind(p);
+
+    p.connect = async (id) => {
+      const info = await connect(id);
+      await archilState.sandboxes.get(id)?.pause();
+
+      return info;
+    };
+
+    try {
+      expect(
+        await reapSandboxes(p, {
+          labels: { group: "sleeps-mid-check" },
+          idleOnly: true,
+          olderThanMs: 0,
+        }),
+      ).toBe(0);
+      expect(archilState.sandboxes.get(box.id)?.status).toBe("paused");
     } finally {
       await box.destroy();
     }

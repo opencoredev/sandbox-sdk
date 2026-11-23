@@ -51,6 +51,8 @@ export async function makeHandle<N>(
   options: CreateOptions,
   redactor: Redactor,
   recoverSecrets = true,
+  /** Dispose by close even without a key: the provider could not read whether the sandbox is keyed. */
+  closeOnDispose = false,
 ): Promise<SandboxBase<N>> {
   let closed = false;
   let destroyed = false;
@@ -473,7 +475,7 @@ export async function makeHandle<N>(
       }
     },
     async [Symbol.asyncDispose]() {
-      if (options.key) await box.close();
+      if (options.key || closeOnDispose) await box.close();
       else await box.destroy();
     },
   };

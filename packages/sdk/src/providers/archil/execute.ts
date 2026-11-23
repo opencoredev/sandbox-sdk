@@ -1,5 +1,6 @@
 import type { ExecInput, ExecResult } from "../../provider.js";
 import { quote } from "../../shared/shell.js";
+import { SandboxError } from "../../errors.js";
 import { archilError, failure, nativeStatus } from "./errors.js";
 
 /** How a `disk` process ended, as `SandboxProcess.wait()` reports it. */
@@ -156,7 +157,9 @@ async function start(
   try {
     return await runner.run(command, options);
   } catch (error) {
-    if (nativeStatus(error) !== undefined) throw archilError(error, sandboxId);
+    // The adapter's own refusal (a sleeping sandbox) and Archil's answered refusals made nothing.
+    if (error instanceof SandboxError || nativeStatus(error) !== undefined)
+      throw archilError(error, sandboxId);
     throw failure(
       "Archil process connection failed; the command may have started",
       "outcome_unknown",

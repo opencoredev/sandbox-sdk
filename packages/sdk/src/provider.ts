@@ -282,7 +282,8 @@ export interface Provider<
    * A paused or stopped sandbox's key and labels can be read only by waking it (Archil keeps them in
    * a file inside the sandbox). `connect` then reports such a sandbox without them and wakes nothing;
    * the core reopens a keyed sandbox that is not running through `find`, which wakes and verifies it,
-   * and idle-only reaping leaves it alone rather than wake it to look.
+   * idle-only reaping leaves it alone rather than wake it to look, and `await using` on a handle
+   * connected while it slept closes rather than destroys it.
    */
   readonly readsMetadataOnlyWhenRunning?: boolean;
   /** Native command dialect for portable run wrappers; defaults to POSIX sh. */
