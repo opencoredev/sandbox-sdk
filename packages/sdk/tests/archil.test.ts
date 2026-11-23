@@ -438,17 +438,62 @@ describe("Archil create", () => {
     }
   });
 
-  test("a keyed create whose lost answer hides a failed boot deletes it", async () => {
+  test("a keyed create whose lost answer finds a failed boot keeps it and names it", async () => {
     const key = `failed-${crypto.randomUUID()}`;
     archilState.dropNextCreateAnswer = true;
     archilState.settleTo = "failed";
     const before = archilState.sandboxes.size;
 
     try {
+      // Its attempt ID can't be read from a guest that never ran, so it may be another client's.
       await expect(createSandbox(provider(), { key })).rejects.toBeInstanceOf(Error);
-      expect(archilState.sandboxes.size).toBe(before);
+      expect(archilState.sandboxes.size).toBe(before + 1);
     } finally {
       archilState.settleTo = undefined;
+
+      for (const [id, box] of archilState.sandboxes)
+        if (box.status === "failed") {
+          archilState.sandboxes.delete(id);
+          await box.guest.destroy();
+        }
+    }
+  });
+
+  test("a keyed sandbox woken by a lookup and found foreign is put back to sleep", async () => {
+    const key = `asleep-${crypto.randomUUID()}`;
+    const name = `sbxsdk-k${createHash("sha256").update(key).digest("hex").slice(0, 40)}`;
+    const box = await addForeign(name, "paused");
+    const marker = box.guest.rewrite("/var/lib/sandbox-sdk/metadata.json");
+    await mkdir(dirname(marker), { recursive: true });
+    await writeFile(marker, JSON.stringify({ key: "someone-else", labels: {} }));
+
+    try {
+      expect(await provider().find(key)).toBeUndefined();
+      expect(box.status).toBe("paused");
+    } finally {
+      archilState.sandboxes.delete(box.id);
+      await box.guest.destroy();
+    }
+  });
+
+  test("secret recovery refuses a read whose output skipped bytes, and retries", async () => {
+    const p = provider();
+
+    const info = await p.create({
+      labels: {},
+      secretNames: ["SMOKE_TOKEN"],
+      env: { SMOKE_TOKEN: "v" },
+    });
+
+    try {
+      archilState.dropOutputAbove = 0;
+      const found = await p.readSecretEnvironment?.(info.id);
+
+      expect(found?.record).toBe('["SMOKE_TOKEN"]');
+      expect(found?.environment.SMOKE_TOKEN).toBe("v");
+    } finally {
+      archilState.dropOutputAbove = undefined;
+      await p.destroy(info.id);
     }
   });
 

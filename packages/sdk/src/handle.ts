@@ -188,7 +188,7 @@ export async function makeHandle<N>(
       await removeIfPresent(files, "/tmp/.sandbox-sdk/marks/start.json");
     const names = Object.keys(options.secrets ?? {});
 
-    if (names.length || options.from !== undefined) {
+    if ((names.length || options.from !== undefined) && !provider.recordsSecretNames) {
       const record = JSON.stringify(names);
 
       if (provider.files.writeCreatesParents) await files.write(namesPath, record);

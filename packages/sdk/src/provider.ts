@@ -273,6 +273,11 @@ export interface Provider<
    * core then runs commands without a marker and idle reaping scans `/proc` for the SDK's env tag.
    */
   readonly procActivity?: boolean;
+  /**
+   * The adapter writes the secret-names record from `CreateInput.secretNames` itself, atomically and
+   * before the sandbox can be found, so the core does not rewrite it after create.
+   */
+  readonly recordsSecretNames?: boolean;
   /** Native command dialect for portable run wrappers; defaults to POSIX sh. */
   readonly commandShell?: "bash";
   /** Durable absolute directory for core-owned process records. */

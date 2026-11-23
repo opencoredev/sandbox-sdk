@@ -17,6 +17,7 @@ import type {
   TerminalOptions,
 } from "../../provider.js";
 import { loadPeer } from "../../peer.js";
+import { secretRecoveryCommand } from "../../run.js";
 import { files, python, type Guest } from "../../shared/guest.js";
 import { isObject, isString, isStringRecord } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
@@ -521,6 +522,39 @@ export function createArchilProvider(
     keyMode: "exact",
     // One VM per sandbox: every process runs as root in one PID namespace with /proc mounted.
     procActivity: true,
+    // Setup writes the secret-names record before the marker, so the core leaves it alone.
+    recordsSecretNames: true,
+    // Archil's output stream can skip bytes, so the secret names and environment are read through
+    // a check that refuses any gap: a lost value would otherwise switch its redaction off.
+    readSecretEnvironment: (id) =>
+      safe(id, async () => {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const result = await collect(runner(id), id, secretRecoveryCommand, {
+            timeoutMs: 30_000,
+          });
+
+          if (result.exitCode !== 0) throw failure("Secret recovery failed", "provider", id);
+
+          if (result.lost > 0) continue;
+          const wire = new TextDecoder().decode(result.stdout);
+
+          if (!wire) return undefined;
+          const separator = wire.indexOf("\0");
+
+          if (separator < 0) throw failure("Secret recovery record is malformed", "provider", id);
+          const environment: Record<string, string> = {};
+
+          for (const entry of wire.slice(separator + 1).split("\0")) {
+            const equal = entry.indexOf("=");
+
+            if (equal >= 0) environment[entry.slice(0, equal)] = entry.slice(equal + 1);
+          }
+
+          return { record: wire.slice(0, separator), environment };
+        }
+
+        throw failure("Secret recovery output was incomplete three times", "unavailable", id);
+      }),
     capabilities: new Set<ArchilCapability>(["pause", "terminal", "network-policy", "size"]),
     create: (input) =>
       safe(undefined, async () => {
@@ -631,19 +665,15 @@ export function createArchilProvider(
         } catch (error) {
           boxes.delete(box.id);
 
-          if (adopted) {
-            // A sandbox that failed to boot is no use to anyone: delete it whoever made it.
-            if (box.status === "failed") await remove(c, box.id).catch(() => false);
-            else
-              // Not proven to be this create's (it never ran, or the caller gave up): leave it to its
-              // owner, and name it so the caller can reconcile.
-              throw failure(
-                `Sandbox creation outcome is unknown; sandbox ${box.id} may be this create's; delete it if no other client uses this key`,
-                "outcome_unknown",
-                box.id,
-              );
-            throw archilError(error, box.id);
-          }
+          // Not proven to be this create's (it never ran, failed to boot, or the caller gave up):
+          // another client's create may own it, so it is never deleted here. Name it so the
+          // caller can reconcile.
+          if (adopted)
+            throw failure(
+              `Sandbox creation outcome is unknown; sandbox ${box.id} may be this create's; delete it if no other client uses this key`,
+              "outcome_unknown",
+              box.id,
+            );
 
           // The sandbox exists and is billed: settle the failure only once it is gone.
           const cleaned = await remove(c, box.id).catch(() => false);
@@ -689,7 +719,14 @@ export function createArchilProvider(
         // A stopped or paused sandbox is started or resumed: only a running one can show the marker
         // that proves it is this key's. A pending or running one without it is still being set up
         // by its creator, who deletes it if setup fails: wait for the marker, or for it to go.
+        // What a wake changed, so a sandbox that proves to be someone else's is put back.
+        let woke: "paused" | "stopped" | undefined;
         let woken = false;
+
+        const restore = async () => {
+          if (woke === "paused") await box.pause().catch(() => {});
+          else if (woke === "stopped") await box.stop().catch(() => {});
+        };
 
         for (;;) {
           if (stateOf(box.status) === undefined) return gone();
@@ -697,6 +734,7 @@ export function createArchilProvider(
           try {
             if (box.status !== "running" && box.status !== "pending" && !woken) {
               woken = true;
+              woke = box.status === "paused" || box.status === "pausing" ? "paused" : "stopped";
               await within(wake(box), box.id);
               continue;
             }
@@ -708,7 +746,11 @@ export function createArchilProvider(
               );
 
               // A marker for another key means the name is not this key's sandbox.
-              if (marker && marker.key !== key) return gone();
+              if (marker && marker.key !== key) {
+                await restore();
+
+                return gone();
+              }
 
               if (marker)
                 return {
@@ -720,7 +762,12 @@ export function createArchilProvider(
                 };
             }
 
-            if (Date.now() > deadline) throw late(box.id);
+            if (Date.now() > deadline) {
+              // Woken and still unproven: put it back as it was.
+              await restore();
+              throw late(box.id);
+            }
+
             await sleep(500);
             await within(box.refresh(), box.id);
           } catch (error) {
