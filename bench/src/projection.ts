@@ -1,7 +1,7 @@
 import type { ReportV2 } from "./v2-model.js";
 import { pricedResources } from "./billed-resources.js";
 import { estimateCost, pricing } from "./pricing.js";
-import { accountCap } from "./scenarios.js";
+import { accountCap, selectsScenario } from "./scenarios.js";
 
 /** Planning estimate only: extrapolates pilot durations, including failures, with no rate-limit prediction. */
 export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "samples">) {
@@ -157,38 +157,47 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
 
       // A dedicated cpu-sustained iteration is one sandbox, priced on its own recorded lifetime
       // (`sandbox-lifetime`, create to destroy): that covers the probe's upload and first guest
-      // clock read, which run before the measured probe step. A pilot without that row falls back
-      // to the sum of its create, fingerprint, probe and destroy steps.
+      // clock read, which run before the measured probe step. In a sustained run, every planned
+      // iteration (below `runs`) that recorded a lifetime is priced on it, even when its probe was
+      // blocked: the sandbox still ran. An iteration whose probe ran but whose lifetime is missing
+      // (an older pilot) falls back to the sum of its create, fingerprint, probe and destroy steps.
       const sustainedParts = ["cold", "fingerprint", "cpu-sustained", "destroy"];
+      const timed = (s: (typeof rows)[number]) => ["sample", "failure"].includes(s.outcome.kind);
 
-      const sustainedLifetimes = [
-        ...new Set(
-          rows
-            .filter(
-              (s) =>
-                s.scenario === "cpu-sustained" && ["sample", "failure"].includes(s.outcome.kind),
-            )
-            .map((s) => s.iteration),
-        ),
-      ].map((iteration) => {
-        const lifetime = rows.find(
+      const recordedLifetime = (iteration: number) =>
+        rows.find(
           (s) =>
             s.iteration === iteration &&
             s.scenario === "sandbox-lifetime" &&
             s.outcome.kind === "sample",
         );
 
-        return lifetime
-          ? lifetime.durationMs
-          : rows
-              .filter(
-                (s) =>
-                  s.iteration === iteration &&
-                  sustainedParts.includes(s.scenario) &&
-                  ["sample", "failure"].includes(s.outcome.kind),
-              )
-              .reduce((ms, s) => ms + s.durationMs, 0);
-      });
+      const sustainedRun = selectsScenario(report.config.scenarios, "cpu-sustained");
+
+      const sustainedIterations = [
+        ...new Set(
+          rows
+            .filter(
+              (s) =>
+                (s.scenario === "cpu-sustained" && timed(s)) ||
+                (sustainedRun &&
+                  s.scenario === "sandbox-lifetime" &&
+                  s.outcome.kind === "sample" &&
+                  s.iteration < report.config.runs),
+            )
+            .map((s) => s.iteration),
+        ),
+      ];
+
+      const sustainedLifetimes = sustainedIterations.map(
+        (iteration) =>
+          recordedLifetime(iteration)?.durationMs ??
+          rows
+            .filter(
+              (s) => s.iteration === iteration && sustainedParts.includes(s.scenario) && timed(s),
+            )
+            .reduce((ms, s) => ms + s.durationMs, 0),
+      );
 
       const cpuSustained30 = perSandbox(sustainedLifetimes, 30);
 

@@ -869,6 +869,70 @@ describe("PR 75 review: cpu-sustained projections price the whole sandbox lifeti
   it("falls back to the summed steps for a pilot that recorded no lifetime", () => {
     expect(sustained30(1000, null)).toBeCloseTo(sustained30(1000, 4000), 12);
   });
+
+  describe("in a cpu-sustained run", () => {
+    const sustainedConfig = parseV2([
+      "--providers",
+      "vercel",
+      "--account-limits",
+      "vercel=25",
+      "--scenarios",
+      "cpu-sustained",
+      "--runs",
+      "1",
+      "--workload-runs",
+      "2",
+    ]);
+
+    const at = (row: Sample, iteration: number, outcome: Sample["outcome"] = row.outcome) => ({
+      ...row,
+      iteration,
+      outcome,
+    });
+
+    const blocked: Sample["outcome"] = {
+      kind: "blocked",
+      blocked_by: "fingerprint",
+      note: "fingerprint failed",
+    };
+
+    /** Iteration 0 with its fingerprint failed, so its probe was blocked; the sandbox ran 8 s. */
+    const blockedIteration = [
+      sampleRow("cold", 1000, "vercel"),
+      at(sampleRow("fingerprint", 1000, "vercel"), 0, {
+        kind: "failure",
+        note: "fingerprint failed",
+      }),
+      at(sampleRow("cpu-sustained", 0, "vercel"), 0, blocked),
+      sampleRow("destroy", 1000, "vercel"),
+      sampleRow("sandbox-lifetime", 8000, "vercel"),
+    ];
+
+    const project = (samples: Sample[]) =>
+      projectCosts({ config: sustainedConfig, providers, samples })[0]?.stress.cpuSustained30;
+
+    it("prices a blocked probe's sandbox on its recorded lifetime", () => {
+      // Priced as a probed iteration whose sandbox ran the same 8 s.
+      expect(project(blockedIteration)).toBeCloseTo(sustained30(1000, 8000), 12);
+    });
+
+    it("leaves out a lifetime recorded past the planned runs", () => {
+      const extra = sampleRow("sandbox-lifetime", 600_000, "vercel");
+
+      expect(project([...blockedIteration, at(extra, 1)])).toBeCloseTo(
+        z.number().parse(project(blockedIteration)),
+        12,
+      );
+    });
+
+    it("still sums the steps of a probed iteration that recorded no lifetime", () => {
+      const steps = ["cold", "fingerprint", "cpu-sustained", "destroy"].map((name) =>
+        sampleRow(name, 1000, "vercel"),
+      );
+
+      expect(project(steps)).toBeCloseTo(sustained30(1000, 4000), 12);
+    });
+  });
 });
 
 describe("cpu-sustained create failures reach the published attempts", () => {
@@ -951,6 +1015,59 @@ describe("cpu-sustained create failures reach the published attempts", () => {
         blocked: 0,
         skipped: 0,
       },
+    });
+  }, 60_000);
+
+  it("schedules only `runs` iterations when --workload-runs is larger", async () => {
+    let creates = 0;
+
+    const source = await refusingRun(
+      "sustained-workload-runs",
+      [
+        "--runs",
+        "1",
+        "--workload-runs",
+        "2",
+        "--concurrency",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "cpu-sustained",
+      ],
+      () => {
+        creates++;
+
+        return true;
+      },
+    );
+
+    expect(creates).toBe(1);
+    expect([...new Set(source.samples.map((s) => s.iteration))]).toEqual([0]);
+    expect(
+      stressData(mergeSources([source], [], 45, policy), "default").cpuSustained[0]?.attempts
+        .failures,
+    ).toEqual({ accountLimit: 1, clientNetwork: 0, provider: 0 });
+  }, 60_000);
+
+  it("counts an older report's refused creates only below its source run's `runs`", async () => {
+    // What the runner wrote before it bounded stress runs by `runs`: `--runs 1 --workload-runs 2`
+    // queued two iterations, and both creates were refused.
+    const collected = await sustainedRun("sustained-older-extra", 2, () => true);
+
+    const older = {
+      ...collected,
+      config: { ...collected.config, runs: 1, "workload-runs": 2 },
+    };
+
+    expect(older.samples.filter((s) => s.scenario === "cold")).toHaveLength(2);
+    expect(
+      stressData(mergeSources([older], [], 45, policy), "default").cpuSustained[0]?.attempts,
+    ).toEqual({
+      successes: 0,
+      failures: { accountLimit: 1, clientNetwork: 0, provider: 0 },
+      blocked: 0,
+      skipped: 0,
     });
   }, 60_000);
 
@@ -1108,5 +1225,27 @@ describe("PR 75 review: stress entries keep products and tracks apart", () => {
     expect(() =>
       stressData({ ...older, stressSelectionRemoved: { "replaced-source": 2 } }, "default"),
     ).toThrow(/not split by track/);
+    expect(() =>
+      stressData({ ...older, stressSelectionRemoved: { "replaced-source": 2 } }, "same-spec"),
+    ).toThrow(/not split by track/);
+  }, 60_000);
+
+  it("gives an older single-track report's unsplit removals to its track and none to the other", async () => {
+    const [first, second] = await Promise.all([
+      sustained("older-default-a", "default"),
+      sustained("older-default-b", "default"),
+    ]);
+
+    const { stressSelectionRemovedByTrack: _split, ...merged } = mergeSources(
+      [first, second],
+      [],
+      45,
+      policy,
+    );
+
+    const older = { ...merged, stressSelectionRemoved: { "replaced-source": 2 } };
+
+    expect(stressData(older, "default").selectionRemoved).toEqual({ "replaced-source": 2 });
+    expect(stressData(older, "same-spec")).toMatchObject({ observations: 0, selectionRemoved: {} });
   }, 60_000);
 });

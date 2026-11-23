@@ -89,6 +89,8 @@ const sourceSchema = z
     config: z
       .object({
         seed: z.number().int(),
+        /** Ordinary iterations planned; absent from runs collected before it was journaled. */
+        runs: z.number().int().positive().optional(),
         scenarios: z.array(z.string()),
         bursts: z.array(finite),
         track: trackSchema.optional(),

@@ -38,6 +38,7 @@ import {
   deleteAttemptMs,
   cohortOnly,
   isCohortKind,
+  isStressSelection,
   iterationBoundMs,
   parseCohortScenario,
   scenarioNames,
@@ -2617,7 +2618,13 @@ export async function runV2(
 
   const jobs = roundRobin(
     ready.map((p) => p.name),
-    costSuite ? config["cost-runs"] : Math.max(config.runs, config["workload-runs"] ?? config.runs),
+    // A stress run has no workloads: an iteration past `runs` would create a sandbox and probe
+    // nothing, and a refused create there would count as a sustained failure.
+    costSuite
+      ? config["cost-runs"]
+      : isStressSelection(config.scenarios)
+        ? config.runs
+        : Math.max(config.runs, config["workload-runs"] ?? config.runs),
   );
 
   await schedule(

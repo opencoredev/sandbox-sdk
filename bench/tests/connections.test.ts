@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import { main } from "../src/cli.js";
 import { lookupSandbox } from "../src/existence.js";
 import { parseV2 } from "../src/v2-config.js";
 import { runV2 } from "../src/v2-runner.js";
@@ -266,6 +267,16 @@ const journalSchema = z.object({
 /** The run journal in `out`. */
 async function journalIn(out: string) {
   return journalSchema.parse(JSON.parse(await readFile(join(out, "ownership.json"), "utf8")));
+}
+
+const reportSchema = z.object({
+  providers: z.array(z.object({ name: z.string(), kind: z.enum(["ready", "skipped"]) })),
+  samples: z.array(z.unknown()),
+});
+
+/** The report the CLI wrote to `out`. */
+async function reportIn(out: string) {
+  return reportSchema.parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
 }
 
 /** Every file under `dir`, recursively, with its text. */
@@ -671,6 +682,68 @@ describe("a run never creates on a provider whose fingerprint it cannot journal"
       });
     } finally {
       await rm(out, { recursive: true, force: true });
+    }
+  });
+
+  it("the CLI exits 1 when the gate skips every provider, and runs on with one still ready", async () => {
+    vi.stubEnv("DOCKER_HOST", "unix:///tmp/bench-no-such-docker.sock");
+    vi.spyOn(connectionProbes, "dockerDaemonId").mockRejectedValue(new Error("connect ENOENT"));
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const argv = process.argv;
+    const exitCode = process.exitCode;
+
+    const loader: typeof loadProvider = async (name, env, sizes, config) =>
+      name === "memory"
+        ? { kind: "ready", name, cloud: false, region: null, provider: bound(memory()) }
+        : loadProvider(name, env, sizes, config);
+
+    async function cli(providers: string) {
+      const out = await mkdtemp(join(tmpdir(), "bench-cli-gate-"));
+
+      process.argv = [
+        "bun",
+        "cli.ts",
+        "--providers",
+        providers,
+        "--run",
+        `cli-gate-${providers.replace(",", "-")}`,
+        "--runs",
+        "1",
+        "--scenarios",
+        "command",
+        "--bursts",
+        "",
+        "--out",
+        out,
+      ];
+      process.exitCode = undefined;
+
+      try {
+        await main(loader);
+
+        return { exitCode: process.exitCode, report: await reportIn(out) };
+      } finally {
+        await rm(out, { recursive: true, force: true });
+      }
+    }
+
+    try {
+      // `local` loads ready, then the gate skips it: nothing ran, so the run failed.
+      const only = await cli("local");
+      expect(only.report.providers).toEqual([expect.objectContaining({ kind: "skipped" })]);
+      expect(only.report.samples).toEqual([]);
+      expect(only.exitCode).toBe(1);
+
+      const mixed = await cli("local,memory");
+      expect(mixed.report.providers.map((p) => [p.name, p.kind])).toEqual([
+        ["local", "skipped"],
+        ["memory", "ready"],
+      ]);
+      expect(mixed.report.samples.length).toBeGreaterThan(0);
+      expect(mixed.exitCode).toBeUndefined();
+    } finally {
+      process.argv = argv;
+      process.exitCode = exitCode;
     }
   });
 

@@ -109,8 +109,10 @@ export async function main(load: typeof loadProvider = loadProvider) {
 
   for (const p of report.providers) process.stdout.write(`${p.name}: ${p.kind} ${p.note}\n`);
 
+  // `report.providers`, not the loaded list: the run's fingerprint gate can skip a provider that
+  // loaded ready, and a run left with none created nothing.
   if (
-    !providers.some((p) => p.kind === "ready") ||
+    !report.providers.some((p) => p.kind === "ready") ||
     report.samples.some((s) => s.outcome.kind === "failure") ||
     (report.admissionStopped?.length ?? 0) > 0 ||
     (report.cleanupReview?.length ?? 0) > 0 ||

@@ -156,9 +156,14 @@ const iterationKey = (s: Pick<StressInput, "sourceRunId" | "provider" | "sourceI
  * Failed creates of a cpu-sustained run's iterations that have no probe row: `runV2` records a
  * failed create as the iteration's `cold` row and returns before the probe. Only the sustained
  * run's own `cold` rows count, never a cohort's member rows; an iteration with a probe row is
- * already counted by that row (or the failure that blocked it).
+ * already counted by that row (or the failure that blocked it). Only the iterations a source run
+ * planned a probe for count (below its `runs`): an older run with `--workload-runs` above `runs`
+ * also created extra iterations that were never going to probe.
  */
-function unprobedCreateFailures(samples: readonly StressInput[]) {
+function unprobedCreateFailures(
+  samples: readonly StressInput[],
+  plannedRuns: ReadonlyMap<string, number>,
+) {
   const probed = new Set(
     samples.flatMap((s) => (s.scenario === "cpu-sustained" ? [iterationKey(s)] : [])),
   );
@@ -168,6 +173,7 @@ function unprobedCreateFailures(samples: readonly StressInput[]) {
       s.suite === "cpu-sustained" &&
       s.scenario === "cold" &&
       s.outcome.kind === "failure" &&
+      s.sourceIteration < (plannedRuns.get(s.sourceRunId) ?? Number.POSITIVE_INFINITY) &&
       !probed.has(iterationKey(s)),
   );
 }
@@ -211,10 +217,18 @@ function sustainedAttempts(
 }
 
 /** cpu-sustained per provider and allocation. */
-function cpuSustained(samples: readonly StressInput[], seed: number) {
+function cpuSustained({
+  samples,
+  seed,
+  plannedRuns,
+}: {
+  samples: readonly StressInput[];
+  seed: number;
+  plannedRuns: ReadonlyMap<string, number>;
+}) {
   const rows = [
     ...samples.filter((s) => /^cpu-sustained(-single|-all)?$/.test(s.scenario)),
-    ...unprobedCreateFailures(samples),
+    ...unprobedCreateFailures(samples, plannedRuns),
   ];
 
   return groupBy(rows, (s) => JSON.stringify([s.provider, allocation(s)])).map((mine) => {
@@ -544,8 +558,9 @@ function sizes(units: readonly CohortUnit[]) {
 
 /**
  * The stress rows the attempt policy removed on one track. A report merged before removals were
- * kept by track holds only the total: it is this track's when every source ran on this track (or
- * nothing was removed); otherwise it cannot be split, and the report must be merged again.
+ * kept by track holds only the total. When every source ran on one track the total is that
+ * track's, and the other track removed nothing; when its runs span tracks it cannot be split
+ * (unless nothing was removed), and the report must be merged again.
  */
 function trackRemovals(report: StressReport, track: "default" | "same-spec") {
   const byTrack = report.stressSelectionRemovedByTrack;
@@ -554,7 +569,9 @@ function trackRemovals(report: StressReport, track: "default" | "same-spec") {
   const total = report.stressSelectionRemoved ?? {};
   const tracks = new Set(report.sources.map((s) => s.config.track ?? "default"));
 
-  if (Object.keys(total).length === 0 || (tracks.size === 1 && tracks.has(track))) return total;
+  if (Object.keys(total).length === 0) return {};
+
+  if (tracks.size === 1) return tracks.has(track) ? total : {};
   throw new Error(
     "The stress report's selection removals are not split by track and its runs span tracks: merge it again",
   );
@@ -597,7 +614,15 @@ export function stressData(report: StressReport | null, track: "default" | "same
     })),
     /** This track's stress rows the attempt policy removed, by whole cohort or iteration, by reason. */
     selectionRemoved: trackRemovals(report, track),
-    cpuSustained: cpuSustained(samples, report.bootstrapSeed),
+    cpuSustained: cpuSustained({
+      samples,
+      seed: report.bootstrapSeed,
+      plannedRuns: new Map(
+        report.sources.flatMap((s) =>
+          s.config.runs === undefined ? [] : [[s.runId, s.config.runs]],
+        ),
+      ),
+    }),
     cpuBurst: sizes(cpu).map((k) => ({ k, providers: cpuBurst(cpu.filter((u) => u.k === k)) })),
     burstSurvival: sizes(survival).map((k) => ({
       k,
