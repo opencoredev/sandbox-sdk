@@ -39,10 +39,11 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  * use, from the SDK's `resolveConfig`. The harness reads, snapshots and cleans up through the
  * connection of the exact adapter instance that created the sandboxes. A read sent to another
  * endpoint, account, team or project answers 404 for a sandbox that is running, which would be
- * recorded as absence. Local, Modal and Railway have no `resolveConfig`; their connection is read
- * here from the same options and variables their adapters read.
+ * recorded as absence. Archil, Local, Modal and Railway have no `resolveConfig`; their connection
+ * is read here from the same options and variables their adapters read.
  */
 export interface Connections {
+  archil: ArchilConfig;
   baseten: BasetenConfig;
   beam: BeamConfig;
   boat: BoatConfig;
@@ -58,6 +59,16 @@ export interface Connections {
   tenki: TenkiConfig;
   upstash: UpstashConfig;
   vercel: VercelConfig;
+}
+
+/**
+ * What `archil()` builds its client from (`connectClient` in the Archil adapter): the key, trimmed,
+ * and the region the key belongs to. Archil keys are region-scoped, so the region picks the
+ * control plane its requests reach.
+ */
+export interface ArchilConfig {
+  readonly apiKey: string;
+  readonly region: string;
 }
 
 /** The Docker socket `local()` talks to (`new Docker(options.dockerHost)` in the local adapter). */
@@ -106,6 +117,7 @@ const connectionOptions = z.object({
   jwtToken: z.string().optional(),
   organizationId: z.string().optional(),
   projectId: z.string().optional(),
+  region: z.string().optional(),
   target: z.string().optional(),
   teamId: z.string().optional(),
   token: z.string().optional(),
@@ -115,6 +127,16 @@ const connectionOptions = z.object({
 });
 
 export type ConnectionOptions = z.infer<typeof connectionOptions>;
+
+/** As the Archil adapter resolves it: options, then ARCHIL_API_KEY and ARCHIL_REGION. */
+function archilConfig(options: ConnectionOptions): ArchilConfig {
+  const apiKey = (options.apiKey ?? process.env.ARCHIL_API_KEY)?.trim();
+
+  if (!apiKey)
+    throw Object.assign(new Error("Archil API key is missing"), { code: "auth" });
+
+  return { apiKey, region: options.region ?? process.env.ARCHIL_REGION ?? "aws-us-east-1" };
+}
 
 /** The local adapter's socket: `dockerHost`, then DOCKER_HOST, then Docker's default socket. */
 function localConfig(options: ConnectionOptions): LocalConfig {
@@ -145,6 +167,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
   const env = process.env;
 
   switch (name) {
+    case "archil":
+      return { name, config: archilConfig(options) };
     case "baseten":
       return { name, config: basetenConfig(options) };
     case "beam":
@@ -199,6 +223,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
 /** A connection keyed by its provider, for typed reads by name. */
 function byName(connection: Connection): Partial<Connections> {
   switch (connection.name) {
+    case "archil":
+      return { archil: connection.config };
     case "baseten":
       return { baseten: connection.config };
     case "beam":

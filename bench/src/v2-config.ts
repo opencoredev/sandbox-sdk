@@ -71,6 +71,14 @@ const assignments = (value: string[]): Record<string, string> =>
     }),
   );
 
+/**
+ * Providers with no disk size option, by the reason. A size with a disk is refused here, before
+ * anything runs, so it is reported as unsupported rather than recorded as failed creates.
+ */
+const noDiskSize: ReadonlyMap<string, string> = new Map([
+  ["archil", "Archil sandboxes have no disk size option (the root disk is fixed)"],
+]);
+
 const sizes = z
   .array(z.string())
   .default([])
@@ -78,8 +86,13 @@ const sizes = z
     Object.fromEntries(
       Object.entries(assignments(value)).map(([name, raw]) => {
         if (!raw) throw new Error("Expected provider=size");
+        const size = sizeSchema.parse(sizeInput(raw));
+        const noDisk = noDiskSize.get(name);
 
-        return [name, sizeSchema.parse(sizeInput(raw))];
+        if (noDisk && !isSizePreset(size) && size.diskGb !== undefined)
+          throw new Error(`${noDisk}; pass ${name}=cpu:memoryMb`);
+
+        return [name, size];
       }),
     ),
   );

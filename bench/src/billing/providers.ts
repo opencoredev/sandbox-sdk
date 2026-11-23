@@ -6,6 +6,7 @@ import { z } from "zod";
 import { resolveConfig as vercelConfig } from "@opencoredev/sandbox-sdk/vercel";
 import { endpoint } from "../connections.js";
 import type { Json } from "../json.js";
+import { archilControlUrl, archilSandboxBody, archilUsageBody } from "../archil.js";
 import { pricing } from "../pricing.js";
 import type { OwnedSandbox } from "./input.js";
 import { collectModal, modalBillingSource, type ModalReport } from "./modal.js";
@@ -82,6 +83,8 @@ type BillingSource = {
   key: string;
   notes: string[];
 };
+
+export const archilUsageSource = "GET /api/sandboxes/{id}/usage (Archil control plane)";
 
 const sources = new Map<string, BillingSource>(
   Object.entries({
@@ -188,6 +191,16 @@ const sources = new Map<string, BillingSource>(
       key: "BEAM_TOKEN",
       notes: [
         "The dashboard's Usage page shows workspace totals; no per-sandbox billing API found. No fabricated cost.",
+      ],
+    },
+    archil: {
+      source: archilUsageSource,
+      granularity: "sandbox lifetime: vCPU-hours, memory GiB-hours and cost, sampled each minute",
+      delay: "about a minute; readable for 90 days, final once the sandbox is deleted",
+      key: "ARCHIL_API_KEY",
+      notes: [
+        "Archil's own per-sandbox cost at its rates ($0.055/vCPU-hour, $0.020/GiB-hour; https://docs.archil.com/administration/billing.md), before included allowances and prepaid credit. Compute only: disk data storage, egress and the plan minimum are excluded.",
+        "Free-plan sandboxes get deny-all egress; paid plans are unrestricted.",
       ],
     },
     freestyle: {
@@ -309,6 +322,45 @@ export function instaboxUsageQuery(row: Pick<OwnedSandbox, "startedAt">, now = D
   if (Number.isFinite(started)) query.set("from", new Date(started - 24 * 3_600_000).toISOString());
 
   return query;
+}
+
+/**
+ * How long after a sandbox's session ended (Archil's own `finished_at`) a usage read must be made to
+ * count as settled. `as_of` is when the usage was read, and the meter updates about once a minute, so
+ * a read this long after the end has seen the final minute.
+ */
+export const archilSettleMs = 120_000;
+
+/**
+ * One sandbox's usage from Archil's `GET /api/sandboxes/{id}/usage`: Archil's own cost since the
+ * sandbox was created. It is final only once the sandbox is deleted and the read (`as_of`, the read
+ * time) is at least {@link archilSettleMs} after Archil's own end of its last session (`finished_at`);
+ * without that end, or read sooner, it is provisional. The bench's last sample is not used: a sandbox
+ * left for the final cleanup sweep can run on long after it.
+ */
+export function decodeArchil(
+  raw: Json,
+  state: { deleted: boolean; endedAt: string | undefined },
+): Cost {
+  const usage = archilUsageBody.parse(raw);
+  const asOf = usage.as_of === undefined ? Number.NaN : Date.parse(usage.as_of);
+  const ended = state.endedAt === undefined ? Number.NaN : Date.parse(state.endedAt);
+  const settled = state.deleted && asOf >= ended + archilSettleMs;
+
+  const why = !state.deleted
+    ? "; the sandbox still existed"
+    : settled
+      ? ""
+      : "; provisional: the meter may not have settled since the sandbox's last sample";
+
+  return {
+    kind: "billed",
+    usd: usage.cost,
+    scope: "sandbox-lifetime",
+    complete: settled,
+    confidence: settled ? "high" : "low",
+    note: `Provider-reported cost (${usage.vcpu_hours} vCPU-hours, ${usage.memory_gib_hours} GiB-hours), before allowances and prepaid credit; storage and egress excluded${why}`,
+  };
 }
 
 export function decodeUpstash(raw: Json, id: string): Cost {
@@ -918,6 +970,7 @@ export async function collectProvider(
     "modal",
     "vercel",
     "instabox",
+    "archil",
   ].includes(provider);
 
   let blocked = offline
@@ -1182,6 +1235,26 @@ export async function collectProvider(
         );
 
         cost = decodeInstabox(usage, { deleted, started: row.startedAt !== null });
+      } else if (provider === "archil") {
+        const headers = { Authorization: `Bearer ${key ?? ""}` };
+        const base = archilControlUrl(env.ARCHIL_REGION);
+
+        // Deletion and Archil's own end of the last session first, so a usage read after them is
+        // known to be final. A sandbox already dropped (404) has no end time left: provisional.
+        const native = await transport(`${base}/api/sandboxes/${id}`, headers).then(
+          (raw) => {
+            const found = archilSandboxBody.parse(raw);
+
+            return { deleted: found.status === "deleted", endedAt: found.finishedAt };
+          },
+          (cause: unknown) => {
+            if (cause instanceof BillingHttpError && cause.status === 404)
+              return { deleted: true, endedAt: undefined };
+            throw cause;
+          },
+        );
+
+        cost = decodeArchil(await transport(`${base}/api/sandboxes/${id}/usage`, headers), native);
       } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
       else cost = unavailable("No supported per-sandbox billing source");
       result.sandboxes.push({ id: row.id, source: spec.source, cost });

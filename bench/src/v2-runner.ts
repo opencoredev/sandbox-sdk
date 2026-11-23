@@ -2177,6 +2177,33 @@ export async function runV2(
             if (metric === "network-mbps" && config["omit-network-download"]) continue;
             const value = probe.kind === "success" ? probe.result.metrics[metric] : undefined;
 
+            // A documented capability gap (Instabox blocks 1.1.1.1:443, so tcp-ms never connects) is not
+            // a provider failure. A value the probe did return is still recorded, and flagged: the
+            // publication merge drops every row a not-run rule matches, so the rule is now stale.
+            const notRun =
+              probe.kind === "success"
+                ? collectionPolicy().notRun.find(
+                    (rule) =>
+                      rule.provider === p.name &&
+                      (rule.track ?? "default") === config.track &&
+                      rule.suite === "main" &&
+                      rule.scenario === metric,
+                  )
+                : undefined;
+
+            if (notRun) {
+              const info = report.providers.find((v) => v.name === p.name);
+
+              const note =
+                value === undefined
+                  ? `${metric} documented not-run: ${notRun.reason}`
+                  : `${metric} returned a value but is documented not-run; remove its collection-policy entry before merging`;
+
+              if (info && !info.note.includes(note)) info.note += `; ${note}`;
+
+              if (value === undefined) continue;
+            }
+
             const outcome: Outcome =
               probe.kind !== "success"
                 ? source.outcome

@@ -177,6 +177,16 @@ export function classifyFailure(
   )
     return "provider-account-limit";
 
+  // Archil refuses a create over the plan's concurrent-sandbox cap; the adapter reports it as
+  // quota, before anything is allocated, so no sandbox is named.
+  if (
+    sample.provider === "archil" &&
+    /(^|\/)cold$/.test(sample.scenario) &&
+    sample.outcome.code === "quota" &&
+    sample.outcome.sandboxId === undefined
+  )
+    return "provider-account-limit";
+
   if (sample.scenario === "network-mbps" && /HTTP Error 429|Connection reset by peer/.test(note))
     return "client-third-party";
 

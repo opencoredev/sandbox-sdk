@@ -78,6 +78,8 @@ async function load(name: string, factory: FactoryOptions): Promise<Provider> {
 /** The environment a conflicting case runs in: another key, endpoint and scope for everything. */
 function otherEnvironment() {
   const other = {
+    ARCHIL_API_KEY: "other-key",
+    ARCHIL_REGION: "aws-us-west-2",
     BASETEN_API_KEY: "other-key",
     BEAM_TOKEN: "other-token",
     BEAM_WORKSPACE_ID: "ws-other",
@@ -442,6 +444,30 @@ describe("lookups use the explicit options the adapter was built with, not the e
     });
     expect((await lookupSandbox(superserve, id, budget)).result).toBe("present");
     expect(seen.every((row) => row.endsWith(" 200"))).toBe(true);
+  });
+
+  it("Archil: explicit key and region pick the key and control plane of its reads", async () => {
+    otherEnvironment();
+
+    const seen = stubFetch((url, headers) => {
+      if (
+        headers.get("authorization") === "Bearer live-key" &&
+        url.href === `https://control.green.eu-west-1.aws.prod.archil.com/api/sandboxes/${id}`
+      )
+        return [200, { success: true, data: { sandbox_id: id, status: "running" } }];
+
+      return [404, {}];
+    });
+
+    const archil = await load("archil", { apiKey: " live-key ", region: "aws-eu-west-1" });
+
+    expect(await lookupSandbox(archil, id, budget)).toMatchObject({
+      result: "present",
+      nativeState: "running",
+    });
+    expect(seen).toEqual([
+      `https://control.green.eu-west-1.aws.prod.archil.com/api/sandboxes/${id} 200`,
+    ]);
   });
 
   it("Beam: explicit gateway and token on its container listing", async () => {
