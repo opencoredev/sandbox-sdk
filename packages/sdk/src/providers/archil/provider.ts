@@ -773,6 +773,8 @@ export function createArchilProvider(
           } catch (error) {
             // Deleted meanwhile: the creator's setup failed, so the key is free again.
             if (nativeStatus(error) === 404) return gone();
+            // Any other exit after a wake leaves the sandbox unverified: put it back, bounded.
+            await bounded(restore(), 30_000);
             throw error;
           }
         }
@@ -780,7 +782,12 @@ export function createArchilProvider(
     connect: (id) =>
       safe(id, async () => {
         boxes.delete(id);
-        const found = await infoOf(await sandbox(id));
+        const box = await sandbox(id);
+
+        // A paused or stopped sandbox is woken, as E2B's connect does: only a running one can show
+        // the marker with its key and labels, which a reopened keyed handle needs.
+        if (stateOf(box.status) !== "running") await wake(box);
+        const found = await infoOf(box);
 
         if (!found) throw failure("Sandbox not found", "not_found", id);
 

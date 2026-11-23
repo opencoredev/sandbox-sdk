@@ -111,7 +111,7 @@ await box.resume();
 console.log((await box.run("cat /workspace/state")).stdout);
 ```
 
-Archil pauses an idle sandbox by itself after 30 minutes, or after `idleTimeoutMs` when you pass one. A sandbox that paused itself wakes on its next command, so you don't need to call `resume()` first. `listSandboxes()` and `reapSandboxes()` leave out a paused or stopped sandbox: the file that proves it is the SDK's, with its key and labels, can't be read until it runs again, and a name alone is not proof. `connectSandbox(archil(), id)` still reaches it by ID. A paused sandbox accrues no compute charge, but its disk is billed until you delete it.
+Archil pauses an idle sandbox by itself after 30 minutes, or after `idleTimeoutMs` when you pass one. A sandbox that paused itself wakes on its next command, so you don't need to call `resume()` first. `listSandboxes()` and `reapSandboxes()` leave out a paused or stopped sandbox: the file that proves it is the SDK's, with its key and labels, can't be read until it runs again, and a name alone is not proof. `connectSandbox(archil(), id)` still reaches it by ID, and wakes it, so its key and labels come back with it. A paused sandbox accrues no compute charge, but its disk is billed until you delete it.
 
 ## Terminal
 

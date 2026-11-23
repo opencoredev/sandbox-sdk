@@ -497,6 +497,25 @@ describe("Archil create", () => {
     }
   });
 
+  test("reopening a paused keyed sandbox keeps its key and labels", async () => {
+    const p = provider();
+    const key = `reopen-${crypto.randomUUID()}`;
+    const first = await createSandbox(p, { key, labels: { team: "a" } });
+
+    try {
+      await first.close();
+      await archilState.sandboxes.get(first.id)?.pause();
+      const again = await createSandbox(p, { key });
+
+      expect(again.id).toBe(first.id);
+      expect(again.created).toBe(false);
+      expect(again.key).toBe(key);
+      expect(again.labels).toMatchObject({ team: "a" });
+    } finally {
+      await first.destroy();
+    }
+  });
+
   test("a keyed lookup of a sandbox still pending waits for its marker", async () => {
     const key = `pending-${crypto.randomUUID()}`;
     const name = `sbxsdk-k${createHash("sha256").update(key).digest("hex").slice(0, 40)}`;
@@ -547,8 +566,11 @@ describe("Archil create", () => {
       expect((await listSandboxes(p)).map((info) => info.id)).not.toContain(box.id);
       await reapSandboxes(p, { olderThanMs: 0 });
       expect(archilState.sandboxes.has(box.id)).toBe(true);
-      // An explicit ID still connects: the caller vouches for it.
-      expect((await p.connect(box.id)).state).toBe("paused");
+      // An explicit ID still connects, and wakes it: its marker then gives the labels back.
+      expect(await p.connect(box.id)).toMatchObject({
+        state: "running",
+        labels: { group: "paused-list" },
+      });
     } finally {
       await box.destroy();
     }
