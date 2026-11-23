@@ -58,8 +58,6 @@ export function chunkRedactor(
 
     for (const p of redactor.streamChainLeft) if (p.length > maxLeft) maxLeft = p.length;
 
-    for (const p of redactor.streamHoldLeft) if (p.length > maxLeft) maxLeft = p.length;
-
     if (maxLeft === 0) return 0;
 
     return Math.min(4096, maxLeft + marker.length * 2 + 2);
@@ -128,14 +126,15 @@ export function chunkRedactor(
     return table;
   }
 
-  /** Earliest index >= `searchFrom` whose trailing suffix is a prefix of any secret, in O(L) time. */
+  /** Earliest index >= `searchFrom` whose suffix up to `endLimit` is a prefix of any secret, in O(L) time. */
   function earliestSecretPrefix(
     text: string,
     searchFrom: number,
     secrets: readonly string[],
     strictProper: boolean,
+    endLimit = text.length,
   ): number {
-    if (searchFrom >= text.length) return -1;
+    if (searchFrom >= endLimit) return -1;
 
     let bestLen = 0;
 
@@ -144,14 +143,18 @@ export function chunkRedactor(
 
       if (maxMatch <= bestLen) continue;
 
-      const start = Math.max(searchFrom, text.length - maxMatch);
+      const start = Math.max(searchFrom, endLimit - maxMatch);
 
-      if (text.length - start <= bestLen) continue;
+      if (endLimit - start <= bestLen) continue;
+
+      const firstAt = text.indexOf(secret.charAt(0), start);
+
+      if (firstAt === -1 || firstAt >= endLimit || endLimit - firstAt <= bestLen) continue;
 
       const table = kmpTable(secret);
       let matched = 0;
 
-      for (let index = start; index < text.length; index++) {
+      for (let index = firstAt; index < endLimit; index++) {
         const code = text.charCodeAt(index);
 
         while (matched > 0 && (matched === maxMatch || secret.charCodeAt(matched) !== code)) {
@@ -164,7 +167,7 @@ export function chunkRedactor(
       if (matched > bestLen) bestLen = matched;
     }
 
-    return bestLen > 0 ? text.length - bestLen : -1;
+    return bestLen > 0 ? endLimit - bestLen : -1;
   }
 
   function hasAdjacentMarkerSecret(): boolean {
@@ -265,41 +268,34 @@ export function chunkRedactor(
   function pullLeftForMarker(text: string, pos: number): number {
     let safe = snapBeforeMarker(text, pos);
     const fullLeft = redactor.streamChainLeft;
-    const partialLeft = redactor.streamHoldLeft;
 
-    if (safe <= 0 || (fullLeft.length === 0 && partialLeft.length === 0)) return safe;
+    if (safe <= 0 || fullLeft.length === 0) return safe;
 
-    if (fullLeft.length > 0) {
-      let pulled = true;
+    let pulled = true;
 
-      while (pulled && safe > 0) {
-        pulled = false;
+    while (pulled && safe > 0) {
+      pulled = false;
 
-        for (const prefix of fullLeft) {
-          if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
-            safe -= prefix.length;
-            pulled = true;
-            break;
-          }
-        }
-
-        if (pulled) {
-          safe = snapBeforeMarker(text, safe);
-
-          if (safe >= marker.length && text.startsWith(marker, safe - marker.length))
-            safe -= marker.length;
-        }
-      }
-    }
-
-    if (safe > 0 && partialLeft.length > 0) {
-      for (const prefix of partialLeft) {
+      for (const prefix of fullLeft) {
         if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
           safe -= prefix.length;
-          safe = snapBeforeMarker(text, safe);
+          pulled = true;
           break;
         }
       }
+
+      if (pulled) {
+        safe = snapBeforeMarker(text, safe);
+
+        if (safe >= marker.length && text.startsWith(marker, safe - marker.length))
+          safe -= marker.length;
+      }
+    }
+
+    if (safe > 0) {
+      const partialHit = earliestSecretPrefix(text, 0, fullLeft, true, safe);
+
+      if (partialHit >= 0 && partialHit < safe) safe = snapBeforeMarker(text, partialHit);
     }
 
     return snapBeforeMarker(text, safe);
@@ -459,51 +455,46 @@ export function chunkRedactor(
 
     // Hold trailing characters that could extend left from a future marker, while keeping
     // any marker whole so neither half leaks an inside-marker secret. Chain only on full
-    // left/around prefixes (`streamChainLeft`) and pull a partial prefix (`streamHoldLeft`) at most once.
+    // left/around prefixes (`streamChainLeft`) and pull a strict partial prefix at most once.
     const fullLeft = redactor.streamChainLeft;
-    const partialLeft = redactor.streamHoldLeft;
     let usedPartial = false;
 
-    if (initialSafe > 0 && (fullLeft.length > 0 || partialLeft.length > 0)) {
-      if (fullLeft.length > 0) {
-        let pulled = true;
+    if (initialSafe > 0 && fullLeft.length > 0) {
+      let pulled = true;
 
-        while (pulled && safe > 0) {
-          if (useHoldZero && holdZeroAt.has(offset + safe)) {
-            return { safe: 0, pulledFrom: offset + initialSafe };
-          }
-
-          pulled = false;
-
-          for (const prefix of fullLeft) {
-            if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
-              safe -= prefix.length;
-              pulled = true;
-              break;
-            }
-          }
-
-          if (pulled) {
-            safe = snapBeforeMarker(text, safe);
-
-            if (safe >= marker.length && text.startsWith(marker, safe - marker.length))
-              safe -= marker.length;
-          }
-        }
-      }
-
-      if (safe > 0 && partialLeft.length > 0) {
+      while (pulled && safe > 0) {
         if (useHoldZero && holdZeroAt.has(offset + safe)) {
           return { safe: 0, pulledFrom: offset + initialSafe };
         }
 
-        for (const prefix of partialLeft) {
+        pulled = false;
+
+        for (const prefix of fullLeft) {
           if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
             safe -= prefix.length;
-            safe = snapBeforeMarker(text, safe);
-            usedPartial = true;
+            pulled = true;
             break;
           }
+        }
+
+        if (pulled) {
+          safe = snapBeforeMarker(text, safe);
+
+          if (safe >= marker.length && text.startsWith(marker, safe - marker.length))
+            safe -= marker.length;
+        }
+      }
+
+      if (safe > 0) {
+        if (useHoldZero && holdZeroAt.has(offset + safe)) {
+          return { safe: 0, pulledFrom: offset + initialSafe };
+        }
+
+        const partialHit = earliestSecretPrefix(text, 0, fullLeft, true, safe);
+
+        if (partialHit >= 0 && partialHit < safe) {
+          safe = snapBeforeMarker(text, partialHit);
+          usedPartial = true;
         }
       }
     }
@@ -1103,10 +1094,7 @@ export function chunkRedactor(
               break;
             }
 
-            if (
-              bestLen > 0 &&
-              (redactor.streamChainLeft.length > 0 || redactor.streamHoldLeft.length > 0)
-            ) {
+            if (bestLen > 0 && redactor.streamChainLeft.length > 0) {
               const cTail = interleaved ? chainTailAll : chainTail[first.stream];
               const cBase = rawLen - cTail.length;
 

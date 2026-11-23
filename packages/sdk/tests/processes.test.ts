@@ -1446,6 +1446,42 @@ test("no-awk detached fallback holds incomplete lines whole so secrets across 4 
     expect(overflowRaw).not.toContain("BEGIN_QQQQ");
     expect(overflowRaw).not.toContain("QQQQ_END");
     expect(overflowRaw).not.toContain("Q".repeat(16));
+
+    // Wrapped <=512B and >512B secrets must also be redacted in real no-awk mode, including split writes.
+    const periodic1200 = "0123456789abcdef".repeat(75);
+    const short200 = `S200_${"M".repeat(190)}_E200`;
+
+    await using boxWrap = await createSandbox(provider, {
+      env: { PATH: binDir },
+      secrets: { WRAP1200: periodic1200, SHORT16: shortSecret, SHORT200: short200 },
+    });
+
+    const l100 = "L".repeat(100);
+
+    const first14 = Array.from({ length: 14 }, (_, i) =>
+      periodic1200.slice(i * 80, (i + 1) * 80),
+    ).join("\\n");
+
+    const last80 = periodic1200.slice(14 * 80);
+
+    const procNoAwkWrap = await boxWrap.start(
+      `printf '%s${first14}\\n' '${l100}'; sleep 0.15; printf '${last80}\\n'; printf '%s\\n%s\\n' '${shortSecret.slice(0, 8)}' '${shortSecret.slice(8)}'; printf '%s\\n%s\\n' '${short200.slice(0, 100)}' '${short200.slice(100)}'`,
+      { name: "noawk-wrapped-all" },
+    );
+
+    await procNoAwkWrap.wait();
+    const wrapLogs = await procNoAwkWrap.logs();
+    const wrapRaw = await boxWrap.files.read("/tmp/.sandbox-sdk/procs/noawk-wrapped-all/out.log");
+
+    expect(wrapLogs.text).toContain(l100);
+    expect(wrapLogs.text).toContain("[REDACTED]");
+    expect(wrapLogs.text).not.toContain("0123456789abcdef");
+    expect(wrapRaw).not.toContain("0123456789abcdef");
+    expect(wrapLogs.text).not.toContain("SHORT_SE");
+    expect(wrapLogs.text).not.toContain("CRET_123");
+    expect(wrapRaw).not.toContain("SHORT_SE");
+    expect(wrapLogs.text).not.toContain("S200_MMMM");
+    expect(wrapRaw).not.toContain("MMMM_E200");
   } finally {
     await fs.rm(binDir, { recursive: true, force: true });
   }

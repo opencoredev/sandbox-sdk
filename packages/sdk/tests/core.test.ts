@@ -1089,3 +1089,30 @@ test("OutputBus and BufferCap release consumed slots and toolOutputFilter redact
   expect(byStream("stderr")).toBe("foreign-stream ");
   expect(chunks.map((c) => c.text).join("")).not.toContain("SECRET_SPLIT");
 });
+
+test("Redactor compiles large marker-adjacent secrets linearly and OutputBus trims oversized UTF-8 chunks cleanly", async () => {
+  const largeMarkerSecret = `${"a".repeat(1_048_560)}[REDACTED]z`;
+  const t0 = performance.now();
+
+  await using box = await createSandbox(memory(), { secrets: { LARGE: largeMarkerSecret } });
+  const res = await box.run("echo safe");
+  const elapsedMs = performance.now() - t0;
+
+  expect(res.stdout).toBe("safe\n");
+  expect(elapsedMs).toBeLessThan(1_000);
+
+  const bus = new OutputBus();
+  const stream = bus.stream();
+  const pending = stream.next();
+  bus.emit({ stream: "stdout", text: "€".repeat(400_000) });
+  const first = await pending;
+  bus.end();
+
+  expect(first.done).toBe(false);
+
+  if (!first.done) {
+    expect(Buffer.byteLength(first.value.text)).toBeLessThanOrEqual(1_048_576);
+    expect(first.value.text.startsWith("\uFFFD")).toBe(false);
+    expect(first.value.text.startsWith("€")).toBe(true);
+  }
+});

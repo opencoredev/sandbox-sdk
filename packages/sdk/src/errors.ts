@@ -238,7 +238,6 @@ export class Redactor {
   private rightSuffixes: string[] = [];
   private aroundPairs: [string, string][] = [];
   private chainLeft: string[] = [];
-  private holdLeft: string[] = [];
   private rightStreamSuffixes: string[] = [];
   private outsideSecrets: string[] = [];
   private cachedSecrets: string[] = [];
@@ -275,7 +274,6 @@ export class Redactor {
 
     const left = new Set<string>();
     const right = new Set<string>();
-    const hold = new Set<string>();
     const around: [string, string][] = [];
 
     for (const secret of outside) {
@@ -287,10 +285,7 @@ export class Redactor {
         if (redactedMarker.endsWith(secret.slice(0, overlap))) right.add(secret.slice(overlap));
 
         if (redactedMarker.startsWith(secret.slice(secret.length - overlap))) {
-          const prefix = secret.slice(0, secret.length - overlap);
-          left.add(prefix);
-
-          for (let len = 1; len <= prefix.length; len++) hold.add(prefix.slice(0, len));
+          left.add(secret.slice(0, secret.length - overlap));
         }
       }
 
@@ -301,10 +296,6 @@ export class Redactor {
       while (markerAt !== -1) {
         const before = secret.slice(0, markerAt);
         const after = secret.slice(markerAt + redactedMarker.length);
-
-        if (before) {
-          for (let len = 1; len <= before.length; len++) hold.add(before.slice(0, len));
-        }
 
         if (before && after) around.push([before, after]);
 
@@ -318,7 +309,6 @@ export class Redactor {
     this.chainLeft = [...new Set([...left, ...around.map(([before]) => before)])].sort(
       (a, b) => b.length - a.length,
     );
-    this.holdLeft = [...hold].sort((a, b) => b.length - a.length);
     this.rightStreamSuffixes = [
       ...new Set([...this.rightSuffixes, ...this.aroundPairs.map(([, after]) => after)]),
     ].sort((a, b) => b.length - a.length);
@@ -753,11 +743,6 @@ export class Redactor {
     this.compile();
 
     return this.chainLeft;
-  }
-  get streamHoldLeft(): readonly string[] {
-    this.compile();
-
-    return this.holdLeft;
   }
   get streamRightSuffixes(): readonly string[] {
     this.compile();

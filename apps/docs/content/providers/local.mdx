@@ -184,7 +184,7 @@ A custom size sets Docker's CPU quota and memory directly; fractional CPUs work.
 | `capDrop`      | `string[]`     | None                          |               |
 | `securityOpt`  | `string[]`     | None                          |               |
 
-The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, and GNU `sed` (plus `awk` for newline-wrapped >512-byte secret matching in background process logs; without `awk`, incomplete lines are held whole up to 1 MiB until newline or EOF and any single newline-less line past 1 MiB is suppressed to `[REDACTED]` until the next newline or EOF so contiguous secrets are neither split across 4 KiB reads nor leaked across the cap). `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `apiTimeoutMs` is the idle limit for one Docker Engine request; raise it when a large image pull goes quiet for longer. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
+The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, and GNU `sed`. Including `awk` enables streaming carry-window redaction for secrets over 512 bytes; without `awk`, incomplete lines are held whole up to 1 MiB (suppressing any single newline-less line past 1 MiB to `[REDACTED]` until the next newline or EOF) and newline-wrapped secrets are scrubbed in POSIX `sh`. `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `apiTimeoutMs` is the idle limit for one Docker Engine request; raise it when a large image pull goes quiet for longer. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";

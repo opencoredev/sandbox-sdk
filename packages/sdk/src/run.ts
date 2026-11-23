@@ -237,10 +237,15 @@ export class OutputBus {
 
     const listener = (chunk?: OutputChunk) => {
       if (chunk) {
-        const text =
-          Buffer.byteLength(chunk.text) > 1_048_576
-            ? Buffer.from(chunk.text).subarray(-1_048_576).toString()
-            : chunk.text;
+        let text = chunk.text;
+
+        if (Buffer.byteLength(text) > 1_048_576) {
+          const tail = Buffer.from(text).subarray(-1_048_576);
+          let start = 0;
+
+          while (start < tail.length && ((tail[start] ?? 0) & 0xc0) === 0x80) start++;
+          text = tail.subarray(start).toString();
+        }
 
         queue.push({ ...chunk, text });
         bytes += Buffer.byteLength(text);

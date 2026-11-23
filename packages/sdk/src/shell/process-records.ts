@@ -206,8 +206,6 @@ export function redactionSedScript(secrets: readonly string[]): string {
 
   if (lines.length === 0) return "\n";
 
-  const useCarryWindow = maxSecretLineBytes(lines) > 512;
-
   // Choose three distinct non-whitespace control bytes absent from all secrets:
   // `esc` escapes literal occurrences of itself (`esc` -> `esc + lit`), while
   // `esc + mark` shields existing and newly emitted `[REDACTED]` markers until the end.
@@ -264,7 +262,7 @@ export function redactionSedScript(secrets: readonly string[]): string {
   for (const secret of lines) {
     rules.push(`s|${shield(secret)}|${replacement}|g`);
 
-    if (!useCarryWindow) {
+    if (secret.length <= 512) {
       for (let len = secret.length - 1; len >= 1; len--) {
         const prefix = secret.slice(0, len);
         const suffix = secret.slice(secret.length - len);
@@ -465,7 +463,7 @@ function streamReader(input: {
   // 1) Scrub secrets wrapped across newlines in `head`, holding trailing wrapped-prefix lines (>= 8 bytes) across reads.
   // 2) Keep any partial trailing line raw while checking suffix-prefix overlap before sed can rewrite a shorter inner secret.
   const wrapAwk = [
-    `FILENAME!="-"{if(length($0)>512)s[++n]=$0;next}`,
+    `FILENAME!="-"{if(length($0)>1&&index("[REDACTED]",$0)==0)s[++n]=$0;next}`,
     `{L[++m]=$0}`,
     `END{`,
     `for(i=1;i<=n;i++){`,
@@ -490,14 +488,14 @@ function streamReader(input: {
     `for(k=m;k>=1;k--){`,
     `if(length(acc)>=mh)break;`,
     `acc=L[k] acc;al=length(acc);`,
-    `if(al>=8){hit=0;`,
+    `if(al>=2){hit=0;`,
     `for(i=1;i<=n;i++){`,
-    `sec=s[i];sl=length(sec);c1=substr(sec,1,1);`,
+    `sec=s[i];sl=length(sec);minp=sl<16?sl-1:8;if(minp<2)minp=2;if(al<minp)continue;c1=substr(sec,1,1);`,
     `lim=al<sl-1?al:sl-1;scan=al-lim+1;`,
     `while(scan<=al){`,
     `off=index(substr(acc,scan),c1);if(off==0)break;`,
     `idx=scan+off-1;p=al-idx+1;`,
-    `if(p>=8&&substr(acc,idx,p)==substr(sec,1,p)){hc=m-k+1;hit=1;break}`,
+    `if(p>=minp&&substr(acc,idx,p)==substr(sec,1,p)){hc=m-k+1;hit=1;break}`,
     `scan=idx+1}`,
     `if(hit)break}}}}`,
     `print hc;for(j=1;j<=m;j++)print L[j]}`,
@@ -542,6 +540,57 @@ function streamReader(input: {
       ]
     : [`clen=-1`];
 
+  // Pure POSIX sh fallback for newline-wrapped secret scrubbing when awk is absent.
+  const scrubWrappedShDef = input.secretsPath
+    ? [
+        `scrub_wrapped_sh() { _sw_text=$1; _sw_eof=$2`,
+        `_sw_flat=$(printf '%s' "$_sw_text" | tr -d '\\n')`,
+        `while IFS= read -r _sw_sec || [ -n "$_sw_sec" ]`,
+        `do [ "\${#_sw_sec}" -ge 2 ] || continue`,
+        `case "[REDACTED]" in *"$_sw_sec"*) continue;; esac`,
+        `while :`,
+        `do case "$_sw_flat" in *"$_sw_sec"*) _sw_pre=\${_sw_flat%%"$_sw_sec"*}`,
+        `_sw_s=\${#_sw_pre}; _sw_e=$((_sw_s+\${#_sw_sec}))`,
+        `_sw_rest=$_sw_text; _sw_off=0; _sw_out=; _sw_first=1`,
+        `while :`,
+        `do case "$_sw_rest" in *"$nl"*) _sw_l=\${_sw_rest%%"$nl"*}; _sw_rest=\${_sw_rest#*"$nl"}; _sw_more=1;; *) _sw_l=$_sw_rest; _sw_rest=; _sw_more=0;; esac`,
+        `_sw_ll=\${#_sw_l}; _sw_end=$((_sw_off+_sw_ll))`,
+        `if [ "$_sw_end" -le "$_sw_s" ] || [ "$_sw_off" -ge "$_sw_e" ]`,
+        `then :`,
+        `elif [ "$_sw_off" -le "$_sw_s" ] && [ "$_sw_end" -ge "$_sw_e" ]`,
+        `then _sw_l="\${_sw_l%%"$_sw_sec"*}[REDACTED]\${_sw_l#*"$_sw_sec"}"`,
+        `elif [ "$_sw_off" -le "$_sw_s" ]`,
+        `then _sw_kn=$((_sw_s-_sw_off))`,
+        `if [ "$_sw_kn" -gt 0 ]; then _sw_p=$(printf '%s' "$_sw_l" | head -c "$_sw_kn"; printf .); _sw_l="\${_sw_p%.}[REDACTED]"; else _sw_l="[REDACTED]"; fi`,
+        `elif [ "$_sw_end" -ge "$_sw_e" ]`,
+        `then _sw_sn=$((_sw_e-_sw_off)); _sw_kt=$((_sw_ll-_sw_sn))`,
+        `if [ "$_sw_kt" -gt 0 ]; then _sw_t=$(printf '%s' "$_sw_l" | tail -c "$_sw_kt"; printf .); _sw_l="[REDACTED]\${_sw_t%.}"; else _sw_l="[REDACTED]"; fi`,
+        `else _sw_l="[REDACTED]"`,
+        `fi`,
+        `if [ "$_sw_first" -eq 1 ]; then _sw_out=$_sw_l; _sw_first=0; else _sw_out="$_sw_out$nl$_sw_l"; fi`,
+        `_sw_off=$_sw_end`,
+        `[ "$_sw_more" -eq 1 ] || break`,
+        `done`,
+        `_sw_text=$_sw_out`,
+        `_sw_flat=$(printf '%s' "$_sw_text" | tr -d '\\n');`,
+        `*) break;`,
+        `esac`,
+        `done`,
+        `done < ${quote(input.secretsPath)}`,
+        `_sw_hold=0`,
+        `if [ "$_sw_eof" -eq 0 ] && [ "\${#_sw_flat}" -le 1048576 ]`,
+        `then while IFS= read -r _sw_sec || [ -n "$_sw_sec" ]`,
+        `do [ "\${#_sw_sec}" -ge 8 ] || continue`,
+        `case "[REDACTED]" in *"$_sw_sec"*) continue;; esac`,
+        `_sw_p8=$(printf '%s' "$_sw_sec" | head -c 8)`,
+        `case "$_sw_flat" in *"$_sw_p8"*) _sw_aft=\${_sw_flat##*"$_sw_p8"}`,
+        `if [ $(( \${#_sw_aft} + 8 )) -lt "\${#_sw_sec}" ]; then _sw_hold=1; break; fi;`,
+        `esac`,
+        `done < ${quote(input.secretsPath)}`,
+        `fi; }`,
+      ]
+    : [];
+
   const scrubWrappedHead = input.secretsPath
     ? [
         `hcnt=0`,
@@ -553,6 +602,14 @@ function streamReader(input: {
         `then hcnt=\${wrapped%%"$nl"*}`,
         `head=\${wrapped#*"$nl"}`,
         `head=\${head%"$nl"}`,
+        `fi`,
+        `else scrub_wrapped_sh "$head" 0`,
+        `head=$_sw_text`,
+        `if [ "$_sw_hold" -eq 1 ]`,
+        `then held_h=$head`,
+        `head=`,
+        `emit_head=0`,
+        `else held_h=`,
         `fi`,
         `fi`,
         `if [ "$hcnt" -gt 0 ]`,
@@ -570,7 +627,8 @@ function streamReader(input: {
         `head=`,
         `emit_head=0`,
         `fi`,
-        `else held_h=`,
+        `elif [ "$emit_head" -eq 1 ]`,
+        `then held_h=`,
         `fi`,
       ]
     : [`held_h=`, `emit_head=1`];
@@ -585,6 +643,8 @@ function streamReader(input: {
         `then carry=\${wrapped#*"$nl"}`,
         `carry=\${carry%"$nl"}`,
         `fi`,
+        `else scrub_wrapped_sh "$carry" 1`,
+        `carry=$_sw_text`,
         `fi`,
         `chunk=$(printf '%s\\n' "$carry" | sed -f ${quote(input.sedPath)}; printf .)`,
         `chunk=\${chunk%.}`,
@@ -658,6 +718,7 @@ function streamReader(input: {
   return [
     `(nl=$(printf '\\nX')`,
     `nl=\${nl%X}`,
+    ...scrubWrappedShDef,
     `carry=`,
     `drop_line=0`,
     `while :`,
