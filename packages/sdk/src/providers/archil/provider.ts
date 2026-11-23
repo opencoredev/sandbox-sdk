@@ -720,7 +720,7 @@ export function createArchilProvider(
       close: () =>
         safe(id, async () => {
           try {
-            if (!(await terminate(process)))
+            if (!(await terminate(process, runner(id))))
               throw failure("Terminal could not be closed", "outcome_unknown", id);
           } finally {
             terminals.get(id)?.delete(process);

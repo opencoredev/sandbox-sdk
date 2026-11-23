@@ -94,33 +94,61 @@ const reattachAttempts = 3;
 /**
  * Waits for a process's end through connections Archil closes early: each time `wait` rejects, a new
  * connection resumes from the next undelivered byte, which replays the rest of the output and reports
- * the exit, finished process or not. `onProcess` learns each new connection, so a caller that stops
- * the command stops the live one. Throws the last connection error when the runner can't attach, the
- * process has no ID, or the attempts run out.
+ * the exit, finished process or not. Each attach counts against the attempts, a failed one too,
+ * except Archil's answer that the process or sandbox is gone or not running (404, 409), which ends
+ * the wait at once. `onProcess` learns each new connection and `onAttaching` each attach in flight,
+ * so a caller that stops the command can wait for a pending attach and stop the live connection.
+ * No attach starts once `stopped()` is true. Throws the last error when the runner can't attach, the
+ * process has no ID, the caller stopped, or the attempts run out.
  */
 export async function waitThrough(
   runner: ArchilRunner,
   process: ArchilProcess,
   resume: { offset: () => number; onOutput?: (output: ArchilOutput) => void },
-  onProcess: (process: ArchilProcess) => void,
+  hooks: {
+    onProcess: (process: ArchilProcess) => void;
+    onAttaching?: (attach: Promise<unknown>) => void;
+    stopped?: () => boolean;
+  },
 ): Promise<ArchilProcessResult> {
   let current = process;
+  let attempts = 0;
 
-  for (let attempt = 0; ; attempt++) {
+  for (;;) {
+    let lastError: unknown;
+
     try {
       return await current.wait();
     } catch (error) {
-      const id = current.id;
+      lastError = error;
+    }
 
-      if (runner.attach === undefined || id === undefined || attempt >= reattachAttempts)
-        throw error;
-      await disconnect(current);
-      current = await runner.attach(id, {
+    const id = current.id;
+
+    if (runner.attach === undefined || id === undefined) throw lastError;
+    await disconnect(current);
+
+    for (;;) {
+      if (attempts >= reattachAttempts || hooks.stopped?.()) throw lastError;
+      attempts++;
+
+      const attaching = runner.attach(id, {
         offset: resume.offset(),
         onOutput: resume.onOutput,
         collectOutput: false,
       });
-      onProcess(current);
+
+      hooks.onAttaching?.(attaching);
+
+      try {
+        current = await attaching;
+        hooks.onProcess(current);
+        break;
+      } catch (error) {
+        // Gone, or its sandbox asleep: another connection can't change that.
+        if ([404, 409].includes(nativeStatus(error) ?? 0)) throw error;
+        lastError = error;
+      }
     }
   }
 }
@@ -170,10 +198,28 @@ export function bounded<T>(promise: Promise<T>, ms: number): Promise<T | "late">
 }
 
 /** Kills a process and waits for Archil to report its end, the kill included, within one window. */
-export async function terminate(process: ArchilProcess): Promise<boolean> {
+export async function terminate(process: ArchilProcess, runner?: ArchilRunner): Promise<boolean> {
   const ended = (async () => {
-    await process.kill();
-    await process.wait();
+    // A kill refused because the process already ended is confirmed by the end below.
+    await process.kill().catch(() => {});
+
+    try {
+      await process.wait();
+    } catch (error) {
+      // The end can't arrive on a connection Archil already closed: confirm it on a new one.
+      if (runner?.attach === undefined || process.id === undefined) throw error;
+
+      const confirm = await runner.attach(process.id, {
+        offset: process.cursor,
+        collectOutput: false,
+      });
+
+      try {
+        await confirm.wait();
+      } finally {
+        await disconnect(confirm);
+      }
+    }
   })();
 
   try {
@@ -299,7 +345,7 @@ export async function execute({
           if (!landed.ok) return;
 
           try {
-            await terminate(landed.process);
+            await terminate(landed.process, runner);
           } finally {
             await disconnect(landed.process);
           }
@@ -315,7 +361,7 @@ export async function execute({
       }
 
       try {
-        if (!(await terminate(late.process))) throw unconfirmed();
+        if (!(await terminate(late.process, runner))) throw unconfirmed();
       } finally {
         await disconnect(late.process);
       }
@@ -332,6 +378,8 @@ export async function execute({
     if (!first.ok) throw first.error;
     // The live connection: a new one replaces it when Archil closes it before the exit (waitThrough).
     let process = first.process;
+    // Set once this call settles: no new connection starts, a late one is closed, late output dropped.
+    let settled = false;
 
     // Decoded text still held and bytes lost after the last delivered message, once the process is known ended.
     const flush = () => {
@@ -356,9 +404,18 @@ export async function execute({
         waitThrough(
           runner,
           process,
-          { offset: () => gaps.next, onOutput: options.onOutput },
-          (next) => {
-            process = next;
+          {
+            offset: () => gaps.next,
+            onOutput: (output) => {
+              if (!settled) options.onOutput?.(output);
+            },
+          },
+          {
+            onProcess: (next) => {
+              if (settled) void disconnect(next);
+              else process = next;
+            },
+            stopped: () => cancelled || settled,
           },
         ).then((result) => ({ kind: "exit" as const, result })),
         halted.then(() => ({ kind: "stop" as const })),
@@ -366,7 +423,8 @@ export async function execute({
 
       if (outcome.kind !== "exit") {
         // A broken stream leaves the command running; it settles only once the command is stopped.
-        if (!(await terminate(process))) throw unconfirmed();
+        // The kill goes by process ID at once; its end is confirmed on a new connection if needed.
+        if (!(await terminate(process, runner))) throw unconfirmed();
         flush();
 
         if (outcome.kind === "broken" && !cancelled)
@@ -398,6 +456,7 @@ export async function execute({
         sandboxId,
       );
     } finally {
+      settled = true;
       await disconnect(process);
     }
   } finally {
@@ -490,7 +549,7 @@ export async function collect(
       );
 
     try {
-      if (!(await terminate(landed.process)))
+      if (!(await terminate(landed.process, runner)))
         throw failure(
           "Archil guest operation timed out and could not be stopped",
           "outcome_unknown",
@@ -505,9 +564,14 @@ export async function collect(
 
   // The live connection: a new one replaces it when Archil closes it before the exit (waitThrough).
   let process = started;
+  // Set once this call settles or gives up: no new connection starts, a late one is closed, late
+  // output dropped.
+  let done = false;
 
   const timedOut = async () => {
-    if (!(await terminate(process)))
+    done = true;
+
+    if (!(await terminate(process, runner)))
       return failure(
         "Archil guest operation timed out and could not be stopped",
         "outcome_unknown",
@@ -525,7 +589,7 @@ export async function collect(
       fed = await bounded(writeStdin(process, options.stdin), Math.max(0, deadline - Date.now()));
     } catch {
       // Input that failed half way: stop the helper before the caller can retry.
-      if (!(await terminate(process)))
+      if (!(await terminate(process, runner)))
         throw failure(
           "Archil helper input failed and the helper could not be stopped",
           "outcome_unknown",
@@ -540,15 +604,29 @@ export async function collect(
 
     try {
       result = await bounded(
-        waitThrough(runner, process, { offset: () => gaps.next, onOutput }, (next) => {
-          process = next;
-        }),
+        waitThrough(
+          runner,
+          process,
+          {
+            offset: () => gaps.next,
+            onOutput: (output) => {
+              if (!done) onOutput(output);
+            },
+          },
+          {
+            onProcess: (next) => {
+              if (done) void disconnect(next);
+              else process = next;
+            },
+            stopped: () => done || Date.now() >= deadline,
+          },
+        ),
         Math.max(0, deadline - Date.now()),
       );
     } catch {
       // A broken stream leaves the helper running (it may be writing a file): stop it before the
       // caller can retry, and say so when the stop is not confirmed.
-      if (!(await terminate(process)))
+      if (!(await terminate(process, runner)))
         throw failure(
           "Archil helper stream broke and the helper could not be stopped",
           "outcome_unknown",
@@ -578,6 +656,7 @@ export async function collect(
   } catch (error) {
     throw archilError(error, sandboxId);
   } finally {
+    done = true;
     await disconnect(process);
   }
 }

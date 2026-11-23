@@ -352,17 +352,85 @@ describe("Archil connections closed before the exit", () => {
 
     try {
       archilState.closeConnection = { command: "seq 1 40000", bytes: 1000 };
+      archilState.attachOffsets = [];
       const result = await box.run("seq 1 40000; exit 3");
       const expected = Array.from({ length: 40000 }, (_, i) => `${i + 1}\n`).join("");
 
       expect(result.exitCode).toBe(3);
       expect(result.stdout).toBe(expected);
+      // It resumed mid-stream, from the byte after the cut, not from the start.
+      expect(archilState.attachOffsets).toEqual([1000]);
 
       // The same command again, connection intact: nothing left over from the first.
       const again = await box.run("seq 1 3");
       expect(again.stdout).toBe("1\n2\n3\n");
     } finally {
       archilState.closeConnection = undefined;
+      await box.destroy();
+    }
+  });
+
+  test("a reattach whose handshake fails is retried within the attempts", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      archilState.closeConnection = { command: "seq 1 20000", bytes: 2000 };
+      archilState.failAttaches = 1;
+      const result = await box.run("seq 1 20000");
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(Array.from({ length: 20000 }, (_, i) => `${i + 1}\n`).join(""));
+    } finally {
+      archilState.closeConnection = undefined;
+      archilState.failAttaches = 0;
+      await box.destroy();
+    }
+  });
+
+  test("an abort while a reattach is pending stops the command and closes the late connection", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      archilState.closeConnection = { command: "sleep 30", bytes: 500 };
+      archilState.attachDelayMs = 1500;
+      archilState.attached = [];
+      const controller = new AbortController();
+      const marker = `reattach-abort-${crypto.randomUUID()}`;
+
+      const run = input({
+        command: `head -c 4000 /dev/zero | tr '\\0' y; sleep 30 # ${marker}`,
+        signal: controller.signal,
+      });
+
+      const runner = {
+        run: (command: string, options: ArchilRunOptions) => fake.run(command, options),
+        attach: (id: string, options: { offset: number; onOutput?: (o: ArchilOutput) => void }) =>
+          fake.attach(id, options),
+      };
+
+      setTimeout(() => controller.abort(), 200);
+      const started = Date.now();
+      const result = await execute({ runner, sandboxId: box.id, input: run });
+
+      expect(result).toEqual({ exitCode: null, timedOut: true });
+      expect(Date.now() - started).toBeLessThan(8000);
+
+      // Every connection made is closed, and nothing more arrives once the call has settled.
+      const seen = run.chunks.join("").length;
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      expect(archilState.attached.every((c) => c.disconnected)).toBe(true);
+      expect(run.chunks.join("").length).toBe(seen);
+      // The bracket keeps pgrep from matching its own command line.
+      const pattern = `[r]${marker.slice(1)}`;
+
+      expect((await box.run(`pgrep -f '${pattern}' || true`)).stdout).toBe("");
+    } finally {
+      archilState.closeConnection = undefined;
+      archilState.attachDelayMs = 0;
       await box.destroy();
     }
   });
