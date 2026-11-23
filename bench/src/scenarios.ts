@@ -145,6 +145,8 @@ const defaultAccountCaps = new Map([
   ["tenki", 5],
   ["baseten", 10],
   ["instabox", 25],
+  // Archil's Developer plan cap (Free 5, Team 250): docs.archil.com/administration/billing.md
+  ["archil", 20],
 ]);
 
 /** The most sandboxes one cohort may hold on a provider's account; boxd never above 50. */

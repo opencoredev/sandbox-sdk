@@ -111,6 +111,9 @@ const docs = {
   instaboxBilling: "https://instabox.sh/docs/account/billing.md",
   instaboxUsage: "https://api.instabox.sh/v1/machines/{id}/usage",
   beam: "https://www.beam.cloud/pricing",
+  archil: "https://docs.archil.com/administration/billing.md",
+  archilUsage:
+    "GET /api/sandboxes/{id}/usage on Archil's control plane (docs.archil.com/administration/billing.md)",
   modal: "https://modal.com/pricing",
   modalResources: "https://modal.com/docs/guide/sandbox-resources",
   modalRegions: "https://modal.com/docs/guide/region-selection",
@@ -435,6 +438,43 @@ export const billingRules: readonly BillingRule[] = [
     notes: [
       "Published Sandboxes rates on the Performance tier, the default; credits excluded.",
       "Billed per millisecond while the sandbox runs (beam.cloud/pricing).",
+    ],
+  },
+  {
+    provider: "archil",
+    product: null,
+    pricingKey: "archil",
+    tariff: known({ kind: "per-unit", charges: "allocation" }, docs.archil),
+    billingStarts: unknown("Compute is billed while running; the starting event is not named"),
+    billingStops: unknown(
+      "Compute stops when the sandbox stops or pauses; the delete event is not named",
+    ),
+    incrementSeconds: unknown(
+      "Compute is sampled each minute; the billing increment is not stated, one second assumed in estimates",
+    ),
+    minimumSeconds: unknown("No minimum stated"),
+    perStartFeeUSD: unknown("No per-start fee stated; absence is not confirmation"),
+    keepsCharging: known(
+      ["disk"],
+      `${docs.archil} (stopped and paused: no compute; disk data is storage)`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known(
+      "excluded",
+      `${docs.archil} (disk data is billed as storage, $0.20/GiB-month active)`,
+    ),
+    settledChargeSource: known(
+      "Per-sandbox usage and cost, updated about once a minute, readable for 90 days",
+      docs.archilUsage,
+    ),
+    reportedKind: "billed",
+    attribution: "per-sandbox",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "$0.055/vCPU-hour and $0.020/GiB-hour while running; the usage endpoint's cost is before included allowances and prepaid credit.",
+      "Lifetime expiry and the idle timeout pause a sandbox rather than delete it, so a leaked sandbox stops accruing compute but keeps its storage.",
+      "Egress ($0.07/GB) and plan minimums (Developer $10/month, Team $500/month) excluded.",
     ],
   },
   {

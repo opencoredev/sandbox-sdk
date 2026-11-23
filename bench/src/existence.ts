@@ -14,6 +14,7 @@ import type { Sandbox, SnapshotListOpts, SnapshotPaginator } from "e2b";
 import type { Freestyle } from "freestyle";
 import type { Sandbox as VercelSandbox, Snapshot as VercelSnapshot } from "@vercel/sandbox";
 import { connectionOf, endpoint } from "./connections.js";
+import { archilControlUrl, archilSandboxBody } from "./archil.js";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -481,6 +482,22 @@ export async function lookupSandbox(
           if (!found) throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
 
           return { id: found.containerId, status: found.status };
+        }
+
+        case "archil": {
+          // A plain GET: it never wakes a paused sandbox, unlike a command. A deleted one reads
+          // "deleted" until Archil drops it, then 404.
+          const response = await fetch(
+            `${archilControlUrl(process.env)}/api/sandboxes/${encodeURIComponent(id)}`,
+            { headers: { Authorization: `Bearer ${process.env.ARCHIL_API_KEY ?? ""}` }, signal },
+          );
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          const found = archilSandboxBody.parse(await response.json());
+
+          return { id: found.id, status: found.status };
         }
 
         case "boxd": {

@@ -1402,6 +1402,8 @@ export const accountCaps = new Map<string, AccountCap>([
   ["daytona", { vcpu: 10, note: "Daytona's account allows 10 vCPU in total" }],
   ["beam", { vcpu: 30, note: "Beam's workspace quota is 30 vCPU" }],
   ["baseten", { sandboxes: 10, note: "Baseten allows 10 sandboxes at once" }],
+  // Plan caps (docs.archil.com/administration/billing.md, 2026-11-21): Free 5, Developer 20, Team 250.
+  ["archil", { sandboxes: 20, note: "Archil's Developer plan allows 20 sandboxes at once" }],
 ]);
 
 /** Why a round of `size` tasks of `vcpu` each cannot run on this account, or null when it fits. */
