@@ -739,3 +739,122 @@ it("skips Beam's snapshot scenario, whose snapshots cannot be deleted, before ta
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("records Instabox's blocked tcp-ms as documented not-run, not a failure, and keeps a returned value", async () => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2 } = await import("../src/v2-runner.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+
+  const fingerprint = {
+    cpuModel: "test",
+    flags: [],
+    nproc: 2,
+    cpuMax: "max",
+    quotaCpus: null,
+    memoryMax: "max",
+    memTotalBytes: 4 * 1024 ** 3,
+    memoryBytes: 4 * 1024 ** 3,
+    diskBytes: 20 * 1024 ** 3,
+    df: "",
+    lsblk: "",
+    virtualization: "kvm",
+    hypervisor: true,
+    dmi: "",
+    kernel: "test",
+    distro: "test",
+    user: "root",
+    uid: 0,
+    sudo: true,
+    stealPercent: null,
+    egress: null,
+    tools: {},
+    runtime: "test",
+  };
+
+  const baseMetrics = {
+    "cpu-single": 1,
+    "cpu-all": 2,
+    "memory-mbps": 3,
+    "disk-write-mbps": 4,
+    "disk-read-mbps": 5,
+    "disk-4k-write-iops": 6,
+    "disk-4k-read-iops": 7,
+  };
+
+  for (const [name, tcp] of [
+    ["instabox", undefined],
+    ["instabox", 12],
+    ["e2b", undefined],
+  ] as const) {
+    const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
+    const backing = memory();
+    const metrics = tcp === undefined ? baseMetrics : { ...baseMetrics, "tcp-ms": tcp };
+
+    const provider = {
+      ...backing,
+      exec: async (
+        id: string,
+        input: import("@opencoredev/sandbox-sdk/provider").ExecInput,
+      ): Promise<import("@opencoredev/sandbox-sdk/provider").ExecResult> => {
+        const stdout = input.command.includes("BENCH_FINGERPRINT")
+          ? fingerprint
+          : input.command.includes("BENCH_PERF")
+            ? {
+                metrics,
+                notes: tcp === undefined ? ["tcp-ms: timed out"] : [],
+                workers: 2,
+                method: "test",
+              }
+            : undefined;
+
+        if (stdout === undefined) return backing.exec(id, input);
+        input.onChunk({ stream: "stdout", text: JSON.stringify(stdout) });
+
+        return { exitCode: 0, timedOut: false };
+      },
+    };
+
+    try {
+      const report = await runV2(
+        [{ kind: "ready", name, cloud: false, region: null, provider }],
+        parseV2([
+          "--providers",
+          name,
+          "--runs",
+          "1",
+          "--scenarios",
+          "perf",
+          "--omit-network-download",
+          "true",
+          "--bursts",
+          "",
+          "--out",
+          directory,
+        ]),
+        async () => {},
+      );
+
+      const rows = report.samples.filter((s) => s.scenario === "tcp-ms");
+      const note = report.providers.find((p) => p.name === name)?.note ?? "";
+
+      if (name === "instabox" && tcp === undefined) {
+        expect(rows).toEqual([]);
+        expect(note).toContain("tcp-ms documented not-run");
+      } else if (name === "instabox") {
+        expect(rows.map((s) => s.outcome)).toEqual([{ kind: "sample", value: 12 }]);
+        expect(note).not.toContain("tcp-ms documented not-run");
+        expect(note).toContain("remove its collection-policy entry");
+      } else {
+        expect(rows.map((s) => s.outcome.kind)).toEqual(["failure"]);
+      }
+
+      expect(report.samples.find((s) => s.scenario === "cpu-single")?.outcome).toEqual({
+        kind: "sample",
+        value: 1,
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
