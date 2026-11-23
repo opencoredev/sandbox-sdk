@@ -104,7 +104,7 @@ function trackRun(provider: string, id: string) {
 export class BufferCap {
   private headParts: Buffer[] = [];
   private headBytes = 0;
-  private tailParts: Buffer[] = [];
+  private tailParts: (Buffer | undefined)[] = [];
   private tailHead = 0;
   private tailBytes = 0;
   total = 0;
@@ -117,7 +117,7 @@ export class BufferCap {
     const take = Math.min(data.length, headSize - this.headBytes);
 
     if (take > 0) {
-      this.headParts.push(take === data.length ? data : data.subarray(0, take));
+      this.headParts.push(take === data.length ? data : Buffer.from(data.subarray(0, take)));
       this.headBytes += take;
     }
 
@@ -125,21 +125,26 @@ export class BufferCap {
 
     if (rest.length > 0 && tailLimit > 0) {
       if (rest.length >= tailLimit) {
-        this.tailParts = [rest.subarray(rest.length - tailLimit)];
+        this.tailParts = [Buffer.from(rest.subarray(rest.length - tailLimit))];
         this.tailHead = 0;
         this.tailBytes = tailLimit;
       } else {
-        this.tailParts.push(rest);
+        this.tailParts.push(take > 0 ? Buffer.from(rest) : rest);
         this.tailBytes += rest.length;
 
         while (this.tailBytes > tailLimit && this.tailHead < this.tailParts.length) {
           const front = this.tailParts[this.tailHead];
 
-          if (!front) break;
+          if (!front) {
+            this.tailHead += 1;
+            continue;
+          }
+
           const excess = this.tailBytes - tailLimit;
 
           if (front.length <= excess) {
             this.tailBytes -= front.length;
+            this.tailParts[this.tailHead] = undefined;
             this.tailHead += 1;
           } else {
             this.tailParts[this.tailHead] = front.subarray(excess);
@@ -147,7 +152,10 @@ export class BufferCap {
           }
         }
 
-        if (this.tailHead > 1024 && this.tailHead * 2 >= this.tailParts.length) {
+        if (this.tailHead >= this.tailParts.length) {
+          this.tailParts.length = 0;
+          this.tailHead = 0;
+        } else if (this.tailHead > 1024 && this.tailHead * 2 >= this.tailParts.length) {
           this.tailParts = this.tailParts.slice(this.tailHead);
           this.tailHead = 0;
         }
@@ -162,7 +170,14 @@ export class BufferCap {
       ? Buffer.concat(this.headParts, this.headBytes)
       : Buffer.alloc(0);
 
-    const tailSlice = this.tailHead ? this.tailParts.slice(this.tailHead) : this.tailParts;
+    const tailSlice: Buffer[] = [];
+
+    for (let i = this.tailHead; i < this.tailParts.length; i++) {
+      const part = this.tailParts[i];
+
+      if (part) tailSlice.push(part);
+    }
+
     const tailBuf = tailSlice.length ? Buffer.concat(tailSlice, this.tailBytes) : Buffer.alloc(0);
 
     if (!this.truncated) return Buffer.concat([headBuf, tailBuf]).toString();
@@ -199,16 +214,20 @@ export class OutputBus {
     for (const listener of this.listeners) listener();
   }
   async *stream(): AsyncGenerator<OutputChunk> {
-    const queue: OutputChunk[] = [];
+    const queue: (OutputChunk | undefined)[] = [];
     let head = 0;
     let bytes = 0;
     let wake = () => {};
 
     const dequeue = (): OutputChunk | undefined => {
       if (head >= queue.length) return undefined;
-      const item = queue[head++];
+      const item = queue[head];
+      queue[head++] = undefined;
 
-      if (head >= 1024 && head * 2 >= queue.length) {
+      if (head >= queue.length) {
+        queue.length = 0;
+        head = 0;
+      } else if (head >= 1024 && head * 2 >= queue.length) {
         queue.splice(0, head);
         head = 0;
       }
@@ -250,6 +269,9 @@ export class OutputBus {
 
       if (this.failure) throw this.failure;
     } finally {
+      queue.length = 0;
+      head = 0;
+      bytes = 0;
       this.listeners.delete(listener);
     }
   }

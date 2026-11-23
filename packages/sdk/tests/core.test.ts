@@ -1,6 +1,8 @@
 import { describe, test, expect } from "vitest";
 import { createSandbox, connectSandbox, reapSandboxes, SandboxError } from "../src/index.js";
 import { memory } from "../src/memory.js";
+import { BufferCap, OutputBus } from "../src/run.js";
+import { toolOutputFilter } from "../src/tool-security.js";
 import type { Provider } from "../src/provider.js";
 import type { Files } from "../src/files.js";
 
@@ -1036,4 +1038,54 @@ test("streaming redaction scales linearly on long repeating prefixes in small ch
   expect(res.stdout).toBe("[REDACTED]");
   expect(res.truncated).toBe(false);
   expect(elapsedMs).toBeLessThan(1_000);
+});
+
+test("OutputBus and BufferCap release consumed slots and toolOutputFilter redacts per-stream secrets split by foreign streams", async () => {
+  const bus = new OutputBus();
+  const stream = bus.stream();
+  const received: string[] = [];
+
+  for (let i = 0; i < 32; i++) {
+    const pending = stream.next();
+    bus.emit({ stream: "stdout", text: `chunk-${i}:${"x".repeat(1024)}` });
+    const next = await pending;
+    expect(next.done).toBe(false);
+
+    if (!next.done) received.push(next.value.text);
+  }
+
+  bus.end();
+  expect((await stream.next()).done).toBe(true);
+  expect(received).toHaveLength(32);
+
+  const cap = new BufferCap(128);
+
+  for (let i = 0; i < 64; i++) cap.add(`line-${String(i).padStart(2, "0")}-abcdefgh\n`);
+  const capped = cap.text();
+  expect(cap.truncated).toBe(true);
+  expect(capped).toContain("line-00-");
+  expect(capped).toContain("line-63-abcdefgh\n");
+
+  const secret = "SECRET_SPLIT_TOKEN";
+
+  await using box = await createSandbox(memory(), { secrets: { S: secret } });
+  const chunks: { stream: string; text: string }[] = [];
+  const filter = toolOutputFilter(box, (chunk) => chunks.push(chunk));
+
+  filter.push({ stream: "stdout", text: "prefix SECRET_SPLIT_" });
+  filter.push({ stream: "stderr", text: "foreign-stream " });
+  filter.push({ stream: "stdout", text: "TOKEN suffix" });
+  filter.flush();
+
+  const byStream = (s: string) => {
+    let out = "";
+
+    for (const c of chunks) if (c.stream === s) out += c.text;
+
+    return out;
+  };
+
+  expect(byStream("stdout")).toBe("prefix [REDACTED] suffix");
+  expect(byStream("stderr")).toBe("foreign-stream ");
+  expect(chunks.map((c) => c.text).join("")).not.toContain("SECRET_SPLIT");
 });

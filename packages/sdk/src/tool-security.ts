@@ -30,7 +30,9 @@ export function toolOutputFilter(box: SandboxBase<unknown>, emit: (chunk: Output
   type State = "plain" | "escape" | "csi" | "string" | "string_escape";
 
   const states: Record<OutputChunk["stream"], State> = { stdout: "plain", stderr: "plain" };
-  const filter = chunkRedactor(redactorOf(box), emit, true);
+  const redactor = redactorOf(box);
+  const interleaved = chunkRedactor(redactor, emit, true);
+  const filter = chunkRedactor(redactor, (chunk) => interleaved.push(chunk), false);
 
   return {
     push(chunk: OutputChunk) {
@@ -79,6 +81,7 @@ export function toolOutputFilter(box: SandboxBase<unknown>, emit: (chunk: Output
     },
     flush() {
       filter.flush();
+      interleaved.flush();
     },
   };
 }
