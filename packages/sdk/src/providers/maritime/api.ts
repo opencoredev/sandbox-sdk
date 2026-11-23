@@ -169,7 +169,7 @@ export function credentials(raw: JsonValue | undefined): string[] {
 }
 
 /** Maritime's credential prefixes: sandbox secrets, URL tokens, account and server keys. */
-const tokenPattern = /\b(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g;
+const tokenPattern = /(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g;
 
 /**
  * Credential shapes the HTTP client redacts from every error, registered or not: Maritime's tokens, and
@@ -241,7 +241,7 @@ export function parseCommand(raw: JsonValue | undefined): CommandOutcome {
       return isNumber(exitCode) &&
         Number.isSafeInteger(exitCode) &&
         exitCode >= 0 &&
-        signal === null
+        (signal === null || signal === undefined)
         ? { kind: "exited", exitCode }
         : { kind: "unreadable" };
     case "killed": {

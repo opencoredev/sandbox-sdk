@@ -337,3 +337,172 @@ describe("finding 10: billing completeness follows the approved predicate", () =
     expect(cost).toMatchObject({ kind: "metered", complete: true, confidence: "medium" });
   });
 });
+
+describe("re-review regressions on 6d6fea6", () => {
+  it("sanitizes Maritime credentials prefixed with error_ or request_ in samples.ndjson and merged output", async () => {
+    const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const { runV2 } = await import("../src/v2-runner.js");
+    const { mergeSources, readSource } = await import("../src/merge.js");
+    const { writeV2 } = await import("../src/v2-report.js");
+    const wrappedSecret = "mst_wrapped_secret_123456789";
+    const wrappedToken = "mut_wrapped_token_123456789";
+    const out = await directory("sandbox-bench-wrapped-leak-");
+    const base = memory();
+
+    const provider = {
+      ...base,
+      create: async () => {
+        throw Object.assign(
+          new Error(`HTTP 400 error_${wrappedSecret} (request request_${wrappedToken})`),
+          { code: `error_${wrappedSecret}` },
+        );
+      },
+    };
+
+    const report = await runV2(
+      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      parseV2([
+        "--providers",
+        "memory",
+        "--runs",
+        "1",
+        "--max-sandboxes",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "cold",
+        "--timeout-ms",
+        "5000",
+        "--out",
+        out,
+      ]),
+      async () => {},
+    );
+
+    await writeV2(report, report.config.out);
+    const files = await readdir(out, { recursive: true });
+
+    const written = await Promise.all(
+      files
+        .filter((file) => /\.(ndjson|json)$/.test(file))
+        .map((file) => readFile(join(out, file), "utf8")),
+    );
+
+    const merged = JSON.stringify(mergeSources([await readSource(report.config.out)]));
+
+    for (const text of [...written, merged]) {
+      expect(text).not.toContain(wrappedSecret);
+      expect(text).not.toContain(wrappedToken);
+    }
+  }, 60_000);
+
+  it("keeps looking when a route-level 404 resource_not_found on replay precedes late visibility", async () => {
+    vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
+    let reads = 0;
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+
+      if (url.pathname.endsWith("/save"))
+        return Response.json({ code: "resource_not_found" }, { status: 404 });
+
+      reads += 1;
+
+      return reads === 1
+        ? Response.json({ code: "snapshot_not_found" }, { status: 404 })
+        : Response.json({ name: "snap-1", sourceSandboxId: "sbx-src" });
+    });
+
+    await expect(
+      settleMaritimeSave({
+        sandboxId: "sbx-src",
+        name: "snap-1",
+        idempotencyKey: "key-1",
+        timeoutMs: 3000,
+      }),
+    ).resolves.toBe("exists");
+    expect(reads).toBe(2);
+  });
+
+  it("reapRun never replays a confirmed save after the delete response is lost", async () => {
+    vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
+    const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const out = await directory("bench-maritime-reap-drop-");
+    const calls: string[] = [];
+    let deleted = false;
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${url.pathname}`);
+
+      if (url.pathname === "/v1/snapshots" && method === "GET")
+        return Response.json({
+          data: deleted ? [] : [{ name: "snap-1", sourceSandboxId: "sbx-src" }],
+          nextCursor: null,
+        });
+
+      if (url.pathname === "/v1/snapshots/snap-1" && method === "DELETE") {
+        deleted = true;
+        throw new Error("connection closed after deletion");
+      }
+
+      if (url.pathname === "/v1/snapshots/snap-1")
+        return deleted
+          ? Response.json({ code: "snapshot_not_found" }, { status: 404 })
+          : Response.json({ name: "snap-1", sourceSandboxId: "sbx-src" });
+
+      if (url.pathname.endsWith("/save")) {
+        deleted = false;
+
+        return Response.json({ name: "snap-1", sourceSandboxId: "sbx-src" });
+      }
+
+      return Response.json({ code: "resource_not_found" }, { status: 404 });
+    });
+
+    const proof = snapshotProvenanceSchema.parse({
+      sourceId: "sbx-src",
+      runLabel: "maritime-run",
+      sdkLabel: "1",
+      verifiedAt: new Date().toISOString(),
+    });
+
+    await writeFile(
+      join(out, "ownership.json"),
+      JSON.stringify({
+        runId: "maritime-run",
+        resources: [
+          {
+            provider: "maritime",
+            id: "sbx-src",
+            kind: "snapshot-source",
+            parent: null,
+            snapshotProof: proof,
+          },
+          {
+            provider: "maritime",
+            id: "snap-1",
+            kind: "snapshot",
+            parent: "sbx-src",
+            snapshotProof: proof,
+            idempotencyKey: "key-1",
+          },
+        ],
+      }),
+    );
+
+    await reapRun(
+      [{ kind: "ready", name: "maritime", cloud: true, region: null, provider: memory() }],
+      parseV2(["--providers", "maritime", "--run", "maritime-run", "--out", out]),
+      (s) => s,
+    );
+
+    expect(calls).toContain("DELETE /v1/snapshots/snap-1");
+    expect(calls.filter((c) => c.endsWith("/save"))).toEqual([]);
+    expect(deleted).toBe(true);
+    const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+    expect(journal.resources.filter((r: { kind: string }) => r.kind === "snapshot")).toEqual([]);
+  }, 30_000);
+});

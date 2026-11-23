@@ -448,3 +448,73 @@ describe("finding 9: a private preview follows credential rotation", () => {
     }
   });
 });
+
+describe("re-review regressions on 6d6fea6", () => {
+  test("redacts credentials with a prefix such as error_ or request_ in HTTP code and requestId", async () => {
+    const wrappedSecret = "mst_fixture_secret_123456789";
+    const wrappedToken = "mut_fixture_preview_123456789";
+
+    server.on("POST /v1/sandboxes/{id}/pause", {
+      status: 400,
+      json: {
+        code: `error_${wrappedSecret}`,
+        message: "bad input",
+        requestId: `request_${wrappedToken}`,
+      },
+    });
+
+    const error = await rejection(scripted().pause?.("sbx-s"));
+
+    expect(shown(error)).not.toContain(wrappedSecret);
+    expect(shown(error)).not.toContain(wrappedToken);
+  });
+
+  test("does not count an ended record for a different sandbox ID as kill confirmation", async () => {
+    server.on("GET /v1/sandboxes/{id}", sandbox("running"), sandbox("ended", { id: "sbx-other" }));
+    server.on(
+      "POST /dp/{id}/v1/commands",
+      (_request, response) => {
+        response.writeHead(200, sse);
+        response.write(event("stdout", "started\n"));
+      },
+      { status: 404, json: { code: "resource_not_found", message: "missing route" } },
+      { status: 404, json: { code: "resource_not_found", message: "missing route" } },
+    );
+
+    const controller = new AbortController();
+
+    const { input } = execInput("echo test", {
+      signal: controller.signal,
+      onChunk: () => controller.abort(),
+    });
+
+    await expect(scripted().exec("sbx-s", input)).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+  });
+
+  test("an exec POST answered 401 with sandbox_paused does not replay", async () => {
+    server.on("GET /v1/sandboxes/{id}", sandbox());
+    server.on("POST /dp/{id}/v1/commands", {
+      status: 401,
+      json: { code: "sandbox_paused", message: "paused" },
+    });
+
+    await expect(scripted().exec("sbx-s", execInput("once-only").input)).rejects.toBeInstanceOf(
+      SandboxError,
+    );
+    expect(submissions("POST /dp/{id}/v1/commands", "once-only")).toHaveLength(1);
+  });
+
+  test("Maritime SSE accepts an exited command whose optional signal field is omitted", async () => {
+    server.on("GET /v1/sandboxes/{id}", sandbox());
+    server.on("POST /dp/{id}/v1/commands", (_request, response) => {
+      response.writeHead(200, sse);
+      response.end(event("result", { state: "exited", exitCode: 0 }));
+    });
+
+    await expect(
+      scripted().exec("sbx-s", execInput("echo optional-signal").input),
+    ).resolves.toEqual({ exitCode: 0, timedOut: false });
+  });
+});

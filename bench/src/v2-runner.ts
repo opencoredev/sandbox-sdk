@@ -177,7 +177,7 @@ const errorNote = (cause: unknown) =>
  * sandbox secrets (`mst_`) and URL tokens (`mut_`), and any `token=` query value, such as a preview URL's.
  */
 const leakPatterns: [RegExp, string][] = [
-  [/\b(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
+  [/(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
   [/([?&;]token=)[^&#\s"'<>]+/gi, "$1[REDACTED]"],
 ];
 

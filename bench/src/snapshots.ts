@@ -138,19 +138,29 @@ async function readMaritimeSnapshot(name: string, sandboxId: string, signal: Abo
   return "exists" as const;
 }
 
+const maritimeErrorBody = z.object({ code: z.string() });
+
 /**
- * Replay answers that refuse the save outright, so nothing was saved: an invalid request (400, 422) or
- * a source that is gone (404, 410). An auth failure (401, 403), a conflict, a rate limit or any 5xx
- * says nothing about the first save.
+ * Whether a replay answer refused the save outright, so nothing was saved: an invalid request
+ * (400, 422), `404 sandbox_not_found`, or `410 sandbox_ended`. A route-level `404 resource_not_found`,
+ * auth failure (401, 403), conflict, rate limit or any 5xx says nothing about the first save.
  */
-const saveRefusals: ReadonlySet<number> = new Set([400, 404, 410, 422]);
+function isSaveRefusal(status: number, code: string | undefined): boolean {
+  if (status === 400 || status === 422) return true;
+
+  if (status === 404) return code === "sandbox_not_found";
+
+  if (status === 410) return code === "sandbox_ended";
+
+  return false;
+}
 
 /**
  * Decides a Maritime save whose answer was lost, timed out or unreadable: whether its snapshot exists.
  * It sends the journaled save again with the same idempotency key, which returns the first save's
  * outcome (or makes the save once), then reads the snapshot whatever the replay answered, so a snapshot
  * that is already visible is found even when the replay failed. A 404 read is final only when the
- * replay refused the save ({@link saveRefusals}); otherwise it is read again until the snapshot shows or
+ * replay refused the save ({@link isSaveRefusal}); otherwise it is read again until the snapshot shows or
  * the deadline passes, which throws and keeps the journal entry.
  */
 export async function settleMaritimeSave(input: {
@@ -168,7 +178,7 @@ export async function settleMaritimeSave(input: {
     if (left <= 0) throw new Error("Maritime snapshot save did not settle; journal entry kept");
 
     const signal = AbortSignal.timeout(Math.min(60_000, left));
-    let replay: number | "lost";
+    let refused = false;
 
     try {
       const response = await maritimeFetch(
@@ -181,13 +191,16 @@ export async function settleMaritimeSave(input: {
         },
       );
 
-      replay = response.status;
-      await response.body?.cancel();
+      if (response.status === 404 || response.status === 410) {
+        const parsed = maritimeErrorBody.safeParse(await response.json().catch(() => null));
+        refused = isSaveRefusal(response.status, parsed.success ? parsed.data.code : undefined);
+      } else {
+        refused = isSaveRefusal(response.status, undefined);
+        await response.body?.cancel();
+      }
     } catch {
-      replay = "lost";
+      refused = false;
     }
-
-    const refused = replay !== "lost" && saveRefusals.has(replay);
 
     const read = await readMaritimeSnapshot(
       input.name,

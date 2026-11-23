@@ -244,9 +244,12 @@ const isGone = (cause: unknown) => cause instanceof SandboxError && cause.code =
 
 /** A data-plane refusal made before anything ran: the sandbox is still starting or waking. */
 const isWaking = (cause: unknown) => {
-  const code = httpStatus(cause)?.code;
+  const status = httpStatus(cause);
 
-  return code === "sandbox_paused" || code === "sandbox_starting";
+  return (
+    status?.status === 409 &&
+    (status.code === "sandbox_paused" || status.code === "sandbox_starting")
+  );
 };
 
 function delay(ms: number, signal?: AbortSignal) {
@@ -541,19 +544,22 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
         throw last;
       });
 
-      if (sandbox.state !== "ended") throw last;
+      if (sandbox.id !== id || sandbox.state !== "ended") throw last;
     } finally {
       forget(id);
     }
   }
 
   /**
-   * Whether a read proves the sandbox ended, on a fresh bounded deadline: it reads `ended`, or Maritime
-   * answers `404 sandbox_not_found` or `410 sandbox_ended`. A live sandbox, or no answer, is not proof.
+   * Whether a read proves the sandbox ended, on a fresh bounded deadline: it reads `ended` for the
+   * same sandbox ID, or Maritime answers `404 sandbox_not_found` or `410 sandbox_ended`. A live
+   * sandbox, a different sandbox ID, or no answer is not proof.
    */
   async function confirmedEnded(id: string): Promise<boolean> {
     try {
-      return (await readSandbox(id, { timeoutMs: cleanupMs })).sandbox.state === "ended";
+      const { sandbox } = await readSandbox(id, { timeoutMs: cleanupMs });
+
+      return sandbox.id === id && sandbox.state === "ended";
     } catch (error) {
       const status = httpStatus(error);
 
