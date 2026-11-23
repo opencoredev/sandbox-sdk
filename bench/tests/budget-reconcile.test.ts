@@ -312,4 +312,113 @@ describe("runV2 charges a Vercel sandbox gone within a minute once", () => {
       for (const s of await backing.list({})) await destroy(s.id);
     }
   }, 30_000);
+
+  it("bills a late-settling restore that misses its deadline using its captured charge", async () => {
+    const backing = memory();
+    const destroy = backing.destroy.bind(backing);
+    const realNow = performance.now.bind(performance);
+    let offset = 0;
+
+    let sourceId = "";
+    let restoredId = "";
+    let snapshotDeleted = false;
+    let restoreSettled = false;
+
+    vi.spyOn(performance, "now").mockImplementation(() => realNow() + offset);
+    vi.spyOn(snapshots.snapshotMetadata, "inspect").mockImplementation(async () => ({
+      exists: !snapshotDeleted,
+      sourceId,
+    }));
+    vi.spyOn(snapshots, "snapshotsFromSource").mockImplementation(async () =>
+      snapshotDeleted ? [] : [{ id: "snap-late" }],
+    );
+    vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {
+      snapshotDeleted = true;
+    });
+
+    const vercel: Provider = {
+      ...backing,
+      capabilities: new Set(["snapshot"]),
+      create: async (input) => {
+        if (input.from) {
+          // Stall past the 250 ms step deadline + 250 ms drain so create-from-snapshot's finally
+          // exits (leaving restoreCharges empty and clearing currentRestoreCharge) before this
+          // create settles and verifies ownership.
+          await sleep(700);
+          offset += 65_000;
+          const info = await backing.create(input);
+          restoredId = info.id;
+          restoreSettled = true;
+
+          return info;
+        }
+
+        const info = await backing.create(input);
+        sourceId = info.id;
+
+        return info;
+      },
+      exec: async (id: string, input: ExecInput): Promise<ExecResult> => {
+        if (!input.command.includes("BENCH_FINGERPRINT")) return backing.exec(id, input);
+        input.onChunk({ stream: "stdout", text: JSON.stringify(fingerprint) });
+
+        return { exitCode: 0, timedOut: false };
+      },
+      snapshot: async () => {
+        offset += 10_000;
+
+        return { id: "snap-late" };
+      },
+      destroy: async (id) => {
+        await destroy(id);
+      },
+    };
+
+    const out = await mkdtemp(join(tmpdir(), "bench-budget-late-restore-"));
+    dirs.push(out);
+
+    try {
+      const report = await runV2(
+        [
+          {
+            kind: "ready",
+            name: "vercel",
+            region: null,
+            cloud: false,
+            provider: boundFake(vercel),
+          },
+        ],
+        parseV2([
+          "--providers",
+          "vercel",
+          "--run",
+          "budget-late-restore",
+          "--out",
+          out,
+          "--runs",
+          "1",
+          "--bursts",
+          "",
+          "--scenarios",
+          "snapshot",
+          "--timeout-ms",
+          "250",
+        ]),
+        (r) => writeV2(r, out),
+      );
+
+      expect(restoreSettled).toBe(true);
+      expect(restoredId).not.toBe("");
+
+      const budget = report.budgets.vercel;
+
+      expect(budget?.openLiabilities).toBeUndefined();
+      // Source lived 75 s (2 min + fee = $0.0056806) and late restore lived 65 s (2 min + fee =
+      // $0.0056806) with $0 booked in the iteration -> total $0.0113612. Before the fix, the late
+      // restore hit chargedUntil: Infinity (or inherited sourceCharge) and stayed at $0.0056806.
+      expect(budget?.estimatedUSD).toBeCloseTo(0.0113612, 10);
+    } finally {
+      for (const s of await backing.list({})) await destroy(s.id);
+    }
+  }, 30_000);
 });

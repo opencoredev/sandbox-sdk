@@ -964,8 +964,25 @@ export async function runV2(
     /** Remove one of this iteration's sandboxes; a stress sandbox's cleanup ends by its reserve. */
     const removeOwn = (id: string) => remove(p, id, undefined, cleanupEndBy);
 
-    // Priced once the iteration ends; until then each sandbox's charge is open.
-    const sourceCharge: Charge = { since: lifeStart, chargedUntil: Infinity, price: () => null };
+    const priceFor = (targetFp: Fingerprint | null) => {
+      const basis = reservationResources(p.name, targetFp ?? state.fp, allocation.requestedSize);
+
+      return (ms: number) => {
+        const usd = estimateCost(p.name, ms, basis, p.region);
+
+        return usd === null ? null : budgetUSD(p.name, usd);
+      };
+    };
+
+    // Priced once the iteration ends; starts unbooked with a captured fallback basis so a
+    // late-settling create never escapes final reconciliation.
+    const sourceCharge: Charge = {
+      since: lifeStart,
+      chargedUntil: lifeStart,
+      chargedUSD: 0,
+      price: priceFor(null),
+    };
+
     let currentRestoreCharge: Charge | undefined;
 
     const restoreCharges: {
@@ -1070,6 +1087,16 @@ export async function runV2(
             let restore: RestoreAttempt | undefined;
             // This create, journaled in its App before submission (per-attempt Apps).
             let allocation: { app: JournalApp; id: string } | undefined;
+            const callStart = performance.now();
+
+            const callCharge: Charge = input.from
+              ? (currentRestoreCharge ?? {
+                  since: callStart,
+                  chargedUntil: callStart,
+                  chargedUSD: 0,
+                  price: priceFor(fp),
+                })
+              : sourceCharge;
 
             return pending.track(
               (async () => {
@@ -1153,7 +1180,7 @@ export async function runV2(
                 if (restore) restores.identify(restore, info.id, "alive");
                 createEvidence.sandboxId = info.id;
                 createEvidence.stage = "ownership-persist";
-                own(info.id, input.from ? (currentRestoreCharge ?? sourceCharge) : sourceCharge);
+                own(info.id, callCharge);
 
                 if (input.from) restoredId = info.id;
                 owned.set(`${p.name}/${info.id}`, {
@@ -1255,10 +1282,7 @@ export async function runV2(
 
                     if (restore) restores.identify(restore, nativeId, "alive");
                     createEvidence.sandboxId = nativeId;
-                    own(
-                      nativeId,
-                      input.from ? (currentRestoreCharge ?? sourceCharge) : sourceCharge,
-                    );
+                    own(nativeId, callCharge);
 
                     if (allocation) allocated(allocation.app, allocation.id, nativeId);
 
@@ -2062,8 +2086,9 @@ export async function runV2(
 
             const restoreCharge: Charge = {
               since: restoreStart,
-              chargedUntil: Infinity,
-              price: () => null,
+              chargedUntil: restoreStart,
+              chargedUSD: 0,
+              price: priceFor(fp),
             };
 
             currentRestoreCharge = restoreCharge;
@@ -2600,16 +2625,6 @@ export async function runV2(
         });
       const sourceEnd = performance.now();
       const duration = sourceEnd - lifeStart;
-
-      const priceFor = (targetFp: Fingerprint | null) => {
-        const basis = reservationResources(p.name, targetFp ?? state.fp, allocation.requestedSize);
-
-        return (ms: number) => {
-          const usd = estimateCost(p.name, ms, basis, p.region);
-
-          return usd === null ? null : budgetUSD(p.name, usd);
-        };
-      };
 
       const sourcePrice = priceFor(fp);
       sourceCharge.chargedUntil = sourceEnd;
