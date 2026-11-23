@@ -112,14 +112,28 @@ export async function createNamedMaritimeSnapshot(
   return { id: name };
 }
 
-/** One read of a Maritime snapshot: absent on 404, else its source, which must be this run's. */
+const maritimeErrorBody = z.object({ code: z.string() });
+
+async function readMaritimeErrorCode(response: Response): Promise<string | undefined> {
+  const parsed = maritimeErrorBody.safeParse(await response.json().catch(() => null));
+
+  return parsed.success ? parsed.data.code : undefined;
+}
+
+/** True only when Maritime explicitly confirmed the named snapshot does not exist. */
+async function isMaritimeSnapshotNotFound(response: Response): Promise<boolean> {
+  return (
+    response.status === 404 && (await readMaritimeErrorCode(response)) === "snapshot_not_found"
+  );
+}
+
+/** One read of a Maritime snapshot: absent only on `404 snapshot_not_found`, else its source, which must be this run's. */
 async function readMaritimeSnapshot(name: string, sandboxId: string, signal: AbortSignal) {
   const response = await maritimeFetch(`/snapshots/${encodeURIComponent(name)}`, { signal });
 
   if (response.status === 404) {
-    await response.body?.cancel();
-
-    return "absent" as const;
+    if (await isMaritimeSnapshotNotFound(response)) return "absent" as const;
+    throw httpError("Maritime snapshot read failed", response.status);
   }
 
   if (!response.ok) {
@@ -137,8 +151,6 @@ async function readMaritimeSnapshot(name: string, sandboxId: string, signal: Abo
 
   return "exists" as const;
 }
-
-const maritimeErrorBody = z.object({ code: z.string() });
 
 /**
  * Whether a replay answer refused the save outright, so nothing was saved: an invalid request
@@ -159,9 +171,9 @@ function isSaveRefusal(status: number, code: string | undefined): boolean {
  * Decides a Maritime save whose answer was lost, timed out or unreadable: whether its snapshot exists.
  * It sends the journaled save again with the same idempotency key, which returns the first save's
  * outcome (or makes the save once), then reads the snapshot whatever the replay answered, so a snapshot
- * that is already visible is found even when the replay failed. A 404 read is final only when the
- * replay refused the save ({@link isSaveRefusal}); otherwise it is read again until the snapshot shows or
- * the deadline passes, which throws and keeps the journal entry.
+ * that is already visible is found even when the replay failed. A `404 snapshot_not_found` read is
+ * final only when the replay refused the save ({@link isSaveRefusal}); otherwise it is read again until
+ * the snapshot shows or the deadline passes, which throws and keeps the journal entry.
  */
 export async function settleMaritimeSave(input: {
   sandboxId: string;
@@ -192,8 +204,7 @@ export async function settleMaritimeSave(input: {
       );
 
       if (response.status === 404 || response.status === 410) {
-        const parsed = maritimeErrorBody.safeParse(await response.json().catch(() => null));
-        refused = isSaveRefusal(response.status, parsed.success ? parsed.data.code : undefined);
+        refused = isSaveRefusal(response.status, await readMaritimeErrorCode(response));
       } else {
         refused = isSaveRefusal(response.status, undefined);
         await response.body?.cancel();
@@ -309,17 +320,27 @@ export async function snapshotCleaner(
   }
 
   if (name === "maritime") {
-    // Deleted by name, also after the source sandbox has ended.
+    // Deleted by name, also after the source sandbox has ended. Only `404 snapshot_not_found`
+    // confirms absence; a route-level `404 resource_not_found` must fail so recovery retains it.
     return async (id) => {
       const response = await maritimeFetch(`/snapshots/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: { "Idempotency-Key": crypto.randomUUID() },
       });
 
-      await response.body?.cancel();
+      if (response.ok) {
+        await response.body?.cancel();
 
-      if (!response.ok && response.status !== 404)
-        throw httpError("Maritime snapshot delete failed", response.status);
+        return;
+      }
+
+      if (response.status === 404) {
+        if (await isMaritimeSnapshotNotFound(response)) return;
+      } else {
+        await response.body?.cancel();
+      }
+
+      throw httpError("Maritime snapshot delete failed", response.status);
     };
   }
 
@@ -557,6 +578,11 @@ export async function inspectSnapshot(
       case "maritime": {
         const response = await maritimeFetch(`/snapshots/${encodeURIComponent(id)}`);
 
+        if (response.status === 404) {
+          if (await isMaritimeSnapshotNotFound(response)) return { exists: false };
+          throw httpError("Snapshot metadata unavailable", response.status);
+        }
+
         if (!response.ok) {
           await response.body?.cancel();
           throw httpError("Snapshot metadata unavailable", response.status);
@@ -653,7 +679,10 @@ export async function inspectSnapshot(
 
     return { exists: true, sourceId: parent };
   } catch (error) {
-    if (lookupError(error, name, `${name}:snapshot-exact-get`).result === "not-found")
+    if (
+      name !== "maritime" &&
+      lookupError(error, name, `${name}:snapshot-exact-get`).result === "not-found"
+    )
       return { exists: false };
     throw error;
   }

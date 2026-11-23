@@ -9,7 +9,7 @@ import { decodeMaritime, type MaritimeInfo } from "../src/billing/providers.js";
 import { createRawMaritime, rawOwnerLabel, type RawMaritimeBox } from "../src/maritime-raw.js";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
 import { reapRun } from "../src/recovery.js";
-import { inspectSnapshot, settleMaritimeSave } from "../src/snapshots.js";
+import { inspectSnapshot, settleMaritimeSave, snapshotCleaner } from "../src/snapshots.js";
 import { parseV2 } from "../src/v2-config.js";
 import { sanitize } from "../src/v2-runner.js";
 
@@ -505,4 +505,126 @@ describe("re-review regressions on 6d6fea6", () => {
     const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
     expect(journal.resources.filter((r: { kind: string }) => r.kind === "snapshot")).toEqual([]);
   }, 30_000);
+
+  it("reapRun strips the save key before DELETE when list omits the snapshot and exact GET confirms it", async () => {
+    vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
+    const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const out = await directory("bench-maritime-reap-list-miss-");
+    const calls: string[] = [];
+    let deleted = false;
+    let journalBeforeDelete = "";
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${url.pathname}`);
+
+      if (url.pathname === "/v1/snapshots" && method === "GET")
+        return Response.json({ data: [], nextCursor: null });
+
+      if (url.pathname === "/v1/snapshots/snap-1" && method === "DELETE") {
+        journalBeforeDelete = await readFile(join(out, "ownership.json"), "utf8");
+        deleted = true;
+        throw new Error("connection closed after deletion");
+      }
+
+      if (url.pathname === "/v1/snapshots/snap-1")
+        return deleted
+          ? Response.json({ code: "snapshot_not_found" }, { status: 404 })
+          : Response.json({ name: "snap-1", sourceSandboxId: "sbx-src" });
+
+      if (url.pathname.endsWith("/save")) {
+        deleted = false;
+
+        return Response.json({ name: "snap-1", sourceSandboxId: "sbx-src" });
+      }
+
+      return Response.json({ code: "resource_not_found" }, { status: 404 });
+    });
+
+    const proof = snapshotProvenanceSchema.parse({
+      sourceId: "sbx-src",
+      runLabel: "maritime-run",
+      sdkLabel: "1",
+      verifiedAt: new Date().toISOString(),
+    });
+
+    await writeFile(
+      join(out, "ownership.json"),
+      JSON.stringify({
+        runId: "maritime-run",
+        resources: [
+          {
+            provider: "maritime",
+            id: "snap-1",
+            kind: "snapshot",
+            parent: "sbx-src",
+            snapshotProof: proof,
+            idempotencyKey: "key-1",
+          },
+        ],
+      }),
+    );
+
+    const providers = [
+      { kind: "ready" as const, name: "maritime", cloud: true, region: null, provider: memory() },
+    ];
+
+    const config = parseV2(["--providers", "maritime", "--run", "maritime-run", "--out", out]);
+
+    // First reap settles via replay + GET, strips idempotencyKey before DELETE, then hits the lost DELETE answer.
+    await reapRun(providers, config, (s) => s);
+    expect(calls.filter((c) => c === "DELETE /v1/snapshots/snap-1")).toHaveLength(1);
+    const saveCallsAfterFirst = calls.filter((c) => c.endsWith("/save")).length;
+    expect(journalBeforeDelete).not.toContain("idempotencyKey");
+
+    // Second reap must NOT replay POST /save; it confirms absence via GET and forgets the entry.
+    await reapRun(providers, config, (s) => s);
+    expect(calls.filter((c) => c.endsWith("/save"))).toHaveLength(saveCallsAfterFirst);
+    expect(deleted).toBe(true);
+    const journal = JSON.parse(await readFile(join(out, "ownership.json"), "utf8"));
+    expect(journal.resources.filter((r: { kind: string }) => r.kind === "snapshot")).toEqual([]);
+  }, 30_000);
+
+  it("route-level 404 resource_not_found never proves snapshot absence in settle, inspect, or delete", async () => {
+    vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
+    const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const provider = memory();
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (url.pathname.endsWith("/save") && method === "POST")
+        return Response.json({ code: "sandbox_ended" }, { status: 410 });
+
+      return Response.json({ code: "resource_not_found" }, { status: 404 });
+    });
+
+    await expect(
+      settleMaritimeSave({
+        sandboxId: "sbx-src",
+        name: "snap-1",
+        idempotencyKey: "key-1",
+        timeoutMs: 800,
+      }),
+    ).rejects.toThrow(/did not settle/);
+
+    await expect(inspectSnapshot("maritime", provider, "sbx-src", "snap-1")).rejects.toThrow(
+      /Snapshot metadata unavailable/,
+    );
+
+    const clean = await snapshotCleaner("maritime", provider, "sbx-src");
+    await expect(clean("snap-1")).rejects.toThrow(/Maritime snapshot delete failed/);
+
+    // Only explicit 404 snapshot_not_found proves absence.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ code: "snapshot_not_found" }, { status: 404 }),
+    );
+
+    await expect(inspectSnapshot("maritime", provider, "sbx-src", "snap-1")).resolves.toEqual({
+      exists: false,
+    });
+    await expect(clean("snap-1")).resolves.toBeUndefined();
+  });
 });

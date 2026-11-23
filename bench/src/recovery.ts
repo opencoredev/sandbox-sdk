@@ -362,25 +362,39 @@ export async function reapRun(
       }
     }
 
-    for (const entry of journal?.resources ?? []) {
-      if (entry.provider !== p.name || entry.kind !== "snapshot") continue;
-
+    for (const entry of (journal?.resources ?? []).filter(
+      (r) => r.provider === p.name && r.kind === "snapshot",
+    )) {
       try {
         if (restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
 
-        if ((await settleJournaledSnapshot(p.name, entry, config["timeout-ms"])) === "exists")
+        if ((await settleJournaledSnapshot(p.name, entry, config["timeout-ms"])) === "exists") {
+          let confirmed = entry;
+
+          if (entry.idempotencyKey !== undefined) {
+            const { idempotencyKey: _, ...withoutKey } = entry;
+            confirmed = withoutKey;
+
+            if (journal) {
+              journal.resources = journal.resources.map((r) => (r === entry ? confirmed : r));
+              await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+            }
+          }
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,
-            entry.id,
-            entry.parent,
-            entry.snapshotProof,
+            confirmed.id,
+            confirmed.parent,
+            confirmed.snapshotProof,
             config.run,
             config["timeout-ms"],
           );
-
-        await forget(entry);
+          await forget(confirmed);
+        } else {
+          await forget(entry);
+        }
       } catch (error) {
         review(
           p.name,

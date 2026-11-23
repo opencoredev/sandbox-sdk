@@ -1714,6 +1714,19 @@ export async function runV2(
 
                     return;
                   }
+
+                  // Confirmed on the server: drop the save idempotency key from the journal BEFORE
+                  // deleting so a dropped delete response cannot replay POST /save later.
+                  const current = owned.get(`${p.name}/snapshot/${id}`);
+
+                  if (current?.idempotencyKey !== undefined) {
+                    const { idempotencyKey: _, ...withoutKey } = current;
+                    owned.set(`${p.name}/snapshot/${id}`, withoutKey);
+                    await persist();
+                  }
+
+                  snapshotReady = true;
+                  saveKey = undefined;
                 }
 
                 await clean?.(id);
@@ -2381,17 +2394,28 @@ export async function runV2(
         if (restores.blocksSnapshot(p.name, item.id) || restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
 
-        if ((await settleJournaledSnapshot(p.name, item, config["timeout-ms"])) === "exists")
+        if ((await settleJournaledSnapshot(p.name, item, config["timeout-ms"])) === "exists") {
+          let confirmed = item;
+
+          if (item.idempotencyKey !== undefined) {
+            const { idempotencyKey: _, ...withoutKey } = item;
+            confirmed = withoutKey;
+            owned.set(`${p.name}/snapshot/${item.id}`, confirmed);
+            await persist();
+          }
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,
-            item.id,
-            item.parent,
-            item.snapshotProof,
+            confirmed.id,
+            confirmed.parent,
+            confirmed.snapshotProof,
             config.run,
             config["timeout-ms"],
-            await snapshotCleaner(p.name, p.provider, item.parent ?? ""),
+            await snapshotCleaner(p.name, p.provider, confirmed.parent ?? ""),
           );
+        }
+
         owned.delete(`${p.name}/snapshot/${item.id}`);
         report.cleanupReview = report.cleanupReview?.filter(
           (r) => !(r.provider === p.name && r.id === item.id && r.kind === "snapshot"),
