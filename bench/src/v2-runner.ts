@@ -1582,7 +1582,13 @@ export async function runV2(
       const probe = await measure(scenario, async (signal) => {
         // measure's deadline started just now: the diagnostic clock read must end before it.
         const endBy = performance.now() + timeout;
-        const ran = await runStagedCpuProbe(active, await staging, timeout, signal, endBy);
+
+        const ran = await runStagedCpuProbe(active, await staging, timeout, {
+          signal,
+          endBy,
+          track: (work) => pending.track(work),
+        });
+
         onReturn(ran);
 
         return { ...ran.result, seed: ran.result.probe.seed, ran };

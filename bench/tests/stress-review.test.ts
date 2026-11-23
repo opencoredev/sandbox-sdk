@@ -30,6 +30,7 @@ import {
 } from "../src/survival.js";
 import { parseV2 } from "../src/v2-config.js";
 import type { Sample } from "../src/v2-model.js";
+import { PendingWork } from "../src/timing.js";
 import { writeV2 } from "../src/v2-report.js";
 import { runV2 } from "../src/v2-runner.js";
 import { boundFake } from "./native-fakes.js";
@@ -654,7 +655,7 @@ describe("PR 75 review: the diagnostic clock read never discards a verified CPU 
    * The memory fake with a probes/cpu.py stand-in: the first clock read answers, the run reports
    * honest work, and every clock read after it does what `after` says.
    */
-  function probeBox(after: "fail" | "hang") {
+  function probeBox(after: "fail" | "hang", onHangEnd: () => void = () => {}) {
     const provider = memory();
     let clocks = 0;
 
@@ -668,7 +669,10 @@ describe("PR 75 review: the diagnostic clock read never discards a verified CPU 
           return 0;
         }
 
-        if (after === "hang") await sleep(3_000);
+        if (after === "hang") {
+          await sleep(3_000);
+          onHangEnd();
+        }
 
         return 1;
       }
@@ -736,7 +740,7 @@ describe("PR 75 review: the diagnostic clock read never discards a verified CPU 
     try {
       const staged = await stageCpuProbe(box, challenge, 5000);
       const endBy = performance.now() + 1000;
-      const ran = await runStagedCpuProbe(box, staged, 5000, undefined, endBy);
+      const ran = await runStagedCpuProbe(box, staged, 5000, { endBy });
 
       // Returned before the step's end, with the run's own measurements intact.
       expect(performance.now()).toBeLessThan(endBy);
@@ -747,12 +751,49 @@ describe("PR 75 review: the diagnostic clock read never discards a verified CPU 
     }
   });
 
+  it("keeps a timed-out clock read in pending work until the guest command settles", async () => {
+    let hangEnded = false;
+
+    const box = await createSandbox(
+      probeBox("hang", () => {
+        hangEnded = true;
+      }),
+      {},
+    );
+
+    const pending = new PendingWork();
+
+    try {
+      const staged = await stageCpuProbe(box, challenge, 5000);
+      const endBy = performance.now() + 1000;
+
+      const ran = await runStagedCpuProbe(box, staged, 5000, {
+        endBy,
+        track: (work) => pending.track(work),
+      });
+
+      // The verified result is kept, and the read is reported as given up on...
+      expect(ran.result.allOpsPerSecond).toBeGreaterThan(0);
+      expect(ran).toMatchObject({ clockDriftMs: null, clockDriftUnread: "timed-out" });
+      expect(hangEnded).toBe(false);
+      // ...but cleanup cannot pass its drain check while the guest command is still running.
+      expect(await pending.drain(100)).toBe(false);
+      expect(await pending.drain(5000)).toBe(true);
+      expect(hangEnded).toBe(true);
+    } finally {
+      await box.destroy();
+    }
+  });
+
   it("skips the clock read when the step has no time left", async () => {
     const box = await createSandbox(probeBox("hang"), {});
 
     try {
       const staged = await stageCpuProbe(box, challenge, 5000);
-      const ran = await runStagedCpuProbe(box, staged, 5000, undefined, performance.now());
+
+      const ran = await runStagedCpuProbe(box, staged, 5000, {
+        endBy: performance.now(),
+      });
 
       expect(ran.result.singleOpsPerSecond).toBeGreaterThan(0);
       expect(ran).toMatchObject({ clockDriftMs: null, clockDriftUnread: "no-time-left" });

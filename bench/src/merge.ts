@@ -180,8 +180,10 @@ export function classifyFailure(
     return "provider-account-limit";
 
   // Archil refuses a create over the plan's concurrent-sandbox cap; the adapter reports it as
-  // quota, before anything is allocated, so no sandbox is named.
+  // quota, before anything is allocated, so no sandbox is named. Stress cohorts keep the strict
+  // rule above: there an Archil quota with a non-429 HTTP status stays the provider's.
   if (
+    !stressCohort &&
     sample.provider === "archil" &&
     /(^|\/)cold$/.test(sample.scenario) &&
     sample.outcome.code === "quota" &&

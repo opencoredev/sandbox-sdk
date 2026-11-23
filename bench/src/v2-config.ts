@@ -208,6 +208,12 @@ export function parseV2(args: string[]) {
   if (config["survival-heartbeat-ms"] > config["survival-window-ms"])
     throw new Error("--survival-heartbeat-ms must not exceed --survival-window-ms");
 
+  // The window always ends with a heartbeat (`heartbeatOffsets`). With a remainder, that slot
+  // falls less than an interval after the one before it, so a reply on time to that one can
+  // leave the final slot busy and the member without a verdict.
+  if (config["survival-window-ms"] % config["survival-heartbeat-ms"] !== 0)
+    throw new Error("--survival-window-ms must be a whole multiple of --survival-heartbeat-ms");
+
   checkScenarioPlan(config.scenarios, config.bursts);
 
   if (config.scenarios.includes("cost") && config.scenarios.length !== 1)

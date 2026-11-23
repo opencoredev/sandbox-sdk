@@ -333,6 +333,17 @@ export const clockReadMs = 5_000;
 /** How long before the step's end the diagnostic clock read must give up, to leave the step room. */
 const clockReadMarginMs = 250;
 
+/** Registers work that may outlive the wait on it, such as `PendingWork.track`. */
+export type TrackWork = <T>(work: Promise<T>) => Promise<T>;
+
+export interface RunStagedCpuProbeOptions {
+  signal?: AbortSignal;
+  /** `performance.now()` when the caller's step ends. */
+  endBy?: number;
+  /** Sees the diagnostic clock read's promise, which can outlive its deadline. */
+  track?: TrackWork;
+}
+
 /** Why the clock read after a run gave no drift. Fixed reasons: a guest's reply is never copied. */
 export type ClockDriftUnread = "no-time-left" | "timed-out" | "failed";
 
@@ -345,19 +356,24 @@ async function clockDrift(
   box: Sandbox,
   staged: StagedCpuProbe,
   endBy: number,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  track: TrackWork,
 ): Promise<{ clockDriftMs: number | null; clockDriftUnread: ClockDriftUnread | null }> {
   const budget = Math.min(clockReadMs, endBy - clockReadMarginMs - performance.now());
 
   if (budget <= 0) return { clockDriftMs: null, clockDriftUnread: "no-time-left" };
 
   try {
+    // The deadline only stops waiting: the read itself can still be running in the guest (the
+    // SDK waits for the command to stop), so it is tracked on its own for cleanup to drain.
     const after = await deadline(budget, (own) =>
-      readGuestClock(
-        box,
-        probePath(staged.challenge),
-        budget,
-        signal ? AbortSignal.any([signal, own]) : own,
+      track(
+        readGuestClock(
+          box,
+          probePath(staged.challenge),
+          budget,
+          signal ? AbortSignal.any([signal, own]) : own,
+        ),
       ),
     );
 
@@ -379,14 +395,14 @@ async function clockDrift(
  * read at staging, is recorded as a diagnostic; nothing is placed or judged by the guest's clock.
  * A failed or late read leaves it null with the reason in `clockDriftUnread` and keeps the
  * verified result. `endBy` (`performance.now()`) is when the caller's step ends; it defaults to
- * `timeoutMs` after dispatch.
+ * `timeoutMs` after dispatch. `track` sees the clock read's own promise, so a read given up on
+ * stays visible to the caller's cleanup until the guest command actually stops.
  */
 export async function runStagedCpuProbe(
   box: Sandbox,
   staged: StagedCpuProbe,
   timeoutMs: number,
-  signal?: AbortSignal,
-  endBy?: number,
+  { signal, endBy, track = (work) => work }: RunStagedCpuProbeOptions = {},
 ) {
   const dispatchedAt = performance.now();
   const dispatchedEpoch = hostEpochMs();
@@ -396,7 +412,7 @@ export async function runStagedCpuProbe(
   if (signal?.aborted) throw new Error("CPU probe aborted");
   const result = cpuResult(output, staged.challenge, (returnedAt - dispatchedAt) / 1000);
   const exec: Interval = [dispatchedEpoch, dispatchedEpoch + (returnedAt - dispatchedAt)];
-  const drift = await clockDrift(box, staged, endBy ?? dispatchedAt + timeoutMs, signal);
+  const drift = await clockDrift(box, staged, endBy ?? dispatchedAt + timeoutMs, signal, track);
 
   return { result, returnedAt, exec, ...drift };
 }

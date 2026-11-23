@@ -179,6 +179,34 @@ function unprobedCreateFailures(
 }
 
 /**
+ * The failed row a blocked row names in `blocked_by`, from the same source run, provider and
+ * iteration; undefined when the row is not blocked or its blocker did not fail. `step` names a
+ * row's step the way `blocked_by` does: the scenario itself, or a cohort row's member.
+ */
+function failedBlocker({
+  blocked,
+  rows,
+  step = (s) => s.scenario,
+}: {
+  blocked: StressInput;
+  rows: readonly StressInput[];
+  step?: (row: StressInput) => string | undefined;
+}) {
+  const { outcome } = blocked;
+
+  if (outcome.kind !== "blocked") return undefined;
+
+  return rows.find(
+    (s) =>
+      s.sourceRunId === blocked.sourceRunId &&
+      s.sourceIteration === blocked.sourceIteration &&
+      s.provider === blocked.provider &&
+      step(s) === outcome.blocked_by &&
+      s.outcome.kind === "failure",
+  );
+}
+
+/**
  * What cpu-sustained attempts came to, one per iteration: by its probe row, where a probe blocked
  * by a failed create or fingerprint counts as that row's failure, or by its failed create when
  * the run stopped before the probe. Either way a refusal stays visible as a failed attempt.
@@ -188,18 +216,7 @@ function sustainedAttempts(
   failedCreates: readonly StressInput[],
   samples: readonly StressInput[],
 ) {
-  const blocker = (probe: StressInput) =>
-    probe.outcome.kind === "blocked"
-      ? samples.find(
-          (s) =>
-            probe.outcome.kind === "blocked" &&
-            s.sourceRunId === probe.sourceRunId &&
-            s.sourceIteration === probe.sourceIteration &&
-            s.provider === probe.provider &&
-            s.scenario === probe.outcome.blocked_by &&
-            s.outcome.kind === "failure",
-        )
-      : undefined;
+  const blocker = (probe: StressInput) => failedBlocker({ blocked: probe, rows: samples });
 
   const failed = probes.flatMap((probe) => {
     if (probe.outcome.kind === "failure") return [probe];
@@ -316,6 +333,32 @@ function cohortUnits(samples: readonly StressInput[], kind: "cpu-burst" | "survi
 const member = (units: readonly CohortUnit[], name: string) =>
   units.flatMap((u) => u.rows.filter((s) => parseCohortScenario(s.scenario)?.member === name));
 
+const memberStep = (s: StressInput) => parseCohortScenario(s.scenario)?.member;
+
+/**
+ * Each admitted cpu-burst member's failure, counted once: its failed create, its failed CPU run,
+ * or the failed step (such as its fingerprint) that blocked the run. A member whose fingerprint
+ * failed after it started is a failed attempt, not one that silently drops out of the counts.
+ */
+function cpuMemberFailures(units: readonly CohortUnit[]) {
+  return units.flatMap((u) =>
+    u.cold.flatMap((cold) => {
+      if (cold.outcome.kind === "failure") return [cold];
+
+      const cpu = u.rows.find(
+        (s) => memberStep(s) === "cpu" && s.sourceIteration === cold.sourceIteration,
+      );
+
+      if (!cpu) return [];
+
+      if (cpu.outcome.kind === "failure") return [cpu];
+      const cause = failedBlocker({ blocked: cpu, rows: u.rows, step: memberStep });
+
+      return cause ? [cause] : [];
+    }),
+  );
+}
+
 /** Incomplete cohorts (budget or caps admitted fewer than K): reported, never pooled into K-way figures. */
 const incomplete = (units: readonly CohortUnit[]) => {
   const partial = units.filter((u) => !u.complete);
@@ -414,7 +457,7 @@ function cpuBurst(units: readonly CohortUnit[]) {
         ready: values(member(complete, "cold")).length,
         completed: values(member(complete, "cpu")).length,
       },
-      failures: failureClasses([...member(complete, "cold"), ...member(complete, "cpu")]),
+      failures: failureClasses(cpuMemberFailures(complete)),
       /** From cohorts that all completed with a proven overlap of their CPU phases. */
       perSandbox: {
         cohorts: together.length,

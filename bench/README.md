@@ -60,7 +60,7 @@ Run `bun bench attempts results/publication-final-v2` to print every required pr
 | `--provider-concurrency`   | `1`                                                                  | Active normal iterations per provider, maximum 32                                                 |
 | `--bursts`                 | `3`                                                                  | Isolated cohorts, e.g. `10,25`; empty string disables                                             |
 | `--survival-window-ms`     | `300000`                                                             | How long every survival cohort member must stay alive and answer heartbeats (max 1 hour)          |
-| `--survival-heartbeat-ms`  | `15000`                                                              | Heartbeat interval in survival cohorts, also each heartbeat's deadline (min 1000)                 |
+| `--survival-heartbeat-ms`  | `15000`                                                              | Heartbeat interval and deadline in survival cohorts (min 1000; must divide the window)            |
 | `--account-limits`         | conservative defaults                                                | Overrides such as `e2b=20,tenki=5,boxd=50`; boxd must never exceed 50                             |
 | `--timeout-ms`             | `180000`                                                             | Scenario deadline and bounded cleanup/drain grace                                                 |
 | `--seed`                   | `45`                                                                 | Recorded PRNG seed for scenario-group order and bootstrap CIs                                     |

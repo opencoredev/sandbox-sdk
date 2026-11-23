@@ -123,3 +123,45 @@ it("exports burst survival under stress and leaves every older field unchanged",
     },
   ]);
 }, 30_000);
+
+// PR 75 review (PRRT_kwDOTZ9UNs67Hvbu): the memory fake has no python3, so every member starts
+// but its fingerprint fails and blocks its CPU run. Those members must count as failures.
+it("counts cpu-burst members whose fingerprint failed as failures, once each", async () => {
+  const main = await collect("main-run", ["--runs", "2", "--bursts", "", "--scenarios", "command"]);
+
+  const burst = await collect("burst-run", [
+    "--scenarios",
+    "cpu-burst",
+    "--bursts",
+    "2",
+    "--burst-cohorts",
+    "2",
+    "--concurrency",
+    "2",
+  ]);
+
+  const [entry] = siteData(mergeSources([main]), "default", mergeSources([burst])).stress.cpuBurst;
+
+  expect(entry?.k).toBe(2);
+  expect(entry?.providers[0]).toMatchObject({
+    cohorts: 2,
+    completeCohorts: 0,
+    members: { attempted: 4, ready: 4, completed: 0 },
+    failures: { accountLimit: 0, clientNetwork: 0, provider: 4 },
+  });
+}, 30_000);
+
+it("counts a cpu-sustained probe blocked by a failed fingerprint as a failed attempt", async () => {
+  const main = await collect("main-run", ["--runs", "2", "--bursts", "", "--scenarios", "command"]);
+  const sustained = await collect("sustained-run", ["--scenarios", "cpu-sustained", "--runs", "2"]);
+
+  const [entry] = siteData(mergeSources([main]), "default", mergeSources([sustained])).stress
+    .cpuSustained;
+
+  expect(entry?.attempts).toEqual({
+    successes: 0,
+    failures: { accountLimit: 0, clientNetwork: 0, provider: 2 },
+    blocked: 0,
+    skipped: 0,
+  });
+}, 30_000);

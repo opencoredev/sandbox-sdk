@@ -9,6 +9,7 @@ import {
   survivalFailure,
   type SentHeartbeat,
 } from "../src/survival.js";
+import { parseV2 } from "../src/v2-config.js";
 
 const ok = (atMs: number, bootId = "boot-a"): SentHeartbeat => ({
   kind: "ok",
@@ -225,5 +226,44 @@ describe("heartbeatWindow", () => {
     expect(result.heartbeats.length).toBeLessThan(4);
     expect(result.elapsedMs).toBeLessThan(120);
     expect(survivalFailure(result, "survival-3/window")).toBeNull();
+  });
+});
+
+// PR 75 review (PRRT_kwDOTZ9UNs67Hvb9): with a 1001 ms window and 1000 ms heartbeats the slots
+// fall at 0, 1000 and 1001 ms, so a 300 ms reply to the 1000 ms heartbeat made the final slot a
+// busy skip and the member interrupted. Such plans are refused before any sandbox starts.
+describe("survival plans", () => {
+  it("refuses a window that is not a whole number of heartbeat intervals", () => {
+    const plan = (windowMs: string, heartbeatMs: string) => () =>
+      parseV2(["--survival-window-ms", windowMs, "--survival-heartbeat-ms", heartbeatMs]);
+
+    expect(plan("1001", "1000")).toThrow(
+      "--survival-window-ms must be a whole multiple of --survival-heartbeat-ms",
+    );
+    expect(plan("2500", "1000")).toThrow(/whole multiple/);
+    expect(plan("2000", "1000")).not.toThrow();
+    expect(plan("300000", "15000")).not.toThrow();
+    // The defaults are a whole multiple.
+    expect(() => parseV2([])).not.toThrow();
+  });
+
+  it("keeps every slot an interval apart, so replies on time never collide", async () => {
+    const plan = { windowMs: 120, intervalMs: 40 };
+
+    const result = await heartbeatWindow({
+      plan,
+      heartbeatTimeoutMs: 1000,
+      endBy: Number.POSITIVE_INFINITY,
+      sanitize: (text) => text,
+      track: (work) => work,
+      // Each reply takes 30 ms of a 40 ms interval, as the 300 ms reply did of 1000 ms.
+      heartbeat: () => new Promise((resolve) => setTimeout(() => resolve("boot-a"), 30)),
+      lookup: async () => lookup("present"),
+      stop: new AbortController().signal,
+    });
+
+    expect(heartbeatOffsets(plan)).toEqual([0, 40, 80, 120]);
+    expect(result.verdict).toEqual({ kind: "survived" });
+    expect(result.heartbeats.map((h) => h.kind)).toEqual(["ok", "ok", "ok", "ok"]);
   });
 });
