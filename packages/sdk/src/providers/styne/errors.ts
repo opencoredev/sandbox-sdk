@@ -50,6 +50,8 @@ const refusals = new Set([
 
 const writes = new Set(["POST", "PATCH"]);
 
+const unsupported = new Set(["not_implemented", "not_supported", "class_not_served"]);
+
 /** The SDK's code for one of Styne's `error_code` values, or undefined to keep the status mapping. */
 export function codeOf(errorCode: string | undefined): ErrorCode | undefined {
   if (errorCode === undefined) return undefined;
@@ -62,7 +64,7 @@ export function codeOf(errorCode: string | undefined): ErrorCode | undefined {
 
   if (refusals.has(errorCode)) return "unavailable";
 
-  if (errorCode === "not_implemented" || errorCode === "class_not_served") return "unsupported";
+  if (unsupported.has(errorCode)) return "unsupported";
 
   if (errorCode === "invalid_argument" || errorCode === "unknown_region") return "invalid_argument";
 
@@ -73,12 +75,15 @@ export function codeOf(errorCode: string | undefined): ErrorCode | undefined {
 
 /**
  * The HTTP client's error hook. A file route's 404 is a missing path; the adapter checks the sandbox
- * itself before it reports one. A write answered with a 5xx Styne does not document as a refusal may
- * have taken effect, so it is `outcome_unknown`.
+ * itself before it reports one. A `501` (`not_implemented`, or no code) is a route Styne does not serve,
+ * so nothing ran. A write answered with any other 5xx Styne does not document as a refusal may have taken
+ * effect, so it is `outcome_unknown`.
  */
 export function mapError(failure: HttpFailure, request: FailedRequest): ErrorCode | undefined {
   if (failure.kind !== "status") return undefined;
   const code = failure.body.code;
+
+  if (failure.status === 501 && (code === undefined || unsupported.has(code))) return "unsupported";
 
   if (
     writes.has(request.method) &&

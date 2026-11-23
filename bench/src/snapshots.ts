@@ -249,8 +249,12 @@ export async function createNamedStyneSnapshot(sandboxId: string, name: string) 
   return { id: name };
 }
 
-/** Styne's snapshots of one sandbox, which it lists also after the sandbox is gone. */
-async function snapshotsFromStyneSandbox(sourceSandboxId: string) {
+/**
+ * Styne's snapshots of one sandbox that this run journaled by name before creating them. Styne lists every
+ * snapshot of the source, also after the sandbox is gone, and an operator may have saved one there too;
+ * the run names its own before the request, so nothing else is ever its to delete.
+ */
+async function snapshotsFromStyneSandbox(sourceSandboxId: string, journaled: ReadonlySet<string>) {
   const response = await styneFetch(`/sandboxes/${encodeURIComponent(sourceSandboxId)}/snapshots`);
 
   if (!response.ok) {
@@ -261,7 +265,7 @@ async function snapshotsFromStyneSandbox(sourceSandboxId: string) {
   return z
     .array(z.object({ name: z.string(), sandboxID: z.string() }))
     .parse(await response.json())
-    .filter((snapshot) => snapshot.sandboxID === sourceSandboxId)
+    .filter((snapshot) => snapshot.sandboxID === sourceSandboxId && journaled.has(snapshot.name))
     .map((snapshot) => ({ id: snapshot.name, name: snapshot.name }));
 }
 
@@ -286,9 +290,17 @@ export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
   throw new Error("Snapshot recovery exceeded pagination bound");
 }
 
-/** Query only a source sandbox already recorded in the run ownership journal. */
-export async function snapshotsFromSource(provider: string, sourceSandboxId: string) {
-  if (provider === "styne") return snapshotsFromStyneSandbox(sourceSandboxId);
+/**
+ * Query only a source sandbox already recorded in the run ownership journal. `journaled` is the snapshot
+ * IDs the journal holds for that source; providers whose names the run picks before creating (Styne) keep
+ * only those.
+ */
+export async function snapshotsFromSource(
+  provider: string,
+  sourceSandboxId: string,
+  journaled: ReadonlySet<string>,
+) {
+  if (provider === "styne") return snapshotsFromStyneSandbox(sourceSandboxId, journaled);
 
   if (provider !== "superserve") return snapshotsFromDaytonaSandbox(sourceSandboxId);
 

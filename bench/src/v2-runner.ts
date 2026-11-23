@@ -156,6 +156,19 @@ function burstOutcome(burst: {
 const errorNote = (cause: unknown) =>
   sanitize(cause instanceof Error ? cause.message : "Unknown failure");
 
+/** The snapshot IDs the ownership journal holds for one source sandbox of one provider. */
+function journaledSnapshots(
+  entries: Iterable<{ provider: string; id: string; kind: string; parent: string | null }>,
+  provider: string,
+  sourceId: string,
+): ReadonlySet<string> {
+  return new Set(
+    Array.from(entries)
+      .filter((e) => e.provider === provider && e.kind === "snapshot" && e.parent === sourceId)
+      .map((e) => e.id),
+  );
+}
+
 export function sanitize(text: string) {
   let result = text;
 
@@ -1932,10 +1945,11 @@ export async function runV2(
               .parse(source.snapshotProof);
 
             const sourceCleaner = await snapshotCleaner(p.name, p.provider, source.id);
+            const journaled = journaledSnapshots(owned.values(), p.name, source.id);
             await deadline(timeout, async (signal) => {
               for (;;) {
                 if (signal.aborted) throw new Error("Snapshot source recovery deadline expired");
-                const snapshots = await snapshotsFromSource(p.name, source.id);
+                const snapshots = await snapshotsFromSource(p.name, source.id, journaled);
 
                 if (!snapshots.length) break;
 
@@ -2327,9 +2341,10 @@ export async function runV2(
         if (proof.sourceId !== item.id || proof.runLabel !== config.run)
           throw new Error("Snapshot-source provenance mismatch");
         const sourceCleaner = await snapshotCleaner(p.name, p.provider, item.id);
+        const journaled = journaledSnapshots(owned.values(), p.name, item.id);
 
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, item.id),
+          snapshotsFromSource(p.name, item.id, journaled),
         )) {
           owned.set(`${p.name}/snapshot/${snapshot.id}`, {
             provider: p.name,

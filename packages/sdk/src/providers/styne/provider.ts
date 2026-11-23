@@ -6,8 +6,21 @@
  */
 import { randomUUID } from "node:crypto";
 import { SandboxError, type ErrorCode } from "../../errors.js";
-import { createHttpClient, httpStatus, neverSent, type Fetch } from "../../http.js";
-import { createNativeApi, type NativeApi } from "../../native.js";
+import {
+  createHttpClient,
+  httpStatus,
+  neverSent,
+  type Fetch,
+  type HttpResponse,
+} from "../../http.js";
+import {
+  createNativeApi,
+  sdkCall,
+  sdkConstruct,
+  sdkObject,
+  type NativeApi,
+  type NativeSdkBinding,
+} from "../../native.js";
 import type {
   CreateInput,
   ExecInput,
@@ -21,16 +34,21 @@ import type { JsonObject, JsonValue } from "../../shared/json.js";
 import { isString } from "../../shared/narrow.js";
 import { ndjson } from "../../streams.js";
 import {
+  accessTokens,
+  exitedCleanly,
   keyLabel,
   parseConnection,
   parseExecFrame,
   parseMetrics,
   parseSandbox,
+  parseSandboxAnswer,
   parseSandboxList,
   parseSnapshot,
   toInfo,
   type Connection,
+  type SandboxAnswer,
   type StyneSandbox,
+  type StyneSnapshot,
 } from "./api.js";
 import { codeOf, fail, mapError, provider as name } from "./errors.js";
 
@@ -69,12 +87,35 @@ export interface StyneOptions {
   fetch?: Fetch;
 }
 
+/** The npm package `native.sdk()` binds, installed by the caller. */
+const sdkPackage = "styne-sdk";
+
+/** What `native.sdk()` needs from `styne-sdk`: its `Styne` client, whose `vms.get` reads a VM without resuming it. */
+export interface StyneSdkModule {
+  Styne: new (options: { apiKey?: string; baseUrl?: string }) => {
+    readonly vms: { get(id: string): Promise<object> };
+  };
+}
+
+/** `box.native.sdk(() => import("styne-sdk"))`: a `Styne` client with this adapter's key, and the sandbox's `Vm` from `client.vms.get`. */
+export type StyneSandboxSdk = <M extends StyneSdkModule>(
+  load: () => Promise<M>,
+) => Promise<{
+  client: InstanceType<M["Styne"]>;
+  vm: Awaited<ReturnType<InstanceType<M["Styne"]>["vms"]["get"]>>;
+}>;
+
+/** `provider.api.sdk(() => import("styne-sdk"))`: the `Styne` client. */
+export type StyneClientSdk = <M extends StyneSdkModule>(
+  load: () => Promise<M>,
+) => Promise<InstanceType<M["Styne"]>>;
+
 /** `box.native`: Styne's API with this adapter's key, `{id}` bound to the sandbox. */
-export type StyneNative = NativeApi<StynePlane>;
+export type StyneNative = NativeApi<StynePlane, StyneSandboxSdk>;
 
 export type StyneProvider = Provider<StyneNative, StyneCapability> & {
   /** Account-level calls, such as `api.request("GET", "/snapshots")`. */
-  readonly api: NativeApi<StynePlane>;
+  readonly api: NativeApi<StynePlane, StyneClientSdk>;
 };
 
 /** Styne's sizes (https://docs.styne.ai/limits#sandbox-sizes): vCPU, MiB of memory, GiB of disk. */
@@ -178,6 +219,15 @@ const stdinChunkBytes = 1024 * 1024;
 
 type Body = JsonObject;
 
+/** A 2xx body as JSON, or `undefined` when it is empty or not JSON: each caller treats that as unreadable. */
+function readJson(response: HttpResponse): JsonValue | undefined {
+  try {
+    return response.json();
+  } catch {
+    return undefined;
+  }
+}
+
 export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
   const baseUrl = (options.baseUrl ?? process.env.STYNE_API_URL ?? "https://api.styne.ai").replace(
     /\/+$/,
@@ -187,6 +237,17 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
   const requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
   const connections = new Map<string, Connection>();
   const natives = new Map<string, StyneNative>();
+  /** Sandboxes this client created with `public`, whose ports need no token. */
+  const publicIds = new Set<string>();
+  /** Every access token an answer carried. Kept for the client's life: an error may echo one after a close. */
+  const tokens = new Set<string>();
+
+  /** Registers the access tokens in a sandbox answer for redaction, and hands the answer on. */
+  const remember = (raw: JsonValue | undefined) => {
+    for (const token of accessTokens(raw)) tokens.add(token);
+
+    return raw;
+  };
 
   function apiKey() {
     const key = (options.apiKey ?? process.env.STYNE_API_KEY)?.trim();
@@ -207,16 +268,43 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     defaultPlane: "api",
     fetch: options.fetch,
     timeoutMs: requestTimeoutMs,
-    secrets: () => [
-      options.apiKey ?? process.env.STYNE_API_KEY,
-      ...[...connections.values()].map((c) => c.trafficAccessToken),
-    ],
+    secrets: () => [options.apiKey ?? process.env.STYNE_API_KEY, ...tokens],
     idempotencyHeader: "Idempotency-Key",
     authHint: "Set STYNE_API_KEY to a valid Styne API key.",
     mapError,
   });
 
-  const api = createNativeApi<StynePlane>({ http, placeholder: "id" });
+  const binding: NativeSdkBinding = {
+    package: sdkPackage,
+    async connect(module, sandboxId) {
+      // styne-sdk calls Styne's own API, which is served under /v1 of the same host.
+      const client = sdkConstruct(
+        module,
+        "Styne",
+        [{ apiKey: apiKey(), baseUrl: `${baseUrl}/v1` }],
+        sdkPackage,
+      );
+
+      if (sandboxId === undefined) return client;
+
+      const vms = sdkObject(client.vms, "Styne.vms", sdkPackage);
+
+      // get, not connect: the SDK's connect resumes a paused VM.
+      const vm = sdkObject(
+        await sdkCall(vms, "get", [sandboxId], sdkPackage),
+        "the VM",
+        sdkPackage,
+      );
+
+      return { client, vm };
+    },
+  };
+
+  const api = createNativeApi<StynePlane, StyneClientSdk>({
+    http,
+    placeholder: "id",
+    sdk: binding,
+  });
 
   const sandboxPath = (id: string, route = "") => ({
     path: `/sandboxes/{id}${route}`,
@@ -228,7 +316,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
   const idempotent = () => ({ idempotencyKey: randomUUID() });
 
   async function getSandbox(id: string): Promise<StyneSandbox> {
-    return parseSandbox(await http.json({ method: "GET", ...sandboxPath(id) }));
+    return parseSandbox(remember(await http.json({ method: "GET", ...sandboxPath(id) })));
   }
 
   async function listSandboxes(labels: Labels): Promise<StyneSandbox[]> {
@@ -243,7 +331,10 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
         query: { metadata: filter || undefined, limit: 100, nextToken },
       });
 
-      found.push(...parseSandboxList(response.json()));
+      const page = response.json();
+
+      if (Array.isArray(page)) for (const entry of page) remember(entry);
+      found.push(...parseSandboxList(page));
       nextToken = response.headers.get("x-next-token") ?? undefined;
 
       if (!nextToken) break;
@@ -259,9 +350,10 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
 
     if (known) return known;
 
-    // A connect resumes a paused sandbox and keeps it alive at least 5 more minutes; a preview needs it running.
+    // A connect resumes a paused sandbox and keeps it alive at least 5 more minutes; a preview needs it
+    // running. Being a write, a connect whose answer is lost is outcome_unknown: it may have done either.
     const fresh = parseConnection(
-      await http.json({ method: "POST", ...sandboxPath(id, "/connect"), body: {}, readOnly: true }),
+      remember(await http.json({ method: "POST", ...sandboxPath(id, "/connect"), body: {} })),
     );
 
     connections.set(id, fresh);
@@ -278,10 +370,14 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     } finally {
       connections.delete(id);
       natives.delete(id);
+      publicIds.delete(id);
     }
   }
 
-  /** Kills a command's process group in the guest, on a fresh short deadline. Throws when unconfirmed. */
+  /**
+   * Kills a command's process group in the guest, on a fresh short deadline. Throws when unconfirmed: the
+   * kill command's record must show it ran to a normal exit 0, since a `200` also carries a failed run.
+   */
   async function killGroup(id: string, tag: string, pid: number | undefined) {
     const body = {
       argv: ["sh", "-c", killer, "sandbox-sdk", tag, pid === undefined ? "" : String(pid)],
@@ -291,9 +387,14 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
 
     for (let attempt = 0; attempt < 2; attempt++)
       try {
-        await http.cleanup({ method: "POST", ...sandboxPath(id, "/commands"), body });
+        const record = await http.cleanup({
+          method: "POST",
+          ...sandboxPath(id, "/commands"),
+          body,
+        });
 
-        return;
+        if (exitedCleanly(readJson(record))) return;
+        last = fail("the kill command did not exit cleanly", "outcome_unknown", { sandboxId: id });
       } catch (error) {
         last = error;
 
@@ -489,13 +590,28 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
             // Read the stream to its end, so its connection can serve the next request.
             await drain(frames);
 
-            // Styne's own deadline killed the group; its `command_timeout` line was read above.
-            if (frame.timedOut) return timedOut;
+            switch (frame.status.kind) {
+              // Styne's own deadline killed the group; its `command_timeout` line was read above.
+              case "timedOut":
+                return timedOut;
+              case "code":
+                return { exitCode: frame.status.exitCode, timedOut: false };
+              case "signal":
+                return { exitCode: 128 + frame.status.signal, timedOut: false };
+              default: {
+                const exhaustive: never = frame.status;
 
-            if (frame.exitCode >= 0) return { exitCode: frame.exitCode, timedOut: false };
-
-            return { exitCode: frame.signal > 0 ? 128 + frame.signal : null, timedOut: false };
+                return exhaustive;
+              }
+            }
           }
+
+          case "malformed":
+            // The command may still run, or have ended in a way the line does not say.
+            await killGroup(id, tag, pid).catch(() => {});
+            throw fail("the command stream sent a line it does not document", "outcome_unknown", {
+              sandboxId: id,
+            });
 
           case "error": {
             if (frame.code === "command_timeout") return timedOut;
@@ -721,29 +837,57 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     async create(input) {
       const body = createBody(input);
       const key = idempotent();
-      let made: Connection;
 
       // Not the caller's signal: once sent, the answer names the sandbox to destroy. An abort is
       // honoured after it arrives.
-      try {
-        made = parseConnection(
-          await http.json({ method: "POST", path: "/sandboxes", body, ...key }),
+      const send = async (replay: boolean): Promise<SandboxAnswer> => {
+        const request = { method: "POST" as const, path: "/sandboxes", body, ...key };
+
+        return parseSandboxAnswer(
+          remember(readJson(await (replay ? http.cleanup(request) : http.request(request)))),
         );
+      };
+
+      let answer: SandboxAnswer;
+      let lost: SandboxError | undefined;
+
+      try {
+        answer = await send(false);
       } catch (error) {
         if (!(error instanceof SandboxError && error.code === "outcome_unknown")) throw error;
-        // The same idempotency key returns the sandbox the lost answer named, or makes the one it did not.
-        made = parseConnection(
-          await http
-            .cleanup({ method: "POST", path: "/sandboxes", body, ...key })
-            .then((response) => response.json())
-            .catch(() => {
-              throw error;
-            }),
-        );
+        lost = error;
+        answer = { kind: "unreadable" };
       }
 
+      if (answer.kind === "unreadable") {
+        const unknown =
+          lost ??
+          fail(
+            "the create was answered but its answer could not be read, so a sandbox may exist",
+            "outcome_unknown",
+          );
+
+        // The same idempotency key returns the sandbox the lost answer named, or makes the one it did not.
+        answer = await send(true).catch(() => {
+          throw unknown;
+        });
+
+        if (answer.kind === "unreadable") throw unknown;
+      }
+
+      if (answer.kind === "incomplete")
+        return abandon(
+          answer.id,
+          fail("the create answered without a sandbox domain", "provider", {
+            sandboxId: answer.id,
+          }),
+        );
+
+      const made = answer.connection;
       const id = made.id;
       connections.set(id, made);
+
+      if (options.public) publicIds.add(id);
       const aborted = () => fail("creation aborted", "aborted", { sandboxId: id });
 
       try {
@@ -784,38 +928,41 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     async close(id) {
       connections.delete(id);
       natives.delete(id);
+      publicIds.delete(id);
     },
 
     exec,
     files,
 
     async previewUrl(id, port) {
-      if (options.public) {
-        const domain = connections.get(id)?.domain ?? (await getSandbox(id)).domain;
-
-        if (!domain) throw fail("the sandbox has no preview domain", "provider", { sandboxId: id });
-
-        return { url: `https://${port}-${id}.${domain}` };
-      }
-
       const { domain, trafficAccessToken } = await connection(id);
+      const url = `https://${port}-${id}.${domain}`;
 
-      if (!trafficAccessToken)
-        throw fail("Styne returned no traffic access token for this sandbox", "provider", {
-          sandboxId: id,
-        });
+      // `public` describes the sandboxes this client creates. A sandbox it attached to may be private,
+      // so its ports keep the token whenever Styne hands one over.
+      if (publicIds.has(id)) return { url };
 
-      return {
-        url: `https://${port}-${id}.${domain}`,
-        headers: { "e2b-traffic-access-token": trafficAccessToken },
-      };
+      if (trafficAccessToken)
+        return { url, headers: { "e2b-traffic-access-token": trafficAccessToken } };
+
+      // Styne gives no token for a sandbox made with public traffic.
+      if (options.public) return { url };
+
+      throw fail("Styne returned no traffic access token for this sandbox", "provider", {
+        sandboxId: id,
+      });
     },
 
     native(id) {
       let value = natives.get(id);
 
       if (!value) {
-        value = createNativeApi<StynePlane>({ http, placeholder: "id", sandboxId: id });
+        value = createNativeApi<StynePlane, StyneSandboxSdk>({
+          http,
+          placeholder: "id",
+          sandboxId: id,
+          sdk: binding,
+        });
         natives.set(id, value);
       }
 
@@ -847,12 +994,14 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
         connections.set(
           id,
           parseConnection(
-            await http.json({
-              method: "POST",
-              ...sandboxPath(id, "/resume"),
-              body: {},
-              ...idempotent(),
-            }),
+            remember(
+              await http.json({
+                method: "POST",
+                ...sandboxPath(id, "/resume"),
+                body: {},
+                ...idempotent(),
+              }),
+            ),
           ),
         );
       } catch (error) {
@@ -867,34 +1016,46 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
         });
       const snapshotName = `sbx-${randomUUID()}`;
 
-      try {
-        const saved = parseSnapshot(
-          await http.json({
-            method: "POST",
-            ...sandboxPath(id, "/snapshots"),
-            body: { name: snapshotName },
-            ...idempotent(),
-            timeoutMs: 600_000,
-          }),
-        );
+      // The name was chosen before the request, so a lost or unreadable answer can be looked up.
+      const lookUp = async (unknown: SandboxError) => {
+        const found: StyneSnapshot = await http
+          .cleanup({ method: "GET", path: "/snapshots/{name}", params: { name: snapshotName } })
+          .then((response) => parseSnapshot(response.json()))
+          .catch(() => {
+            throw unknown;
+          });
 
-        return { id: saved.name };
+        if (found.name !== snapshotName) throw unknown;
+
+        return { id: found.name };
+      };
+
+      let response: HttpResponse;
+
+      try {
+        response = await http.request({
+          method: "POST",
+          ...sandboxPath(id, "/snapshots"),
+          body: { name: snapshotName },
+          ...idempotent(),
+          timeoutMs: 600_000,
+        });
       } catch (error) {
         if (!(error instanceof SandboxError && error.code === "outcome_unknown")) throw error;
 
-        // The name was chosen before the request, so a lost answer can be looked up.
-        const found = await http
-          .cleanup({
-            method: "GET",
-            path: "/snapshots/{name}",
-            params: { name: snapshotName },
-          })
-          .then((response) => parseSnapshot(response.json()))
-          .catch(() => {
-            throw error;
-          });
+        return lookUp(error);
+      }
 
-        return { id: found.name };
+      try {
+        return { id: parseSnapshot(readJson(response)).name };
+      } catch {
+        return lookUp(
+          fail(
+            `the snapshot was answered but its answer could not be read; it may exist as ${snapshotName}`,
+            "outcome_unknown",
+            { sandboxId: id },
+          ),
+        );
       }
     },
 

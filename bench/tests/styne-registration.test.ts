@@ -180,13 +180,15 @@ describe("Styne snapshots", () => {
     );
   });
 
-  it("creates under the journaled name, lists by source, and deletes by name", async () => {
+  it("creates under the journaled name, lists only journaled names by source, and deletes by name", async () => {
     const calls = styneApi(
       { status: 201, json: { name: "bench-r-1", sandboxID: "vm1" } },
       {
         status: 200,
         json: [
           { name: "bench-r-1", sandboxID: "vm1" },
+          // An operator's own snapshot of the same source is never the run's to delete.
+          { name: "operator-copy", sandboxID: "vm1" },
           { name: "other", sandboxID: "vm2" },
         ],
       },
@@ -197,7 +199,7 @@ describe("Styne snapshots", () => {
     expect(await createNamedStyneSnapshot("vm1", "bench-r-1")).toEqual({ id: "bench-r-1" });
     expect(JSON.parse(calls[0]!.body ?? "")).toEqual({ name: "bench-r-1" });
     expect(calls[0]!.headers.get("idempotency-key")).toMatch(/^[0-9a-f-]{36}$/);
-    expect(await snapshotsFromSource("styne", "vm1")).toEqual([
+    expect(await snapshotsFromSource("styne", "vm1", new Set(["bench-r-1"]))).toEqual([
       { id: "bench-r-1", name: "bench-r-1" },
     ]);
 

@@ -305,8 +305,14 @@ export async function reapRun(
         if (proof.sourceId !== entry.id || proof.runLabel !== config.run)
           throw new Error("Snapshot-source provenance mismatch");
 
+        const journaled = new Set(
+          (journal?.resources ?? [])
+            .filter((r) => r.provider === p.name && r.kind === "snapshot" && r.parent === entry.id)
+            .map((r) => r.id),
+        );
+
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, entry.id),
+          snapshotsFromSource(p.name, entry.id, journaled),
         )) {
           const item = {
             provider: p.name,

@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SandboxError } from "../src/errors.js";
 import type { ExecInput } from "../src/provider.js";
-import { styne, type StyneOptions } from "../src/providers/styne/index.js";
-import { createSandbox } from "../src/index.js";
+import { styne, type StyneOptions, type StyneSdkModule } from "../src/providers/styne/index.js";
+import { connectSandbox, createSandbox } from "../src/index.js";
 import { fakeServer, type FakeServer, type RecordedRequest } from "./http-fake.js";
 import { styneFake } from "./styne-fake.js";
 
@@ -514,9 +514,29 @@ describe("styne lifecycle", () => {
       "e2b-traffic-access-token": token,
     });
     expect(server.calls("POST /sandboxes/{id}/connect")).toHaveLength(1);
+    // `public` covers what this client creates; the private sandbox it attaches to keeps the token.
+    expect((await provider({ public: true }).previewUrl(id, 8080)).headers).toEqual({
+      "e2b-traffic-access-token": token,
+    });
+    // Styne gives no token for a sandbox made with public traffic.
+    server.on("POST /sandboxes/{id}/connect", {
+      status: 201,
+      json: { ...created(), trafficAccessToken: null },
+    });
     expect(await provider({ public: true }).previewUrl(id, 8080)).toEqual({
       url: `https://8080-${id}.ash.styne.ai`,
     });
+    expect((await rejection(provider().previewUrl(id, 8080))).code).toBe("provider");
+  });
+
+  test("a sandbox this client created public serves its preview without the token", async () => {
+    server
+      .on("POST /sandboxes", { status: 201, json: created() })
+      .on("POST /sandboxes/{id}/exec", { stream: ok });
+    const p = provider({ public: true });
+    await p.create({ labels: {} });
+    expect(await p.previewUrl(id, 3000)).toEqual({ url: `https://3000-${id}.ash.styne.ai` });
+    expect(server.calls("POST /sandboxes/{id}/connect")).toHaveLength(0);
   });
 
   test("errors keep Styne's status and code, never its message or the key", async () => {
@@ -586,5 +606,280 @@ describe("styne against a local fake that runs real processes", () => {
     } finally {
       await fake.close();
     }
+  });
+});
+
+describe("independent review regressions", () => {
+  test("replays the create under the same key if a successful reply cannot be decoded", async () => {
+    server
+      .on("POST /sandboxes", { status: 201, body: "{" }, { status: 201, json: created() })
+      .on("POST /sandboxes/{id}/exec", { stream: ok })
+      .on("DELETE /sandboxes/{id}", { status: 204 });
+    await using box = await createSandbox(provider());
+    expect(box.id).toBe(id);
+    const calls = server.calls("POST /sandboxes");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.headers["idempotency-key"]).toBe(calls[1]?.headers["idempotency-key"]);
+  });
+
+  test("rolls back a created sandbox when the reply has its ID but no usable domain", async () => {
+    server
+      .on("POST /sandboxes", { status: 201, json: { ...created(), domain: null } })
+      .on("DELETE /sandboxes/{id}", { status: 204 });
+    await expect(createSandbox(provider())).rejects.toBeInstanceOf(SandboxError);
+    expect(server.calls("DELETE /sandboxes/{id}").map((r) => r.url)).toEqual([`/sandboxes/${id}`]);
+  });
+
+  test.each(["null", '{"exit":{}}', '{"exit":{"exitCode":-1,"signal":0,"timedOut":false}}'])(
+    "malformed frame %s triggers a kill and outcome_unknown",
+    async (malformed) => {
+      server
+        .on("GET /sandboxes/{id}", { json: sandbox() })
+        .on("POST /sandboxes/{id}/exec", {
+          stream: [...frames({ started: { pid: 42 } }), `${malformed}\n`],
+        })
+        .on("POST /sandboxes/{id}/commands", { json: { exitCode: 0 } });
+      const box = await connectSandbox(provider(), id, { recoverSecrets: false });
+
+      const result = await Promise.resolve(box.run("true")).then(
+        (value) => ({ exitCode: value.exitCode }),
+        (failure: SandboxError) => ({ code: failure.code }),
+      );
+
+      expect({
+        ...result,
+        kills: server.calls("POST /sandboxes/{id}/commands").length,
+      }).toEqual({ code: "outcome_unknown", kills: 1 });
+    },
+  );
+
+  test("a 200 with a failed kill command does not confirm cancellation", async () => {
+    server
+      .on("GET /sandboxes/{id}", { json: sandbox() })
+      .on("POST /sandboxes/{id}/exec", { stream: frames({ started: { pid: 42 } }), hold: true })
+      .on("POST /sandboxes/{id}/commands", {
+        json: { exitCode: -1, signal: 9, stdout: "", stderr: "" },
+      });
+    const box = await connectSandbox(provider(), id, { recoverSecrets: false });
+    await expect(Promise.resolve(box.run("sleep 5", { timeoutMs: 300 }))).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+  });
+
+  test("a dropped preview connect may have resumed the sandbox", async () => {
+    server
+      .on("GET /sandboxes/{id}", { json: sandbox("paused") })
+      .on("POST /sandboxes/{id}/connect", { drop: true });
+    const box = await connectSandbox(provider(), id, { recoverSecrets: false });
+    await expect(box.preview(3000)).rejects.toMatchObject({ code: "outcome_unknown" });
+  });
+
+  test("recovers the named snapshot after a successful reply cannot be decoded", async () => {
+    let savedName = "";
+    server
+      .on("GET /sandboxes/{id}", { json: sandbox() })
+      .on("POST /sandboxes/{id}/snapshots", (request, response) => {
+        savedName = body(request).name;
+        response.writeHead(201, { "content-type": "application/json" }).end("{");
+      })
+      .on("GET /snapshots/{name}", (request, response) => {
+        expect(request.url).toBe(`/snapshots/${savedName}`);
+        response
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ name: savedName, sandboxID: id }));
+      });
+    const box = await connectSandbox(provider(), id, { recoverSecrets: false });
+    expect((await box.snapshot()).id).toBe(savedName);
+    expect(server.calls("GET /snapshots/{name}")).toHaveLength(1);
+  });
+
+  test("a documented 501 route refusal is unsupported", async () => {
+    server
+      .on("GET /sandboxes/{id}", { json: sandbox() })
+      .on("POST /sandboxes/{id}/exec", error(501, "not_implemented"))
+      .on("POST /sandboxes/{id}/commands", { json: { exitCode: 0 } });
+    const box = await connectSandbox(provider(), id, { recoverSecrets: false });
+    const failure = await rejection(Promise.resolve(box.run("true")));
+    expect(failure.code).toBe("unsupported");
+  });
+
+  test("a 410 on the stored ID recreates a keyed sandbox", async () => {
+    server
+      .on("GET /sandboxes/{id}", error(410, "node_loss"))
+      .on("GET /sandboxes", { json: [] })
+      .on("POST /sandboxes", { status: 201, json: created() })
+      .on("POST /sandboxes/{id}/exec", { stream: ok })
+      .on("DELETE /sandboxes/{id}", { status: 204 });
+
+    const box = await createSandbox(provider(), {
+      key: "stale-key",
+      locator: { get: async () => "vmStale", set: async () => {} },
+    });
+
+    try {
+      expect(box.created).toBe(true);
+      expect(box.id).toBe(id);
+      expect(server.calls("GET /sandboxes/{id}")[0]?.url).toBe("/sandboxes/vmStale");
+    } finally {
+      await box.destroy();
+    }
+  });
+});
+
+test("a public-create setting does not strip the token from a reattached private VM", async () => {
+  server
+    .on("GET /sandboxes/{id}", { json: sandbox() })
+    .on("POST /sandboxes/{id}/connect", { status: 201, json: created() });
+  const control = globalThis.fetch;
+  vi.stubGlobal(
+    "fetch",
+    async (_url: string, init: RequestInit) =>
+      new Response(null, {
+        status: new Headers(init.headers).get("e2b-traffic-access-token") === token ? 200 : 401,
+      }),
+  );
+
+  try {
+    const box = await connectSandbox(provider({ public: true, fetch: control }), id, {
+      recoverSecrets: false,
+    });
+
+    const preview = await box.preview(3000, { waitMs: 150 });
+    expect(preview.headers?.["e2b-traffic-access-token"] === token).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("native errors redact all three credentials returned or used at create", async () => {
+  server
+    .on("POST /sandboxes", { status: 201, json: created() })
+    .on("POST /sandboxes/{id}/exec", { stream: ok })
+    .on("GET /sandboxes/{id}/command-history", {
+      status: 500,
+      json: {
+        error_code: "internal",
+        message: [apiKey, token, created().envdAccessToken].join(" "),
+      },
+    })
+    .on("DELETE /sandboxes/{id}", { status: 204 });
+  await using box = await createSandbox(provider());
+  const issue = await rejection(box.native.request("GET", "/sandboxes/{id}/command-history"));
+  const detail = `${issue.message} ${String(issue.cause)}`;
+  expect({
+    apiKey: detail.includes(apiKey),
+    traffic: detail.includes(token),
+    envd: detail.includes(created().envdAccessToken),
+  }).toEqual({ apiKey: false, traffic: false, envd: false });
+});
+
+test("box.native.sdk accepts a caller-supplied Styne SDK loader", async () => {
+  server.on("GET /sandboxes/{id}", { json: sandbox() });
+  const box = await connectSandbox(provider(), id, { recoverSecrets: false });
+  const load = vi.fn(async () => ({ Styne: class {} }));
+  // @ts-expect-error a JavaScript caller can pass a module without the shape styne-sdk has
+  await Promise.resolve(box.native.sdk(load)).catch(() => {});
+  expect(load).toHaveBeenCalledOnce();
+});
+
+describe("review regressions, follow-up cases", () => {
+  test("a create whose replay is unreadable too is outcome_unknown, and destroys nothing", async () => {
+    server.on("POST /sandboxes", { status: 201, body: "{" }, { status: 201, body: "{" });
+    const failure = await rejection(provider().create({ labels: {} }));
+    expect(failure.code).toBe("outcome_unknown");
+    expect(server.calls("POST /sandboxes")).toHaveLength(2);
+    expect(server.calls("DELETE /sandboxes/{id}")).toHaveLength(0);
+  });
+
+  test("a domainless create whose rollback fails names the sandbox", async () => {
+    server
+      .on("POST /sandboxes", { status: 201, json: { ...created(), domain: null } })
+      .on("DELETE /sandboxes/{id}", error(500, "internal"));
+    const failure = await rejection(provider({ requestTimeoutMs: 2000 }).create({ labels: {} }));
+    expect(failure.code).toBe("outcome_unknown");
+    expect(failure.sandboxId).toBe(id);
+    expect(failure.message).toContain(id);
+  });
+
+  test("an unreadable snapshot answer whose name is not found stays outcome_unknown", async () => {
+    server
+      .on("GET /sandboxes/{id}", { json: sandbox() })
+      .on("POST /sandboxes/{id}/snapshots", { status: 201, body: "{" })
+      .on("GET /snapshots/{name}", error(404, "not_found"));
+    const box = await connectSandbox(provider(), id, { recoverSecrets: false });
+    expect((await rejection(Promise.resolve(box.snapshot()))).code).toBe("outcome_unknown");
+  });
+
+  test("a kill that ran past its timeout does not confirm cancellation", async () => {
+    server
+      .on("GET /sandboxes/{id}", { json: sandbox() })
+      .on("POST /sandboxes/{id}/exec", { stream: frames({ started: { pid: 42 } }), hold: true })
+      .on("POST /sandboxes/{id}/commands", { json: { exitCode: 0, timedOut: true } });
+    const box = await connectSandbox(provider(), id, { recoverSecrets: false });
+    await expect(Promise.resolve(box.run("sleep 5", { timeoutMs: 300 }))).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    expect(server.calls("POST /sandboxes/{id}/commands")).toHaveLength(2);
+  });
+
+  test("a 501 on a write is unsupported, another 5xx on a write stays outcome_unknown", async () => {
+    server.on("POST /sandboxes", error(501, "not_supported"));
+    expect((await rejection(provider().create({ labels: {} }))).code).toBe("unsupported");
+    server.on("POST /sandboxes", error(500, "internal"), error(500, "internal"));
+    expect(
+      (await rejection(provider({ requestTimeoutMs: 2000 }).create({ labels: {} }))).code,
+    ).toBe("outcome_unknown");
+  });
+
+  test("tokens from a GET and a connect are redacted from native errors", async () => {
+    const envd = "envd-from-get-0123456789abcdef";
+    server
+      .on("GET /sandboxes/{id}", { json: { ...sandbox(), envdAccessToken: envd } })
+      .on("GET /sandboxes/{id}/metrics", {
+        status: 500,
+        json: { error_code: "internal", message: `leaked ${envd}` },
+      });
+    const box = await connectSandbox(provider(), id, { recoverSecrets: false });
+    const issue = await rejection(box.native.request("GET", "/sandboxes/{id}/metrics"));
+    expect(`${issue.message} ${String(issue.cause)}`).not.toContain(envd);
+  });
+
+  test("native.sdk builds styne-sdk's client with this key and reads the VM without resuming it", async () => {
+    server.on("GET /sandboxes/{id}", { json: sandbox() });
+    const constructed: ConstructorParameters<StyneSdkModule["Styne"]>[0][] = [];
+    const got: string[] = [];
+
+    class Styne {
+      readonly vms = {
+        get: async (vmId: string) => {
+          got.push(vmId);
+
+          return { id: vmId };
+        },
+        connect: async () => {
+          throw new Error("connect resumes a paused VM");
+        },
+      };
+
+      constructor(options: { apiKey?: string; baseUrl?: string }) {
+        constructed.push(options);
+      }
+    }
+
+    const p = provider();
+    const box = await connectSandbox(p, id, { recoverSecrets: false });
+
+    const bound = await box.native.sdk(async () => ({ Styne }));
+    expect(bound.client).toBeInstanceOf(Styne);
+    expect(bound.vm).toEqual({ id });
+    expect({ constructed, got }).toEqual({
+      constructed: [{ apiKey, baseUrl: `${server.url}/v1` }],
+      got: [id],
+    });
+    expect(await p.api.sdk(async () => ({ Styne }))).toBeInstanceOf(Styne);
+
+    // @ts-expect-error the module lacks the Styne export
+    const missing = await rejection(box.native.sdk(async () => ({})));
+    expect(missing.code).toBe("invalid_argument");
   });
 });

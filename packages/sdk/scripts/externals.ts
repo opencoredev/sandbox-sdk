@@ -24,6 +24,7 @@ export const externalPackages: readonly string[] = [
   "freestyle",
   "modal",
   "railway",
+  "styne-sdk",
   // Agent frameworks and test runners behind their own subpaths.
   "@mastra/core",
   "@openai/agents",
