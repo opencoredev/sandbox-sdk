@@ -107,7 +107,7 @@ export async function waitThrough(
   resume: { offset: () => number; onOutput?: (output: ArchilOutput) => void },
   hooks: {
     onProcess: (process: ArchilProcess) => void;
-    onAttaching?: (attach: Promise<unknown>) => void;
+    onAttaching?: (attach: Promise<ArchilProcess>) => void;
     stopped?: () => boolean;
   },
 ): Promise<ArchilProcessResult> {
@@ -197,24 +197,40 @@ export function bounded<T>(promise: Promise<T>, ms: number): Promise<T | "late">
   ]).finally(() => clearTimeout(timer));
 }
 
-/** Kills a process and waits for Archil to report its end, the kill included, within one window. */
-export async function terminate(process: ArchilProcess, runner?: ArchilRunner): Promise<boolean> {
+/**
+ * Kills a process and waits for Archil to report its end, the kill included, within one window.
+ * `pending` is a new connection to the process still being made (waitThrough): Archil gives the
+ * process to the newest connection and closes the others, so the end is confirmed on that one once it
+ * lands, and a separate connection is opened only when it fails. The caller closes `pending`'s
+ * connection, as its live one.
+ */
+export async function terminate(
+  process: ArchilProcess,
+  runner?: ArchilRunner,
+  pending?: Promise<ArchilProcess>,
+): Promise<boolean> {
   // A confirmation connection, closed when the window runs out or as soon as it lands after that.
   let confirm: ArchilProcess | undefined;
   let expired = false;
 
   const ended = (async () => {
-    // A kill refused because the process already ended is confirmed by the end below.
+    // The kill goes by process ID at once. A kill refused because the process already ended is
+    // confirmed by the end below.
     await process.kill().catch(() => {});
 
+    const recovered = pending === undefined ? undefined : await pending.catch(() => undefined);
+
+    if (expired) return;
+    const target = recovered ?? process;
+
     try {
-      await process.wait();
+      await target.wait();
     } catch (error) {
       // The end can't arrive on a connection Archil already closed: confirm it on a new one.
       if (runner?.attach === undefined || process.id === undefined) throw error;
 
       confirm = await runner.attach(process.id, {
-        offset: process.cursor,
+        offset: target.cursor,
         collectOutput: false,
       });
 
@@ -395,6 +411,8 @@ export async function execute({
     let process = first.process;
     // Set once this call settles: no new connection starts, a late one is closed, late output dropped.
     let settled = false;
+    // The newest new connection, landed or not: a stop confirms the end on it (terminate).
+    let attaching: Promise<ArchilProcess> | undefined;
 
     // Decoded text still held and bytes lost after the last delivered message, once the process is known ended.
     const flush = () => {
@@ -430,6 +448,9 @@ export async function execute({
               if (settled) void disconnect(next);
               else process = next;
             },
+            onAttaching: (next) => {
+              attaching = next;
+            },
             stopped: () => cancelled || settled,
           },
         ).then((result) => ({ kind: "exit" as const, result })),
@@ -439,7 +460,7 @@ export async function execute({
       if (outcome.kind !== "exit") {
         // A broken stream leaves the command running; it settles only once the command is stopped.
         // The kill goes by process ID at once; its end is confirmed on a new connection if needed.
-        if (!(await terminate(process, runner))) throw unconfirmed();
+        if (!(await terminate(process, runner, attaching))) throw unconfirmed();
         flush();
 
         if (outcome.kind === "broken" && !cancelled)
@@ -582,11 +603,13 @@ export async function collect(
   // Set once this call settles or gives up: no new connection starts, a late one is closed, late
   // output dropped.
   let done = false;
+  // The newest new connection, landed or not: a stop confirms the end on it (terminate).
+  let attaching: Promise<ArchilProcess> | undefined;
 
   const timedOut = async () => {
     done = true;
 
-    if (!(await terminate(process, runner)))
+    if (!(await terminate(process, runner, attaching)))
       return failure(
         "Archil guest operation timed out and could not be stopped",
         "outcome_unknown",
@@ -632,6 +655,9 @@ export async function collect(
             onProcess: (next) => {
               if (done) void disconnect(next);
               else process = next;
+            },
+            onAttaching: (next) => {
+              attaching = next;
             },
             stopped: () => done || Date.now() >= deadline,
           },

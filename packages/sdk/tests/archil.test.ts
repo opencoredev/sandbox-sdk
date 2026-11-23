@@ -435,6 +435,50 @@ describe("Archil connections closed before the exit", () => {
     }
   });
 
+  test("a stop during a reattach confirms the end on the recovery connection, not a rival one", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      const marker = `reattach-owner-${crypto.randomUUID()}`;
+
+      // The recovery attach answers last; a separate confirmation attach would answer first and then
+      // be closed by it, as Archil hands the process to the newest connection.
+      archilState.closeConnection = { command: marker, bytes: 500 };
+      archilState.attachDelays = [1500, 100];
+      // The kill's end comes after the recovery connection has taken the process over.
+      archilState.killDelayMs = 2000;
+      archilState.attached = [];
+      const controller = new AbortController();
+
+      const run = input({
+        command: `head -c 4000 /dev/zero | tr '\\0' y; sleep 30 # ${marker}`,
+        signal: controller.signal,
+      });
+
+      const runner = {
+        run: (command: string, options: ArchilRunOptions) => fake.run(command, options),
+        attach: (id: string, options: { offset: number; onOutput?: (o: ArchilOutput) => void }) =>
+          fake.attach(id, options),
+      };
+
+      setTimeout(() => controller.abort(), 200);
+
+      await expect(execute({ runner, sandboxId: box.id, input: run })).resolves.toEqual({
+        exitCode: null,
+        timedOut: true,
+      });
+      expect(archilState.attached).toHaveLength(1);
+    } finally {
+      archilState.closeConnection = undefined;
+      archilState.attachDelays = [];
+      archilState.killDelayMs = 0;
+      await box.destroy();
+    }
+  });
+
   test("a helper whose connection Archil closes early still returns its whole output", async () => {
     const box = await createSandbox(provider());
 

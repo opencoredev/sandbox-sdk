@@ -55,6 +55,10 @@ interface ArchilState {
   failAttaches: number;
   /** Hold every `attach` this long before it answers. */
   attachDelayMs: number;
+  /** Per-attach holds, in order, before `attachDelayMs` applies. */
+  attachDelays: number[];
+  /** Hold a kill this long before the process actually ends, as Archil's report can lag. */
+  killDelayMs: number;
   /** Connections `attach` made, with whether each was disconnected. */
   attached: { disconnected: boolean }[];
 }
@@ -76,6 +80,8 @@ export const archilState: ArchilState = {
   attachOffsets: [],
   failAttaches: 0,
   attachDelayMs: 0,
+  attachDelays: [],
+  killDelayMs: 0,
   attached: [],
 };
 
@@ -91,6 +97,8 @@ class FakeProcess implements ArchilProcess {
   readonly log: ArchilOutput[] = [];
   /** Live output listeners an attach added. */
   readonly listeners = new Set<(output: ArchilOutput) => void>();
+  /** Closes the connection that owns the process now; a new attach takes it over (Archil's rule). */
+  closeOwner = () => {};
   /** Output past this many bytes is not delivered on this connection (Archil closed it). */
   closedAfter: number | undefined;
   /** Rejects once this connection is closed early. */
@@ -211,7 +219,10 @@ class FakeProcess implements ArchilProcess {
   }
   async kill() {
     this.#killed = true;
-    this.#group("SIGKILL");
+    const delay = archilState.killDelayMs;
+
+    if (delay > 0) setTimeout(() => this.#group("SIGKILL"), delay);
+    else this.#group("SIGKILL");
   }
   async disconnect() {
     this.#disconnected = true;
@@ -281,8 +292,9 @@ class FakeSandbox {
   ): Promise<ArchilProcess> {
     archilState.attachOffsets.push(options.offset ?? 0);
 
-    if (archilState.attachDelayMs > 0)
-      await new Promise((resolve) => setTimeout(resolve, archilState.attachDelayMs));
+    const hold = archilState.attachDelays.shift() ?? archilState.attachDelayMs;
+
+    if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold));
 
     if (archilState.failAttaches > 0) {
       archilState.failAttaches--;
@@ -299,6 +311,20 @@ class FakeSandbox {
     let detached = false;
     const record = { disconnected: false };
     archilState.attached.push(record);
+
+    // Archil gives the process to the newest connection and closes the one that had it.
+    target.closeOwner();
+    let closeMine = () => {};
+
+    const closed = new Promise<never>((_, reject) => {
+      closeMine = () => {
+        detached = true;
+        reject(new Error("Process connection closed: another connection took the process"));
+      };
+    });
+
+    closed.catch(() => {});
+    target.closeOwner = closeMine;
 
     const send = ({ stream, offset, data }: ArchilOutput) => {
       if (detached || offset + data.length <= from) return;
@@ -317,7 +343,7 @@ class FakeSandbox {
       sendInput: (data) => target.sendInput(data),
       closeStdin: () => target.closeStdin(),
       resize: async () => {},
-      wait: () => target.ended,
+      wait: () => Promise.race([target.ended, closed]),
       kill: () => target.kill(),
       disconnect: async () => {
         detached = true;
