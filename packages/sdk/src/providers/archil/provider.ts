@@ -227,8 +227,10 @@ function matches(info: SandboxInfo, labels: Labels) {
 // Writes stdin to the path in $SANDBOX_SDK_PATH (bytes, exactly as given), with argv[1] as an octal
 // mode or "" to keep an existing file's mode (644 for a new file), making its directory first.
 // A symlink is followed one hop at a time to its final target (a loop exits 22). The target's
-// parent is created and checked as given, so the kernel judges `x/..` (a file `x` exits 24), and only
-// then resolved for staging (`link/../x` through a linked directory lands where the kernel puts it).
+// parent is walked one component at a time as the kernel walks it: a linked directory is followed
+// before a later `..` (`link/../x` lands where the kernel puts it), a missing directory is created,
+// even as a dangling link's target (`config -> storage/generated`), and a regular file used as a
+// directory exits 24 (`file/../x` is refused, as the kernel refuses it).
 // An existing directory exits 21 and any other non-regular file (a FIFO, a device) exits 23, both
 // checked again once stdin is staged, so a change mid-write is caught too. stdin is staged beside
 // the target and renamed over it only once complete, so a failed write (a full disk, a broken
@@ -251,12 +253,29 @@ const writeSource = [
   " n+=1",
   " if n>40: no(22,'too many levels of symbolic links')",
   " p=os.path.join(os.path.dirname(p),os.readlink(p))",
+  "def walk(d):",
+  " out=b'/' if d.startswith(b'/') else os.getcwdb()",
+  " todo=[c for c in d.split(b'/') if c and c!=b'.']",
+  " hops=0",
+  " while todo:",
+  "  c=todo.pop(0)",
+  "  if c==b'..': out=os.path.dirname(out); continue",
+  "  nxt=os.path.join(out,c)",
+  "  if os.path.islink(nxt):",
+  "   hops+=1",
+  "   if hops>40: no(22,'too many levels of symbolic links')",
+  "   t=os.readlink(nxt)",
+  "   if t.startswith(b'/'): out=b'/'",
+  "   todo=[x for x in t.split(b'/') if x and x!=b'.']+todo",
+  "   continue",
+  "  if not os.path.lexists(nxt):",
+  "   try: os.mkdir(nxt)",
+  "   except FileExistsError: todo.insert(0,c); continue",
+  "  elif not os.path.isdir(nxt): no(24,'a parent is not a directory')",
+  "  out=nxt",
+  " return out",
   "if not os.path.basename(p): no(21,'is a directory')",
-  "d=os.path.dirname(p) or b'.'",
-  "try: os.makedirs(d,exist_ok=True)",
-  "except (FileExistsError,NotADirectoryError): no(24,'a parent is not a directory')",
-  "if not os.path.isdir(d): no(24,'a parent is not a directory')",
-  "d=os.path.realpath(d)",
+  "d=walk(os.path.dirname(p))",
   "p=os.path.join(d,os.path.basename(p))",
   "check(p)",
   "fd,t=tempfile.mkstemp(dir=d,prefix=b'.sandbox-sdk-write.')",
@@ -613,6 +632,9 @@ export function createArchilProvider(
           if ((await within(() => box.stop({ wait: false }))) === "late") return "late";
 
         if (["stopped", "exited", "failed"].includes(box.status)) {
+          // Not sent at all: the sandbox stays. Sent but unanswered: it may still be deleted.
+          if (Date.now() >= deadline) return "late";
+
           if ((await within(() => box.delete())) === "late") return "unconfirmed";
 
           return "gone";

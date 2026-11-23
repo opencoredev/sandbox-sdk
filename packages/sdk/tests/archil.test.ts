@@ -512,6 +512,20 @@ describe("Archil create", () => {
     }
   });
 
+  test("a write under a dangling directory link creates the link's target", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run("mkdir -p dl && ln -s storage/generated dl/config");
+      await box.files.write("dl/config/settings.json", "{}");
+      expect(
+        (await box.run("cat dl/storage/generated/settings.json; readlink dl/config")).stdout,
+      ).toBe("{}storage/generated\n");
+    } finally {
+      await box.destroy();
+    }
+  });
+
   test("a write to a FIFO is refused and leaves it in place", async () => {
     const box = await createSandbox(provider());
 
@@ -597,6 +611,46 @@ describe("Archil create", () => {
     } finally {
       vi.useRealTimers();
       fake.stop = realStop;
+      await p.destroy(info.id);
+    }
+  });
+
+  test("destroy whose deadline passes after stop, before delete, is a timeout with no delete sent", async () => {
+    const p = provider();
+    const info = await p.create({ labels: {} });
+    const fake = archilState.sandboxes.get(info.id);
+
+    if (!fake) throw new Error("fake sandbox missing");
+    let deletes = 0;
+    const realStop = fake.stop.bind(fake);
+    const realDelete = fake.delete.bind(fake);
+
+    // The stop is answered just as the deadline passes.
+    fake.stop = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120_000));
+      fake.status = "stopped";
+
+      return fake;
+    };
+
+    fake.delete = async () => {
+      deletes++;
+
+      return realDelete();
+    };
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+
+    try {
+      const refused = expect(p.destroy(info.id)).rejects.toMatchObject({ code: "timeout" });
+
+      await vi.advanceTimersByTimeAsync(125_000);
+      await refused;
+      expect(deletes).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      fake.stop = realStop;
+      fake.delete = realDelete;
       await p.destroy(info.id);
     }
   });
