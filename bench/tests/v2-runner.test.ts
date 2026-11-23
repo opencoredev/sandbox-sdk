@@ -844,6 +844,7 @@ it("records Instabox's blocked tcp-ms as documented not-run, not a failure, and 
       } else if (name === "instabox") {
         expect(rows.map((s) => s.outcome)).toEqual([{ kind: "sample", value: 12 }]);
         expect(note).not.toContain("tcp-ms documented not-run");
+        expect(note).toContain("remove its collection-policy entry");
       } else {
         expect(rows.map((s) => s.outcome.kind)).toEqual(["failure"]);
       }
