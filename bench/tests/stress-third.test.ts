@@ -17,6 +17,7 @@ import { heartbeatWindow } from "../src/survival.js";
 import { parseV2 } from "../src/v2-config.js";
 import { writeV2 } from "../src/v2-report.js";
 import { runV2 } from "../src/v2-runner.js";
+import { boundFake } from "./native-fakes.js";
 
 type Row = MergeSource["samples"][number];
 
@@ -61,7 +62,15 @@ async function collect(run: string, args: string[]) {
   const dir = await tempDir(run);
 
   await runV2(
-    [{ kind: "ready", name: "boat", cloud: false, region: null, provider: memoryBoat() }],
+    [
+      {
+        kind: "ready",
+        name: "boat",
+        cloud: false,
+        region: null,
+        provider: boundFake(memoryBoat()),
+      },
+    ],
     parseV2(["--providers", "boat", "--run", run, "--out", dir, ...args]),
     (report) => writeV2(report, dir),
   );
@@ -171,7 +180,15 @@ describe("P1.1: reported spend covers every sandbox until it is confirmed gone",
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name: "boat", region: null, cloud: false, provider }],
+        [
+          {
+            kind: "ready",
+            name: "boat",
+            region: null,
+            cloud: false,
+            provider: boundFake(provider),
+          },
+        ],
         parseV2(args),
         async () => {
           pricedBy = performance.now();

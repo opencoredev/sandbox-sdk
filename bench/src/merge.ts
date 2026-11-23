@@ -416,7 +416,7 @@ export function mergeSources(
 
   const selection = attemptPolicy
     ? selectAttempts(samples, attemptPolicy)
-    : { samples, removed: {}, removedByTrack: {}, stressRemoved: {} };
+    : { samples, removed: {}, removedByTrack: {}, stressRemoved: {}, stressRemovedByTrack: {} };
 
   return {
     attemptPolicy,
@@ -425,6 +425,8 @@ export function mergeSources(
     selectionRemovedByTrack: selection.removedByTrack,
     /** Stress rows (cpu-sustained, cpu-burst, survival) removed by whole unit, kept apart from selectionRemoved. */
     stressSelectionRemoved: selection.stressRemoved,
+    /** stressSelectionRemoved split by track, so each track's stress export discloses its own. */
+    stressSelectionRemovedByTrack: selection.stressRemovedByTrack,
     schemaVersion: "publication-merge-v1" as const,
     runId: "publication-final",
     bootstrapSeed: seed,

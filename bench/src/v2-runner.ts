@@ -113,7 +113,7 @@ import {
 } from "./snapshots.js";
 import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
-import { fingerprintOf } from "./connections.js";
+import { journalFingerprint } from "./connections.js";
 import { captureVercelMeter } from "./billing/providers.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import { failureOutcome } from "./failure.js";
@@ -340,12 +340,55 @@ export function summarize(
   });
 }
 
+/**
+ * The providers a run may create on: every ready one whose connection fingerprint the journal
+ * can record. One without is skipped with the reason, so no sandbox is ever created that a later
+ * reap would refuse to clean up.
+ */
+export async function fingerprinted(candidates: readonly LoadedProvider[]): Promise<{
+  loaded: LoadedProvider[];
+  connectionFingerprints: Record<string, string>;
+}> {
+  const connectionFingerprints: Record<string, string> = {};
+  const loaded: LoadedProvider[] = [];
+
+  for (const p of candidates) {
+    if (p.kind === "skipped") {
+      loaded.push(p);
+      continue;
+    }
+
+    const fingerprint = await journalFingerprint(p.provider);
+
+    if (fingerprint.kind === "unknown") {
+      loaded.push({
+        kind: "skipped",
+        name: p.name,
+        note: `No connection fingerprint for the run's journal (${fingerprint.reason}); skipped before any create, since a reap could not clean up its sandboxes`,
+      });
+      continue;
+    }
+
+    connectionFingerprints[p.name] = fingerprint.value;
+    loaded.push(p);
+  }
+
+  return { loaded, connectionFingerprints };
+}
+
 export async function runV2(
-  loaded: LoadedProvider[],
+  candidates: LoadedProvider[],
   config: ConfigV2,
   checkpoint: (report: ReportV2) => Promise<void>,
   metadata = collectMetadata(),
 ) {
+  // Each adapter's connection fingerprint, never the connection itself: an endpoint can carry a
+  // credential in its userinfo, path or query. `reap` reads only through an adapter whose
+  // connection, rebuilt from its environment, has the same fingerprint, so a provider whose
+  // fingerprint cannot be read now (Docker's /info failing, an unresolved connection) is skipped
+  // before its first create: its sandboxes could never be reaped after a crash.
+  const { loaded, connectionFingerprints } = await fingerprinted(candidates);
+
   await mkdir(resolve(config.out), { recursive: true });
   // Before this run writes anything there: another run's journal must not be overwritten.
   await assertJournalFree(join(resolve(config.out), "ownership.json"), config.run, config.force);
@@ -556,17 +599,6 @@ export async function runV2(
   const pendingOwned = new Set<string>();
 
   let journal = Promise.resolve();
-
-  // Each adapter's connection fingerprint, never the connection itself: an endpoint can carry a
-  // credential in its userinfo, path or query. `reap` reads only through an adapter whose
-  // connection, rebuilt from its environment, has the same fingerprint.
-  const connectionFingerprints: Record<string, string> = {};
-
-  for (const p of loaded) {
-    const value = p.kind === "ready" ? await fingerprintOf(p.provider) : null;
-
-    if (value) connectionFingerprints[p.name] = value;
-  }
 
   // Before any create, so a run that dies before its first create returns still leaves the
   // fingerprints a reap needs for label recovery: reap refuses a connection the journal lacks.
@@ -1480,7 +1512,9 @@ export async function runV2(
       onReturn: (ran: CpuRun) => void = () => {},
     ) {
       const probe = await measure(scenario, async (signal) => {
-        const ran = await runStagedCpuProbe(active, await staging, timeout, signal);
+        // measure's deadline started just now: the diagnostic clock read must end before it.
+        const endBy = performance.now() + timeout;
+        const ran = await runStagedCpuProbe(active, await staging, timeout, signal, endBy);
         onReturn(ran);
 
         return { ...ran.result, seed: ran.result.probe.seed, ran };

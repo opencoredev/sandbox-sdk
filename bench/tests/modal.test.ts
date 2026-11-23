@@ -13,7 +13,7 @@ import { loadProvider, type DestroyTiming, type FactoryOptions } from "../src/pr
 import * as snapshots from "../src/snapshots.js";
 import { runV2 } from "../src/v2-runner.js";
 import { parseV2 } from "../src/v2-config.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { fakeNativeModules, boundFake } from "./native-fakes.js";
 
 const dirs: string[] = [];
 
@@ -133,7 +133,15 @@ it("admits every Modal iteration under the default dollar budget", async () => {
   const out = await directory();
 
   const report = await runV2(
-    [{ kind: "ready", name: "modal", cloud: true, region: "us-east", provider: memory() }],
+    [
+      {
+        kind: "ready",
+        name: "modal",
+        cloud: true,
+        region: "us-east",
+        provider: boundFake(memory()),
+      },
+    ],
     parseV2([
       "--providers",
       "modal",
@@ -204,7 +212,7 @@ it("restores a Modal snapshot at the source's requested size, and leaves other p
           name,
           cloud: false,
           region: null,
-          provider: recordingProvider(name, creates),
+          provider: boundFake(recordingProvider(name, creates)),
         },
       ],
       parseV2([

@@ -8,6 +8,7 @@ import { parseV2 } from "../src/v2-config.js";
 import { writeV2 } from "../src/v2-report.js";
 import { mergeSources, readSource } from "../src/merge.js";
 import { siteData } from "../src/site-data.js";
+import { boundFake } from "./native-fakes.js";
 
 const dirs: string[] = [];
 
@@ -36,7 +37,7 @@ async function collect(run: string, args: string[], death = false) {
   });
 
   await runV2(
-    [{ kind: "ready", name: "boat", cloud: false, region: null, provider }],
+    [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(provider) }],
     parseV2([
       "--providers",
       "boat",
@@ -102,6 +103,7 @@ it("exports burst survival under stress and leaves every older field unchanged",
           provider: "boat",
           requestedSize: null,
           template: null,
+          product: null,
           windowS: 2,
           heartbeatS: 1,
           cohorts: 1,

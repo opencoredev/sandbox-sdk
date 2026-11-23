@@ -33,6 +33,7 @@ import { parseV2 } from "../src/v2-config.js";
 import type { Sample } from "../src/v2-model.js";
 import { writeV2 } from "../src/v2-report.js";
 import { runV2 } from "../src/v2-runner.js";
+import { boundFake } from "./native-fakes.js";
 
 const bootId = "4f9c1d1e-8b2a-4c1e-9d3f-0a1b2c3d4e5f";
 
@@ -81,7 +82,7 @@ async function collect(run: string, args: string[]) {
         name: "boat",
         cloud: false,
         region: null,
-        provider: memoryBoat(),
+        provider: boundFake(memoryBoat()),
       },
     ],
     parseV2(["--providers", "boat", "--run", run, "--out", dir, ...args]),
@@ -172,7 +173,7 @@ describe("P1: cleanup stays inside the admitted reserve", () => {
     ]);
 
     const report = await runV2(
-      [{ kind: "ready", name: "boat", region: null, cloud: false, provider }],
+      [{ kind: "ready", name: "boat", region: null, cloud: false, provider: boundFake(provider) }],
       config,
       async () => {},
     );
@@ -838,6 +839,38 @@ describe("P2.8 and P3: cost projections price each sandbox", () => {
   });
 });
 
+describe("PR 75 review: cpu-sustained projections price the whole sandbox lifetime", () => {
+  const config = parseV2(["--providers", "vercel", "--account-limits", "vercel=25"]);
+  const providers = [{ name: "vercel", kind: "ready" as const, note: "", configuredRegion: null }];
+
+  /** One sustained iteration's rows: four timed steps of `stepMs` each and its recorded lifetime. */
+  const iteration = (stepMs: number, lifetimeMs: number | null) => [
+    ...["cold", "fingerprint", "cpu-sustained", "destroy"].map((name) =>
+      sampleRow(name, stepMs, "vercel"),
+    ),
+    ...(lifetimeMs === null ? [] : [sampleRow("sandbox-lifetime", lifetimeMs, "vercel")]),
+  ];
+
+  const sustained30 = (stepMs: number, lifetimeMs: number | null) =>
+    z
+      .number()
+      .parse(
+        projectCosts({ config, providers, samples: iteration(stepMs, lifetimeMs) })[0]?.stress
+          .cpuSustained30,
+      );
+
+  it("includes the setup before the probe step: upload and first clock read", () => {
+    // 4 s of timed steps, but the sandbox ran 200 s: staging the probe took the rest. It is
+    // priced as an iteration whose steps alone add up to 200 s.
+    expect(sustained30(1000, 200_000)).toBeCloseTo(sustained30(50_000, null), 12);
+    expect(sustained30(1000, 200_000)).toBeGreaterThan(sustained30(1000, null));
+  });
+
+  it("falls back to the summed steps for a pilot that recorded no lifetime", () => {
+    expect(sustained30(1000, null)).toBeCloseTo(sustained30(1000, 4000), 12);
+  });
+});
+
 describe("cpu-sustained create failures reach the published attempts", () => {
   /** A real run on Boat (the memory fake) whose creates fail where `refuse` says. */
   async function refusingRun(run: string, args: string[], refuse: (attempt: number) => boolean) {
@@ -854,7 +887,7 @@ describe("cpu-sustained create failures reach the published attempts", () => {
     const dir = await tempDir(run);
 
     await runV2(
-      [{ kind: "ready", name: "boat", cloud: false, region: null, provider }],
+      [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(provider) }],
       parseV2(["--providers", "boat", "--run", run, "--out", dir, ...args]),
       (report) => writeV2(report, dir),
     );
@@ -967,5 +1000,113 @@ describe("cpu-sustained create failures reach the published attempts", () => {
     expect(stress.cpuSustained.map((p) => p.attempts.failures)).toEqual([
       { accountLimit: 0, clientNetwork: 0, provider: 1 },
     ]);
+  }, 60_000);
+});
+
+describe("PR 75 review: stress entries keep products and tracks apart", () => {
+  /** A real cpu-sustained run on Boat (the memory fake) on `track`, one iteration per run. */
+  async function sustained(run: string, track: "default" | "same-spec", refuse = false) {
+    const provider = memoryBoat();
+    const create = provider.create.bind(provider);
+
+    provider.create = async (...createArgs) => {
+      if (refuse) throw new Error("Boat reported quota");
+
+      return create(...createArgs);
+    };
+
+    const dir = await tempDir(run);
+
+    await runV2(
+      [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(provider) }],
+      parseV2([
+        "--providers",
+        "boat",
+        "--run",
+        run,
+        "--out",
+        dir,
+        "--track",
+        track,
+        "--runs",
+        "1",
+        "--concurrency",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "cpu-sustained",
+      ]),
+      (report) => writeV2(report, dir),
+    );
+
+    return readSource(dir);
+  }
+
+  it("never pools two native products of one provider into one cpu-sustained entry", async () => {
+    const [box, ephemeral] = await Promise.all([
+      sustained("sustained-box", "default"),
+      sustained("sustained-ephemeral", "default", true),
+    ]);
+
+    // As a run with `--product boat=ephemeral` would record it: every row names the product.
+    const other = {
+      ...ephemeral,
+      samples: ephemeral.samples.map((s) => ({ ...s, product: "ephemeral" })),
+    };
+
+    const stress = stressData(mergeSources([box, other], [], 45, policy), "default");
+
+    expect(stress.cpuSustained.map((p) => [p.provider, p.product, p.attempts.failures])).toEqual([
+      ["boat", null, { accountLimit: 0, clientNetwork: 0, provider: 1 }],
+      ["boat", "ephemeral", { accountLimit: 1, clientNetwork: 0, provider: 0 }],
+    ]);
+  }, 60_000);
+
+  it("reports each track's stress removals only in that track's export", async () => {
+    const [replaced, rerun, kept] = await Promise.all([
+      sustained("same-spec-replaced", "same-spec", true),
+      sustained("same-spec-rerun", "same-spec"),
+      sustained("default-kept", "default"),
+    ]);
+
+    const report = mergeSources([replaced, rerun, kept], [], 45, {
+      ...policy,
+      replacements: [
+        {
+          provider: "boat" as const,
+          suite: "cpu-sustained" as const,
+          track: "same-spec" as const,
+          scenario: "cold",
+          sourceRunIds: ["same-spec-rerun"],
+        },
+      ],
+    });
+
+    expect(report.samples.some((s) => s.sourceRunId === "same-spec-replaced")).toBe(false);
+    expect(report.samples.some((s) => s.sourceRunId === "default-kept")).toBe(true);
+    expect(stressData(report, "same-spec").selectionRemoved).toEqual({
+      "replaced-source": expect.any(Number),
+    });
+    expect(stressData(report, "default").selectionRemoved).toEqual({});
+  }, 60_000);
+
+  it("refuses an older report whose removals span tracks and were never split", async () => {
+    const [sameSpec, plain] = await Promise.all([
+      sustained("older-same-spec", "same-spec"),
+      sustained("older-default", "default"),
+    ]);
+
+    const { stressSelectionRemovedByTrack: _split, ...older } = mergeSources(
+      [sameSpec, plain],
+      [],
+      45,
+      policy,
+    );
+
+    expect(stressData(older, "default").selectionRemoved).toEqual({});
+    expect(() =>
+      stressData({ ...older, stressSelectionRemoved: { "replaced-source": 2 } }, "default"),
+    ).toThrow(/not split by track/);
   }, 60_000);
 });

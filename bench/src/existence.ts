@@ -488,6 +488,7 @@ export async function lookupSandbox(
           // A plain GET: it never wakes a paused sandbox, unlike a command. A deleted one reads
           // "deleted" until Archil drops it, then 404.
           const { apiKey, region } = connectionOf(provider, "archil");
+
           const response = await fetch(
             `${archilControlUrl(region)}/api/sandboxes/${encodeURIComponent(id)}`,
             { headers: { Authorization: `Bearer ${apiKey}` }, signal },

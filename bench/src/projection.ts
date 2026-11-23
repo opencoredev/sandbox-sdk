@@ -155,8 +155,10 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
           ? ("skipped" as const)
           : perSandbox(lifetimes(new RegExp(`^${kind}-\\d+/sandbox-lifetime$`)), k * cohorts);
 
-      // A dedicated cpu-sustained iteration is one sandbox: create, fingerprint, probe, destroy,
-      // summed per iteration and priced per iteration.
+      // A dedicated cpu-sustained iteration is one sandbox, priced on its own recorded lifetime
+      // (`sandbox-lifetime`, create to destroy): that covers the probe's upload and first guest
+      // clock read, which run before the measured probe step. A pilot without that row falls back
+      // to the sum of its create, fingerprint, probe and destroy steps.
       const sustainedParts = ["cold", "fingerprint", "cpu-sustained", "destroy"];
 
       const sustainedLifetimes = [
@@ -168,16 +170,25 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
             )
             .map((s) => s.iteration),
         ),
-      ].map((iteration) =>
-        rows
-          .filter(
-            (s) =>
-              s.iteration === iteration &&
-              sustainedParts.includes(s.scenario) &&
-              ["sample", "failure"].includes(s.outcome.kind),
-          )
-          .reduce((ms, s) => ms + s.durationMs, 0),
-      );
+      ].map((iteration) => {
+        const lifetime = rows.find(
+          (s) =>
+            s.iteration === iteration &&
+            s.scenario === "sandbox-lifetime" &&
+            s.outcome.kind === "sample",
+        );
+
+        return lifetime
+          ? lifetime.durationMs
+          : rows
+              .filter(
+                (s) =>
+                  s.iteration === iteration &&
+                  sustainedParts.includes(s.scenario) &&
+                  ["sample", "failure"].includes(s.outcome.kind),
+              )
+              .reduce((ms, s) => ms + s.durationMs, 0);
+      });
 
       const cpuSustained30 = perSandbox(sustainedLifetimes, 30);
 
@@ -210,7 +221,7 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
             ? null
             : lifecycle + workload + overlap + burst10 + burst25,
         /**
-         * CPU sustained (30 dedicated iterations: create, fingerprint, probe, destroy) and the
+         * CPU sustained (30 dedicated iterations, each priced on its recorded sandbox lifetime) and the
          * cpu-burst and survival cohorts at K=10 and 25 with the configured cohort count, each
          * sandbox priced on its own. Null where the pilot did not run that suite; "skipped" where
          * K exceeds the account cap. Not included in `total`.

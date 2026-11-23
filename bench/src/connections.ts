@@ -132,8 +132,7 @@ export type ConnectionOptions = z.infer<typeof connectionOptions>;
 function archilConfig(options: ConnectionOptions): ArchilConfig {
   const apiKey = (options.apiKey ?? process.env.ARCHIL_API_KEY)?.trim();
 
-  if (!apiKey)
-    throw Object.assign(new Error("Archil API key is missing"), { code: "auth" });
+  if (!apiKey) throw Object.assign(new Error("Archil API key is missing"), { code: "auth" });
 
   return { apiKey, region: options.region ?? process.env.ARCHIL_REGION ?? "aws-us-east-1" };
 }
@@ -552,7 +551,7 @@ async function identity(connection: Connection): Promise<Identity> {
   }
 }
 
-type Fingerprint =
+export type Fingerprint =
   | { readonly kind: "known"; readonly value: string }
   | { readonly kind: "unknown"; readonly reason: string };
 
@@ -573,16 +572,25 @@ async function fingerprintNow(
 }
 
 /**
- * This instance's connection fingerprint for the run's journal, or null when it has none: it was
- * never bound, its connection failed to resolve, or its identity could not be read.
+ * This instance's connection fingerprint for the run's journal, or why it has none: it was never
+ * bound, its connection failed to resolve, or its identity could not be read. The reason names no
+ * connection value.
  */
-export async function fingerprintOf(provider: Provider): Promise<string | null> {
+export async function journalFingerprint(provider: Provider): Promise<Fingerprint> {
   const binding = bindings.get(provider);
 
-  if (binding === undefined || binding.kind === "failed") return null;
+  if (binding === undefined) return { kind: "unknown", reason: "adapter instance not bound" };
 
-  if (binding.kind === "in-process") return binding.fingerprint;
-  const current = await fingerprintNow(binding);
+  if (binding.kind === "failed") return { kind: "unknown", reason: binding.reason };
+
+  if (binding.kind === "in-process") return { kind: "known", value: binding.fingerprint };
+
+  return fingerprintNow(binding);
+}
+
+/** {@link journalFingerprint}'s value, or null when the instance has none. */
+export async function fingerprintOf(provider: Provider): Promise<string | null> {
+  const current = await journalFingerprint(provider);
 
   return current.kind === "known" ? current.value : null;
 }

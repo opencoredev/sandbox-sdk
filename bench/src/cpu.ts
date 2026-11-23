@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { Sandbox } from "@opencoredev/sandbox-sdk";
 import { statistics } from "./stats.js";
+import { deadline, DeadlineError } from "./timing.js";
 import { command } from "./workloads.js";
 
 /**
@@ -326,6 +327,49 @@ export async function stageCpuProbe(
 /** A [start, end] interval in host epoch milliseconds. */
 export type Interval = readonly [number, number];
 
+/** The longest the diagnostic clock read after a run may take. */
+export const clockReadMs = 5_000;
+
+/** How long before the step's end the diagnostic clock read must give up, to leave the step room. */
+const clockReadMarginMs = 250;
+
+/** Why the clock read after a run gave no drift. Fixed reasons: a guest's reply is never copied. */
+export type ClockDriftUnread = "no-time-left" | "timed-out" | "failed";
+
+/**
+ * The guest clock's drift since staging, read after a verified run: a diagnostic only, so it is
+ * bounded to {@link clockReadMs} and to `endBy` (`performance.now()`, the step's deadline) less a
+ * margin, and its failure is recorded, never thrown.
+ */
+async function clockDrift(
+  box: Sandbox,
+  staged: StagedCpuProbe,
+  endBy: number,
+  signal?: AbortSignal,
+): Promise<{ clockDriftMs: number | null; clockDriftUnread: ClockDriftUnread | null }> {
+  const budget = Math.min(clockReadMs, endBy - clockReadMarginMs - performance.now());
+
+  if (budget <= 0) return { clockDriftMs: null, clockDriftUnread: "no-time-left" };
+
+  try {
+    const after = await deadline(budget, (own) =>
+      readGuestClock(
+        box,
+        probePath(staged.challenge),
+        budget,
+        signal ? AbortSignal.any([signal, own]) : own,
+      ),
+    );
+
+    return { clockDriftMs: after - staged.clockOffsetMs, clockDriftUnread: null };
+  } catch (error) {
+    return {
+      clockDriftMs: null,
+      clockDriftUnread: error instanceof DeadlineError ? "timed-out" : "failed",
+    };
+  }
+}
+
 /**
  * Run a staged probe. `returnedAt` (`performance.now()`) is taken as soon as the exec returns,
  * before any checks or report writes. `exec` is the exec on the host clock, from just before its
@@ -333,12 +377,16 @@ export type Interval = readonly [number, number];
  *
  * The guest clock is read again after the run. `clockDriftMs`, the change in its offset from the
  * read at staging, is recorded as a diagnostic; nothing is placed or judged by the guest's clock.
+ * A failed or late read leaves it null with the reason in `clockDriftUnread` and keeps the
+ * verified result. `endBy` (`performance.now()`) is when the caller's step ends; it defaults to
+ * `timeoutMs` after dispatch.
  */
 export async function runStagedCpuProbe(
   box: Sandbox,
   staged: StagedCpuProbe,
   timeoutMs: number,
   signal?: AbortSignal,
+  endBy?: number,
 ) {
   const dispatchedAt = performance.now();
   const dispatchedEpoch = hostEpochMs();
@@ -347,10 +395,10 @@ export async function runStagedCpuProbe(
 
   if (signal?.aborted) throw new Error("CPU probe aborted");
   const result = cpuResult(output, staged.challenge, (returnedAt - dispatchedAt) / 1000);
-  const after = await readGuestClock(box, probePath(staged.challenge), timeoutMs, signal);
   const exec: Interval = [dispatchedEpoch, dispatchedEpoch + (returnedAt - dispatchedAt)];
+  const drift = await clockDrift(box, staged, endBy ?? dispatchedAt + timeoutMs, signal);
 
-  return { result, returnedAt, exec, clockDriftMs: after - staged.clockOffsetMs };
+  return { result, returnedAt, exec, ...drift };
 }
 
 export type CpuRun = Awaited<ReturnType<typeof runStagedCpuProbe>>;
@@ -361,6 +409,7 @@ export function cpuPhaseEvidence(ran: CpuRun, phase: "single" | "all") {
     exec: ran.exec,
     seconds: phase === "single" ? ran.result.singleSeconds : ran.result.allSeconds,
     clockDriftMs: ran.clockDriftMs,
+    clockDriftUnread: ran.clockDriftUnread,
   };
 }
 

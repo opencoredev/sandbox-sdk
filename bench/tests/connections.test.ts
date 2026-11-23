@@ -625,3 +625,87 @@ describe("bench reap acts only through the connection the run used", () => {
     }
   });
 });
+
+describe("a run never creates on a provider whose fingerprint it cannot journal", () => {
+  it("skips local before its first create when Docker's /info fails, and still runs the others", async () => {
+    vi.stubEnv("DOCKER_HOST", "unix:///tmp/bench-no-such-docker.sock");
+    vi.spyOn(connectionProbes, "dockerDaemonId").mockRejectedValue(new Error("connect ENOENT"));
+    const local = bound({ ...memory(), name: "local" });
+    const create = vi.spyOn(local, "create");
+    const other = bound(memory());
+    const otherCreate = vi.spyOn(other, "create");
+    const out = await mkdtemp(join(tmpdir(), "bench-no-fingerprint-"));
+
+    try {
+      const report = await runV2(
+        [
+          { kind: "ready", name: "local", cloud: false, region: null, provider: local },
+          { kind: "ready", name: "memory", cloud: false, region: null, provider: other },
+        ],
+        parseV2([
+          "--providers",
+          "local,memory",
+          "--run",
+          "no-fingerprint",
+          "--runs",
+          "1",
+          "--scenarios",
+          "command",
+          "--bursts",
+          "",
+          "--out",
+          out,
+        ]),
+        (r) => writeV2(r, out),
+      );
+
+      expect(create).not.toHaveBeenCalled();
+      expect(otherCreate).toHaveBeenCalled();
+      expect(report.providers.find((p) => p.name === "local")).toMatchObject({
+        kind: "skipped",
+        note: expect.stringMatching(/No connection fingerprint .*Docker daemon did not answer/),
+      });
+      expect(report.samples.some((s) => s.provider === "local")).toBe(false);
+      expect((await journalIn(out)).connectionFingerprints).toEqual({
+        memory: expect.stringMatching(/^[0-9a-f]{16}$/),
+      });
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  });
+
+  it("skips an adapter instance that was never bound", async () => {
+    const unbound = memory();
+    const create = vi.spyOn(unbound, "create");
+    const out = await mkdtemp(join(tmpdir(), "bench-unbound-"));
+
+    try {
+      const report = await runV2(
+        [{ kind: "ready", name: "memory", cloud: false, region: null, provider: unbound }],
+        parseV2([
+          "--providers",
+          "memory",
+          "--run",
+          "unbound",
+          "--runs",
+          "1",
+          "--scenarios",
+          "command",
+          "--bursts",
+          "",
+          "--out",
+          out,
+        ]),
+        (r) => writeV2(r, out),
+      );
+
+      expect(create).not.toHaveBeenCalled();
+      expect(report.providers[0]).toMatchObject({
+        kind: "skipped",
+        note: expect.stringContaining("adapter instance not bound"),
+      });
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  });
+});

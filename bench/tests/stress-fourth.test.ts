@@ -17,6 +17,7 @@ import { heartbeatWindow, missKind } from "../src/survival.js";
 import { parseV2 } from "../src/v2-config.js";
 import { writeV2 } from "../src/v2-report.js";
 import { runV2 } from "../src/v2-runner.js";
+import { boundFake } from "./native-fakes.js";
 
 type Row = MergeSource["samples"][number];
 
@@ -116,7 +117,7 @@ describe("P1.1: a sandbox is priced until it is observed gone, not until its del
             name: "boat",
             region: null,
             cloud: false,
-            provider: boat,
+            provider: boundFake(boat),
           },
         ],
         parseV2(survivalArgs("fourth-async-delete", out, "boat")),
@@ -176,14 +177,14 @@ describe("P1.2: every budget is priced to one cutoff after every provider's swee
             name: "boat",
             region: null,
             cloud: false,
-            provider: boat,
+            provider: boundFake(boat),
           },
           {
             kind: "ready",
             name: "local",
             region: null,
             cloud: false,
-            provider: local,
+            provider: boundFake(local),
           },
         ],
         parseV2(survivalArgs("fourth-two-provider", out, "boat,local")),
@@ -217,7 +218,7 @@ async function survivalSource() {
         name: "boat",
         cloud: false,
         region: null,
-        provider: heartbeating(),
+        provider: boundFake(heartbeating()),
       },
     ],
     parseV2([
@@ -413,7 +414,7 @@ describe("P2.3: CPU overlap is proven from the host clock, never from guest wall
     ]);
 
     // The guest clocks agree before and after, so drift alone cannot see the steps.
-    for (const d of drift) expect(Math.abs(d)).toBeLessThan(20);
+    for (const d of drift) expect(Math.abs(d ?? Infinity)).toBeLessThan(20);
     expect(published?.perSandbox.cohorts).toBe(0);
     expect(published?.excluded).toMatchObject({ lowOverlap: 1 });
   }, 30_000);

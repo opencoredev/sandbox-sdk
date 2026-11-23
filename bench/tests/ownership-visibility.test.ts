@@ -7,6 +7,7 @@ import type { Provider, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { runV2 } from "../src/v2-runner.js";
 import { parseV2 } from "../src/v2-config.js";
 import { proveSnapshotSource, UnverifiedOwnershipError } from "../src/ownership.js";
+import { boundFake } from "./native-fakes.js";
 
 const dirs: string[] = [];
 
@@ -70,7 +71,15 @@ it.each([
   );
 
   const report = await runV2(
-    [{ kind: "ready", name: "memory", provider: { ...backing, list }, region: null, cloud: false }],
+    [
+      {
+        kind: "ready",
+        name: "memory",
+        provider: boundFake({ ...backing, list }),
+        region: null,
+        cloud: false,
+      },
+    ],
     await config("visible-run"),
     async () => {},
   );
@@ -102,7 +111,7 @@ it("keeps a sandbox whose live labels name another run, without waiting", async 
       {
         kind: "ready",
         name: "memory",
-        provider: { ...backing, list, destroy },
+        provider: boundFake({ ...backing, list, destroy }),
         region: null,
         cloud: false,
       },

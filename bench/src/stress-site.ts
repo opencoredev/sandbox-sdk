@@ -25,7 +25,7 @@ import {
 
 /** A merged stress report (`bun bench merge` over stress runs only), as site-data reads it. */
 export type StressReport = Pick<PublicationReport, "samples" | "sources" | "bootstrapSeed"> &
-  Partial<Pick<PublicationReport, "stressSelectionRemoved">>;
+  Partial<Pick<PublicationReport, "stressSelectionRemoved" | "stressSelectionRemovedByTrack">>;
 
 type StressInput = Pick<
   MergedSample,
@@ -39,6 +39,7 @@ type StressInput = Pick<
   | "sourceIteration"
   | "requestedSize"
   | "template"
+  | "product"
 >;
 
 const finite = z.number().finite();
@@ -98,11 +99,18 @@ function groupBy<T>(rows: readonly T[], key: (row: T) => string) {
   return [...groups.values()];
 }
 
-/** The allocation a row was collected at: requested size and template. */
-const allocation = (s: Pick<StressInput, "requestedSize" | "template">) => ({
+/**
+ * The allocation a row was collected at: requested size, template and native product (such as
+ * Upstash's `ephemeral`), so two products of one provider are never pooled into one entry.
+ */
+const allocation = (s: Pick<StressInput, "requestedSize" | "template" | "product">) => ({
   requestedSize: s.requestedSize ?? null,
   template: s.template ?? null,
+  product: s.product ?? null,
 });
+
+/** An entry's allocation when the group has no row to read it from. */
+const noAllocation = { requestedSize: null, template: null, product: null };
 
 /**
  * Failures by the harness's taxonomy: account limits and client errors are not the provider's.
@@ -225,7 +233,7 @@ function cpuSustained(samples: readonly StressInput[], seed: number) {
 
     return {
       provider: first?.provider ?? "",
-      ...allocation(first ?? { requestedSize: null, template: null }),
+      ...allocation(first ?? noAllocation),
       single: throughput(single, seed),
       all: throughput(all, seed),
       singleSeconds: seconds(singleDetails),
@@ -377,7 +385,7 @@ function cpuBurst(units: readonly CohortUnit[]) {
 
     return {
       provider: first?.provider ?? "",
-      ...allocation(first?.cold[0] ?? first?.rows[0] ?? { requestedSize: null, template: null }),
+      ...allocation(first?.cold[0] ?? first?.rows[0] ?? noAllocation),
       work: (first && work(first)) ?? null,
       cohorts: complete.length,
       completeCohorts: finished.length,
@@ -498,7 +506,7 @@ function burstSurvival(units: readonly CohortUnit[]) {
 
     return {
       provider: first?.provider ?? "",
-      ...allocation(first?.cold[0] ?? first?.rows[0] ?? { requestedSize: null, template: null }),
+      ...allocation(first?.cold[0] ?? first?.rows[0] ?? noAllocation),
       windowS: p ? p.windowMs / 1000 : null,
       heartbeatS: p ? p.intervalMs / 1000 : null,
       cohorts: complete.length,
@@ -532,6 +540,24 @@ const counts_ = (xs: readonly string[]) => [
 /** Cohort sizes collected for one kind, ascending. */
 function sizes(units: readonly CohortUnit[]) {
   return [...new Set(units.map((u) => u.k))].sort((a, b) => a - b);
+}
+
+/**
+ * The stress rows the attempt policy removed on one track. A report merged before removals were
+ * kept by track holds only the total: it is this track's when every source ran on this track (or
+ * nothing was removed); otherwise it cannot be split, and the report must be merged again.
+ */
+function trackRemovals(report: StressReport, track: "default" | "same-spec") {
+  const byTrack = report.stressSelectionRemovedByTrack;
+
+  if (byTrack) return byTrack[track] ?? {};
+  const total = report.stressSelectionRemoved ?? {};
+  const tracks = new Set(report.sources.map((s) => s.config.track ?? "default"));
+
+  if (Object.keys(total).length === 0 || (tracks.size === 1 && tracks.has(track))) return total;
+  throw new Error(
+    "The stress report's selection removals are not split by track and its runs span tracks: merge it again",
+  );
 }
 
 /**
@@ -569,8 +595,8 @@ export function stressData(report: StressReport | null, track: "default" | "same
       suite: s.suite,
       samples: samples.filter((x) => x.sourceRunId === s.runId).length,
     })),
-    /** Stress rows the attempt policy removed, by whole cohort or iteration, by reason. */
-    selectionRemoved: report.stressSelectionRemoved ?? {},
+    /** This track's stress rows the attempt policy removed, by whole cohort or iteration, by reason. */
+    selectionRemoved: trackRemovals(report, track),
     cpuSustained: cpuSustained(samples, report.bootstrapSeed),
     cpuBurst: sizes(cpu).map((k) => ({ k, providers: cpuBurst(cpu.filter((u) => u.k === k)) })),
     burstSurvival: sizes(survival).map((k) => ({
