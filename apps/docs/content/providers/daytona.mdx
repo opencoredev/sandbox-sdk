@@ -1,6 +1,6 @@
 ---
 title: Daytona
-description: Run sandboxes on Daytona, or move E2B code to it by changing one line. Exact sizes, idle auto-stop, lifetimes, network allow lists, snapshots, and previews.
+description: Run sandboxes on Daytona, or move E2B code to it by changing one line. Exact sizes, idle auto-stop, lifetimes, allow lists, snapshots, volumes, and previews.
 ---
 
 `daytona()` runs each sandbox on [Daytona](https://daytona.io). It calls Daytona's HTTP API directly, so it needs no other package.
@@ -180,27 +180,56 @@ const provider = daytona({
 await using box = await createSandbox(provider, { idleTimeoutMs: 15 * 60_000 });
 ```
 
-To keep data across sandboxes, mount a [Daytona volume](https://www.daytona.io/docs/en/volumes) with `volumes: [{ volumeId: "my-volume", mountPath: "/data" }]`.
+## Volumes
+
+To keep data across sandboxes, mount a [Daytona volume](https://www.daytona.io/docs/en/volumes) with the factory's `volumes` option. Every sandbox that provider creates mounts it. Each entry is `{ volumeId, mountPath, subpath? }`, the same shape as `VolumeMount` in Daytona's own SDK. `volumeId` takes the volume's ID or its name, and `subpath` mounts only that prefix of the volume instead of all of it.
+
+The adapter doesn't create volumes, and a volume must be in the `ready` state before a sandbox can mount it. Create one in the Daytona Dashboard, with Daytona's own SDK, or through the factory's `api`, then read it back with `GET /volumes/{volumeId}` until its state is `ready`:
+
+```ts
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+const { api } = daytona();
+const created = await api.request<{ id: string }>("POST", "/volumes", {
+  body: { name: "my-volume" },
+});
+const volume = await api.request<{ state: string }>("GET", `/volumes/${created.id}`);
+console.log(volume.state); // "ready" once it can be mounted
+```
+
+Then mount it:
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+
+const provider = daytona({
+  volumes: [{ volumeId: "my-volume", mountPath: "/data", subpath: "user-123" }],
+});
+
+await using box = await createSandbox(provider);
+await box.files.write("/data/notes.txt", "still here in the next sandbox\n");
+```
 
 ## Configuration
 
-| Option              | Type                        | Default                      | Env var                   |
-| ------------------- | --------------------------- | ---------------------------- | ------------------------- |
-| `apiKey`            | `string`                    |                              | `DAYTONA_API_KEY`         |
-| `jwtToken`          | `string`                    |                              | `DAYTONA_JWT_TOKEN`       |
-| `organizationId`    | `string`                    |                              | `DAYTONA_ORGANIZATION_ID` |
-| `baseUrl`           | `string`                    | `https://app.daytona.io/api` | `DAYTONA_API_URL`         |
-| `target`            | `string`                    | `"us"`                       | `DAYTONA_TARGET`          |
-| `image`             | `string`                    | Daytona's default snapshot   |                           |
-| `snapshot`          | `string`                    | Daytona's default snapshot   |                           |
-| `requestTimeoutMs`  | `number`                    | `30_000`                     |                           |
-| `snapshotTimeoutMs` | `number`                    | `600_000`, at most `900_000` |                           |
-| `createTimeoutMs`   | `number`                    | `60_000`                     |                           |
-| `public`            | `boolean`                   | `false`                      |                           |
-| `autoArchiveMs`     | `number`                    | Daytona's 7 days             |                           |
-| `autoDeleteMs`      | `number`                    | Never                        |                           |
-| `volumes`           | `{ volumeId, mountPath }[]` |                              |                           |
-| `outboundProxyUrl`  | `string`                    |                              |                           |
+| Option              | Type                                  | Default                      | Env var                   |
+| ------------------- | ------------------------------------- | ---------------------------- | ------------------------- |
+| `apiKey`            | `string`                              |                              | `DAYTONA_API_KEY`         |
+| `jwtToken`          | `string`                              |                              | `DAYTONA_JWT_TOKEN`       |
+| `organizationId`    | `string`                              |                              | `DAYTONA_ORGANIZATION_ID` |
+| `baseUrl`           | `string`                              | `https://app.daytona.io/api` | `DAYTONA_API_URL`         |
+| `target`            | `string`                              | `"us"`                       | `DAYTONA_TARGET`          |
+| `image`             | `string`                              | Daytona's default snapshot   |                           |
+| `snapshot`          | `string`                              | Daytona's default snapshot   |                           |
+| `requestTimeoutMs`  | `number`                              | `30_000`                     |                           |
+| `snapshotTimeoutMs` | `number`                              | `600_000`, at most `900_000` |                           |
+| `createTimeoutMs`   | `number`                              | `60_000`                     |                           |
+| `public`            | `boolean`                             | `false`                      |                           |
+| `autoArchiveMs`     | `number`                              | Daytona's 7 days             |                           |
+| `autoDeleteMs`      | `number`                              | Never                        |                           |
+| `volumes`           | `{ volumeId, mountPath, subpath? }[]` |                              |                           |
+| `outboundProxyUrl`  | `string`                              |                              |                           |
 
 Set `image` or `snapshot`, not both. `from` overrides either. `apiUrl` is a deprecated alias for `baseUrl`. Use either `apiKey` or `jwtToken` with `organizationId`. `createTimeoutMs` covers the whole create call, including an image build. `outboundProxyUrl` routes the sandbox's HTTP(S) traffic through your proxy with `HTTP_PROXY` and `HTTPS_PROXY`. Daytona refuses it on tiers with restricted networking, and the create fails with `invalid_argument`. The image needs `sh`, `env`, `setsid`, `/bin/kill`, `python3`, and passwordless `sudo -n`.
 
