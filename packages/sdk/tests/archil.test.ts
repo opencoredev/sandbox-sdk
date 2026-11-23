@@ -8,8 +8,10 @@ import {
   collect,
   collectExact,
   execute,
+  type ArchilOutput,
   type ArchilProcess,
   type ArchilProcessResult,
+  type ArchilRunOptions,
 } from "../src/providers/archil/execute.js";
 import { createArchilProvider } from "../src/providers/archil/provider.js";
 import type { ExecInput } from "../src/provider.js";
@@ -339,6 +341,75 @@ describe("Archil output gaps", () => {
       expect(range).toEqual(bytes.subarray(10, 1_500_010));
     } finally {
       archilState.dropOutputAbove = undefined;
+      await box.destroy();
+    }
+  });
+});
+
+describe("Archil connections closed before the exit", () => {
+  test("a command whose connection Archil closes early returns its exit and every byte, once", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      archilState.closeConnection = { command: "seq 1 40000", bytes: 1000 };
+      const result = await box.run("seq 1 40000; exit 3");
+      const expected = Array.from({ length: 40000 }, (_, i) => `${i + 1}\n`).join("");
+
+      expect(result.exitCode).toBe(3);
+      expect(result.stdout).toBe(expected);
+
+      // The same command again, connection intact: nothing left over from the first.
+      const again = await box.run("seq 1 3");
+      expect(again.stdout).toBe("1\n2\n3\n");
+    } finally {
+      archilState.closeConnection = undefined;
+      await box.destroy();
+    }
+  });
+
+  test("a helper whose connection Archil closes early still returns its whole output", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const bytes = new Uint8Array(300_000).map((_, i) => i % 253);
+      await box.files.write("big.bin", bytes);
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      archilState.closeConnection = { command: "cat -- ", bytes: 5000 };
+
+      const runner = {
+        run: (command: string, options: ArchilRunOptions) => fake.run(command, options),
+        attach: (id: string, options: { offset: number; onOutput?: (o: ArchilOutput) => void }) =>
+          fake.attach(id, options),
+      };
+
+      const result = await collect(runner, box.id, "cat -- /workspace/big.bin");
+
+      expect(result.lost).toBe(0);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toEqual(bytes);
+    } finally {
+      archilState.closeConnection = undefined;
+      await box.destroy();
+    }
+  });
+
+  test("without a way to reattach, an early close still stops the command and says so", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      archilState.closeConnection = { command: "seq 1 40000", bytes: 1000 };
+      const run = input({ command: "seq 1 40000" });
+
+      await expect(
+        execute({ runner: { run: (c, o) => fake.run(c, o) }, sandboxId: box.id, input: run }),
+      ).rejects.toMatchObject({ code: "outcome_unknown" });
+    } finally {
+      archilState.closeConnection = undefined;
       await box.destroy();
     }
   });

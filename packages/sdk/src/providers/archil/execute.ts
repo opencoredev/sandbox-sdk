@@ -19,6 +19,8 @@ export interface ArchilProcess {
   disconnect(): Promise<void>;
   /** Output bytes the process has produced so far, both streams; final once it has exited. */
   readonly cursor: number;
+  /** Archil's process ID, for a new connection to the same process (`ArchilRunner.attach`). */
+  readonly id?: string;
 }
 
 export interface ArchilRunOptions {
@@ -55,6 +57,11 @@ export class OutputGaps {
     return skipped;
   }
 
+  /** The offset of the next byte not yet delivered: where a new connection resumes. */
+  get next(): number {
+    return this.#next;
+  }
+
   /** Bytes missing after the last delivered message, given the process's final cursor. */
   tail(cursor: number): number {
     const skipped = Math.max(0, cursor - this.#next);
@@ -65,9 +72,57 @@ export class OutputGaps {
   }
 }
 
+/** Options for a new connection to a running or finished process (`disk`'s `Sandbox.attach`). */
+export interface ArchilAttachOptions {
+  /** Output offset to replay from, both streams counted together. */
+  offset: number;
+  onOutput?: (output: ArchilOutput) => void;
+  collectOutput?: boolean;
+}
+
 /** The part of a `disk` `Sandbox` that starts processes. Each `run` opens one process connection. */
 export interface ArchilRunner {
   run(command: string, options: ArchilRunOptions): Promise<ArchilProcess>;
+  /** A new connection to a process by ID; Archil replays its output from the offset and reports its end. */
+  attach?(processId: string, options: ArchilAttachOptions): Promise<ArchilProcess>;
+}
+
+// Archil can close a process connection before the exit event arrives (seen on large outputs) while
+// the process carries on. This many new connections are tried before the stream counts as broken.
+const reattachAttempts = 3;
+
+/**
+ * Waits for a process's end through connections Archil closes early: each time `wait` rejects, a new
+ * connection resumes from the next undelivered byte, which replays the rest of the output and reports
+ * the exit, finished process or not. `onProcess` learns each new connection, so a caller that stops
+ * the command stops the live one. Throws the last connection error when the runner can't attach, the
+ * process has no ID, or the attempts run out.
+ */
+export async function waitThrough(
+  runner: ArchilRunner,
+  process: ArchilProcess,
+  resume: { offset: () => number; onOutput?: (output: ArchilOutput) => void },
+  onProcess: (process: ArchilProcess) => void,
+): Promise<ArchilProcessResult> {
+  let current = process;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await current.wait();
+    } catch (error) {
+      const id = current.id;
+
+      if (runner.attach === undefined || id === undefined || attempt >= reattachAttempts)
+        throw error;
+      await disconnect(current);
+      current = await runner.attach(id, {
+        offset: resume.offset(),
+        onOutput: resume.onOutput,
+        collectOutput: false,
+      });
+      onProcess(current);
+    }
+  }
 }
 
 const stopped: ExecResult = { exitCode: null, timedOut: true };
@@ -275,7 +330,8 @@ export async function execute({
     }
 
     if (!first.ok) throw first.error;
-    const { process } = first;
+    // The live connection: a new one replaces it when Archil closes it before the exit (waitThrough).
+    let process = first.process;
 
     // Decoded text still held and bytes lost after the last delivered message, once the process is known ended.
     const flush = () => {
@@ -297,7 +353,14 @@ export async function execute({
       );
 
       const outcome = await Promise.race([
-        process.wait().then((result) => ({ kind: "exit" as const, result })),
+        waitThrough(
+          runner,
+          process,
+          { offset: () => gaps.next, onOutput: options.onOutput },
+          (next) => {
+            process = next;
+          },
+        ).then((result) => ({ kind: "exit" as const, result })),
         halted.then(() => ({ kind: "stop" as const })),
       ]).catch(() => ({ kind: "broken" as const }));
 
@@ -385,17 +448,19 @@ export async function collect(
 
   const deadline = Date.now() + timeoutMs;
 
+  const onOutput = (output: ArchilOutput) => {
+    const { stream, data } = output;
+    gaps.take(output);
+
+    if (stream === "stdout") stdout.push(data.slice());
+    else errorText += stderr.decode(data, { stream: true });
+  };
+
   const starting = start(runner, sandboxId, command, {
     env: options.env,
     timeoutSeconds: Math.ceil(timeoutMs / 1000) + nativeGraceSeconds,
     collectOutput: false,
-    onOutput: (output) => {
-      const { stream, data } = output;
-      gaps.take(output);
-
-      if (stream === "stdout") stdout.push(data.slice());
-      else errorText += stderr.decode(data, { stream: true });
-    },
+    onOutput,
   });
 
   // One deadline covers the start, the input and the wait. A start that lands late is stopped.
@@ -438,7 +503,8 @@ export async function collect(
     throw failure("Archil guest operation timed out starting", "timeout", sandboxId);
   }
 
-  const process = started;
+  // The live connection: a new one replaces it when Archil closes it before the exit (waitThrough).
+  let process = started;
 
   const timedOut = async () => {
     if (!(await terminate(process)))
@@ -473,7 +539,12 @@ export async function collect(
     let result: ArchilProcessResult | "late";
 
     try {
-      result = await bounded(process.wait(), Math.max(0, deadline - Date.now()));
+      result = await bounded(
+        waitThrough(runner, process, { offset: () => gaps.next, onOutput }, (next) => {
+          process = next;
+        }),
+        Math.max(0, deadline - Date.now()),
+      );
     } catch {
       // A broken stream leaves the helper running (it may be writing a file): stop it before the
       // caller can retry, and say so when the stop is not confirmed.

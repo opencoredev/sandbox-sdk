@@ -456,6 +456,9 @@ export function createArchilProvider(
           );
         }
       },
+      // A new connection to a process this runner started, when Archil closed the first one early.
+      attach: async (processId, attachOptions) =>
+        (await sandbox(id)).attach(processId, attachOptions),
     };
   }
 
