@@ -11,6 +11,7 @@ import {
   httpStatus,
   neverSent,
   type Fetch,
+  type HttpClient,
   type HttpResponse,
 } from "../../http.js";
 import {
@@ -37,6 +38,7 @@ import {
   accessTokens,
   exitedCleanly,
   keyLabel,
+  nestedAccessTokens,
   parseConnection,
   parseExecFrame,
   parseMetrics,
@@ -185,14 +187,34 @@ const wrapper = [
   `exit $s`,
 ].join("\n");
 
-/** Kills a command's process group: argv is `tag pid`, the PID empty when the command never reported one. */
+/**
+ * Kills a command's process group: argv is `tag pid`, the PID empty when the command never reported one.
+ * A PID that is not a plain number above 1 exits 1 without a kill. Exits 0 only once `kill -0` answers
+ * "No such process" for both the group and the PID; any other answer, or a group still alive after
+ * about two seconds, exits 1 and leaves the PID record for a retry.
+ * `gone` returns 0 when both are gone, 1 while one still exists (a killed process stays until reaped),
+ * and 2 when `kill` failed for another reason, which no wait would change.
+ */
 const killer = [
   `d=${execDir}; t="$d/$1"`,
   `{ : > "$t.cancel"; } 2>/dev/null || { mkdir -p "$d" && : > "$t.cancel"; }`,
   `p=$2`,
   `[ -n "$p" ] || read -r p < "$t" 2>/dev/null`,
+  // Only a plain PID above 1: `kill -KILL -1` signals every process, `-0` the killer's own group.
+  `case $p in *[!0-9]* | 0*) exit 1 ;; esac`,
+  `[ -z "$p" ] || [ "$p" -gt 1 ] || exit 1`,
+  `gone() { for q in -"$p" "$p"; do e=$(kill -0 "$q" 2>&1) && return 1; case $e in *"No such process"*) ;; *) return 2;; esac; done; return 0; }`,
+  `if [ -n "$p" ]; then`,
+  `  i=0`,
+  `  while :; do`,
   // dash, the image's sh, refuses `--` before a negative PID: `kill -KILL -PID` names the group.
-  `if [ -n "$p" ]; then kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null; fi`,
+  `    kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null`,
+  `    gone; r=$?`,
+  `    [ "$r" -eq 0 ] && break`,
+  `    [ "$r" -eq 1 ] && [ "$i" -lt 40 ] || exit 1`,
+  `    i=$((i + 1)); sleep 0.05`,
+  `  done`,
+  `fi`,
   `rm -f "$t"`,
   `exit 0`,
 ].join("\n");
@@ -300,8 +322,23 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     },
   };
 
+  /**
+   * `provider.api` and `box.native` register the access tokens in every JSON answer they read, as the
+   * adapter's own calls do, so a later error never echoes one. `fetch` hands the caller the raw body unread.
+   */
+  const nativeHttp: HttpClient<StynePlane> = {
+    ...http,
+    async json(request) {
+      const value = await http.json(request);
+
+      for (const token of nestedAccessTokens(value)) tokens.add(token);
+
+      return value;
+    },
+  };
+
   const api = createNativeApi<StynePlane, StyneClientSdk>({
-    http,
+    http: nativeHttp,
     placeholder: "id",
     sdk: binding,
   });
@@ -351,14 +388,24 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     if (known) return known;
 
     // A connect resumes a paused sandbox and keeps it alive at least 5 more minutes; a preview needs it
-    // running. Being a write, a connect whose answer is lost is outcome_unknown: it may have done either.
-    const fresh = parseConnection(
-      remember(await http.json({ method: "POST", ...sandboxPath(id, "/connect"), body: {} })),
+    // running. Being a write, a connect whose answer is lost, unreadable or incomplete is
+    // outcome_unknown: it may have done either.
+    const answer = parseSandboxAnswer(
+      remember(
+        readJson(await http.request({ method: "POST", ...sandboxPath(id, "/connect"), body: {} })),
+      ),
     );
 
-    connections.set(id, fresh);
+    if (answer.kind !== "connection")
+      throw fail(
+        "the connect was answered but its answer could not be read; the sandbox may have been resumed and its lifetime extended",
+        "outcome_unknown",
+        { sandboxId: id },
+      );
 
-    return fresh;
+    connections.set(id, answer.connection);
+
+    return answer.connection;
   }
 
   async function destroy(id: string) {
@@ -534,8 +581,12 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
         return timedOut;
       }
 
-      if (!opened.body)
+      if (!opened.body) {
+        // A 2xx without a stream (such as a 204) says nothing of whether the command started.
+        await killGroup(id, tag, undefined).catch(() => {});
         throw fail("the command stream had no body", "outcome_unknown", { sandboxId: id });
+      }
+
       frames = ndjson(opened.body, { provider: name, sandboxId: id })[Symbol.asyncIterator]();
 
       for (;;) {
@@ -958,7 +1009,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
 
       if (!value) {
         value = createNativeApi<StynePlane, StyneSandboxSdk>({
-          http,
+          http: nativeHttp,
           placeholder: "id",
           sandboxId: id,
           sdk: binding,
@@ -1046,17 +1097,24 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
         return lookUp(error);
       }
 
+      let answered: string | undefined;
+
       try {
-        return { id: parseSnapshot(readJson(response)).name };
+        answered = parseSnapshot(readJson(response)).name;
       } catch {
-        return lookUp(
-          fail(
-            `the snapshot was answered but its answer could not be read; it may exist as ${snapshotName}`,
-            "outcome_unknown",
-            { sandboxId: id },
-          ),
-        );
+        answered = undefined;
       }
+
+      if (answered === snapshotName) return { id: snapshotName };
+
+      // An answer naming another snapshot says nothing about ours: look ours up, never hand that one over.
+      return lookUp(
+        fail(
+          `the snapshot was answered but its answer did not name it; it may exist as ${snapshotName}`,
+          "outcome_unknown",
+          { sandboxId: id },
+        ),
+      );
     },
 
     async deleteSnapshot(snapshotId) {

@@ -57,16 +57,39 @@ export function parseSandboxList(raw: JsonValue | undefined): StyneSandbox[] {
   return raw.map(parseSandbox);
 }
 
+const tokenKeys: readonly string[] = ["trafficAccessToken", "envdAccessToken"];
+
 /**
  * The access tokens a sandbox answer carries (`trafficAccessToken` and `envdAccessToken`, on a create,
  * a connect, a resume and sometimes a `GET`), so the adapter can redact them from every error.
  */
 export function accessTokens(raw: JsonValue | undefined): string[] {
-  return ["trafficAccessToken", "envdAccessToken"].flatMap((key) => {
+  return tokenKeys.flatMap((key) => {
     const value = field(raw, key);
 
     return isString(value) && value ? [value] : [];
   });
+}
+
+/**
+ * The access tokens anywhere in an answer the caller asked for through `box.native` or `provider.api`,
+ * whose shape the adapter does not know: a sandbox, a list of them, or either nested in another object.
+ */
+export function nestedAccessTokens(raw: JsonValue | undefined): string[] {
+  const found: string[] = [];
+  const pending: (JsonValue | undefined)[] = [raw];
+
+  for (let seen = 0; pending.length > 0 && seen < 1_000_000; seen++) {
+    const value = pending.pop();
+
+    if (Array.isArray(value)) pending.push(...value);
+    else if (isJsonObject(value))
+      for (const [key, entry] of Object.entries(value))
+        if (tokenKeys.includes(key) && isString(entry) && entry) found.push(entry);
+        else pending.push(entry);
+  }
+
+  return found;
 }
 
 /**
@@ -204,6 +227,9 @@ function exitStatus(exit: JsonValue | undefined): ExitStatus | undefined {
   return isSafeInteger(signal) && signal > 0 ? { kind: "signal", signal } : undefined;
 }
 
+/** Standard base64, padded or not. */
+const base64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/;
+
 const safeCode = /^[a-z][a-z0-9_]{0,63}$/;
 
 function errorCodeOf(raw: JsonValue | undefined): string | undefined {
@@ -223,7 +249,12 @@ export function parseExecFrame(raw: JsonValue | undefined): ExecFrame {
   for (const stream of ["stdout", "stderr"] as const) {
     const data = raw[stream];
 
-    if (isString(data)) return { kind: "output", stream, data: Buffer.from(data, "base64") };
+    if (data === undefined) continue;
+
+    // Buffer.from skips what is not base64, so a corrupt line would read as output that never ran.
+    return isString(data) && base64.test(data)
+      ? { kind: "output", stream, data: Buffer.from(data, "base64") }
+      : { kind: "malformed" };
   }
 
   if (raw.exit !== undefined) {
