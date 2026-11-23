@@ -363,7 +363,9 @@ export async function collect(
   let errorText = "";
   const gaps = new OutputGaps();
 
-  const process = await start(runner, sandboxId, command, {
+  const deadline = Date.now() + timeoutMs;
+
+  const starting = start(runner, sandboxId, command, {
     env: options.env,
     timeoutSeconds: Math.ceil(timeoutMs / 1000) + nativeGraceSeconds,
     collectOutput: false,
@@ -376,9 +378,28 @@ export async function collect(
     },
   });
 
+  // One deadline covers the start, the input and the wait. A start that lands late is stopped.
+  const started = await bounded(starting, timeoutMs);
+
+  if (started === "late") {
+    void starting.then(
+      async (late) => {
+        try {
+          await terminate(late);
+        } finally {
+          await disconnect(late);
+        }
+      },
+      () => {},
+    );
+    throw failure("Archil guest operation timed out starting", "timeout", sandboxId);
+  }
+
+  const process = started;
+
   try {
-    await writeStdin(process, options.stdin);
-    const result = await bounded(process.wait(), timeoutMs);
+    await bounded(writeStdin(process, options.stdin), Math.max(0, deadline - Date.now()));
+    const result = await bounded(process.wait(), Math.max(0, deadline - Date.now()));
 
     if (result === "late") {
       await terminate(process);

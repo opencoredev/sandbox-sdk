@@ -39,6 +39,8 @@ interface ArchilState {
   pauseOnCommand: string | undefined;
   /** Refuse the next process start with this HTTP status, once. */
   refuseNextRun: number | undefined;
+  /** Pause the sandbox while a command containing this text runs, cutting its stream, once. */
+  pauseDuringCommand: string | undefined;
 }
 
 export const archilState: ArchilState = {
@@ -53,6 +55,7 @@ export const archilState: ArchilState = {
   settleTo: undefined,
   pauseOnCommand: undefined,
   refuseNextRun: undefined,
+  pauseDuringCommand: undefined,
 };
 
 class FakeProcess implements ArchilProcess {
@@ -139,8 +142,10 @@ class FakeProcess implements ArchilProcess {
     this.#child.stdin?.end();
   }
   async resize() {}
+  /** Set when the sandbox paused under this process: its stream is cut, as Archil does. */
+  cut: Promise<never> | undefined;
   wait() {
-    return this.#ended;
+    return this.cut === undefined ? this.#ended : Promise.race([this.#ended, this.cut]);
   }
   async kill() {
     this.#killed = true;
@@ -185,8 +190,19 @@ class FakeSandbox {
     if (this.status !== "running")
       throw new FakeApiError("Sandbox is not running", 409, "sandbox_not_running");
     archilState.runs.push(command);
+    const process = new FakeProcess(this.guest, command, options, this.env);
 
-    return new FakeProcess(this.guest, command, options, this.env);
+    if (
+      archilState.pauseDuringCommand !== undefined &&
+      command.includes(archilState.pauseDuringCommand)
+    ) {
+      archilState.pauseDuringCommand = undefined;
+      this.status = "paused";
+      process.cut = Promise.reject(new Error("Process connection closed"));
+      process.cut.catch(() => {});
+    }
+
+    return process;
   }
   async refresh() {
     if (this.status === "deleted") throw new FakeApiError("Sandbox not found", 404, "not_found");

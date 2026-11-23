@@ -462,9 +462,10 @@ export function createArchilProvider(
     try {
       marker = await markerOf(box.id);
     } catch (error) {
-      // It went to sleep during the read: report it asleep and unread, as if listed that way. Any
-      // other failure, or a sandbox that still runs, is a failed read, never a keyless sandbox.
-      if (!(error instanceof SandboxError) || error.code !== "unavailable") throw error;
+      // It went to sleep during the read (refused at start, or its stream cut by the pause): report
+      // it asleep and unread, as if listed that way. A sandbox that still runs is a failed read,
+      // never a keyless sandbox.
+      if (!(error instanceof SandboxError)) throw error;
       await box.refresh();
       const now = stateOf(box.status);
 
@@ -791,8 +792,8 @@ export function createArchilProvider(
         let pendingWake: Promise<boolean> | undefined;
         let restoring: Promise<void> | undefined;
 
-        // Only a state change this lookup made is undone: a wake that was refused, or that found the
-        // sandbox already running (another client woke it), leaves it alone.
+        // Only a state change this lookup made is undone, and only once the marker proves the sandbox
+        // belongs to another key: a wake that was refused, or found it already running, leaves it alone.
         const restore = () => {
           restoring ??= (async () => {
             const changed = await pendingWake?.catch(() => false);
@@ -815,13 +816,9 @@ export function createArchilProvider(
               woke = box.status === "paused" || box.status === "pausing" ? "paused" : "stopped";
               pendingWake = wake(box);
 
-              try {
-                await within(pendingWake, box.id);
-              } catch (error) {
-                // A wake still in flight at the deadline is undone once it lands.
-                void restore();
-                throw error;
-              }
+              // A wake that outlasts the deadline is surfaced, not undone: another client may be
+              // reopening the same sandbox, and pausing it under them would break their handle.
+              await within(pendingWake, box.id);
 
               continue;
             }
@@ -849,19 +846,15 @@ export function createArchilProvider(
                 };
             }
 
-            if (Date.now() > deadline) {
-              // Woken and still unproven: put it back as it was.
-              await restore();
-              throw late(box.id);
-            }
+            // Still unproven at the deadline: surfaced and left running, for the same reason.
+            if (Date.now() > deadline) throw late(box.id);
 
             await sleep(500);
             await within(box.refresh(), box.id);
           } catch (error) {
             // Deleted meanwhile: the creator's setup failed, so the key is free again.
             if (nativeStatus(error) === 404) return gone();
-            // Any other exit after a wake leaves the sandbox unverified: put it back, bounded.
-            await restore();
+            // Unproven either way: the only rollback is for a marker that proves another key.
             throw error;
           }
         }

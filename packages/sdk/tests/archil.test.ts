@@ -375,6 +375,23 @@ describe("Archil create", () => {
     }
   });
 
+  test("a pause that cuts the marker stream mid-read reports the sandbox asleep", async () => {
+    const p = provider();
+    const box = await createSandbox(p, { labels: { group: "cut-mid-read" } });
+
+    try {
+      // connect reads the marker of a running sandbox; the pause cuts that read's stream.
+      archilState.pauseDuringCommand = "metadata.json";
+      const info = await p.connect(box.id);
+
+      expect(info.state).toBe("paused");
+      expect(info.key).toBeUndefined();
+    } finally {
+      archilState.pauseDuringCommand = undefined;
+      await box.destroy();
+    }
+  });
+
   test("a failed marker read on a running sandbox is an error, never a keyless sandbox", async () => {
     const p = provider();
     const keyed = await createSandbox(p, { key: `flaky-${crypto.randomUUID()}` });
