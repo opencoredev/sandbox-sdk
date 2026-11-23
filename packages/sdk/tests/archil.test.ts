@@ -482,6 +482,48 @@ describe("Archil create", () => {
     }
   });
 
+  test("a symlink through a linked directory and .. writes where the kernel resolves it", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run(
+        "mkdir -p jl/other/sub jl/other/writable jl/writable && ln -s other/sub jl/jump && ln -s jump/../writable/file jl/link",
+      );
+      await box.files.write("jl/link", "k");
+      expect((await box.run("cat jl/other/writable/file; ls jl/writable")).stdout).toBe("k");
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("a write to a FIFO is refused and leaves it in place", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run("mkfifo pipe");
+      await expect(box.files.write("pipe", "x")).rejects.toMatchObject({
+        code: "invalid_argument",
+      });
+      expect((await box.run("test -p pipe && echo fifo")).stdout).toBe("fifo\n");
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("a tempfile.py in the working directory can't shadow the write helper's imports", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run(
+        "printf 'raise SystemExit(9)\\n' > tempfile.py; printf 'raise SystemExit(9)\\n' > stat.py",
+      );
+      await box.files.write("shadow.txt", "ok");
+      expect(await box.files.read("shadow.txt")).toBe("ok");
+    } finally {
+      await box.destroy();
+    }
+  });
+
   test("a write to a hard-linked file updates every link and leaves no staging file", async () => {
     const box = await createSandbox(provider());
 
@@ -529,7 +571,10 @@ describe("Archil create", () => {
 
     try {
       const start = Date.now();
-      const refused = expect(p.destroy(info.id)).rejects.toMatchObject({ code: "provider" });
+
+      const refused = expect(p.destroy(info.id)).rejects.toMatchObject({
+        code: "outcome_unknown",
+      });
 
       await vi.advanceTimersByTimeAsync(125_000);
       await refused;
@@ -989,6 +1034,24 @@ describe("Archil create", () => {
 
     const connected = await connectSandbox(provider(), box.id);
     await expect(connected.resume()).rejects.toMatchObject({ code: "unavailable" });
+
+    // A paused sandbox whose resume answers failed isn't reported as resumed either.
+    fake.status = "paused";
+    const proto: Pick<typeof fake, "resume"> = Object.getPrototypeOf(fake);
+    const realResume = proto.resume;
+
+    proto.resume = async function (this: typeof fake) {
+      this.status = "failed";
+
+      return this;
+    };
+
+    try {
+      await expect(connected.resume()).rejects.toMatchObject({ code: "unavailable" });
+    } finally {
+      proto.resume = realResume;
+    }
+
     expect(fake.status).toBe("failed");
     await connected.destroy();
     expect(archilState.sandboxes.has(box.id)).toBe(false);

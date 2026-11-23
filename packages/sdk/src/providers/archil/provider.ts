@@ -19,7 +19,7 @@ import type {
 import { SandboxError } from "../../errors.js";
 import { loadPeer } from "../../peer.js";
 import { secretRecoveryCommand } from "../../run.js";
-import { files, python, type Guest } from "../../shared/guest.js";
+import { files, type Guest } from "../../shared/guest.js";
 import { isObject, isString, isStringRecord } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
 import { archilError, failure, isTransportMissing, nativeStatus, notRunning } from "./errors.js";
@@ -226,26 +226,35 @@ function matches(info: SandboxInfo, labels: Labels) {
 
 // Writes stdin to the path in $SANDBOX_SDK_PATH (bytes, exactly as given), with argv[1] as an octal
 // mode or "" to keep an existing file's mode (644 for a new file), making its directory first.
-// A symlink is followed one hop at a time to its final target, whose missing parents are created;
-// a loop exits 22. stdin is staged beside the target and renamed over it only once complete, so a
-// failed write (a full disk, a broken stream) leaves the old file whole, and rename(2) refuses a
-// directory even one created mid-write (exit 21). A file with other hard links is copied over in
-// place once fully staged, so its links keep sharing it; only a failure during that copy can leave
-// it partial.
+// A symlink is followed one hop at a time to its final target (a loop exits 22), and the target's
+// parent is resolved as the kernel would (`link/../x` through a linked directory) before staging.
+// An existing directory exits 21 and any other non-regular file (a FIFO, a device) exits 23, both
+// checked again once stdin is staged, so a change mid-write is caught too. stdin is staged beside
+// the target and renamed over it only once complete, so a failed write (a full disk, a broken
+// stream) leaves the old file whole. A file with other hard links is copied over in place once
+// fully staged, so its links keep sharing it; only a failure during that copy can leave it partial.
 const writeSource = [
   "import os,sys,stat,tempfile",
+  "def no(code,why):",
+  " sys.stderr.write(why+'\\n'); sys.exit(code)",
+  "def check(p):",
+  " try: st=os.stat(p)",
+  " except FileNotFoundError: return None",
+  " if stat.S_ISDIR(st.st_mode): no(21,'is a directory')",
+  " if not stat.S_ISREG(st.st_mode): no(23,'not a regular file')",
+  " return st",
   "p=os.environb[b'SANDBOX_SDK_PATH']",
   "m=sys.argv[1]",
   "n=0",
   "while os.path.islink(p):",
   " n+=1",
-  " if n>40: sys.stderr.write('too many levels of symbolic links\\n'); sys.exit(22)",
+  " if n>40: no(22,'too many levels of symbolic links')",
   " p=os.path.join(os.path.dirname(p),os.readlink(p))",
-  "if os.path.isdir(p): sys.stderr.write('is a directory\\n'); sys.exit(21)",
-  "d=os.path.dirname(p) or b'.'",
+  "if not os.path.basename(p): no(21,'is a directory')",
+  "d=os.path.realpath(os.path.dirname(p) or b'.')",
+  "p=os.path.join(d,os.path.basename(p))",
+  "check(p)",
   "os.makedirs(d,exist_ok=True)",
-  "try: st=os.stat(p)",
-  "except FileNotFoundError: st=None",
   "fd,t=tempfile.mkstemp(dir=d,prefix=b'.sandbox-sdk-write.')",
   "try:",
   " with os.fdopen(fd,'wb') as f:",
@@ -253,23 +262,31 @@ const writeSource = [
   "   b=sys.stdin.buffer.read(1048576)",
   "   if not b: break",
   "   f.write(b)",
-  " if st is not None and stat.S_ISREG(st.st_mode) and st.st_nlink>1:",
-  "  with open(t,'rb') as s, open(p,'wb') as f:",
-  "   while True:",
-  "    b=s.read(1048576)",
-  "    if not b: break",
-  "    f.write(b)",
+  " st=check(p)",
+  " if st is not None and st.st_nlink>1:",
+  "  try:",
+  "   with open(t,'rb') as s, open(p,'wb') as f:",
+  "    while True:",
+  "     b=s.read(1048576)",
+  "     if not b: break",
+  "     f.write(b)",
+  "  except IsADirectoryError: no(21,'is a directory')",
   "  if m: os.chmod(p,int(m,8))",
   " else:",
   "  os.chmod(t,int(m,8) if m else stat.S_IMODE(st.st_mode) if st else 0o644)",
   "  try: os.rename(t,p)",
-  "  except IsADirectoryError: sys.stderr.write('is a directory\\n'); sys.exit(21)",
+  "  except IsADirectoryError: no(21,'is a directory')",
   "finally:",
   " if os.path.lexists(t): os.unlink(t)",
 ].join("\n");
 
+// Isolated (-I): the guest's working directory, PYTHON* variables and user site can't shadow the
+// standard library these helpers import.
+const isolatedPython = (code: string, ...args: string[]) =>
+  `python3 -I -S -c ${quote(code)} ${args.map(quote).join(" ")}`;
+
 const writeProgram = (mode: number | undefined) =>
-  python(writeSource, mode === undefined ? "" : mode.toString(8));
+  isolatedPython(writeSource, mode === undefined ? "" : mode.toString(8));
 
 // Prints argv[3] bytes of regular file argv[1] from offset argv[2] (-1: to the end); exit 3 if absent.
 const readProgram =
@@ -359,17 +376,15 @@ export function createArchilProvider(
       await box.refresh();
     }
 
+    let woke = false;
+
     try {
       if (box.status === "paused") {
         await box.resume();
-
-        return true;
-      }
-
-      if (box.status === "stopped" || box.status === "exited") {
+        woke = true;
+      } else if (box.status === "stopped" || box.status === "exited") {
         await box.start();
-
-        return true;
+        woke = true;
       }
     } catch (error) {
       // Refused because another client woke it first: running now, and not this call's doing.
@@ -379,7 +394,16 @@ export function createArchilProvider(
       if (box.status !== "running") throw error;
     }
 
-    return false;
+    // A sandbox that failed while settling, or whose resume or start answered failed, isn't awake.
+    // resume and start apply Archil's answer to `box`, so this needs no further request.
+    if (box.status !== "running")
+      throw failure(
+        `Sandbox ${box.id} is ${box.status} on Archil, not running; destroy it and create another`,
+        "unavailable",
+        box.id,
+      );
+
+    return woke;
   }
 
   /**
@@ -429,6 +453,9 @@ export function createArchilProvider(
 
         if (result.exitCode === 22) throw failure("Path is a symlink loop", "invalid_argument", id);
 
+        if (result.exitCode === 23)
+          throw failure("Path is not a regular file", "invalid_argument", id);
+
         if (result.exitCode !== 0) throw failure("File write failed", "provider", id);
       },
       read: async (path, range) => {
@@ -437,7 +464,7 @@ export function createArchilProvider(
           const result = await collect(
             run,
             id,
-            python(readProgram, path, String(range.offset), String(range.length)),
+            isolatedPython(readProgram, path, String(range.offset), String(range.length)),
           );
 
           if (result.exitCode === 3) throw failure("File does not exist", "file_not_found", id);
@@ -993,7 +1020,13 @@ export function createArchilProvider(
         boxes.delete(id);
         await detachTerminals(id);
 
-        if (!(await remove(c, id))) throw failure("Sandbox could not be deleted", "provider", id);
+        // Archil's client may still retry a delete after the deadline, so the outcome is unknown.
+        if (!(await remove(c, id)))
+          throw failure(
+            "Sandbox deletion was not confirmed within 2 minutes; it may still complete",
+            "outcome_unknown",
+            id,
+          );
       }),
     async close(id) {
       boxes.delete(id);
