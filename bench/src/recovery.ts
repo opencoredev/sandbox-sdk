@@ -324,6 +324,13 @@ export async function reapRun(
             snapshotProof: proof,
           };
 
+          // Entries already journaled for this snapshot, such as a Maritime save still pending with its
+          // idempotency key. Once the snapshot is deleted they go too: a pending save left behind would be
+          // settled below by replaying it, which could save the snapshot again.
+          const earlier = (journal?.resources ?? []).filter(
+            (r) => r.provider === p.name && r.kind === "snapshot" && r.id === snapshot.id,
+          );
+
           journal?.resources.push(item);
           await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
           await deleteProvenSnapshot(
@@ -335,6 +342,8 @@ export async function reapRun(
             config.run,
             config["timeout-ms"],
           );
+
+          for (const entry of earlier) await forget(entry);
           await forget(item);
         }
 

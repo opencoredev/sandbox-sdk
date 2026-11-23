@@ -172,6 +172,12 @@ export function credentials(raw: JsonValue | undefined): string[] {
 const tokenPattern = /\b(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g;
 
 /**
+ * Credential shapes the HTTP client redacts from every error, registered or not: Maritime's tokens, and
+ * any `token=` query value, such as a preview URL's.
+ */
+export const leakPatterns: readonly RegExp[] = [tokenPattern, /[?&;]token=[^&#\s"'<>]+/gi];
+
+/**
  * The credentials anywhere in an answer the caller asked for through `box.native` or `provider.api`, whose
  * shape the adapter does not know: `secret`, `urlToken` and `apiKey` fields at any depth, and any string
  * holding a Maritime token, such as a preview URL with `?token=mut_...`.
@@ -217,31 +223,45 @@ const signals = new Map([
   ["SIGTERM", 15],
 ]);
 
-/** A Command object (`result` event, JSON answer of `POST /commands`, `command` of an error). */
+/**
+ * A Command object (`result` event, JSON answer of `POST /commands`, `command` of an error). Each state
+ * has one shape, and anything else is unreadable: `exited` has a whole `exitCode` of 0 or more and a null
+ * `signal`; `killed` has a known `signal` and a null `exitCode`. So `{ state: "exited", exitCode: 0,
+ * signal: "SIGKILL" }` is never a clean exit.
+ */
 export function parseCommand(raw: JsonValue | undefined): CommandOutcome {
   const state = field(raw, "state");
   const exitCode = field(raw, "exitCode");
   const signal = field(raw, "signal");
 
-  if (state === "running") return { kind: "running" };
+  switch (state) {
+    case "running":
+      return { kind: "running" };
+    case "exited":
+      return isNumber(exitCode) &&
+        Number.isSafeInteger(exitCode) &&
+        exitCode >= 0 &&
+        signal === null
+        ? { kind: "exited", exitCode }
+        : { kind: "unreadable" };
+    case "killed": {
+      const number = isString(signal) ? signals.get(signal) : undefined;
 
-  if (state === "exited" && isNumber(exitCode) && Number.isSafeInteger(exitCode) && exitCode >= 0)
-    return { kind: "exited", exitCode };
+      return number !== undefined && (exitCode === null || exitCode === undefined)
+        ? { kind: "killed", signal: number }
+        : { kind: "unreadable" };
+    }
 
-  if (state === "killed" || state === "exited") {
-    const number = isString(signal) ? signals.get(signal) : undefined;
-
-    if (number !== undefined) return { kind: "killed", signal: number };
+    default:
+      return { kind: "unreadable" };
   }
-
-  return { kind: "unreadable" };
 }
 
 /** Whether a Command object says the command ran to a normal exit 0, with no signal. */
 export function exitedCleanly(raw: JsonValue | undefined): boolean {
   const outcome = parseCommand(raw);
 
-  return outcome.kind === "exited" && outcome.exitCode === 0 && field(raw, "signal") === null;
+  return outcome.kind === "exited" && outcome.exitCode === 0;
 }
 
 /** `POST /v1/sandboxes/{id}/save` and `GET /v1/snapshots/{name}`. */

@@ -43,6 +43,7 @@ import { sse, type ServerSentEvent } from "../../streams.js";
 import {
   allocLabel,
   connectionOf,
+  leakPatterns,
   credentials,
   exitedCleanly,
   keyLabel,
@@ -61,7 +62,7 @@ import {
   type MaritimeSandbox,
   type SandboxAnswer,
 } from "./api.js";
-import { codeOf, fail, mapError, provider as name, refusals } from "./errors.js";
+import { codeOf, fail, mapError, provider as name, refusals, shownCode } from "./errors.js";
 import { commandSeconds, execDir, killCommand, wrappedCommand } from "./exec.js";
 
 /**
@@ -272,6 +273,7 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
   const requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
   const connections = new Map<string, Connection>();
   const natives = new Map<string, MaritimeNative>();
+  /** Public preview URLs, which carry no credential. A private one is asked for each time: its token rotates. */
   const previews = new Map<string, string>();
   /** Every secret and URL token an answer carried. Kept for the client's life: an error may echo one after a close. */
   const tokens = new Set<string>();
@@ -311,15 +313,19 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
     provider: name,
     label: "Maritime",
     planes: {
-      control: { baseUrl: `${root}/v1`, auth: bearer },
-      api: { baseUrl: root, auth: bearer },
+      // Maritime never redirects a write, so none is followed: it is never sent twice.
+      control: { baseUrl: `${root}/v1`, auth: bearer, redirectWrites: false },
+      api: { baseUrl: root, auth: bearer, redirectWrites: false },
       data: {
+        redirectWrites: false,
         baseUrl: async ({ sandboxId }) => (await connection(sandboxOf(sandboxId))).dataPlaneUrl,
         auth: async ({ sandboxId }) => ({
           "X-Maritime-Token": (await connection(sandboxOf(sandboxId))).secret,
         }),
-        // A 401 `unauthenticated` means the secret rotated: read the current one and send again. Nothing
-        // ran, so this is the one case a command is sent twice.
+        // A 401 carrying Maritime's `unauthenticated` code means the secret rotated: read the current one
+        // and send again. Nothing ran, so this is the one case a command is sent twice. Any other 401 (no
+        // body, an unreadable one, another code) proves nothing ran, so it is never sent again.
+        unauthorized: (body) => body.code === "unauthenticated",
         refresh: async ({ sandboxId }) => {
           const id = sandboxOf(sandboxId);
           connections.delete(id);
@@ -331,6 +337,8 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
     fetch: options.fetch,
     timeoutMs: requestTimeoutMs,
     secrets: () => [options.apiKey ?? process.env.MARITIME_API_KEY, ...tokens],
+    // Tokens the adapter never saw, such as another sandbox's, echoed in an error code or request ID.
+    credentialPatterns: leakPatterns,
     idempotencyHeader: "Idempotency-Key",
     authHint: "Set MARITIME_API_KEY to a valid Maritime API key with the sandboxes scope.",
     mapError,
@@ -441,12 +449,26 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
       }
   }
 
-  /** Live sandboxes whose metadata has every label, across all pages. */
-  async function listSandboxes(labels: Labels): Promise<MaritimeSandbox[]> {
+  /**
+   * Live sandboxes whose metadata has every label, across all pages. With `until` (epoch ms), no page
+   * starts after it and each gets only the time left: `undefined` is returned once it passes.
+   */
+  async function listSandboxes(labels: Labels): Promise<MaritimeSandbox[]>;
+  async function listSandboxes(
+    labels: Labels,
+    until: number,
+  ): Promise<MaritimeSandbox[] | undefined>;
+  async function listSandboxes(
+    labels: Labels,
+    until?: number,
+  ): Promise<MaritimeSandbox[] | undefined> {
     const found: MaritimeSandbox[] = [];
     let cursor: string | undefined;
 
     for (let page = 0; page < 1000; page++) {
+      const left = until === undefined ? undefined : until - Date.now();
+
+      if (left !== undefined && left <= 0) return undefined;
       const query = new URLSearchParams();
 
       for (const state of liveStates) query.append("state", state);
@@ -457,9 +479,13 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
 
       if (cursor !== undefined) query.set("cursor", cursor);
 
-      const answer = parseSandboxPage(
-        await http.json({ method: "GET", path: `/sandboxes?${query.toString()}` }),
-      );
+      const pageRequest: HttpRequest<MaritimePlane> = {
+        method: "GET",
+        path: `/sandboxes?${query.toString()}`,
+      };
+
+      if (left !== undefined) pageRequest.timeoutMs = left;
+      const answer = parseSandboxPage(await http.json(pageRequest));
 
       for (const { sandbox, raw } of answer.data) {
         remember(raw);
@@ -522,8 +548,27 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
   }
 
   /**
+   * Whether a read proves the sandbox ended, on a fresh bounded deadline: it reads `ended`, or Maritime
+   * answers `404 sandbox_not_found` or `410 sandbox_ended`. A live sandbox, or no answer, is not proof.
+   */
+  async function confirmedEnded(id: string): Promise<boolean> {
+    try {
+      return (await readSandbox(id, { timeoutMs: cleanupMs })).sandbox.state === "ended";
+    } catch (error) {
+      const status = httpStatus(error);
+
+      return (
+        (status?.status === 404 && status.code === "sandbox_not_found") ||
+        (status?.status === 410 && status.code === "sandbox_ended")
+      );
+    }
+  }
+
+  /**
    * Kills a command's process group in the guest, on a fresh bounded deadline. Throws `outcome_unknown`
-   * when unconfirmed: the kill command's own record must show it ran to a normal exit 0.
+   * when unconfirmed: the kill command's own record must show it ran to a normal exit 0, or a read must
+   * show the sandbox ended. A 404 from the commands route alone proves nothing: the route may be gone
+   * while the sandbox, and the command, live on.
    */
   async function killGroup(id: string, tag: string) {
     const body = { cmd: killCommand(tag), cwd: "/", timeoutSeconds: 30 };
@@ -545,8 +590,8 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
       } catch (error) {
         last = error;
 
-        // A sandbox that ended took the command with it.
-        if (isGone(error)) return;
+        // A sandbox that ended took the command with it, once a read confirms it ended.
+        if (isGone(error) && (await confirmedEnded(id))) return;
       }
 
     throw fail(
@@ -730,13 +775,14 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
               return timedOut;
             }
 
-            // A sandbox that ended took the command with it.
-            if (codeOf(code) === "not_found")
+            // A sandbox that ended took the command with it, once a read confirms it ended.
+            if (codeOf(code) === "not_found" && (await confirmedEnded(id)))
               throw fail("the sandbox ended while the command ran", "not_found", { sandboxId: id });
 
-            return await unknown(
-              `the command stream failed${code && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? ` (${code})` : ""}`,
-            );
+            // The code is text from the network: only one of Maritime's documented codes is shown.
+            const shown = shownCode(code);
+
+            return await unknown(`the command stream failed${shown ? ` (${shown})` : ""}`);
           }
 
           default:
@@ -908,12 +954,21 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
     );
   };
 
+  /** Whether a create's answer names the sandbox this call made: it carries this call's marker. */
+  const ours = (answer: SandboxAnswer, alloc: string) =>
+    answer.kind !== "unreadable" && answer.sandbox.metadata[allocLabel] === alloc;
+
   /**
-   * After a create whose answer was lost: on a fresh deadline, send the same request with the same key,
-   * which returns the sandbox the lost answer named (or makes the one it did not), else find the sandbox
-   * by this call's allocation marker. `unknown` is thrown when neither settles it.
+   * After a create whose answer was lost or did not carry this call's marker: within one fresh
+   * {@link cleanupMs} deadline, send the same request with the same key, which returns the sandbox the
+   * first answer named (or makes the one it did not), else find the sandbox by this call's allocation
+   * marker. Only an answer carrying the marker is returned. No request starts after the deadline, and
+   * each gets only the time left. `unknown` is thrown when nothing settles it.
    */
   async function reconcile(body: Body, key: string, alloc: string, unknown: SandboxError) {
+    const until = Date.now() + cleanupMs;
+    const left = () => until - Date.now();
+
     try {
       const answer = parseSandboxAnswer(
         remember(
@@ -923,31 +978,31 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
               path: "/sandboxes",
               body,
               headers: keyed(key),
-              timeoutMs: cleanupMs,
+              timeoutMs: left(),
             }),
           ),
         ),
       );
 
-      if (answer.kind !== "unreadable") return answer;
+      if (ours(answer, alloc)) return answer;
     } catch (error) {
       // A refusal of the replay says nothing about the first send; look it up by the marker.
       void error;
     }
 
-    let found: MaritimeSandbox[];
+    let found: MaritimeSandbox[] | undefined;
 
     try {
-      found = await listSandboxes({ [allocLabel]: alloc });
+      found = await listSandboxes({ [allocLabel]: alloc }, until);
     } catch {
       throw unknown;
     }
 
-    const [first] = found;
+    const [first] = found ?? [];
 
-    if (!first || found.length > 1) throw unknown;
+    if (!first || found?.length !== 1 || left() <= 0) throw unknown;
 
-    const { raw } = await readSandbox(first.id, { timeoutMs: cleanupMs }).catch(() => {
+    const { raw } = await readSandbox(first.id, { timeoutMs: left() }).catch(() => {
       throw unknown;
     });
 
@@ -1015,6 +1070,9 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
 
           if (capacityRefusal(error) && Date.now() + wait < capacityEnd && !input.signal?.aborted) {
             await delay(wait, input.signal);
+
+            // Nothing was made, and an abort during the wait means no further create is sent.
+            if (input.signal?.aborted) throw fail("creation aborted", "aborted");
             key = randomUUID();
             continue;
           }
@@ -1032,6 +1090,19 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
             fail(
               "the create was answered but its answer could not be read, so a sandbox may exist",
               "outcome_unknown",
+            ),
+          );
+        // An answer naming a sandbox without readable metadata may still be this call's: the replay
+        // with the same key returns its full record. One carrying another call's marker is left alone.
+        else if (answer.sandbox.metadata[allocLabel] === undefined)
+          answer = await reconcile(
+            body,
+            key,
+            alloc,
+            fail(
+              `the create answered with sandbox ${answer.sandbox.id} but no readable metadata, so whose it is is unknown; it was left alone`,
+              "outcome_unknown",
+              { sandboxId: answer.sandbox.id },
             ),
           );
         break;
@@ -1110,7 +1181,7 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
     files,
 
     async previewUrl(id, port) {
-      const cached = previews.get(`${id}:${port}`);
+      const cached = options.public ? previews.get(`${id}:${port}`) : undefined;
 
       if (cached) return { url: cached };
 
@@ -1128,7 +1199,9 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
       for (const token of tokensIn(url)) tokens.add(token);
 
       for (const value of new URL(url).searchParams.values()) if (value) tokens.add(value);
-      previews.set(`${id}:${port}`, url);
+
+      // A private URL carries the sandbox's URL token, which Maritime can rotate: never served from a cache.
+      if (options.public) previews.set(`${id}:${port}`, url);
 
       return { url };
     },
@@ -1222,20 +1295,23 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
         return lookUp(error);
       }
 
-      let answered: string | undefined;
+      let answered: ReturnType<typeof parseSnapshot> | undefined;
 
       try {
-        answered = parseSnapshot(readJson(response)).name;
+        answered = parseSnapshot(readJson(response));
       } catch {
         answered = undefined;
       }
 
-      if (answered === snapshotName) return { id: snapshotName };
+      // Only an answer naming this snapshot of this sandbox is taken as is.
+      if (answered?.name === snapshotName && answered.sourceSandboxId === id)
+        return { id: snapshotName };
 
-      // An answer naming another snapshot says nothing about ours: look ours up, never hand that one over.
+      // An answer naming another snapshot, another source or none says nothing about ours: look ours up,
+      // and never hand that one over.
       return lookUp(
         fail(
-          `the snapshot was answered but its answer did not name it; it may exist as ${snapshotName}`,
+          `the snapshot was answered but its answer did not name it as a snapshot of this sandbox; it may exist as ${snapshotName}`,
           "outcome_unknown",
           { sandboxId: id },
         ),

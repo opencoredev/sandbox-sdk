@@ -156,18 +156,17 @@ describe("Maritime billing completeness", () => {
     expect(never).toMatchObject({ kind: "metered", usd: 0, complete: true });
   });
 
-  it("is partial while the sandbox lives, an interval is open, or the totals disagree", () => {
+  it("is partial while the sandbox lives or an interval is open; a disagreeing info total is only noted", () => {
     expect(
       decodeMaritime(info({ state: "paused", endedAt: null }), [interval()], "sbx-a"),
     ).toMatchObject({ kind: "metered", complete: false, confidence: "low" });
     expect(decodeMaritime(info(), [interval({ endedAt: null })], "sbx-a")).toMatchObject({
       complete: false,
     });
-    expect(decodeMaritime(info({ costSoFarUsd: "0.010000" }), [interval()], "sbx-a")).toMatchObject(
-      {
-        complete: false,
-      },
-    );
+    const disagreeing = decodeMaritime(info({ costSoFarUsd: "0.010000" }), [interval()], "sbx-a");
+
+    expect(disagreeing).toMatchObject({ complete: true });
+    expect(disagreeing.note).toContain("$0.010000 so far");
   });
 
   it("refuses intervals of another sandbox and amounts that are not non-negative decimals", () => {

@@ -10,6 +10,7 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Boxd } from "@boxd-sh/sdk";
 import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { TenkiSandbox } from "@tenkicloud/sandbox";
+import { createRawMaritime, maritimePlane, maritimeRun } from "../src/maritime-raw.js";
 
 type Sdk = typeof Core;
 
@@ -48,89 +49,6 @@ const sdkRoot = resolve(values.sdk);
 const runId = `sbx57-${Date.now().toString(36)}`;
 const label = { "sdk-overhead-run": runId };
 const moduleUrl = (path: string) => pathToFileURL(resolve(sdkRoot, "dist", path)).href;
-
-/**
- * Maritime's control plane with the run's key, as the floor and raw creates call it. The adapter is
- * direct HTTP with no peer SDK, so the floor is the same REST API with plain fetch.
- */
-async function maritimeCall(
-  path: string,
-  init: { method?: string; json?: object; key?: string } = {},
-) {
-  const root = (process.env.MARITIME_API_URL ?? "https://api.maritime.sh").replace(/\/+$/, "");
-
-  const headers = new Headers({ Authorization: `Bearer ${process.env.MARITIME_API_KEY ?? ""}` });
-
-  if (init.json !== undefined) headers.set("Content-Type", "application/json");
-
-  if (init.key !== undefined) headers.set("Idempotency-Key", init.key);
-
-  const response = await fetch(`${root}/v1${path}`, {
-    method: init.method ?? "GET",
-    headers,
-    body: init.json === undefined ? undefined : JSON.stringify(init.json),
-  });
-
-  if (!response.ok) {
-    const code = z.object({ code: z.string() }).safeParse(await response.json().catch(() => null));
-
-    throw Object.assign(
-      new Error(`Maritime ${path.split("/")[1]} failed: HTTP ${response.status}`),
-      {
-        status: response.status,
-        code: code.success ? code.data.code : undefined,
-      },
-    );
-  }
-
-  return response;
-}
-
-const maritimeSandbox = z.object({
-  id: z.string(),
-  state: z.string(),
-  dataPlaneUrl: z.string(),
-  secret: z.string(),
-});
-
-/** One sandbox's data plane: its URL and secret, read once per sandbox. */
-const maritimePlanes = new Map<string, Promise<z.infer<typeof maritimeSandbox>>>();
-
-function maritimePlane(id: string) {
-  let plane = maritimePlanes.get(id);
-
-  if (!plane) {
-    plane = maritimeCall(`/sandboxes/${encodeURIComponent(id)}`).then(async (response) =>
-      maritimeSandbox.parse(await response.json()),
-    );
-    maritimePlanes.set(id, plane);
-  }
-
-  return plane;
-}
-
-/** One command to its end through `POST {dataPlaneUrl}/commands` (JSON, not a stream); a non-zero exit throws. */
-async function maritimeRun(id: string, command: string) {
-  const plane = await maritimePlane(id);
-
-  const response = await fetch(`${plane.dataPlaneUrl}/commands`, {
-    method: "POST",
-    headers: { "X-Maritime-Token": plane.secret, "Content-Type": "application/json" },
-    body: JSON.stringify({ cmd: ["sh", "-c", command], cwd: "/" }),
-  });
-
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`Maritime command failed: HTTP ${response.status}`);
-  }
-
-  const result = z.object({ exitCode: z.number().nullable() }).parse(await response.json());
-
-  if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}`);
-}
-
-/** Maritime's answer for a sandbox that is gone: 404, or an ended record while it remembers it. */
-const maritimeGone = z.object({ status: z.literal(404) });
 
 const nativeUrl = (name: string) =>
   import.meta.resolve(name, pathToFileURL(resolve(sdkRoot, "package.json")).href);
@@ -896,62 +814,9 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     return raw;
   }
 
-  if (name === "maritime") {
-    // The adapter's defaults: base, a one-hour time limit, a fresh idempotency key, and a new key after
-    // each capacity refusal, which Maritime answers before anything runs.
-    let created: z.infer<typeof maritimeSandbox> | undefined;
-
-    for (let attempt = 0; !created; attempt++)
-      try {
-        created = maritimeSandbox.parse(
-          await (
-            await maritimeCall("/sandboxes", {
-              method: "POST",
-              key: crypto.randomUUID(),
-              json: {
-                from: templates.get(name) ?? "base",
-                metadata: label,
-                timeLimitSeconds: 3600,
-              },
-            })
-          ).json(),
-        );
-      } catch (error) {
-        const refused = z.object({ code: z.literal("out_of_capacity") }).safeParse(error).success;
-
-        if (!refused || attempt >= 5) throw error;
-        await new Promise((resolve) => setTimeout(resolve, Math.min(20_000, 2000 * 2 ** attempt)));
-      }
-
-    const id = created.id;
-    maritimePlanes.set(id, Promise.resolve(created));
-
-    const raw: NativeBox = {
-      id,
-      exec: () => maritimeRun(id, "true"),
-      destroy: async () => {
-        try {
-          await (
-            await maritimeCall(`/sandboxes/${encodeURIComponent(id)}`, { method: "DELETE" })
-          ).body?.cancel();
-        } catch (error) {
-          // A repeated end answers the ended sandbox; an unknown one 404.
-          if (!maritimeGone.safeParse(error).success) throw error;
-        }
-      },
-      exists: async () => {
-        const state = z
-          .object({ state: z.string() })
-          .parse(await (await maritimeCall(`/sandboxes/${encodeURIComponent(id)}`)).json()).state;
-
-        return state !== "ended";
-      },
-    };
-
-    admit(raw);
-
-    return raw;
-  }
+  if (name === "maritime")
+    // Admitted for use and cleanup only once its answer carries this create's own owner marker.
+    return createRawMaritime({ template: templates.get(name) ?? "base", labels: label, admit });
 
   throw new Error(`Unknown provider ${name}`);
 }

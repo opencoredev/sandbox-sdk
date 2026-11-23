@@ -30,7 +30,12 @@ or blank key fails with `auth` before any request. Every error is redacted of
 the key, every sandbox secret (`mst_...`) and URL token (`mut_...`) an answer
 carried, for the client's life; answers read through `box.native.request` are
 scanned for `secret`, `urlToken` and `apiKey` fields and Maritime token
-prefixes too.
+prefixes too. Any `mk_`, `mlk_`, `mst_` or `mut_` token and any `token=` query
+value is redacted even when no answer carried it, and an error `code` or
+request ID is shown only when it holds none: an SSE `error` event's code only
+when it is one of Maritime's documented codes. A write sent without an idempotency
+key (a create, a command) follows no redirect, so it is never sent twice; a
+redirect is `outcome_unknown`.
 
 ## Create
 
@@ -47,12 +52,16 @@ resends it on its own.
   fresh 30-second deadline, then looked up by its `sandbox-sdk-alloc` marker.
   If neither settles it, `create` fails with `outcome_unknown`.
 - Any answer, first or replayed, is trusted, set up, returned or ended only
-  when its `metadata["sandbox-sdk-alloc"]` is this call's. Otherwise `create`
-  fails with `outcome_unknown` and ends nothing.
+  when its `metadata["sandbox-sdk-alloc"]` is this call's. An answer with no
+  readable marker (missing or malformed metadata) is replayed with the same key
+  as a lost one is. One carrying another call's marker fails `outcome_unknown`
+  and ends nothing. The replay and every lookup page share the one 30-second
+  deadline: no request starts after it.
 - `503 out_of_capacity` (also `no_ready_machine`, `capacity_unavailable`) is a
   refusal made before anything ran: Maritime ends the sandbox it names
   (`create_failed`) and holds the key to that answer, so the adapter tries
   again with a new key, backing off from 2 to 20 seconds, for up to 3 minutes.
+  An abort during the backoff sends no further create.
   On 2026-11-23 about one create in three was refused this way.
 - Setup runs one command: it makes `/workspace` writable for the command user
   (uid 1000, through passwordless `sudo -n` on the base image) and
@@ -86,26 +95,35 @@ stop it, so every command runs as
 
 with a `tag` chosen before the request. The wrapper writes its PID (the new
 group's leader) to `/tmp/.sandbox-sdk/exec/<tag>`, then checks for
-`<tag>.cancel` and exits 137 without running anything if it is there, then
+`<tag>.cancel` and exits 137 without running anything if it is there (a record
+it cannot write exits 125 without running anything), then
 `cd`s and runs the command with `sh -c`. On a timeout or abort the adapter
 drops the stream and runs the killer, a JSON `POST /commands` on a fresh
-30-second deadline: it writes `<tag>.cancel` before it reads the PID, checks
+30-second deadline: it writes `<tag>.cancel` before it reads the PID (and
+exits 1 when it cannot), checks
 the PID is a plain number above 1, sends `kill -KILL -<pid>`, and exits 0 only
 once `kill -0` answers "No such process" for both the group and the PID. Only
 a killer record of `state: "exited"` with `exitCode: 0` counts; two failed
-tries fail `outcome_unknown`, never a clean `timedOut`. A cancel that reaches
+tries fail `outcome_unknown`, never a clean `timedOut`. A `404` from the
+commands route counts as a cancel only when `GET /v1/sandboxes/{id}` then
+reads `ended` (or answers `404 sandbox_not_found` or `410 sandbox_ended`). A cancel that reaches
 the guest before the command either stops it from starting or finds its group.
 
 The stream carries `stdout` and `stderr` (JSON strings), `result` (the Command
-object) and `error` events. `result` gives the exit code, or 128 plus the
-signal for a killed command. `error` with `command_timeout` (Maritime's own
+object) and `error` events. `result` gives the exit code (`exited` with a
+whole `exitCode` and a null `signal`), or 128 plus the signal for a killed
+command (`killed` with a known `signal` and a null `exitCode`); any other
+combination is unreadable. `error` with `command_timeout` (Maritime's own
 deadline, the caller's plus 10 seconds, at most one hour) still runs the
-killer and reads as timed out; `sandbox_ended` is `not_found`; any other error,
+killer and reads as timed out; `sandbox_ended` is `not_found` once a read
+confirms the sandbox ended; any other error,
 a stream that breaks, ends without a result, or sends an event the adapter
 does not know, runs the killer and fails `outcome_unknown`. A command is sent
 again only when it provably did not run: it never left the process, Maritime
 answered `409 sandbox_paused` or `sandbox_starting`, or the data plane
-answered `401` (the secret rotated; the adapter reads the current one first).
+answered `401` with Maritime's `unauthenticated` code (the secret rotated; the
+adapter reads the current one first). Any other `401`, a bodyless one included,
+fails `auth` and is not sent again.
 
 ## Files, previews, lifecycle
 
@@ -113,7 +131,9 @@ Files use `GET` and `PUT {dataPlaneUrl}/files?path=` (PUT creates parents);
 list, stat, mkdir and remove run the shared guest helpers. `previewUrl()` calls
 `POST /v1/sandboxes/{id}/urls` with `token: true` (private: the URL carries
 `?token=mut_...`) or, with `maritime({ public: true })`, `token: false`, which
-makes the port public. The core keeps that query on `box.preview(port, { path })`.
+makes the port public. A private URL is asked for on every call, never cached,
+so a rotated URL token is picked up. The core keeps that query on
+`box.preview(port, { path })`.
 
 `list` and `find` page `GET /v1/sandboxes` with every state but `ended` and
 `metadata[<label>]` filters; `connect` reads `GET /v1/sandboxes/{id}`, which
@@ -127,7 +147,9 @@ requires that command's exit 0; the control plane went on reading `paused` for
 several seconds after such a wake. `usage()` reads `GET /v1/sandboxes/{id}/usage`.
 
 `snapshot()` picks the name (`sandbox-sdk-<uuid>`) before
-`POST /v1/sandboxes/{id}/save`; a lost or unreadable answer is looked up with
+`POST /v1/sandboxes/{id}/save`; the answer counts only when it names that
+snapshot with this sandbox as its `sourceSandboxId`. A lost, unreadable or
+mismatched answer is looked up with
 `GET /v1/snapshots/{name}`, and counts only when its `sourceSandboxId` is this
 sandbox. Snapshots are kept until deleted (`DELETE /v1/snapshots/{name}`;
 `false` on 404), so `expiresInMs` fails `unsupported`. `create({ from })`

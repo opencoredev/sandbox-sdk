@@ -386,9 +386,9 @@ export function maritimeUsageQuery(info: MaritimeInfo, now = Date.now(), cursor?
 
 /**
  * One sandbox's cost from Maritime's info and every usage interval of it. Complete only when the sandbox
- * has ended, every interval has an end, and the intervals add up to the info's running total. No interval
- * at all is $0 only when the info itself says the sandbox ended having run 0 seconds at $0; otherwise it
- * is unavailable, since missing usage is not zero.
+ * has ended and it has intervals, every one with an end. No interval at all is $0 only when the info
+ * itself says the sandbox ended having run 0 seconds at $0; otherwise it is unavailable, since missing
+ * usage is not zero. A disagreeing running total in the info is noted, not used.
  */
 export function decodeMaritime(
   info: MaritimeInfo,
@@ -420,9 +420,12 @@ export function decodeMaritime(
 
   const usd = costs.reduce((sum, cost) => sum + cost, 0);
   const closed = records.every((record) => record.endedAt !== null);
-  // The intervals and the info's running total agree to Maritime's precision (a millionth of a dollar).
-  const agrees = soFar !== null && Math.abs(soFar - usd) <= 0.000002 + usd * 0.01;
-  const complete = ended && closed && agrees;
+  // The plan's predicate: ended, every interval closed, and intervals listed (or the never-ran case above).
+  // The info's running total is not part of it: `/info` can report `costSoFarUsd: null` once ended.
+  const complete = ended && closed && (records.length > 0 || neverRan);
+  // Reported, never used to decide completeness: the info's total, when it has one, disagrees with the
+  // intervals beyond Maritime's precision (a millionth of a dollar).
+  const disagrees = soFar !== null && Math.abs(soFar - usd) > 0.000002 + usd * 0.01;
 
   return {
     kind: "metered",
@@ -431,12 +434,10 @@ export function decodeMaritime(
     complete,
     confidence: complete ? "medium" : "low",
     note: complete
-      ? `Metered, not invoice: Maritime's ${records.length} running interval(s) of this sandbox (${info.runningSeconds} running seconds); disk while paused excluded`
+      ? `Metered, not invoice: Maritime's ${records.length} running interval(s) of this sandbox (${info.runningSeconds} running seconds); disk while paused excluded${disagrees ? `; Maritime's info says $${info.costSoFarUsd} so far, the intervals sum to $${usd.toFixed(6)}` : ""}`
       : !ended
         ? `Partial: the sandbox is ${info.state}, so its intervals are not final`
-        : !closed
-          ? "Partial: an interval of this ended sandbox has no end yet"
-          : `Partial: the intervals sum to $${usd.toFixed(6)} but Maritime's info says $${info.costSoFarUsd ?? "unknown"} so far`,
+        : "Partial: an interval of this ended sandbox has no end yet",
   };
 }
 

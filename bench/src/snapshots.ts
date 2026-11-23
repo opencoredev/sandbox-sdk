@@ -139,11 +139,19 @@ async function readMaritimeSnapshot(name: string, sandboxId: string, signal: Abo
 }
 
 /**
+ * Replay answers that refuse the save outright, so nothing was saved: an invalid request (400, 422) or
+ * a source that is gone (404, 410). An auth failure (401, 403), a conflict, a rate limit or any 5xx
+ * says nothing about the first save.
+ */
+const saveRefusals: ReadonlySet<number> = new Set([400, 404, 410, 422]);
+
+/**
  * Decides a Maritime save whose answer was lost, timed out or unreadable: whether its snapshot exists.
  * It sends the journaled save again with the same idempotency key, which returns the first save's
- * outcome (or makes the save once), then reads the snapshot. A 404 is final only when the save was
- * refused (a 4xx such as an ended source) or the source is gone; after an accepted save it is read
- * again until the snapshot shows or the deadline passes, which throws and keeps the journal entry.
+ * outcome (or makes the save once), then reads the snapshot whatever the replay answered, so a snapshot
+ * that is already visible is found even when the replay failed. A 404 read is final only when the
+ * replay refused the save ({@link saveRefusals}); otherwise it is read again until the snapshot shows or
+ * the deadline passes, which throws and keeps the journal entry.
  */
 export async function settleMaritimeSave(input: {
   sandboxId: string;
@@ -179,27 +187,22 @@ export async function settleMaritimeSave(input: {
       replay = "lost";
     }
 
-    const refused =
-      replay !== "lost" && replay >= 400 && replay < 500 && ![408, 409, 429].includes(replay);
+    const refused = replay !== "lost" && saveRefusals.has(replay);
 
-    const accepted = replay !== "lost" && ((replay >= 200 && replay < 300) || replay === 409);
+    const read = await readMaritimeSnapshot(
+      input.name,
+      input.sandboxId,
+      AbortSignal.timeout(Math.max(1, Math.min(30_000, end - Date.now()))),
+    ).catch((cause: unknown) => {
+      if (cause instanceof Error && /provenance|source metadata/.test(cause.message)) throw cause;
 
-    if (refused || accepted) {
-      const read = await readMaritimeSnapshot(
-        input.name,
-        input.sandboxId,
-        AbortSignal.timeout(Math.max(1, Math.min(30_000, end - Date.now()))),
-      ).catch((cause: unknown) => {
-        if (cause instanceof Error && /provenance|source metadata/.test(cause.message)) throw cause;
+      return "unknown" as const;
+    });
 
-        return "unknown" as const;
-      });
+    if (read === "exists") return "exists";
 
-      if (read === "exists") return "exists";
-
-      // A refused save made nothing. An accepted one that does not show yet is read again.
-      if (read === "absent" && refused) return "absent";
-    }
+    // A refused save made nothing. Any other save that does not show yet is read again.
+    if (read === "absent" && refused) return "absent";
 
     await new Promise((resolve) =>
       setTimeout(resolve, Math.min(backoffMs, Math.max(0, end - Date.now()))),
@@ -546,8 +549,14 @@ export async function inspectSnapshot(
           throw httpError("Snapshot metadata unavailable", response.status);
         }
 
-        info = snapshotInfo.parse(await response.json());
-        break;
+        // Only Maritime's own `sourceSandboxId` proves the source; no other field stands in for it.
+        const snapshot = maritimeSnapshot.parse(await response.json());
+
+        if (snapshot.name !== id) throw new Error("Snapshot metadata ID mismatch");
+
+        if (!snapshot.sourceSandboxId) throw new Error("Snapshot source metadata unavailable");
+
+        return { exists: true, sourceId: snapshot.sourceSandboxId };
       }
 
       case "upstash": {
@@ -622,9 +631,7 @@ export async function inspectSnapshot(
 
     // These APIs expose provenance: unreadable or cleared source fields cannot authorize deletion.
     if (
-      ["daytona", "superserve", "tenki", "freestyle", "upstash", "instabox", "maritime"].includes(
-        name,
-      ) &&
+      ["daytona", "superserve", "tenki", "freestyle", "upstash", "instabox"].includes(name) &&
       !parent
     )
       throw new Error("Snapshot source metadata unavailable");

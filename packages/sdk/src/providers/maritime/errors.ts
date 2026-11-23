@@ -61,6 +61,32 @@ export const refusals: ReadonlySet<string> = new Set([
   "sandbox_starting",
 ]);
 
+/**
+ * Every error code the adapter may show in a message. A `code` from an SSE `error` event or an error body
+ * is text from the network, which can hold anything, a credential included, so only these are shown.
+ */
+const documented: ReadonlySet<string> = new Set([
+  ...auth,
+  ...quota,
+  ...missing,
+  ...invalid,
+  ...unsupported,
+  ...refusals,
+  "file_not_found",
+  "command_timeout",
+  "internal_error",
+  "invalid_state",
+  "sandbox_paused",
+  "pause_failed",
+  "create_failed",
+  "snapshot_exists",
+]);
+
+/** `code` when it is one of Maritime's documented error codes, else undefined: safe to put in a message. */
+export function shownCode(code: string | undefined): string | undefined {
+  return code !== undefined && documented.has(code) ? code : undefined;
+}
+
 const writes = new Set(["POST", "PATCH"]);
 
 /** The SDK's code for one of Maritime's error codes, or undefined to keep the status mapping. */

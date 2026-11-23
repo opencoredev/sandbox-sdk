@@ -172,12 +172,23 @@ export function journaledSnapshots(
 const errorNote = (cause: unknown) =>
   sanitize(cause instanceof Error ? cause.message : "Unknown failure");
 
+/**
+ * Credential shapes no environment variable names: Maritime's account and server keys (`mk_`, `mlk_`),
+ * sandbox secrets (`mst_`) and URL tokens (`mut_`), and any `token=` query value, such as a preview URL's.
+ */
+const leakPatterns: [RegExp, string][] = [
+  [/\b(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
+  [/([?&;]token=)[^&#\s"'<>]+/gi, "$1[REDACTED]"],
+];
+
 export function sanitize(text: string) {
   let result = text;
 
   for (const [name, value] of Object.entries(process.env))
     if (/KEY|TOKEN|SECRET|PASSWORD/.test(name) && value && value.length > 5)
       result = result.replaceAll(value, "[REDACTED]");
+
+  for (const [pattern, replacement] of leakPatterns) result = result.replace(pattern, replacement);
 
   return result;
 }

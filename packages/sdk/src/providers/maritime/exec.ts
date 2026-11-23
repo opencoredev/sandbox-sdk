@@ -12,12 +12,15 @@ export const execDir = "/tmp/.sandbox-sdk/exec";
  * Runs as `setsid -w sh -c wrapper -- cwd command tag`, so `$$` leads a new session and process group.
  * It records that PID before it checks for a cancel marker, and the killer writes the marker before it
  * reads the PID. So a cancel that reaches the guest before the command either stops it from starting
- * (exit 137) or finds its group to kill. A missing cwd is a non-zero exit, like a failed `cd`.
+ * (exit 137) or finds its group to kill. A missing cwd is a non-zero exit, like a failed `cd`. When the
+ * record cannot be made (the directory cannot be created or written), the user's command never runs: a
+ * cancel could not find it. That exits 125 with a line on stderr.
  */
 export const wrapper = [
   `d=${execDir}; t="$d/$3"`,
-  `[ -d "$d" ] || mkdir -p "$d"`,
-  `echo $$ > "$t"`,
+  `f() { echo "sandbox-sdk: cannot record the command under $d" >&2; exit 125; }`,
+  `[ -d "$d" ] || mkdir -p "$d" || f`,
+  `{ echo $$ > "$t"; } 2>/dev/null || f`,
   `if [ -e "$t.cancel" ]; then rm -f "$t" "$t.cancel"; exit 137; fi`,
   `cd -- "$1" || { rm -f "$t"; exit 1; }`,
   `sh -c "$2"; s=$?`,
@@ -32,12 +35,14 @@ export const wrapper = [
  * (`kill -KILL -1` would signal every process). Otherwise it exits 0 only once `kill -0` answers
  * "No such process" for both the group and the PID; any other answer, or a group still alive after about
  * two seconds, exits 1 and leaves the record for a retry. `gone` returns 0 when both are gone, 1 while
- * one still exists (a killed process stays until reaped), 2 when `kill` failed another way.
+ * one still exists (a killed process stays until reaped), 2 when `kill` failed another way. A marker it
+ * cannot write (the directory cannot be created or written) exits 1: it would not stop a command that
+ * has not started yet.
  */
 export const killer = [
   `d=${execDir}; t="$d/$1"`,
-  `[ -d "$d" ] || mkdir -p "$d"`,
-  `: > "$t.cancel"`,
+  `[ -d "$d" ] || mkdir -p "$d" || exit 1`,
+  `{ : > "$t.cancel"; } 2>/dev/null || exit 1`,
   `p=`,
   `read -r p < "$t" 2>/dev/null`,
   `[ -n "$p" ] || exit 0`,

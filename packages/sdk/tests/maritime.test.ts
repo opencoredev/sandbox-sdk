@@ -670,11 +670,31 @@ describe("maritime exec against scripted streams", () => {
     });
   });
 
-  test("an error event for an ended sandbox is not_found", async () => {
+  test("an error event for an ended sandbox is not_found once a read confirms it ended", async () => {
+    const record = (state: string) => ({
+      json: {
+        id: "sbx-s",
+        state,
+        metadata: {},
+        createdAt: "2026-11-23T20:46:00Z",
+        dataPlaneUrl: `${server.url}/dp/sbx-s/v1`,
+        secret: "mst_scripted_secret_0123456789",
+      },
+    });
+
+    server.on("GET /v1/sandboxes/{id}", record("running"), record("ended"));
     streamThen([event("error", { code: "sandbox_ended" })]);
 
     await expect(scripted().exec("sbx-s", execInput("x").input)).rejects.toMatchObject({
       code: "not_found",
+    });
+
+    // A read that still shows it running leaves the command's outcome unknown.
+    server.on("GET /v1/sandboxes/{id}", record("running"));
+    streamThen([event("error", { code: "sandbox_ended" })]);
+
+    await expect(scripted().exec("sbx-s", execInput("x").input)).rejects.toMatchObject({
+      code: "outcome_unknown",
     });
   });
 
