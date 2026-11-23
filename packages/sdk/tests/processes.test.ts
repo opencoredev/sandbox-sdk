@@ -1497,6 +1497,30 @@ test("no-awk detached fallback holds incomplete lines whole so secrets across 4 
 
     expect(logs256Tail.text).toContain("done-256k\n");
     expect(dt256).toBeLessThan(5_000);
+
+    // Secrets that are substrings of repeated `[REDACTED][REDACTED]` markers (e.g. `][` or `D][R`)
+    // must not hang `scrub_wrapped_sh` when wrapped secrets produce adjacent markers in no-awk mode.
+    await using boxAdj = await createSandbox(provider, {
+      env: { PATH: binDir },
+      secrets: { LONG: "A".repeat(600), BRACKETS: "][", ADJ: "D][R" },
+    });
+
+    const tAdj = performance.now();
+
+    const procAdj = await boxAdj.start(
+      `printf '%s\\n%s\\nDONE_ADJ\\n' '${"A".repeat(300)}' '${"A".repeat(300)}'`,
+      { name: "noawk-repeated-marker" },
+    );
+
+    await procAdj.wait();
+    const dtAdj = performance.now() - tAdj;
+    const adjLogs = await procAdj.logs();
+    const adjRaw = await boxAdj.files.read("/tmp/.sandbox-sdk/procs/noawk-repeated-marker/out.log");
+
+    expect(dtAdj).toBeLessThan(5_000);
+    expect(adjLogs.text).toContain("DONE_ADJ\n");
+    expect(adjLogs.text).not.toContain("A".repeat(16));
+    expect(adjRaw).not.toContain("A".repeat(16));
   } finally {
     await fs.rm(binDir, { recursive: true, force: true });
   }

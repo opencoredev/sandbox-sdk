@@ -456,12 +456,24 @@ export function makeProcesses(
         let cursor = position.offset;
         const pending = position.pending;
 
+        const clampPending = (value: string) => {
+          const scrubbed = redactor.text(value);
+
+          if (Buffer.byteLength(scrubbed) <= 65_536) return scrubbed;
+          const tail = Buffer.from(scrubbed).subarray(-65_510);
+          let start = 0;
+
+          while (((tail[start] ?? 0) & 0xc0) === 0x80) start++;
+
+          return "[line truncated]" + tail.subarray(start).toString();
+        };
+
         const checkpoint = (offset: string) =>
           JSON.stringify({
             v: 1,
             offset,
-            stdout: redactor.text(pending.stdout),
-            stderr: redactor.text(pending.stderr),
+            stdout: clampPending(pending.stdout),
+            stderr: clampPending(pending.stderr),
           });
 
         do {
@@ -472,12 +484,7 @@ export function makeProcesses(
             pending[event.stream] += event.text;
 
             if (Buffer.byteLength(pending[event.stream]) > 65_536) {
-              const scrubbedPending = redactor.text(pending[event.stream]);
-              const tail = Buffer.from(scrubbedPending).subarray(-65_510);
-              let start = 0;
-
-              while (((tail[start] ?? 0) & 0xc0) === 0x80) start++;
-              pending[event.stream] = "[line truncated]" + tail.subarray(start).toString();
+              pending[event.stream] = clampPending(pending[event.stream]);
             }
 
             if (pending[event.stream].endsWith("\n")) {

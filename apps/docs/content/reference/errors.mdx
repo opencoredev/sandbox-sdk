@@ -68,7 +68,7 @@ Kept text is scrubbed before it reaches you: URLs, `Authorization` headers, bear
 | `edit_not_unique`  | `files.edit` found more than one match. The message lists their line numbers.                                      | Add surrounding lines to `find` so it matches once.                                                                                    |
 | `file_not_found`   | The path doesn't exist                                                                                             | Check the path. Relative paths resolve against `/workspace`.                                                                           |
 | `invalid_argument` | The request itself is invalid, such as a bad port, a non-positive timeout, or an invalid environment variable name | Fix the input. Retrying won't help.                                                                                                    |
-| `provider`         | Any other provider failure, or an adapter that declares a capability without its method                            | Read `message` and `cause`. Report it if it looks like an SDK bug.                                                                     |
+| `provider`         | Any other provider failure, or an adapter whose declared capabilities and optional methods do not match            | Read `message` and `cause`. Report it if it looks like an SDK bug.                                                                     |
 
 ## Retrying
 

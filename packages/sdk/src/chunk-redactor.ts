@@ -73,7 +73,7 @@ export function chunkRedactor(
 
     for (const p of redactor.streamChainLeft) if (p.length > maxLeft) maxLeft = p.length;
 
-    if (maxLeft === 0) return 0;
+    if (maxLeft === 0) return hasAdjacentMarkerSecret() ? marker.length * 2 + 2 : 0;
 
     return Math.min(4096, maxLeft + marker.length * 2 + 2);
   }
@@ -283,13 +283,20 @@ export function chunkRedactor(
   function pullLeftForMarker(text: string, pos: number): number {
     let safe = snapBeforeMarker(text, pos);
     const fullLeft = redactor.streamChainLeft;
+    const adjMarker = hasAdjacentMarkerSecret();
 
-    if (safe <= 0 || fullLeft.length === 0) return safe;
+    if (safe <= 0 || (fullLeft.length === 0 && !adjMarker)) return safe;
 
     let pulled = true;
 
     while (pulled && safe > 0) {
       pulled = false;
+
+      if (adjMarker && safe >= marker.length && text.startsWith(marker, safe - marker.length)) {
+        safe -= marker.length;
+        pulled = true;
+        continue;
+      }
 
       for (const prefix of fullLeft) {
         if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
@@ -307,7 +314,7 @@ export function chunkRedactor(
       }
     }
 
-    if (safe > 0) {
+    if (safe > 0 && fullLeft.length > 0) {
       const partialHit = earliestSecretPrefix(text, 0, fullLeft, true, safe);
 
       if (partialHit >= 0 && partialHit < safe) safe = snapBeforeMarker(text, partialHit);
@@ -322,7 +329,25 @@ export function chunkRedactor(
    * outer secret's prefix. */
   function rawHoldCutoff(text: string, segments: readonly RedactSpan[]): number {
     const secrets = redactor.secrets;
+    const adjMarker = hasAdjacentMarkerSecret();
     let earliest = text.length;
+
+    function snapCutoff(pos: number): number {
+      let cutoff = pullLeftForMarker(text, pos);
+
+      while (cutoff > 0) {
+        const split = segments.find(
+          (seg) =>
+            seg.redacted &&
+            ((seg.start < cutoff && seg.end > cutoff) || (adjMarker && seg.end === cutoff)),
+        );
+
+        if (!split) break;
+        cutoff = pullLeftForMarker(text, split.start);
+      }
+
+      return cutoff;
+    }
 
     // If a trailing contiguous run of redacted matches ends right at `text.length` and
     // any segment in that run (or the text immediately preceding it) ends with a
@@ -361,16 +386,7 @@ export function chunkRedactor(
       }
 
       if (matchesChainLeft) {
-        let chainCutoff = pullLeftForMarker(text, chainStart);
-
-        while (chainCutoff > 0) {
-          const split = segments.find(
-            (seg) => seg.redacted && seg.start < chainCutoff && seg.end > chainCutoff,
-          );
-
-          if (!split) break;
-          chainCutoff = pullLeftForMarker(text, split.start);
-        }
+        const chainCutoff = snapCutoff(chainStart);
 
         if (chainCutoff < earliest) earliest = chainCutoff;
       }
@@ -398,16 +414,7 @@ export function chunkRedactor(
         const tail = text.slice(seg.end);
 
         if (rightSuffixes.some((suffix) => suffix.length > tailLen && suffix.startsWith(tail))) {
-          let rightCutoff = pullLeftForMarker(text, seg.start);
-
-          while (rightCutoff > 0) {
-            const split = segments.find(
-              (item) => item.redacted && item.start < rightCutoff && item.end > rightCutoff,
-            );
-
-            if (!split) break;
-            rightCutoff = pullLeftForMarker(text, split.start);
-          }
+          const rightCutoff = snapCutoff(seg.start);
 
           if (rightCutoff < earliest) earliest = rightCutoff;
         }
@@ -440,18 +447,7 @@ export function chunkRedactor(
         }
       }
 
-      let cutoff = pullLeftForMarker(text, covering ? covering.start : hit);
-
-      while (cutoff > 0) {
-        const split = segments.find(
-          (seg) => seg.redacted && seg.start < cutoff && seg.end > cutoff,
-        );
-
-        if (!split) break;
-        cutoff = pullLeftForMarker(text, split.start);
-      }
-
-      return Math.min(earliest, cutoff);
+      return Math.min(earliest, snapCutoff(covering ? covering.start : hit));
     }
 
     return earliest;
@@ -472,9 +468,10 @@ export function chunkRedactor(
     // any marker whole so neither half leaks an inside-marker secret. Chain only on full
     // left/around prefixes (`streamChainLeft`) and pull a strict partial prefix at most once.
     const fullLeft = redactor.streamChainLeft;
+    const adjMarker = hasAdjacentMarkerSecret();
     let usedPartial = false;
 
-    if (initialSafe > 0 && fullLeft.length > 0) {
+    if (initialSafe > 0 && (fullLeft.length > 0 || adjMarker)) {
       let pulled = true;
 
       while (pulled && safe > 0) {
@@ -483,6 +480,12 @@ export function chunkRedactor(
         }
 
         pulled = false;
+
+        if (adjMarker && safe >= marker.length && text.startsWith(marker, safe - marker.length)) {
+          safe -= marker.length;
+          pulled = true;
+          continue;
+        }
 
         for (const prefix of fullLeft) {
           if (safe >= prefix.length && text.startsWith(prefix, safe - prefix.length)) {
@@ -500,7 +503,7 @@ export function chunkRedactor(
         }
       }
 
-      if (safe > 0) {
+      if (safe > 0 && fullLeft.length > 0) {
         if (useHoldZero && holdZeroAt.has(offset + safe)) {
           return { safe: 0, pulledFrom: offset + initialSafe };
         }
@@ -1109,7 +1112,7 @@ export function chunkRedactor(
               break;
             }
 
-            if (bestLen > 0 && redactor.streamChainLeft.length > 0) {
+            if (bestLen > 0 && (redactor.streamChainLeft.length > 0 || hasAdjacentMarkerSecret())) {
               const cTail = interleaved ? chainTailAll : chainTail[first.stream];
               const cBase = rawLen - cTail.length;
 

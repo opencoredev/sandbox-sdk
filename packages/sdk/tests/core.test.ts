@@ -1116,3 +1116,26 @@ test("Redactor compiles large marker-adjacent secrets linearly and OutputBus tri
     expect(first.value.text.startsWith("€")).toBe(true);
   }
 });
+
+test("chunkRedactor holds preceding redacted segments across adjacent-marker secrets on arbitrary splits", async () => {
+  const text = "aTED]baaTED]ba";
+
+  await using box = await createSandbox(memory(), {
+    secrets: { A: "b", B: "TED][RED", C: "aTED]ba" },
+  });
+
+  const splits: string[][] = [[text], ["aTED]baaTED]b", "a"], [...text]];
+
+  for (let i = 1; i < text.length; i++) splits.push([text.slice(0, i), text.slice(i)]);
+
+  for (const pieces of splits) {
+    const streamed: string[] = [];
+    const filter = toolOutputFilter(box, (chunk) => streamed.push(chunk.text));
+
+    for (const piece of pieces) filter.push({ stream: "stdout", text: piece });
+    filter.flush();
+
+    expect(streamed.join("")).toBe("[REDACTED]");
+    expect(streamed.join("")).not.toContain("TED][RED");
+  }
+});
