@@ -726,4 +726,103 @@ describe("re-review regressions on 6d6fea6", () => {
     expect(await readFile(journalPath, "utf8")).toContain("idempotencyKey");
     expect(deleteJournals).toEqual([]);
   }, 30_000);
+
+  it("runV2 awaits a delayed keyless rename across snapshot timeout and never sends DELETE if it rejects", async () => {
+    vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
+    const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const { runV2 } = await import("../src/v2-runner.js");
+    const out = await directory("bench-maritime-journal-race-");
+    const journalPath = join(out, "ownership.json");
+    const realRename = journalFiles.rename;
+    const deleteJournals: string[] = [];
+    let rejectedWrites = 0;
+    let savedSnapshot: { name: string; sourceSandboxId: string } | null = null;
+
+    vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (to === journalPath) {
+        const next = await readFile(from, "utf8");
+
+        if (
+          savedSnapshot &&
+          !next.includes("idempotencyKey") &&
+          next.includes(savedSnapshot.name)
+        ) {
+          rejectedWrites += 1;
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          throw new Error("delayed confirmed journal rename failed");
+        }
+      }
+
+      return realRename(from, to);
+    });
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (url.pathname.endsWith("/save") && method === "POST") {
+        const sourceSandboxId = url.pathname.split("/")[3] ?? "";
+        const body = z.object({ name: z.string() }).parse(JSON.parse(String(init?.body ?? "{}")));
+        savedSnapshot = { name: body.name, sourceSandboxId };
+
+        return Response.json(savedSnapshot);
+      }
+
+      if (savedSnapshot && url.pathname === `/v1/snapshots/${savedSnapshot.name}`) {
+        if (method === "DELETE") {
+          deleteJournals.push(await readFile(journalPath, "utf8"));
+
+          return Response.json({ deleted: true });
+        }
+
+        return Response.json(savedSnapshot);
+      }
+
+      if (url.pathname === "/v1/snapshots" && method === "GET")
+        return Response.json({ data: savedSnapshot ? [savedSnapshot] : [], nextCursor: null });
+
+      return Response.json({ code: "resource_not_found" }, { status: 404 });
+    });
+
+    const base = memory();
+
+    await runV2(
+      [
+        {
+          kind: "ready",
+          name: "maritime",
+          cloud: true,
+          region: null,
+          provider: {
+            ...base,
+            capabilities: new Set([...base.capabilities, "snapshot"]),
+            async snapshot() {
+              throw new Error("unused for named Maritime snapshots");
+            },
+          },
+        },
+      ],
+      parseV2([
+        "--providers",
+        "maritime",
+        "--scenarios",
+        "snapshot",
+        "--runs",
+        "1",
+        "--bursts",
+        "",
+        "--timeout-ms",
+        "250",
+        "--run",
+        "snapshot-race",
+        "--out",
+        out,
+      ]),
+      async () => {},
+    ).catch(() => {});
+
+    expect(rejectedWrites).toBeGreaterThan(0);
+    expect(await readFile(journalPath, "utf8")).toContain("idempotencyKey");
+    expect(deleteJournals).toEqual([]);
+  }, 30_000);
 });

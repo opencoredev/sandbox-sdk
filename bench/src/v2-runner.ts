@@ -397,18 +397,17 @@ export async function runV2(
   const deletions = new DeletionWork();
   const restores = new RestoreCleanup();
 
-  const owned = new Map<
-    string,
-    {
-      provider: string;
-      id: string;
-      kind: "sandbox" | "snapshot" | "snapshot-source";
-      parent: string | null;
-      snapshotProof?: SnapshotProvenance;
-      /** The save's idempotency key, journaled before a Maritime save so an unanswered one can be settled. */
-      idempotencyKey?: string;
-    }
-  >();
+  interface OwnedEntry {
+    provider: string;
+    id: string;
+    kind: "sandbox" | "snapshot" | "snapshot-source";
+    parent: string | null;
+    snapshotProof?: SnapshotProvenance;
+    /** The save's idempotency key, journaled before a Maritime save so an unanswered one can be settled. */
+    idempotencyKey?: string;
+  }
+
+  const owned = new Map<string, OwnedEntry>();
 
   // Per-attempt Apps (--app-per-attempt): journaled before any sandbox is allocated in them and
   // never removed, so recovery can list their sandboxes and billing can attribute their charges.
@@ -418,16 +417,41 @@ export async function runV2(
 
   let journal = Promise.resolve();
 
-  function persist() {
-    const data = JSON.stringify(
-      { runId: config.run, resources: [...owned.values()], apps: [...apps.values()] },
-      null,
-      2,
+  function serializeJournal(override?: { key: string; value: OwnedEntry }) {
+    const resources = [...owned.entries()].map(([k, v]) =>
+      override && k === override.key ? override.value : v,
     );
 
-    journal = journal.then(() => writeOwnership(join(runDir, "ownership.json"), data));
+    if (override && !owned.has(override.key)) resources.push(override.value);
 
-    return journal;
+    return JSON.stringify({ runId: config.run, resources, apps: [...apps.values()] }, null, 2);
+  }
+
+  function persist() {
+    const next = journal.then(() =>
+      writeOwnership(join(runDir, "ownership.json"), serializeJournal()),
+    );
+
+    journal = next.catch(() => {});
+
+    return next;
+  }
+
+  /**
+   * Persist a confirmed snapshot entry (without `idempotencyKey`) to disk BEFORE mutating `owned`.
+   * If a concurrent timeout or rename failure interrupts the write, `owned` keeps the pending
+   * `idempotencyKey` entry intact so neither cleanup nor recovery can skip persisting or send DELETE
+   * while `ownership.json` on disk still carries the save key.
+   */
+  function persistConfirmedSnapshot(key: string, value: OwnedEntry) {
+    const next = journal.then(async () => {
+      await writeOwnership(join(runDir, "ownership.json"), serializeJournal({ key, value }));
+      owned.set(key, value);
+    });
+
+    journal = next.catch(() => {});
+
+    return next;
   }
 
   function review(
@@ -1379,6 +1403,7 @@ export async function runV2(
           let snapshotReady = false;
           // A Maritime save's idempotency key, journaled with its name before the request.
           let saveKey: string | undefined;
+          let pendingKeylessWrite: Promise<void> | undefined;
           let clean: ((id: string) => Promise<void>) | undefined;
           let snapshotProof: SnapshotProvenance | undefined;
 
@@ -1507,9 +1532,8 @@ export async function runV2(
               }
 
               snapshotId = snap.id;
-              const previous = owned.get(`${p.name}/snapshot/${snap.id}`);
 
-              owned.set(`${p.name}/snapshot/${snap.id}`, {
+              const write = persistConfirmedSnapshot(`${p.name}/snapshot/${snap.id}`, {
                 provider: p.name,
                 id: snap.id,
                 kind: "snapshot",
@@ -1517,12 +1541,8 @@ export async function runV2(
                 snapshotProof,
               });
 
-              try {
-                await persist();
-              } catch (error) {
-                if (previous) owned.set(`${p.name}/snapshot/${snap.id}`, previous);
-                throw error;
-              }
+              pendingKeylessWrite = write;
+              await write;
 
               snapshotReady = true;
               saveKey = undefined;
@@ -1707,6 +1727,12 @@ export async function runV2(
 
                 if (restoredId && owned.has(`${p.name}/${restoredId}`)) await remove(p, restoredId);
 
+                if (pendingKeylessWrite) {
+                  await pendingKeylessWrite;
+                  snapshotReady = true;
+                  saveKey = undefined;
+                }
+
                 // A Maritime save that never confirmed may still land: settle it first. Only a refused
                 // save, or a source gone with no snapshot, drops the journal entry without a delete; an
                 // unsettled one throws and stays journaled for recovery.
@@ -1725,20 +1751,13 @@ export async function runV2(
                     return;
                   }
 
-                  // Confirmed on the server: drop the save idempotency key from the journal BEFORE
-                  // deleting so a dropped delete response cannot replay POST /save later.
+                  // Confirmed on the server: persist the keyless entry BEFORE deleting so a
+                  // dropped delete response cannot replay POST /save later.
                   const current = owned.get(`${p.name}/snapshot/${id}`);
 
                   if (current?.idempotencyKey !== undefined) {
                     const { idempotencyKey: _, ...withoutKey } = current;
-                    owned.set(`${p.name}/snapshot/${id}`, withoutKey);
-
-                    try {
-                      await persist();
-                    } catch (error) {
-                      owned.set(`${p.name}/snapshot/${id}`, current);
-                      throw error;
-                    }
+                    await persistConfirmedSnapshot(`${p.name}/snapshot/${id}`, withoutKey);
                   }
 
                   snapshotReady = true;
@@ -2416,14 +2435,7 @@ export async function runV2(
           if (item.idempotencyKey !== undefined) {
             const { idempotencyKey: _, ...withoutKey } = item;
             confirmed = withoutKey;
-            owned.set(`${p.name}/snapshot/${item.id}`, confirmed);
-
-            try {
-              await persist();
-            } catch (error) {
-              owned.set(`${p.name}/snapshot/${item.id}`, item);
-              throw error;
-            }
+            await persistConfirmedSnapshot(`${p.name}/snapshot/${item.id}`, confirmed);
           }
 
           await deleteProvenSnapshot(
@@ -2464,23 +2476,13 @@ export async function runV2(
         for (const snapshot of await deadline(config["timeout-ms"], () =>
           snapshotsFromSource(p.name, item.id, journaledSnapshots(owned.values(), p.name, item.id)),
         )) {
-          const previous = owned.get(`${p.name}/snapshot/${snapshot.id}`);
-
-          owned.set(`${p.name}/snapshot/${snapshot.id}`, {
+          await persistConfirmedSnapshot(`${p.name}/snapshot/${snapshot.id}`, {
             provider: p.name,
             id: snapshot.id,
             kind: "snapshot",
             parent: item.id,
             snapshotProof: proof,
           });
-
-          try {
-            await persist();
-          } catch (error) {
-            if (previous) owned.set(`${p.name}/snapshot/${snapshot.id}`, previous);
-            else owned.delete(`${p.name}/snapshot/${snapshot.id}`);
-            throw error;
-          }
 
           await deleteProvenSnapshot(
             p.name,
