@@ -453,9 +453,11 @@ describe("Archil create", () => {
     const box = await createSandbox(provider());
 
     try {
-      await box.run("mkdir -p nl && echo sib > nl/real && printf x > \"nl/real\n\" && ln -s \"real\n\" nl/link");
+      await box.run(
+        'mkdir -p nl && echo sib > nl/real && printf x > "nl/real\n" && ln -s "real\n" nl/link',
+      );
       await box.files.write("nl/link", "new");
-      expect((await box.run("cat nl/real; cat \"nl/real\n\"")).stdout).toBe("sib\nnew");
+      expect((await box.run('cat nl/real; cat "nl/real\n"')).stdout).toBe("sib\nnew");
     } finally {
       await box.destroy();
     }
@@ -465,7 +467,9 @@ describe("Archil create", () => {
     const box = await createSandbox(provider());
 
     try {
-      await box.run("mkdir -p sl && ln -s gone/deep/file sl/link && ln -s loop2 sl/loop1 && ln -s loop1 sl/loop2");
+      await box.run(
+        "mkdir -p sl && ln -s gone/deep/file sl/link && ln -s loop2 sl/loop1 && ln -s loop1 sl/loop2",
+      );
       await box.files.write("sl/link", "made");
       expect((await box.run("cat sl/gone/deep/file; readlink sl/link")).stdout).toBe(
         "madegone/deep/file\n",

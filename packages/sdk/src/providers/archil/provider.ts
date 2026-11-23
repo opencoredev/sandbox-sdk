@@ -427,8 +427,7 @@ export function createArchilProvider(
 
         if (result.exitCode === 21) throw failure("Path is a directory", "invalid_argument", id);
 
-        if (result.exitCode === 22)
-          throw failure("Path is a symlink loop", "invalid_argument", id);
+        if (result.exitCode === 22) throw failure("Path is a symlink loop", "invalid_argument", id);
 
         if (result.exitCode !== 0) throw failure("File write failed", "provider", id);
       },
