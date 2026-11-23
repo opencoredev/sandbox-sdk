@@ -199,6 +199,10 @@ export function bounded<T>(promise: Promise<T>, ms: number): Promise<T | "late">
 
 /** Kills a process and waits for Archil to report its end, the kill included, within one window. */
 export async function terminate(process: ArchilProcess, runner?: ArchilRunner): Promise<boolean> {
+  // A confirmation connection, closed when the window runs out or as soon as it lands after that.
+  let confirm: ArchilProcess | undefined;
+  let expired = false;
+
   const ended = (async () => {
     // A kill refused because the process already ended is confirmed by the end below.
     await process.kill().catch(() => {});
@@ -209,10 +213,16 @@ export async function terminate(process: ArchilProcess, runner?: ArchilRunner): 
       // The end can't arrive on a connection Archil already closed: confirm it on a new one.
       if (runner?.attach === undefined || process.id === undefined) throw error;
 
-      const confirm = await runner.attach(process.id, {
+      confirm = await runner.attach(process.id, {
         offset: process.cursor,
         collectOutput: false,
       });
+
+      if (expired) {
+        await disconnect(confirm);
+
+        return;
+      }
 
       try {
         await confirm.wait();
@@ -223,7 +233,12 @@ export async function terminate(process: ArchilProcess, runner?: ArchilRunner): 
   })();
 
   try {
-    return (await bounded(ended, killConfirmMs)) !== "late";
+    if ((await bounded(ended, killConfirmMs)) !== "late") return true;
+    expired = true;
+
+    if (confirm) await disconnect(confirm);
+
+    return false;
   } catch {
     return false;
   }
