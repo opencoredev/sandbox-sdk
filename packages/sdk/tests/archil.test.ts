@@ -526,6 +526,22 @@ describe("Archil create", () => {
     }
   });
 
+  test("a leaf symlink under a parent link through a missing directory writes its target", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.run(
+        "mkdir -p lf/shared && echo old > lf/shared/default.json && ln -s default.json lf/shared/settings.json && ln -s cache/../shared lf/config",
+      );
+      await box.files.write("lf/config/settings.json", "new");
+      expect(
+        (await box.run("cat lf/shared/default.json; readlink lf/shared/settings.json")).stdout,
+      ).toBe("newdefault.json\n");
+    } finally {
+      await box.destroy();
+    }
+  });
+
   test("a write to a FIFO is refused and leaves it in place", async () => {
     const box = await createSandbox(provider());
 
