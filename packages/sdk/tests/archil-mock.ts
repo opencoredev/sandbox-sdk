@@ -10,7 +10,7 @@ import type {
 } from "../src/providers/archil/execute.js";
 import { MockGuest } from "./mock-guest.js";
 
-type Status = "pending" | "running" | "paused" | "stopped" | "deleted";
+type Status = "pending" | "running" | "paused" | "stopped" | "failed" | "deleted";
 
 class FakeApiError extends Error {
   override name = "ArchilApiError";
@@ -31,6 +31,10 @@ interface ArchilState {
   dropNextCreateAnswer: boolean;
   /** Drop the first output message that starts at or past this stream offset, once. */
   dropOutputAbove: number | undefined;
+  /** Refuse the next create with this HTTP status before allocating anything. */
+  refuseNextCreate: number | undefined;
+  /** New sandboxes start pending and then end in this state on their first refresh. */
+  settleTo: Status | undefined;
 }
 
 export const archilState: ArchilState = {
@@ -41,9 +45,12 @@ export const archilState: ArchilState = {
   dropNextCreateAnswer: false,
   /** Drop the first output message that starts at or past this stream offset, once. */
   dropOutputAbove: undefined,
+  refuseNextCreate: undefined,
+  settleTo: undefined,
 };
 
 class FakeProcess implements ArchilProcess {
+  cursor = 0;
   readonly #child: ChildProcess;
   readonly #ended: Promise<ArchilProcessResult>;
   #killed = false;
@@ -63,12 +70,10 @@ class FakeProcess implements ArchilProcess {
     const strip = (data: Buffer) =>
       new Uint8Array(Buffer.from(data.toString("latin1").split(guest.root).join(""), "latin1"));
 
-    // Archil counts one offset across both streams.
-    let written = 0;
-
     const deliver = (stream: "stdout" | "stderr", data: Uint8Array) => {
-      const offset = written;
-      written += data.length;
+      // Archil counts one offset across both streams.
+      const offset = this.cursor;
+      this.cursor += data.length;
 
       // Like Archil's stream under load: a message past the drop threshold skips its bytes.
       if (archilState.dropOutputAbove !== undefined && offset >= archilState.dropOutputAbove) {
@@ -151,6 +156,10 @@ class FakeSandbox {
     return new FakeProcess(this.guest, command, options);
   }
   async refresh() {
+    if (this.status === "deleted") throw new FakeApiError("Sandbox not found", 404, "not_found");
+
+    if (this.status === "pending") this.status = archilState.settleTo ?? "running";
+
     return this;
   }
   async start() {
@@ -174,7 +183,7 @@ class FakeSandbox {
     return this;
   }
   async delete() {
-    if (this.status !== "stopped")
+    if (this.status !== "stopped" && this.status !== "failed")
       throw new FakeApiError("Sandbox must be stopped", 409, "sandbox_not_stopped");
     this.status = "deleted";
     archilState.sandboxes.delete(this.id);
@@ -190,15 +199,28 @@ class FakeArchil {
     create: async (request: CreateSandboxRequest) => {
       archilState.creates.push(request);
 
-      if ([...archilState.sandboxes.values()].some((box) => box.name === request.name))
+      if (archilState.refuseNextCreate !== undefined) {
+        const status = archilState.refuseNextCreate;
+        archilState.refuseNextCreate = undefined;
+        throw new FakeApiError("Service unavailable", status, "unavailable");
+      }
+
+      const guest = await MockGuest.create();
+
+      // Archil checks and takes a name in one step, and a taken name lists at once.
+      if ([...archilState.sandboxes.values()].some((box) => box.name === request.name)) {
+        await guest.destroy();
         throw new FakeApiError(
           "A sandbox with this name already exists",
           409,
           "sandbox_name_conflict",
         );
-      const guest = await MockGuest.create();
+      }
+
       const box = new FakeSandbox(guest.id, request.name ?? guest.id, guest);
       archilState.sandboxes.set(box.id, box);
+
+      if (archilState.settleTo !== undefined) box.status = "pending";
 
       if (archilState.dropNextCreateAnswer) {
         archilState.dropNextCreateAnswer = false;
@@ -216,6 +238,16 @@ class FakeArchil {
     },
     list: async () => [...archilState.sandboxes.values()],
   };
+}
+
+/** Adds a sandbox the SDK did not make, as another Archil client would. */
+export async function addForeign(name: string, status: Status) {
+  const guest = await MockGuest.create();
+  const box = new FakeSandbox(guest.id, name, guest);
+  box.status = status;
+  archilState.sandboxes.set(box.id, box);
+
+  return box;
 }
 
 /** The fake module, typed as the adapter's `disk` loader expects. */

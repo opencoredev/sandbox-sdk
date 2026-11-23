@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createSandbox, listSandboxes } from "../src/index.js";
+import { createSandbox, listSandboxes, reapSandboxes } from "../src/index.js";
 import { archilError } from "../src/providers/archil/errors.js";
 import {
   execute,
@@ -9,7 +9,7 @@ import {
 import { createArchilProvider } from "../src/providers/archil/provider.js";
 import type { ExecInput } from "../src/provider.js";
 import { runConformance } from "../src/testing.js";
-import { archilState, fakeDisk } from "./archil-mock.js";
+import { addForeign, archilState, fakeDisk } from "./archil-mock.js";
 
 const provider = () => createArchilProvider({ apiKey: "test-key" }, async () => fakeDisk);
 
@@ -31,7 +31,9 @@ function input(extra: Partial<ExecInput> = {}): ExecInput & { chunks: string[] }
 }
 
 /** A process that ends when told to, recording kills. */
-function scripted(options: { killConfirms?: boolean; result?: ArchilProcessResult } = {}) {
+function scripted(
+  options: { killConfirms?: boolean; result?: ArchilProcessResult; cursor?: number } = {},
+) {
   let finish: (result: ArchilProcessResult) => void = () => {};
   const ended = new Promise<ArchilProcessResult>((resolve) => (finish = resolve));
   const inputs: Uint8Array[] = [];
@@ -52,6 +54,7 @@ function scripted(options: { killConfirms?: boolean; result?: ArchilProcessResul
       if (options.killConfirms !== false) finish({ status: "cancelled" });
     },
     disconnect: async () => {},
+    cursor: options.cursor ?? 0,
   };
 
   if (options.result) finish(options.result);
@@ -134,7 +137,47 @@ describe("Archil exec", () => {
   });
 });
 
+describe("Archil exec deadlines", () => {
+  test("a start still unanswered at the deadline is stopped once it lands", async () => {
+    const { process, calls } = scripted();
+
+    const result = await execute({
+      runner: {
+        run: () => new Promise((resolve) => setTimeout(() => resolve(process), 60)),
+      },
+      sandboxId: "box",
+      input: input({ timeoutMs: 10 }),
+    });
+
+    expect(result).toEqual({ exitCode: null, timedOut: true });
+    expect(calls.kills).toBe(1);
+  });
+
+  test(
+    "a start that never lands is outcome_unknown, not a timeout",
+    { timeout: 20_000 },
+    async () => {
+      await expect(
+        execute({
+          runner: { run: () => new Promise(() => {}) },
+          sandboxId: "box",
+          input: input({ timeoutMs: 10 }),
+        }),
+      ).rejects.toMatchObject({ code: "outcome_unknown" });
+    },
+  );
+});
+
 describe("Archil output gaps", () => {
+  test("output missing after the last message is marked from the final cursor", async () => {
+    const { process } = scripted({ result: { status: "completed", exitCode: 0 }, cursor: 10 });
+    const run = input();
+
+    await execute({ runner: { run: async () => process }, sandboxId: "box", input: run });
+
+    expect(run.chunks.join("")).toContain("skipped the last 10 bytes");
+  });
+
   test("a command whose output Archil skipped says so where the bytes went missing", async () => {
     const box = await createSandbox(provider());
 
@@ -257,6 +300,52 @@ describe("Archil create", () => {
       expect((await box.run("echo awake")).stdout).toBe("awake\n");
     } finally {
       await box.destroy();
+    }
+  });
+
+  test("reaping never touches a paused sandbox whose name only resembles the SDK's", async () => {
+    const p = provider();
+    const foreign = await addForeign("sbxsdk-native-test", "paused");
+
+    try {
+      await reapSandboxes(p, { olderThanMs: 0 });
+      expect(archilState.sandboxes.has(foreign.id)).toBe(true);
+    } finally {
+      archilState.sandboxes.delete(foreign.id);
+      await foreign.guest.destroy();
+    }
+  });
+
+  test("a 5xx create answer is outcome_unknown, never a refusal", async () => {
+    archilState.refuseNextCreate = 503;
+    await expect(createSandbox(provider())).rejects.toMatchObject({ code: "outcome_unknown" });
+  });
+
+  test("a sandbox that fails after allocation is deleted, not leaked", async () => {
+    archilState.settleTo = "failed";
+    const before = archilState.sandboxes.size;
+
+    try {
+      await expect(createSandbox(provider())).rejects.toMatchObject({ code: "provider" });
+      expect(archilState.sandboxes.size).toBe(before);
+    } finally {
+      archilState.settleTo = undefined;
+    }
+  });
+
+  test("a keyed lookup during setup waits for the creator's marker", async () => {
+    const key = `race-${crypto.randomUUID()}`;
+    const first = provider();
+    const created = createSandbox(first, { key, labels: { who: "first" } });
+    // A second client looks the key up while the first may still be setting up.
+    const second = createSandbox(provider(), { key });
+    const [a, b] = await Promise.all([created, second]);
+
+    try {
+      expect(b.id).toBe(a.id);
+      expect(b.labels).toMatchObject({ who: "first" });
+    } finally {
+      await a.destroy();
     }
   });
 

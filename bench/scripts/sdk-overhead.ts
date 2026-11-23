@@ -817,10 +817,12 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
 
     // Archil keeps no labels; the name carries the run ID (lowercase, hyphens, at most 63
     // characters). Same defaults as the adapter: Archil's node:24-bookworm, 1 vCPU / 2048 MiB.
-    // create waits until the sandbox runs, as the adapter's create does.
-    const box = await client.sandboxes.create({
-      name: `${runId}-native-${crypto.randomUUID().slice(0, 8)}`,
-    });
+    // Allocate without waiting, as the adapter does, so the ID is admitted for cleanup before the
+    // readiness poll can fail; the poll stays inside this create's timing.
+    const box = await client.sandboxes.create(
+      { name: `${runId}-native-${crypto.randomUUID().slice(0, 8)}` },
+      { wait: false },
+    );
 
     const raw = {
       id: box.id,
@@ -847,6 +849,16 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     };
 
     admit(raw);
+
+    const deadline = Date.now() + 180_000;
+
+    while (box.status === "pending") {
+      if (Date.now() > deadline) throw new Error("Archil sandbox did not start in time");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await box.refresh();
+    }
+
+    if (box.status !== "running") throw new Error(`Archil sandbox did not start (${box.status})`);
 
     return raw;
   }

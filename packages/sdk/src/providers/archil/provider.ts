@@ -21,7 +21,14 @@ import { files, python, type Guest } from "../../shared/guest.js";
 import { isObject, isString, isStringRecord } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
 import { archilError, failure, nativeStatus, notRunning } from "./errors.js";
-import { collect, execute, inDirectory, terminate, type ArchilRunner } from "./execute.js";
+import {
+  collect,
+  disconnect,
+  execute,
+  inDirectory,
+  terminate,
+  type ArchilRunner,
+} from "./execute.js";
 
 export interface ArchilOptions {
   /** Defaults to ARCHIL_API_KEY. Keys are made per region in the Archil console. */
@@ -50,8 +57,22 @@ export interface ArchilModule {
 
 const prefix = "sbxsdk-";
 
-// The label the core stamps on every sandbox it creates. Every sandbox under the prefix has it.
+/**
+ * The names this adapter gives sandboxes: `sbxsdk-<UUIDv4>`, or `sbxsdk-k<40 hex>` for a key. A
+ * paused or stopped sandbox's marker cannot be read, so only a name in exactly this form counts
+ * as the SDK's; a merely similar name, like `sbxsdk-native-test`, never does.
+ */
+const sdkName =
+  /^sbxsdk-(?:k[0-9a-f]{40}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+
+// The label the core stamps on every sandbox it creates.
 const sdkLabel: Labels = { "sandbox-sdk": "1" };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// How long create waits for a sandbox to run, and a keyed lookup for its creator's marker.
+const readyTimeoutMs = 180_000;
+const markerWaitMs = 60_000;
 
 /** A keyed sandbox's native name. Archil names are unique per account, so the key is exact. */
 function keyedName(key: string) {
@@ -145,8 +166,9 @@ function stateOf(status: SandboxStatus): SandboxInfo["state"] | undefined {
  */
 const markerPath = "/var/lib/sandbox-sdk/metadata.json";
 
-// Makes the default working directory and writes the marker, in one process.
-const setupCommand = `mkdir -p /workspace /var/lib/sandbox-sdk && printf '%s' "$SANDBOX_SDK_MARKER" > ${markerPath}`;
+// Makes the default working directory, then publishes the marker atomically, in one process. The
+// marker is last: a keyed lookup that sees it knows setup finished.
+const setupCommand = `mkdir -p /workspace /var/lib/sandbox-sdk && printf '%s' "$SANDBOX_SDK_MARKER" > ${markerPath}.tmp && mv -f ${markerPath}.tmp ${markerPath}`;
 
 interface Marker {
   key?: string;
@@ -241,26 +263,38 @@ export function createArchilProvider(
       throw error;
     }
 
-    if (!value.name.startsWith(prefix) || stateOf(value.status) === undefined)
+    if (!sdkName.test(value.name) || stateOf(value.status) === undefined)
       throw failure("Sandbox not found", "not_found", id);
     boxes.set(id, value);
 
     return value;
   }
 
-  /** Brings a paused or stopped sandbox back so it can run commands. */
+  /**
+   * Waits out a transition (pending, pausing, stopping), then brings a paused or stopped sandbox
+   * back so it can run commands. Archil refuses a resume while it is still pausing.
+   */
   async function wake(box: Sandbox) {
+    const deadline = Date.now() + readyTimeoutMs;
     await box.refresh();
 
-    if (box.status === "paused" || box.status === "pausing") await box.resume();
-    else if (["stopped", "stopping", "exited"].includes(box.status)) await box.start();
+    while (["pending", "pausing", "stopping"].includes(box.status)) {
+      if (Date.now() > deadline)
+        throw failure(`Sandbox stayed ${box.status} too long`, "timeout", box.id);
+      await sleep(250);
+      await box.refresh();
+    }
+
+    if (box.status === "paused") await box.resume();
+    else if (box.status === "stopped" || box.status === "exited") await box.start();
   }
 
   /**
-   * A runner that wakes the sandbox once when Archil refuses a process because it is not running:
-   * an idle or lifetime expiry pauses it on its own.
+   * A runner for the sandbox. With `wake`, it wakes the sandbox once when Archil refuses a process
+   * because it is not running: an idle or lifetime expiry pauses it on its own. Metadata reads run
+   * without it, so listing never resumes a sandbox.
    */
-  function runner(id: string): ArchilRunner {
+  function runner(id: string, waking = true): ArchilRunner {
     return {
       run: async (command, runOptions) => {
         const box = await sandbox(id);
@@ -268,7 +302,7 @@ export function createArchilProvider(
         try {
           return await box.run(command, runOptions);
         } catch (error) {
-          if (!notRunning(error)) throw error;
+          if (!waking || !notRunning(error)) throw error;
           await wake(box);
 
           return box.run(command, runOptions);
@@ -364,7 +398,7 @@ export function createArchilProvider(
 
   /** Reads a running sandbox's marker. Undefined when it has none: not made by this SDK, or still being made. */
   async function markerOf(id: string): Promise<Marker | undefined> {
-    const result = await collect(runner(id), id, `cat -- ${quote(markerPath)}`, {
+    const result = await collect(runner(id, false), id, `cat -- ${quote(markerPath)}`, {
       timeoutMs: 30_000,
     });
 
@@ -380,10 +414,10 @@ export function createArchilProvider(
   ): Promise<{ info: SandboxInfo; readable: boolean } | undefined> {
     const state = stateOf(box.status);
 
-    if (!box.name.startsWith(prefix) || state === undefined) return undefined;
+    if (!sdkName.test(box.name) || state === undefined) return undefined;
     const base = { id: box.id, state, createdAt: box.createdAt.getTime() };
 
-    // The name prefix proves the core's own label; the rest waits until the sandbox runs again.
+    // The SDK's name format stands in for the core's own label; the rest waits until it runs again.
     if (state !== "running") return { info: { ...base, labels: { ...sdkLabel } }, readable: false };
     boxes.set(box.id, box);
     const marker = await markerOf(box.id);
@@ -457,7 +491,7 @@ export function createArchilProvider(
         safe(id, async () => {
           if (!(await terminate(process)))
             throw failure("Terminal could not be closed", "outcome_unknown", id);
-          await process.disconnect().catch(() => {});
+          await disconnect(process);
         }),
       wait: () =>
         safe(id, async () => {
@@ -496,32 +530,50 @@ export function createArchilProvider(
 
         if (input.signal?.aborted) throw failure("Creation aborted", "aborted");
         const c = await api();
+
+        const unknown = () =>
+          failure(
+            `Sandbox creation outcome is unknown; delete sandbox ${request.name ?? ""} if it exists before retrying`,
+            "outcome_unknown",
+          );
+
         let box: Sandbox;
 
         try {
-          box = await c.sandboxes.create(request);
+          // Allocate without waiting, so the ID is held before anything else can fail.
+          box = await c.sandboxes.create(request, { wait: false });
         } catch (error) {
-          // An HTTP refusal made nothing (a name conflict included: the core looks the key up again).
-          if (nativeStatus(error) !== undefined) throw error;
-          // No answer: the create may have landed. The name is this attempt's alone unless keyed.
-          const found = (await c.sandboxes.list()).find((native) => native.name === request.name);
+          const status = nativeStatus(error);
 
-          if (!found) throw error;
+          // A 4xx refusal made nothing (a name conflict included: the core looks the key up again).
+          if (status !== undefined && status < 500) throw error;
 
-          if (input.key !== undefined)
-            throw failure(
-              `Sandbox creation outcome is unknown; sandbox ${found.id} has this key`,
-              "outcome_unknown",
-            );
+          // No answer, or a 5xx: the create may have landed. The name is this attempt's alone
+          // unless keyed; absence right after is not proof, so it stays unknown.
+          const found = await c.sandboxes
+            .list()
+            .then((all) => all.find((native) => native.name === request.name))
+            .catch(() => undefined);
+
+          if (!found || input.key !== undefined) throw unknown();
           box = found;
         }
 
         const marker = JSON.stringify({ key: input.key, labels: input.labels } satisfies Marker);
 
         try {
-          if (box.status !== "running") await box.refresh();
+          const deadline = Date.now() + readyTimeoutMs;
 
-          if (stateOf(box.status) !== "running")
+          while (box.status === "pending") {
+            if (input.signal?.aborted) throw failure("Creation aborted", "aborted", box.id);
+
+            if (Date.now() > deadline)
+              throw failure("Sandbox did not start in time", "timeout", box.id);
+            await sleep(250);
+            await box.refresh();
+          }
+
+          if (box.status !== "running")
             throw failure(`Sandbox did not start (${box.status})`, "provider", box.id);
           boxes.set(box.id, box);
 
@@ -571,19 +623,42 @@ export function createArchilProvider(
           return {
             id: box.id,
             key,
-            labels: {},
+            labels: { ...sdkLabel },
             state: "paused",
             createdAt: box.createdAt.getTime(),
           };
-        const marker = await markerOf(box.id);
 
-        return {
-          id: box.id,
-          key,
-          labels: marker?.labels ?? {},
-          state: "running",
-          createdAt: box.createdAt.getTime(),
-        };
+        // A running sandbox without its marker is still being set up by its creator, who deletes it
+        // if setup fails. Wait for the marker, or for the sandbox to go.
+        const deadline = Date.now() + markerWaitMs;
+
+        for (;;) {
+          const marker = await markerOf(box.id).catch(() => undefined);
+
+          if (marker)
+            return {
+              id: box.id,
+              key,
+              labels: marker.labels,
+              state: "running",
+              createdAt: box.createdAt.getTime(),
+            };
+          await box.refresh().catch(() => {});
+
+          if (stateOf(box.status) === undefined) {
+            boxes.delete(box.id);
+
+            return undefined;
+          }
+
+          if (Date.now() > deadline)
+            throw failure(
+              "Keyed sandbox is still being set up by another client",
+              "timeout",
+              box.id,
+            );
+          await sleep(500);
+        }
       }),
     connect: (id) =>
       safe(id, async () => {
@@ -601,7 +676,7 @@ export function createArchilProvider(
         const filtered = Object.keys(labels).some((name) => !(name in sdkLabel));
 
         const candidates = (await (await api()).sandboxes.list()).filter(
-          (box) => box.name.startsWith(prefix) && stateOf(box.status) !== undefined,
+          (box) => sdkName.test(box.name) && stateOf(box.status) !== undefined,
         );
 
         // Eight marker reads at a time.

@@ -322,21 +322,36 @@ export function instaboxUsageQuery(row: Pick<OwnedSandbox, "startedAt">, now = D
   return query;
 }
 
+/** How long after a sandbox's last sample Archil's meter is taken as settled (it updates about once a minute). */
+export const archilSettleMs = 120_000;
+
 /**
  * One sandbox's usage from Archil's `GET /api/sandboxes/{id}/usage`: Archil's own cost since the
- * sandbox was created. It is final once the sandbox is deleted (the meter updates about once a
- * minute, so a read right after deletion may still miss the last minute; collect billing later).
+ * sandbox was created. It is final only once the sandbox is deleted and the figures (`as_of`) are
+ * at least {@link archilSettleMs} newer than the sandbox's last sample; before that it is provisional.
  */
-export function decodeArchil(raw: Json, state: { deleted: boolean }): Cost {
+export function decodeArchil(
+  raw: Json,
+  state: { deleted: boolean; finishedAt: string | null },
+): Cost {
   const usage = archilUsageBody.parse(raw);
+  const asOf = usage.as_of === undefined ? Number.NaN : Date.parse(usage.as_of);
+  const ended = state.finishedAt === null ? Number.NaN : Date.parse(state.finishedAt);
+  const settled = state.deleted && asOf >= ended + archilSettleMs;
+
+  const why = !state.deleted
+    ? "; the sandbox still existed"
+    : settled
+      ? ""
+      : "; provisional: the meter may not have settled since the sandbox's last sample";
 
   return {
     kind: "billed",
     usd: usage.cost,
     scope: "sandbox-lifetime",
-    complete: state.deleted,
-    confidence: state.deleted ? "high" : "low",
-    note: `Provider-reported cost (${usage.vcpu_hours} vCPU-hours, ${usage.memory_gib_hours} GiB-hours), before allowances and prepaid credit; storage and egress excluded${state.deleted ? "" : "; the sandbox still existed"}`,
+    complete: settled,
+    confidence: settled ? "high" : "low",
+    note: `Provider-reported cost (${usage.vcpu_hours} vCPU-hours, ${usage.memory_gib_hours} GiB-hours), before allowances and prepaid credit; storage and egress excluded${why}`,
   };
 }
 
@@ -1222,6 +1237,7 @@ export async function collectProvider(
 
         cost = decodeArchil(await transport(`${base}/api/sandboxes/${id}/usage`, headers), {
           deleted,
+          finishedAt: row.finishedAt,
         });
       } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
       else cost = unavailable("No supported per-sandbox billing source");

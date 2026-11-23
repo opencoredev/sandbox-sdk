@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { requestedSize } from "../src/allocation.js";
-import { archilControlUrl } from "../src/archil.js";
+import { archilControlUrl, archilSandboxBody } from "../src/archil.js";
 import { cloudProviders } from "../src/attempts.js";
 import {
   BillingHttpError,
@@ -25,6 +25,7 @@ const usage = {
   memory_gib_hours: 1,
   rates: { vcpu_hour: 0.055, memory_gib_hour: 0.02 },
   cost: 0.0475,
+  as_of: "2026-11-21T10:08:00Z",
 };
 
 describe("Archil bench registration", () => {
@@ -114,19 +115,44 @@ describe("Archil failures", () => {
 });
 
 describe("Archil billing", () => {
-  it("reports Archil's own cost, final once the sandbox is deleted", () => {
-    expect(decodeArchil({ success: true, data: usage }, { deleted: true })).toMatchObject({
+  it("reports Archil's own cost, final once deleted and the meter has settled", () => {
+    const finishedAt = "2026-11-21T10:05:00.000Z";
+
+    expect(
+      decodeArchil({ success: true, data: usage }, { deleted: true, finishedAt }),
+    ).toMatchObject({
       kind: "billed",
       usd: 0.0475,
       scope: "sandbox-lifetime",
       complete: true,
       confidence: "high",
     });
-    expect(decodeArchil(usage, { deleted: false })).toMatchObject({
+    expect(decodeArchil(usage, { deleted: false, finishedAt })).toMatchObject({
       complete: false,
       confidence: "low",
     });
-    expect(() => decodeArchil({ success: true, data: { cost: 1 } }, { deleted: true })).toThrow();
+    // Read within two minutes of the last sample: the last minute may still be missing.
+    expect(
+      decodeArchil({ ...usage, as_of: "2026-11-21T10:06:00Z" }, { deleted: true, finishedAt }),
+    ).toMatchObject({ complete: false, note: expect.stringContaining("provisional") });
+    expect(
+      decodeArchil({ ...usage, as_of: undefined }, { deleted: true, finishedAt }),
+    ).toMatchObject({ complete: false });
+    expect(() =>
+      decodeArchil({ success: true, data: { cost: 1 } }, { deleted: true, finishedAt }),
+    ).toThrow();
+  });
+
+  it("reads the sandbox ID from Archil's wire name, sandbox_id", () => {
+    expect(
+      archilSandboxBody.parse({
+        success: true,
+        data: { sandbox_id: "019d158e-7100-7000-8000-0123456789ab", status: "running", name: "x" },
+      }),
+    ).toEqual({ id: "019d158e-7100-7000-8000-0123456789ab", status: "running" });
+    expect(() =>
+      archilSandboxBody.parse({ success: true, data: { id: "x", status: "running" } }),
+    ).toThrow();
   });
 
   it("collects usage per sandbox; a 404 or a deleted status makes it final", async () => {
@@ -141,9 +167,9 @@ describe("Archil billing", () => {
       if (url.endsWith("/sbx-gone")) throw new BillingHttpError(404);
 
       if (url.endsWith("/sbx-deleted"))
-        return { success: true, data: { id: "sbx-deleted", status: "deleted" } };
+        return { success: true, data: { sandbox_id: "sbx-deleted", status: "deleted" } };
 
-      return { success: true, data: { id: "sbx-live", status: "running" } };
+      return { success: true, data: { sandbox_id: "sbx-live", status: "running" } };
     };
 
     const row = (id: string) => ({

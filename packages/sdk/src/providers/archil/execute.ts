@@ -16,6 +16,8 @@ export interface ArchilProcess {
   wait(): Promise<ArchilProcessResult>;
   kill(): Promise<void>;
   disconnect(): Promise<void>;
+  /** Output bytes the process has produced so far, both streams; final once it has exited. */
+  readonly cursor: number;
 }
 
 export interface ArchilRunOptions {
@@ -51,6 +53,15 @@ export class OutputGaps {
 
     return skipped;
   }
+
+  /** Bytes missing after the last delivered message, given the process's final cursor. */
+  tail(cursor: number): number {
+    const skipped = Math.max(0, cursor - this.#next);
+    this.#next = Math.max(this.#next, cursor);
+    this.lost += skipped;
+
+    return skipped;
+  }
 }
 
 /** The part of a `disk` `Sandbox` that starts processes. Each `run` opens one process connection. */
@@ -63,8 +74,12 @@ const stopped: ExecResult = { exitCode: null, timedOut: true };
 // Archil carries stdin as WebSocket messages; large inputs go in pieces.
 const stdinPieceBytes = 1024 * 1024;
 
-// A kill is confirmed when the process reports its end within this window.
+// A kill is confirmed when the process reports its end within this window. A start that is still
+// unanswered when its command is stopped gets the same window to land, so it can be killed.
 const killConfirmMs = 10_000;
+
+// Closing a process connection never holds a caller longer than this.
+const disconnectMs = 5000;
 
 // Archil's own timeout, in whole seconds, backs up the client's timer when the client goes away.
 // The client's timer fires first, so a command never runs past its deadline by more than this.
@@ -74,10 +89,12 @@ const nativeGraceSeconds = 5;
  * Archil kills a process's group when its main process exits (measured 2026-11-21): a background
  * `nohup setsid ...` started just before the exit dies if `setsid()` has not run yet. So the
  * command runs in a subshell, and before exiting the shell waits, up to about a second, while any
- * process in its group is still `nohup` or `setsid` on its way to a session of its own. Ordinary
- * background jobs are never waited for; Archil ends them with the command, as before.
+ * process in its group is still `nohup` or `setsid` on its way to a session of its own. A group
+ * member that is still a plain forked shell may be about to exec one, so when any other member
+ * is left the scan runs once more after 10 ms. Ordinary background jobs cost that one rescan and
+ * are never waited for; Archil ends them with the command, as before.
  */
-const settle = `read -r l < /proc/$$/stat; set -- \${l##*) }; g=$3; i=0; while [ "$i" -lt 100 ]; do w=; for f in /proc/[0-9]*/stat; do { read -r l < "$f"; } 2>/dev/null || continue; case "$l" in *"(nohup) "*|*"(setsid) "*) set -- \${l##*) }; [ "$3" = "$g" ] && w=1;; esac; done; [ -z "$w" ] && break; sleep 0.01; i=$((i+1)); done`;
+const settle = `read -r l < /proc/$$/stat; set -- \${l##*) }; g=$3; i=0; r=; while [ "$i" -lt 100 ]; do w=; o=; for f in /proc/[0-9]*/stat; do [ "$f" = /proc/$$/stat ] && continue; { read -r l < "$f"; } 2>/dev/null || continue; case "$l" in *"(nohup) "*|*"(setsid) "*) set -- \${l##*) }; [ "$3" = "$g" ] && w=1;; *) set -- \${l##*) }; [ "$3" = "$g" ] && o=1;; esac; done; if [ -z "$w" ]; then { [ -z "$o" ] || [ -n "$r" ]; } && break; r=1; fi; sleep 0.01; i=$((i+1)); done`;
 
 /** Runs `command` in `cwd` the way a fresh POSIX shell would: a missing directory is exit 1. */
 export function inDirectory(cwd: string, command: string): string {
@@ -95,15 +112,26 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T | "late"> {
   ]).finally(() => clearTimeout(timer));
 }
 
-/** Kills a process and waits for Archil to report its end. False when that never came. */
+/** Kills a process and waits for Archil to report its end, the kill included, within one window. */
 export async function terminate(process: ArchilProcess): Promise<boolean> {
-  try {
+  const ended = (async () => {
     await process.kill();
+    await process.wait();
+  })();
 
-    return (await bounded(process.wait(), killConfirmMs)) !== "late";
+  try {
+    return (await bounded(ended, killConfirmMs)) !== "late";
   } catch {
     return false;
   }
+}
+
+/** Closes a process connection, bounded; a connection that will not close is left to Archil. */
+export async function disconnect(process: ArchilProcess): Promise<void> {
+  await bounded(
+    process.disconnect().catch(() => {}),
+    disconnectMs,
+  );
 }
 
 async function writeStdin(process: ArchilProcess, stdin: Uint8Array | undefined) {
@@ -167,8 +195,13 @@ export async function execute({
   const timer = setTimeout(() => stop(), input.timeoutMs);
   input.signal?.addEventListener("abort", stop, { once: true });
 
+  const unconfirmed = () =>
+    failure("Process termination could not be confirmed", "outcome_unknown", sandboxId);
+
   try {
-    const process = await start(runner, sandboxId, inDirectory(input.cwd, input.command), {
+    const command = inDirectory(input.cwd, input.command);
+
+    const options: ArchilRunOptions = {
       env: input.env,
       timeoutSeconds: Math.ceil(input.timeoutMs / 1000) + nativeGraceSeconds,
       collectOutput: false,
@@ -181,14 +214,51 @@ export async function execute({
             stream,
             `${decoders[stream].decode()}\n[sandbox-sdk: Archil's output stream skipped ${skipped} bytes here]\n`,
           );
+
         emit(stream, decoders[stream].decode(data, { stream: true }));
       },
-    });
+    };
+
+    const starting = (async () => {
+      try {
+        return { ok: true as const, process: await start(runner, sandboxId, command, options) };
+      } catch (error) {
+        return { ok: false as const, error: archilError(error, sandboxId) };
+      }
+    })();
+
+    // The start waits on Archil's acknowledgment, so the deadline and the abort race it too.
+    const first = await Promise.race([starting, halted]);
+
+    if (first === "stop") {
+      // The start may still land and run the command: give it the kill window, then stop it.
+      const late = await bounded(starting, killConfirmMs);
+
+      if (late === "late") throw unconfirmed();
+
+      // A refused start ran nothing; an unknown one stays unknown.
+      if (!late.ok) {
+        if (late.error.code !== "outcome_unknown") return stopped;
+        throw late.error;
+      }
+
+      if (!(await terminate(late.process))) throw unconfirmed();
+      await disconnect(late.process);
+
+      return stopped;
+    }
+
+    if (!first.ok) throw first.error;
+    const { process } = first;
 
     try {
       // A command that exits without reading its input refuses the rest; its result still stands.
       const stdin = input.stdin === undefined ? undefined : new TextEncoder().encode(input.stdin);
-      const fed = writeStdin(process, stdin).catch(() => {});
+
+      const fed = bounded(
+        writeStdin(process, stdin).catch(() => {}),
+        input.timeoutMs + killConfirmMs,
+      );
 
       const outcome = await Promise.race([
         process.wait().then((result) => ({ kind: "exit" as const, result })),
@@ -197,8 +267,7 @@ export async function execute({
 
       if (outcome.kind !== "exit") {
         // A broken stream leaves the command running; it settles only once the command is stopped.
-        if (!(await terminate(process)))
-          throw failure("Process termination could not be confirmed", "outcome_unknown", sandboxId);
+        if (!(await terminate(process))) throw unconfirmed();
 
         if (outcome.kind === "broken" && !cancelled)
           throw failure(
@@ -213,6 +282,11 @@ export async function execute({
       await fed;
 
       for (const stream of ["stdout", "stderr"] as const) emit(stream, decoders[stream].decode());
+      // The exit event carries the final cursor: bytes after the last delivered message were lost.
+      const tail = gaps.tail(process.cursor);
+
+      if (tail > 0)
+        emit("stdout", `\n[sandbox-sdk: Archil's output stream skipped the last ${tail} bytes]\n`);
       const { result } = outcome;
 
       if (result.status === "timed_out") return stopped;
@@ -229,7 +303,7 @@ export async function execute({
         sandboxId,
       );
     } finally {
-      await process.disconnect().catch(() => {});
+      await disconnect(process);
     }
   } finally {
     clearTimeout(timer);
@@ -280,6 +354,7 @@ export async function collect(
       throw failure("Archil guest operation timed out", "timeout", sandboxId);
     }
 
+    gaps.tail(process.cursor);
     const size = stdout.reduce((total, part) => total + part.length, 0);
     const bytes = new Uint8Array(size);
     let offset = 0;
@@ -298,6 +373,6 @@ export async function collect(
   } catch (error) {
     throw archilError(error, sandboxId);
   } finally {
-    await process.disconnect().catch(() => {});
+    await disconnect(process);
   }
 }

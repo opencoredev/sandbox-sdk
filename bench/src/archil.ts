@@ -29,8 +29,13 @@ export function archilControlUrl(env: NodeJS.ProcessEnv): string {
   return url;
 }
 
-/** `GET /api/sandboxes/{id}`, the fields the existence and billing checks read. */
-const sandbox = z.object({ id: z.string(), status: z.string() });
+/**
+ * `GET /api/sandboxes/{id}`, the fields the existence and billing checks read. Archil names the
+ * ID `sandbox_id` on the wire (https://docs.archil.com/api-reference/sandboxes/get-sandbox.md).
+ */
+const sandbox = z
+  .object({ sandbox_id: z.string(), status: z.string() })
+  .transform((wire) => ({ id: wire.sandbox_id, status: wire.status }));
 
 /**
  * `GET /api/sandboxes/{id}/usage` (https://docs.archil.com/administration/billing.md): usage since
@@ -45,6 +50,8 @@ const usage = z.object({
     memory_gib_hour: z.number().finite().nonnegative(),
   }),
   cost: z.number().finite().nonnegative(),
+  /** When the figures were last updated. */
+  as_of: z.string().optional(),
 });
 
 // Archil wraps every answer as `{ success, data }`; a body without the wrapper is read as is.
