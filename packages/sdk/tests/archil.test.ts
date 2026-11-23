@@ -334,12 +334,30 @@ describe("Archil create", () => {
     }
   });
 
-  test("a sandbox that falls asleep during its marker read is left out, not a failed reap", async () => {
+  test("a sandbox that falls asleep during the reap's marker read is left out; the reap goes on", async () => {
     const p = provider();
-    const box = await createSandbox(p, { labels: { group: "asleep-mid-read" } });
+    const first = await createSandbox(p, { labels: { group: "asleep-mid-read" } });
+    const second = await createSandbox(p, { labels: { group: "asleep-mid-read" } });
+    const list = p.list.bind(p);
+    const connect = p.connect.bind(p);
+    const visited: string[] = [];
+
+    // Armed after listing, so the pause lands on a marker read inside the reap's own connect.
+    p.list = async (labels) => {
+      const found = await list(labels);
+      archilState.pauseOnCommand = "metadata.json";
+
+      return found;
+    };
+
+    p.connect = async (id) => {
+      visited.push(id);
+
+      return connect(id);
+    };
 
     try {
-      archilState.pauseOnCommand = "metadata.json";
+      // The mock's activity scan reads the host's /proc, so nothing here proves idle: none is reaped.
       expect(
         await reapSandboxes(p, {
           labels: { group: "asleep-mid-read" },
@@ -347,10 +365,58 @@ describe("Archil create", () => {
           olderThanMs: 0,
         }),
       ).toBe(0);
-      expect(archilState.sandboxes.get(box.id)?.status).toBe("paused");
+      expect(visited.sort()).toEqual([first.id, second.id].sort());
+      const states = [first.id, second.id].map((id) => archilState.sandboxes.get(id)?.status);
+      expect(states).toContain("paused");
     } finally {
       archilState.pauseOnCommand = undefined;
-      await box.destroy();
+      await first.destroy();
+      await second.destroy();
+    }
+  });
+
+  test("a failed marker read on a running sandbox is an error, never a keyless sandbox", async () => {
+    const p = provider();
+    const keyed = await createSandbox(p, { key: `flaky-${crypto.randomUUID()}` });
+
+    try {
+      await keyed.close();
+      archilState.refuseNextRun = 503;
+      await expect(connectSandbox(provider(), keyed.id)).rejects.toMatchObject({
+        code: "unavailable",
+      });
+      expect(archilState.sandboxes.has(keyed.id)).toBe(true);
+    } finally {
+      archilState.refuseNextRun = undefined;
+      await keyed.destroy();
+    }
+  });
+
+  test("a lookup whose resume was refused because another client woke it leaves it running", async () => {
+    const key = `racewake-${crypto.randomUUID()}`;
+    const name = `sbxsdk-k${createHash("sha256").update(key).digest("hex").slice(0, 40)}`;
+    const box = await addForeign(name, "paused");
+    const marker = box.guest.rewrite("/var/lib/sandbox-sdk/metadata.json");
+    await mkdir(dirname(marker), { recursive: true });
+    await writeFile(marker, JSON.stringify({ key: "someone-else", labels: {} }));
+    const resume = box.resume.bind(box);
+
+    // Another client resumes it first; this lookup's own resume is then refused.
+    box.resume = async () => {
+      await resume();
+      throw Object.assign(new Error("Sandbox is not paused"), {
+        name: "ArchilApiError",
+        status: 409,
+        code: "sandbox_not_paused",
+      });
+    };
+
+    try {
+      expect(await provider().find(key)).toBeUndefined();
+      expect(box.status).toBe("running");
+    } finally {
+      archilState.sandboxes.delete(box.id);
+      await box.guest.destroy();
     }
   });
 

@@ -288,7 +288,8 @@ export function createArchilProvider(
    * Waits out a transition (pending, pausing, stopping), then brings a paused or stopped sandbox
    * back so it can run commands. Archil refuses a resume while it is still pausing.
    */
-  async function wake(box: Sandbox) {
+  /** Brings the sandbox to running. True when this call resumed or started it, false when it already ran. */
+  async function wake(box: Sandbox): Promise<boolean> {
     const deadline = Date.now() + readyTimeoutMs;
     await box.refresh();
 
@@ -299,8 +300,27 @@ export function createArchilProvider(
       await box.refresh();
     }
 
-    if (box.status === "paused") await box.resume();
-    else if (box.status === "stopped" || box.status === "exited") await box.start();
+    try {
+      if (box.status === "paused") {
+        await box.resume();
+
+        return true;
+      }
+
+      if (box.status === "stopped" || box.status === "exited") {
+        await box.start();
+
+        return true;
+      }
+    } catch (error) {
+      // Refused because another client woke it first: running now, and not this call's doing.
+      if (!notRunning(error)) throw error;
+      await box.refresh();
+
+      if (box.status !== "running") throw error;
+    }
+
+    return false;
   }
 
   /**
@@ -442,12 +462,15 @@ export function createArchilProvider(
     try {
       marker = await markerOf(box.id);
     } catch (error) {
-      // It went to sleep during the read: report it asleep and unread, as if listed that way.
+      // It went to sleep during the read: report it asleep and unread, as if listed that way. Any
+      // other failure, or a sandbox that still runs, is a failed read, never a keyless sandbox.
       if (!(error instanceof SandboxError) || error.code !== "unavailable") throw error;
       await box.refresh();
       const now = stateOf(box.status);
 
       if (now === undefined) return undefined;
+
+      if (now === "running") throw error;
 
       return { info: { ...base, state: now, labels: { ...sdkLabel } }, readable: false };
     }
@@ -765,12 +788,16 @@ export function createArchilProvider(
 
         // At most one restore runs, however many exits ask for it. It waits for a wake still in flight
         // to land first, so a slow resume can't arrive after it; callers wait at most 30 s for it.
-        let pendingWake: Promise<void> | undefined;
+        let pendingWake: Promise<boolean> | undefined;
         let restoring: Promise<void> | undefined;
 
+        // Only a state change this lookup made is undone: a wake that was refused, or that found the
+        // sandbox already running (another client woke it), leaves it alone.
         const restore = () => {
           restoring ??= (async () => {
-            await pendingWake?.catch(() => {});
+            const changed = await pendingWake?.catch(() => false);
+
+            if (!changed) return;
 
             if (woke === "paused") await box.pause().catch(() => {});
             else if (woke === "stopped") await box.stop().catch(() => {});

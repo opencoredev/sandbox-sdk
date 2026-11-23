@@ -37,6 +37,8 @@ interface ArchilState {
   settleTo: Status | undefined;
   /** Pause the sandbox just as a command containing this text starts, once. */
   pauseOnCommand: string | undefined;
+  /** Refuse the next process start with this HTTP status, once. */
+  refuseNextRun: number | undefined;
 }
 
 export const archilState: ArchilState = {
@@ -50,6 +52,7 @@ export const archilState: ArchilState = {
   refuseNextCreate: undefined,
   settleTo: undefined,
   pauseOnCommand: undefined,
+  refuseNextRun: undefined,
 };
 
 class FakeProcess implements ArchilProcess {
@@ -167,6 +170,12 @@ class FakeSandbox {
   ) {}
   async run(command: string, options: ArchilRunOptions = {}) {
     if (this.status === "deleted") throw new FakeApiError("Sandbox not found", 404, "not_found");
+
+    if (archilState.refuseNextRun !== undefined) {
+      const status = archilState.refuseNextRun;
+      archilState.refuseNextRun = undefined;
+      throw new FakeApiError("Service unavailable", status, "unavailable");
+    }
 
     if (archilState.pauseOnCommand !== undefined && command.includes(archilState.pauseOnCommand)) {
       archilState.pauseOnCommand = undefined;
