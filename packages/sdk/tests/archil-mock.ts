@@ -54,6 +54,7 @@ class FakeProcess implements ArchilProcess {
   readonly #child: ChildProcess;
   readonly #ended: Promise<ArchilProcessResult>;
   #killed = false;
+  #disconnected = false;
   #timedOut = false;
 
   constructor(
@@ -82,6 +83,9 @@ class FakeProcess implements ArchilProcess {
       // Archil counts one offset across both streams.
       const offset = this.cursor;
       this.cursor += data.length;
+
+      // A disconnected client gets nothing more.
+      if (this.#disconnected) return;
 
       // Like Archil's stream under load: a message past the drop threshold skips its bytes.
       if (archilState.dropOutputAbove !== undefined && offset >= archilState.dropOutputAbove) {
@@ -136,7 +140,9 @@ class FakeProcess implements ArchilProcess {
     this.#killed = true;
     this.#group("SIGKILL");
   }
-  async disconnect() {}
+  async disconnect() {
+    this.#disconnected = true;
+  }
 }
 
 class FakeSandbox {

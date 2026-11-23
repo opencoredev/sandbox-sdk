@@ -497,6 +497,50 @@ describe("Archil create", () => {
     }
   });
 
+  test("idle-only reaping leaves a sandbox that went to sleep after listing alone", async () => {
+    const p = provider();
+    const box = await createSandbox(p, { labels: { group: "sleeps-late" } });
+    const list = p.list.bind(p);
+
+    p.list = async (labels) => {
+      const found = await list(labels);
+      await archilState.sandboxes.get(box.id)?.pause();
+
+      return found;
+    };
+
+    try {
+      expect(
+        await reapSandboxes(p, {
+          labels: { group: "sleeps-late" },
+          idleOnly: true,
+          olderThanMs: 0,
+        }),
+      ).toBe(0);
+      expect(archilState.sandboxes.get(box.id)?.status).toBe("paused");
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("closing a handle detaches its terminals", async () => {
+    const p = provider();
+    const box = await createSandbox(p, { key: `term-${crypto.randomUUID()}` });
+    const id = box.id;
+
+    if (!("terminal" in box)) throw new Error("terminal capability missing");
+    const terminal = await box.terminal({ cols: 80, rows: 24 });
+    let seen = "";
+    terminal.onData((data) => (seen += data));
+    await terminal.write("while true; do echo tick; sleep 0.05; done\n");
+    await expect.poll(() => seen, { timeout: 5000 }).toContain("tick");
+    await box.close();
+    const before = seen;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(seen).toBe(before);
+    await p.destroy(id);
+  });
+
   test("reopening a paused keyed sandbox keeps its key and labels", async () => {
     const p = provider();
     const key = `reopen-${crypto.randomUUID()}`;
@@ -566,11 +610,9 @@ describe("Archil create", () => {
       expect((await listSandboxes(p)).map((info) => info.id)).not.toContain(box.id);
       await reapSandboxes(p, { olderThanMs: 0 });
       expect(archilState.sandboxes.has(box.id)).toBe(true);
-      // An explicit ID still connects, and wakes it: its marker then gives the labels back.
-      expect(await p.connect(box.id)).toMatchObject({
-        state: "running",
-        labels: { group: "paused-list" },
-      });
+      // An explicit ID still connects, without waking it.
+      expect((await p.connect(box.id)).state).toBe("paused");
+      expect(archilState.sandboxes.get(box.id)?.status).toBe("paused");
     } finally {
       await box.destroy();
     }

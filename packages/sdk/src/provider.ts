@@ -278,6 +278,13 @@ export interface Provider<
    * before the sandbox can be found, so the core does not rewrite it after create.
    */
   readonly recordsSecretNames?: boolean;
+  /**
+   * A paused or stopped sandbox's key and labels can be read only by waking it (Archil keeps them in
+   * a file inside the sandbox). `connect` then reports such a sandbox without them and wakes nothing;
+   * the core reopens a keyed sandbox that is not running through `find`, which wakes and verifies it,
+   * and idle-only reaping leaves it alone rather than wake it to look.
+   */
+  readonly readsMetadataOnlyWhenRunning?: boolean;
   /** Native command dialect for portable run wrappers; defaults to POSIX sh. */
   readonly commandShell?: "bash";
   /** Durable absolute directory for core-owned process records. */

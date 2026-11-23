@@ -29,6 +29,7 @@ import {
   execute,
   inDirectory,
   terminate,
+  type ArchilProcess,
   type ArchilRunner,
 } from "./execute.js";
 
@@ -222,6 +223,8 @@ export function createArchilProvider(
   let client: Promise<Archil> | undefined;
   let current: Archil | undefined;
   const boxes = new Map<string, Sandbox>();
+  // Terminal connections this client opened, per sandbox, so close and destroy can drop them.
+  const terminals = new Map<string, Set<ArchilProcess>>();
 
   async function connectClient(): Promise<Archil> {
     const apiKey = options.apiKey ?? process.env.ARCHIL_API_KEY;
@@ -469,6 +472,14 @@ export function createArchilProvider(
     }
   }
 
+  /** Disconnects every terminal this client opened on the sandbox. */
+  async function detachTerminals(id: string) {
+    const open = terminals.get(id);
+    terminals.delete(id);
+
+    if (open) await Promise.all([...open].map((process) => disconnect(process)));
+  }
+
   async function terminal(id: string, terminalOptions: TerminalOptions): Promise<Terminal> {
     const listeners = new Set<(data: string) => void>();
     const decoder = new TextDecoder();
@@ -488,6 +499,15 @@ export function createArchilProvider(
     );
 
     // Observed at once, so a stream that drops before anyone waits is not an unhandled rejection.
+    let open = terminals.get(id);
+
+    if (!open) {
+      open = new Set();
+      terminals.set(id, open);
+    }
+
+    open.add(process);
+
     const ended = process.wait();
     ended.catch(() => {});
 
@@ -505,6 +525,7 @@ export function createArchilProvider(
             if (!(await terminate(process)))
               throw failure("Terminal could not be closed", "outcome_unknown", id);
           } finally {
+            terminals.get(id)?.delete(process);
             await disconnect(process);
           }
         }),
@@ -524,6 +545,8 @@ export function createArchilProvider(
     procActivity: true,
     // Setup writes the secret-names record before the marker, so the core leaves it alone.
     recordsSecretNames: true,
+    // Key and labels live in a file inside the sandbox, readable only while it runs.
+    readsMetadataOnlyWhenRunning: true,
     // Archil's output stream can skip bytes, so the secret names and environment are read through
     // a check that refuses any gap: a lost value would otherwise switch its redaction off.
     readSecretEnvironment: (id) =>
@@ -735,7 +758,16 @@ export function createArchilProvider(
             if (box.status !== "running" && box.status !== "pending" && !woken) {
               woken = true;
               woke = box.status === "paused" || box.status === "pausing" ? "paused" : "stopped";
-              await within(wake(box), box.id);
+              const waking = wake(box);
+
+              try {
+                await within(waking, box.id);
+              } catch (error) {
+                // A wake still in flight at the deadline is undone once it lands.
+                void waking.then(restore, () => {});
+                throw error;
+              }
+
               continue;
             }
 
@@ -747,7 +779,7 @@ export function createArchilProvider(
 
               // A marker for another key means the name is not this key's sandbox.
               if (marker && marker.key !== key) {
-                await restore();
+                await bounded(restore(), 30_000);
 
                 return gone();
               }
@@ -764,7 +796,7 @@ export function createArchilProvider(
 
             if (Date.now() > deadline) {
               // Woken and still unproven: put it back as it was.
-              await restore();
+              await bounded(restore(), 30_000);
               throw late(box.id);
             }
 
@@ -782,12 +814,9 @@ export function createArchilProvider(
     connect: (id) =>
       safe(id, async () => {
         boxes.delete(id);
-        const box = await sandbox(id);
-
-        // A paused or stopped sandbox is woken, as E2B's connect does: only a running one can show
-        // the marker with its key and labels, which a reopened keyed handle needs.
-        if (stateOf(box.status) !== "running") await wake(box);
-        const found = await infoOf(box);
+        // A paused or stopped sandbox is reported as it is, without its key and labels, and not
+        // woken: the core reopens a keyed one through find (readsMetadataOnlyWhenRunning).
+        const found = await infoOf(await sandbox(id));
 
         if (!found) throw failure("Sandbox not found", "not_found", id);
 
@@ -819,11 +848,14 @@ export function createArchilProvider(
       safe(id, async () => {
         const c = await api();
         boxes.delete(id);
+        await detachTerminals(id);
 
         if (!(await remove(c, id))) throw failure("Sandbox could not be deleted", "provider", id);
       }),
     async close(id) {
       boxes.delete(id);
+      // A closed handle keeps no connection: its terminals detach, and the shells keep running.
+      await detachTerminals(id);
     },
     exec: (id, input) => safe(id, () => execute({ runner: runner(id), sandboxId: id, input })),
     files: { ...files(async (id) => guest(id), safe), writeSupportsMode: true },

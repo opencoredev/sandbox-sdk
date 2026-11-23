@@ -165,6 +165,14 @@ export async function createSandbox(
             if (!(error instanceof SandboxError) || error.code !== "not_found") throw error;
             forgetKey(provider, options.key);
           }
+
+          // The cached ID's key and labels can't be read while it sleeps: find wakes and verifies it.
+          if (
+            provider.readsMetadataOnlyWhenRunning &&
+            info !== undefined &&
+            info.state !== "running"
+          )
+            info = undefined;
         }
 
         // A stopped sandbox may never run again (an ended non-persistent Vercel session). The adapter's
@@ -494,6 +502,9 @@ async function sandboxActivity(provider: Provider, id: string): Promise<"idle" |
 
   try {
     const info = await provider.connect(id);
+
+    // Reading a sleeping sandbox would wake it; one that went to sleep since listing is left alone.
+    if (provider.readsMetadataOnlyWhenRunning && info.state !== "running") return "busy";
     const { makeHandle } = await import("./handle.js");
     box = await makeHandle(provider, info, false, {}, new Redactor(), false);
   } catch (error) {

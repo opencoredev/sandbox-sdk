@@ -318,6 +318,7 @@ const providerMembers = {
   inlineActivity: (target) => target.inlineActivity,
   procActivity: (target) => target.procActivity,
   recordsSecretNames: (target) => target.recordsSecretNames,
+  readsMetadataOnlyWhenRunning: (target) => target.readsMetadataOnlyWhenRunning,
   commandShell: (target) => target.commandShell,
   processRecordRoot: (target) => target.processRecordRoot,
   capabilities: (target) => target.capabilities,
