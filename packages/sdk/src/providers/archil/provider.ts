@@ -26,6 +26,7 @@ import { archilError, failure, isTransportMissing, nativeStatus, notRunning } fr
 import {
   bounded,
   collect,
+  collectExact,
   disconnect,
   execute,
   inDirectory,
@@ -76,6 +77,9 @@ const sdkLabel: Labels = { "sandbox-sdk": "1" };
 const attemptVariable = "SANDBOX_SDK_ATTEMPT";
 const readAttempt = `printf '%s' "$SANDBOX_SDK_ATTEMPT"`;
 
+// Archil's longest lifetime, its default: a sandbox with no timeoutMs gets this.
+const archilMaxLifetimeSeconds = 86_400;
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // How long create waits for a sandbox to run, and a keyed lookup for its creator's marker.
@@ -111,9 +115,19 @@ function machineFor(
   return { vcpuCount: value.cpu, memSizeMiB: value.memoryMb };
 }
 
-/** Archil lifetimes are whole seconds, 60 s to 24 h. Expiry pauses the sandbox rather than deleting it. */
-function lifetimeFor(timeoutMs: number | undefined) {
+/**
+ * Archil lifetimes are whole seconds, 60 s to 24 h, and expiry pauses the sandbox. Traffic to a public
+ * port resumes a paused sandbox with a fresh lifetime, so a hard `timeoutMs` holds only with no port.
+ */
+function lifetimeFor(timeoutMs: number | undefined, ports: readonly number[] | undefined) {
   if (timeoutMs === undefined) return undefined;
+
+  if (ports?.length)
+    throw failure(
+      "Archil resumes a paused sandbox on traffic to an exposed port, so timeoutMs can't be a hard limit with ports",
+      "unsupported",
+    );
+
   const seconds = Math.ceil(timeoutMs / 1000);
 
   if (seconds < 60 || seconds > 86_400)
@@ -207,10 +221,15 @@ function matches(info: SandboxInfo, labels: Labels) {
 }
 
 // Writes stdin to argv[1] in place (the inode and its mode survive), making its directory first.
+// Stages stdin beside the target and renames it over the target only once it is complete, so a
+// failed write (a full disk, a broken stream) leaves the old file whole. Without a mode, an
+// existing file's mode carries over.
 const writeProgram = (mode: number | undefined) =>
-  `set -e; mkdir -p -- "$(dirname -- "$SANDBOX_SDK_PATH")"; cat > "$SANDBOX_SDK_PATH"${
-    mode === undefined ? "" : `; chmod ${mode.toString(8)} -- "$SANDBOX_SDK_PATH"`
-  }`;
+  `set -e; p="$SANDBOX_SDK_PATH"; d="$(dirname -- "$p")"; mkdir -p -- "$d"; t="$(mktemp "$d/.sandbox-sdk-write.XXXXXX")"; trap 'rm -f -- "$t"' EXIT; cat > "$t"; ${
+    mode === undefined
+      ? `if [ -e "$p" ]; then chmod --reference="$p" -- "$t"; else chmod 644 -- "$t"; fi`
+      : `chmod ${mode.toString(8)} -- "$t"`
+  }; mv -f -- "$t" "$p"; trap - EXIT`;
 
 // Prints argv[3] bytes of regular file argv[1] from offset argv[2] (-1: to the end); exit 3 if absent.
 const readProgram =
@@ -354,7 +373,7 @@ export function createArchilProvider(
     return {
       name: "archil",
       raw: async (command) => {
-        const result = await collect(run, id, command);
+        const result = await collectExact(run, id, command);
 
         if (result.exitCode !== 0) throw failure("Guest operation failed", "provider", id);
 
@@ -435,7 +454,7 @@ export function createArchilProvider(
 
   /** Reads a running sandbox's marker. Undefined when it has none: not made by this SDK, or still being made. */
   async function markerOf(id: string): Promise<Marker | undefined> {
-    const result = await collect(runner(id), id, `cat -- ${quote(markerPath)}`, {
+    const result = await collectExact(runner(id), id, `cat -- ${quote(markerPath)}`, {
       timeoutMs: 30_000,
     });
 
@@ -498,16 +517,23 @@ export function createArchilProvider(
       if (box.status === "deleting" || box.status === "deleted") return true;
 
       try {
-        if (!["stopped", "exited", "failed"].includes(box.status)) await box.stop();
-        await box.delete();
+        // A non-waiting stop, polled below under the deadline: a sandbox stuck stopping can't hang it.
+        if (!["stopped", "exited", "failed", "stopping"].includes(box.status))
+          await box.stop({ wait: false });
 
-        return true;
+        if (["stopped", "exited", "failed"].includes(box.status)) {
+          await box.delete();
+
+          return true;
+        }
       } catch (error) {
         if (nativeStatus(error) === 404) return true;
 
         // 409 while a pause, resume or start is still settling.
-        if (nativeStatus(error) !== 409 || Date.now() > deadline) throw error;
+        if (nativeStatus(error) !== 409) throw error;
       }
+
+      if (Date.now() > deadline) return false;
 
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
@@ -549,8 +575,18 @@ export function createArchilProvider(
 
     open.add(process);
 
+    // Once the shell ends, its connection leaves the registry, so ended sessions don't pile up.
     const ended = process.wait();
-    ended.catch(() => {});
+
+    const forget = () => {
+      const set = terminals.get(id);
+      set?.delete(process);
+
+      if (set?.size === 0) terminals.delete(id);
+      void disconnect(process);
+    };
+
+    ended.then(forget, forget);
 
     return {
       write: (data) => safe(id, () => process.sendInput(data)),
@@ -639,7 +675,7 @@ export function createArchilProvider(
           env: { ...input.env, [attemptVariable]: attempt },
           network: networkFor(input.network),
           ports: input.ports?.length ? [...input.ports] : undefined,
-          maxTtlSeconds: lifetimeFor(input.timeoutMs),
+          maxTtlSeconds: lifetimeFor(input.timeoutMs, input.ports),
           idleTtlSeconds: idleFor(input.idleTimeoutMs),
         };
 
@@ -698,7 +734,7 @@ export function createArchilProvider(
           boxes.set(box.id, box);
 
           if (adopted) {
-            const seen = await collect(runner(box.id), box.id, readAttempt, {
+            const seen = await collectExact(runner(box.id), box.id, readAttempt, {
               timeoutMs: 30_000,
             }).catch(() => undefined);
 
@@ -908,7 +944,19 @@ export function createArchilProvider(
     exec: (id, input) => safe(id, () => execute({ runner: runner(id), sandboxId: id, input })),
     files: { ...files(async (id) => guest(id), safe), writeSupportsMode: true },
     previewUrl: (id, port) =>
-      safe(id, async () => ({ url: `https://${await (await sandbox(id)).exposePort(port)}` })),
+      safe(id, async () => {
+        const box = await sandbox(id);
+
+        // A public port would let traffic resume the sandbox past its lifetime, a fresh session each time.
+        if (box.maxTtlSeconds < archilMaxLifetimeSeconds)
+          throw failure(
+            "This sandbox has a timeoutMs lifetime, and Archil resumes a paused sandbox on traffic to an exposed port. Create it without timeoutMs to use previews",
+            "unsupported",
+            id,
+          );
+
+        return { url: `https://${await box.exposePort(port)}` };
+      }),
     pause: (id) =>
       safe(id, async () => {
         await (await sandbox(id)).pause();

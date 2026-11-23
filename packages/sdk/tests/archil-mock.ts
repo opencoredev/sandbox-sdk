@@ -158,6 +158,7 @@ class FakeProcess implements ArchilProcess {
 
 class FakeSandbox {
   status: Status = "pending";
+  maxTtlSeconds = 86_400;
   env: Record<string, string> = {};
   readonly createdAt = new Date();
   readonly files = {

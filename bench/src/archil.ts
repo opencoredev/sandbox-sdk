@@ -5,12 +5,11 @@
  */
 import { z } from "zod";
 
-/** Public regions and their control planes, as `disk` 1.12.1 maps them (src/regions.ts). */
+/** Public regions with sandboxes and their control planes, as `disk` 1.12.1 maps them (src/regions.ts); gcp-us-central1 has none. */
 const controlPlanes = new Map([
   ["aws-us-east-1", "https://control.green.us-east-1.aws.prod.archil.com"],
   ["aws-us-west-2", "https://control.green.us-west-2.aws.prod.archil.com"],
   ["aws-eu-west-1", "https://control.green.eu-west-1.aws.prod.archil.com"],
-  ["gcp-us-central1", "https://control.blue.us-central1.gcp.prod.archil.com"],
 ]);
 
 /** The adapter's default region when ARCHIL_REGION is unset. */
@@ -34,8 +33,17 @@ export function archilControlUrl(env: NodeJS.ProcessEnv): string {
  * ID `sandbox_id` on the wire (https://docs.archil.com/api-reference/sandboxes/get-sandbox.md).
  */
 const sandbox = z
-  .object({ sandbox_id: z.string(), status: z.string() })
-  .transform((wire) => ({ id: wire.sandbox_id, status: wire.status }));
+  .object({
+    sandbox_id: z.string(),
+    status: z.string(),
+    /** When the sandbox's last session ended (stopped, exited or failed). */
+    finished_at: z.string().optional(),
+  })
+  .transform((wire) => ({
+    id: wire.sandbox_id,
+    status: wire.status,
+    finishedAt: wire.finished_at,
+  }));
 
 /**
  * `GET /api/sandboxes/{id}/usage` (https://docs.archil.com/administration/billing.md): usage since

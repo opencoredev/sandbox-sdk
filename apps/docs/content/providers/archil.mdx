@@ -42,7 +42,7 @@ bun add @opencoredev/sandbox-sdk disk
   </Tab>
 </Tabs>
 
-The adapter is written against `disk` 1.12.1 and accepts `^1.12.1`. Create an API key in the Archil console and set `ARCHIL_API_KEY`, or pass `archil({ apiKey })`. Keys belong to one region. For a key outside `aws-us-east-1`, the default, set `ARCHIL_REGION` or pass `region`: `aws-us-west-2`, `aws-eu-west-1` or `gcp-us-central1`.
+The adapter is written against `disk` 1.12.1 and accepts `^1.12.1`. Create an API key in the Archil console and set `ARCHIL_API_KEY`, or pass `archil({ apiKey })`. Keys belong to one region. For a key outside `aws-us-east-1`, the default, set `ARCHIL_REGION` or pass `region`: `aws-us-west-2` or `aws-eu-west-1` (Archil has no sandboxes in `gcp-us-central1`).
 
 If you bundle your app, keep `disk` external. It loads its HTTP client, `undici`, with a computed `import()` the first time it sends a request, so a bundle that inlines `disk` can't find it. The adapter then fails with `unavailable` and says so.
 
@@ -61,21 +61,21 @@ console.log(result.stdout);
 
 ## What it supports
 
-| Feature                        | Support | Notes                                                          |
-| ------------------------------ | ------- | -------------------------------------------------------------- |
-| Commands and streaming         | Yes     | Separate stdout and stderr, stdin, exit codes                  |
-| Files                          | Yes     | Reads need `python3` in the image; the default image has it    |
-| Background processes           | Yes     |                                                                |
-| Preview URLs                   | Yes     | Public `https://` URLs; no ports to declare                    |
-| Pause and resume               | Yes     | Keeps memory and processes                                     |
-| Snapshots                      | No      |                                                                |
-| Templates                      | No      | Use `image` or `imageId`                                       |
-| Machine size                   | Partial | 1 to 32 vCPUs, 256 to 65536 MiB; no disk setting               |
-| Network policy                 | Yes     | `"none"` and allow lists; paid plans only                      |
-| Hard lifetime (`timeoutMs`)    | Yes     | 60 seconds to 24 hours, in whole seconds; pauses when it fires |
-| Idle timeout (`idleTimeoutMs`) | Yes     | Whole seconds, up to 24 hours; pauses when it fires            |
-| Keys                           | Exact   | Sandbox name is a hash of the key                              |
-| Terminal                       | Yes     | A login shell as root with `TERM=xterm-256color`               |
+| Feature                        | Support | Notes                                                           |
+| ------------------------------ | ------- | --------------------------------------------------------------- |
+| Commands and streaming         | Yes     | Separate stdout and stderr, stdin, exit codes                   |
+| Files                          | Yes     | Reads need `python3` in the image; the default image has it     |
+| Background processes           | Yes     |                                                                 |
+| Preview URLs                   | Yes     | Public `https://` URLs; no ports to declare                     |
+| Pause and resume               | Yes     | Keeps memory and processes                                      |
+| Snapshots                      | No      |                                                                 |
+| Templates                      | No      | Use `image` or `imageId`                                        |
+| Machine size                   | Partial | 1 to 32 vCPUs, 256 to 65536 MiB; no disk setting                |
+| Network policy                 | Yes     | `"none"` and allow lists; paid plans only                       |
+| Hard lifetime (`timeoutMs`)    | Yes     | 60 s to 24 h, whole seconds; pauses; not with ports or previews |
+| Idle timeout (`idleTimeoutMs`) | Yes     | Whole seconds, up to 24 hours; pauses when it fires             |
+| Keys                           | Exact   | Sandbox name is a hash of the key                               |
+| Terminal                       | Yes     | A login shell as root with `TERM=xterm-256color`                |
 
 ## Run commands
 
@@ -130,13 +130,13 @@ await terminal.close();
 
 ## Previews
 
-`box.preview(port)` exposes that port publicly and returns its `https://` URL. Nothing needs to be declared at creation, and anyone with the URL can open it.
+`box.preview(port)` exposes that port publicly and returns its `https://` URL. Nothing needs to be declared at creation, and anyone with the URL can open it. Traffic to a public port wakes a paused sandbox with a fresh lifetime, so a sandbox with a preview can't have a hard `timeoutMs`: use `idleTimeoutMs` to pause it when nobody is using it.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { archil } from "@opencoredev/sandbox-sdk/archil";
 
-await using box = await createSandbox(archil(), { timeoutMs: 30 * 60_000 });
+await using box = await createSandbox(archil(), { idleTimeoutMs: 30 * 60_000 });
 await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
 const preview = await box.preview(8000);
 console.log(preview.url);
@@ -165,7 +165,7 @@ await using box = await createSandbox(archil(), {
 
 `network: "none"` denies all outbound traffic, and `{ allow }` denies everything except the listed destinations. On Archil's free plan every sandbox already has outbound traffic denied, and a network policy fails with `unsupported` because the plan doesn't include it. Paid plans allow all outbound traffic unless you set a policy.
 
-`timeoutMs` takes 60 seconds to 24 hours and `idleTimeoutMs` up to 24 hours; both round up to whole seconds. A `timeoutMs` under a minute fails with `unsupported`. Both pause the sandbox when they fire.
+`timeoutMs` takes 60 seconds to 24 hours and `idleTimeoutMs` up to 24 hours; both round up to whole seconds. A `timeoutMs` under a minute fails with `unsupported`. Both pause the sandbox when they fire. Because traffic to a public port resumes a paused sandbox with a fresh lifetime, `timeoutMs` with `ports`, or `box.preview()` on a sandbox created with `timeoutMs`, fails with `unsupported`.
 
 ## Limits and cost
 

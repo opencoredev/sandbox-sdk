@@ -10,12 +10,26 @@ if (credentials) vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 const run = process.env.SANDBOX_TEST_RUN_ID ?? `archil-${Date.now()}`;
 
-// Every live sandbox carries this run's label and pauses after 15 minutes regardless.
+// Every sandbox this run creates, so the leak check looks at this run's alone.
+const created = new Set<string>();
+
+// Every live sandbox carries this run's label and pauses after 15 idle minutes. An idle timeout, not
+// timeoutMs: a hard lifetime can't be combined with previews on Archil.
 function liveProvider(options: ArchilOptions = {}) {
   const provider = archil(options);
   const create = provider.create;
-  provider.create = (input) =>
-    create({ timeoutMs: 900_000, ...input, labels: { ...input.labels, "live-run": run } });
+
+  provider.create = async (input) => {
+    const info = await create({
+      idleTimeoutMs: 900_000,
+      ...input,
+      labels: { ...input.labels, "live-run": run },
+    });
+
+    created.add(info.id);
+
+    return info;
+  };
 
   return provider;
 }
@@ -104,10 +118,10 @@ describe.skipIf(!credentials)("Archil live options", { timeout: 180_000 }, () =>
 
     const left = async () =>
       (await client.sandboxes.list())
-        .filter(
-          (box) => box.name.startsWith("sbxsdk-") && !["deleting", "deleted"].includes(box.status),
-        )
+        .filter((box) => created.has(box.id) && !["deleting", "deleted"].includes(box.status))
         .map((box) => box.name);
+
+    expect(created.size).toBeGreaterThan(0);
 
     await expect.poll(left, { timeout: 30_000, interval: 3000 }).toEqual([]);
   });

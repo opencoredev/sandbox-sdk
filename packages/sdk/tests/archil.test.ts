@@ -6,6 +6,7 @@ import { connectSandbox, createSandbox, listSandboxes, reapSandboxes } from "../
 import { archilError } from "../src/providers/archil/errors.js";
 import {
   collect,
+  collectExact,
   execute,
   type ArchilProcess,
   type ArchilProcessResult,
@@ -235,6 +236,55 @@ describe("Archil helper commands", () => {
   });
 });
 
+describe("Archil helper starts", () => {
+  test("a helper start that lands after the deadline is stopped before the timeout is reported", async () => {
+    const { process, calls } = scripted();
+
+    await expect(
+      collect(
+        { run: () => new Promise((resolve) => setTimeout(() => resolve(process), 100)) },
+        "box",
+        "true",
+        { timeoutMs: 10 },
+      ),
+    ).rejects.toMatchObject({ code: "timeout" });
+    expect(calls.kills).toBe(1);
+  });
+});
+
+describe("Archil exact helper reads", () => {
+  test("a record read whose stream skipped bytes is read again, never returned damaged", async () => {
+    let reads = 0;
+
+    const runner = {
+      run: async () => {
+        reads++;
+
+        const { process } = scripted({
+          result: { status: "completed", exitCode: 0 },
+          cursor: reads === 1 ? 5 : 0,
+        });
+
+        return process;
+      },
+    };
+
+    expect((await collectExact(runner, "box", "cat marker")).lost).toBe(0);
+    expect(reads).toBe(2);
+  });
+
+  test("a record read that keeps losing bytes fails unavailable", async () => {
+    const runner = {
+      run: async () =>
+        scripted({ result: { status: "completed", exitCode: 0 }, cursor: 5 }).process,
+    };
+
+    await expect(collectExact(runner, "box", "cat marker")).rejects.toMatchObject({
+      code: "unavailable",
+    });
+  });
+});
+
 describe("Archil output gaps", () => {
   test("output missing after the last message is marked from the final cursor", async () => {
     const { process } = scripted({ result: { status: "completed", exitCode: 0 }, cursor: 10 });
@@ -339,6 +389,38 @@ describe("Archil create", () => {
     await expect(createSandbox(provider(), { timeoutMs: 10_000 })).rejects.toMatchObject({
       code: "unsupported",
     });
+  });
+
+  test("a hard lifetime is refused with ports, and previews are refused with a lifetime", async () => {
+    await expect(
+      createSandbox(provider(), { timeoutMs: 120_000, ports: [3000] }),
+    ).rejects.toMatchObject({ code: "unsupported" });
+
+    const p = provider();
+    const info = await p.create({ labels: {}, timeoutMs: 120_000 });
+
+    try {
+      const box = archilState.sandboxes.get(info.id);
+
+      if (!box) throw new Error("fake sandbox missing");
+      box.maxTtlSeconds = 120;
+      await expect(p.previewUrl(info.id, 3000)).rejects.toMatchObject({ code: "unsupported" });
+    } finally {
+      await p.destroy(info.id);
+    }
+  });
+
+  test("an overwrite without a mode keeps the file's mode and leaves no staging file", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      await box.files.write("bin/tool", "v1", { mode: 0o755 });
+      await box.files.write("bin/tool", "v2");
+      expect(await box.files.read("bin/tool")).toBe("v2");
+      expect((await box.run("stat -c %a bin/tool; ls -a bin")).stdout).toBe("755\n.\n..\ntool\n");
+    } finally {
+      await box.destroy();
+    }
   });
 
   test("snapshot restore is refused", async () => {

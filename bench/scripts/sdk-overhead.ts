@@ -467,6 +467,20 @@ async function quietly<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Stops an Archil sandbox without waiting on a stop that never settles: at most 60 s, then delete. */
+async function stopBounded(box: import("disk").Sandbox) {
+  await box.stop({ wait: false }).catch(() => {});
+  const deadline = Date.now() + 60_000;
+
+  while (
+    Date.now() < deadline &&
+    !["stopped", "exited", "failed", "deleted"].includes(box.status)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await box.refresh().catch(() => {});
+  }
+}
+
 // Modules resolve from the selected SDK build, not from the harness checkout.
 async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): Promise<NativeBox> {
   if (name === "e2b") {
@@ -837,7 +851,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
             throw new Error("Archil create answer was lost");
           },
           destroy: async () => {
-            await found.stop().catch(() => {});
+            await stopBounded(found);
             await found.delete();
           },
           exists: async () => {
@@ -862,7 +876,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
       },
       destroy: async () => {
         // A sandbox that already stopped or failed refuses stop; delete it either way.
-        await box.stop().catch(() => {});
+        await stopBounded(box);
         await box.delete();
       },
       exists: async () => {

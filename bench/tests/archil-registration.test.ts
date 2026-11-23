@@ -10,6 +10,7 @@ import {
   type Transport,
 } from "../src/billing/providers.js";
 import { billingRule } from "../src/cost/billing-rules.js";
+import { collectionPolicy } from "../src/collection-policy.js";
 import { classifyFailure } from "../src/merge.js";
 import { estimateCost } from "../src/pricing.js";
 import { missingCredentials } from "../src/providers.js";
@@ -114,32 +115,43 @@ describe("Archil failures", () => {
   });
 });
 
+describe("Archil coverage policy", () => {
+  it("records both snapshot scenarios as not run on both tracks", () => {
+    const rows = collectionPolicy().notRun.filter((row) => row.provider === "archil");
+
+    expect(rows.map((row) => `${row.track}/${row.scenario}`).sort()).toEqual([
+      "default/create-from-snapshot",
+      "default/snapshot",
+      "same-spec/create-from-snapshot",
+      "same-spec/snapshot",
+    ]);
+  });
+});
+
 describe("Archil billing", () => {
   it("reports Archil's own cost, final once deleted and the meter has settled", () => {
-    const finishedAt = "2026-11-21T10:05:00.000Z";
+    const endedAt = "2026-11-21T10:05:00.000Z";
 
-    expect(
-      decodeArchil({ success: true, data: usage }, { deleted: true, finishedAt }),
-    ).toMatchObject({
+    expect(decodeArchil({ success: true, data: usage }, { deleted: true, endedAt })).toMatchObject({
       kind: "billed",
       usd: 0.0475,
       scope: "sandbox-lifetime",
       complete: true,
       confidence: "high",
     });
-    expect(decodeArchil(usage, { deleted: false, finishedAt })).toMatchObject({
+    expect(decodeArchil(usage, { deleted: false, endedAt })).toMatchObject({
       complete: false,
       confidence: "low",
     });
     // Read within two minutes of the last sample: the last minute may still be missing.
     expect(
-      decodeArchil({ ...usage, as_of: "2026-11-21T10:06:00Z" }, { deleted: true, finishedAt }),
+      decodeArchil({ ...usage, as_of: "2026-11-21T10:06:00Z" }, { deleted: true, endedAt }),
     ).toMatchObject({ complete: false, note: expect.stringContaining("provisional") });
-    expect(
-      decodeArchil({ ...usage, as_of: undefined }, { deleted: true, finishedAt }),
-    ).toMatchObject({ complete: false });
+    expect(decodeArchil({ ...usage, as_of: undefined }, { deleted: true, endedAt })).toMatchObject({
+      complete: false,
+    });
     expect(() =>
-      decodeArchil({ success: true, data: { cost: 1 } }, { deleted: true, finishedAt }),
+      decodeArchil({ success: true, data: { cost: 1 } }, { deleted: true, endedAt }),
     ).toThrow();
   });
 
@@ -167,7 +179,14 @@ describe("Archil billing", () => {
       if (url.endsWith("/sbx-gone")) throw new BillingHttpError(404);
 
       if (url.endsWith("/sbx-deleted"))
-        return { success: true, data: { sandbox_id: "sbx-deleted", status: "deleted" } };
+        return {
+          success: true,
+          data: {
+            sandbox_id: "sbx-deleted",
+            status: "deleted",
+            finished_at: "2026-11-21T10:05:00Z",
+          },
+        };
 
       return { success: true, data: { sandbox_id: "sbx-live", status: "running" } };
     };
@@ -192,7 +211,8 @@ describe("Archil billing", () => {
     expect(
       result.sandboxes.map((s) => [s.id, s.cost.kind === "billed" && s.cost.complete]),
     ).toEqual([
-      ["sbx-gone", true],
+      // Already dropped: Archil no longer says when it ended, so the cost stays provisional.
+      ["sbx-gone", false],
       ["sbx-deleted", true],
       ["sbx-live", false],
     ]);

@@ -342,6 +342,25 @@ export async function execute({
   }
 }
 
+/**
+ * `collect` for output that must be whole (JSON records, file metadata): a read whose stream skipped
+ * bytes is run again, up to three times, then fails `unavailable` instead of returning a damaged record.
+ */
+export async function collectExact(
+  runner: ArchilRunner,
+  sandboxId: string,
+  command: string,
+  options: { env?: Record<string, string>; timeoutMs?: number } = {},
+): Promise<CollectedRun> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = await collect(runner, sandboxId, command, options);
+
+    if (result.lost === 0) return result;
+  }
+
+  throw failure("Archil helper output was incomplete three times", "unavailable", sandboxId);
+}
+
 export interface CollectedRun {
   exitCode: number | undefined;
   stdout: Uint8Array;
@@ -382,16 +401,37 @@ export async function collect(
   const started = await bounded(starting, timeoutMs);
 
   if (started === "late") {
-    void starting.then(
-      async (late) => {
-        try {
-          await terminate(late);
-        } finally {
-          await disconnect(late);
-        }
-      },
-      () => {},
+    // The helper may already run (a write's cat may be truncating its target): settle only once it is
+    // known stopped, or say the outcome is unknown.
+    const landed = await bounded(
+      starting.then(
+        (late) => late,
+        () => undefined,
+      ),
+      killConfirmMs,
     );
+
+    if (landed === undefined)
+      throw failure("Archil guest operation timed out starting", "timeout", sandboxId);
+
+    if (landed === "late")
+      throw failure(
+        "Archil guest operation start was never answered",
+        "outcome_unknown",
+        sandboxId,
+      );
+
+    try {
+      if (!(await terminate(landed)))
+        throw failure(
+          "Archil guest operation timed out and could not be stopped",
+          "outcome_unknown",
+          sandboxId,
+        );
+    } finally {
+      await disconnect(landed);
+    }
+
     throw failure("Archil guest operation timed out starting", "timeout", sandboxId);
   }
 
@@ -410,10 +450,20 @@ export async function collect(
 
   try {
     // A helper still taking input at the deadline is stopped, whatever it already reported.
-    const fed = await bounded(
-      writeStdin(process, options.stdin),
-      Math.max(0, deadline - Date.now()),
-    );
+    let fed: void | "late";
+
+    try {
+      fed = await bounded(writeStdin(process, options.stdin), Math.max(0, deadline - Date.now()));
+    } catch {
+      // Input that failed half way: stop the helper before the caller can retry.
+      if (!(await terminate(process)))
+        throw failure(
+          "Archil helper input failed and the helper could not be stopped",
+          "outcome_unknown",
+          sandboxId,
+        );
+      throw failure("Archil helper input failed; the helper was stopped", "provider", sandboxId);
+    }
 
     if (fed === "late") throw await timedOut();
 

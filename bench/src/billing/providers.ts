@@ -322,21 +322,27 @@ export function instaboxUsageQuery(row: Pick<OwnedSandbox, "startedAt">, now = D
   return query;
 }
 
-/** How long after a sandbox's last sample Archil's meter is taken as settled (it updates about once a minute). */
+/**
+ * How long after a sandbox's session ended (Archil's own `finished_at`) a usage read must be made to
+ * count as settled. `as_of` is when the usage was read, and the meter updates about once a minute, so
+ * a read this long after the end has seen the final minute.
+ */
 export const archilSettleMs = 120_000;
 
 /**
  * One sandbox's usage from Archil's `GET /api/sandboxes/{id}/usage`: Archil's own cost since the
- * sandbox was created. It is final only once the sandbox is deleted and the figures (`as_of`) are
- * at least {@link archilSettleMs} newer than the sandbox's last sample; before that it is provisional.
+ * sandbox was created. It is final only once the sandbox is deleted and the read (`as_of`, the read
+ * time) is at least {@link archilSettleMs} after Archil's own end of its last session (`finished_at`);
+ * without that end, or read sooner, it is provisional. The bench's last sample is not used: a sandbox
+ * left for the final cleanup sweep can run on long after it.
  */
 export function decodeArchil(
   raw: Json,
-  state: { deleted: boolean; finishedAt: string | null },
+  state: { deleted: boolean; endedAt: string | undefined },
 ): Cost {
   const usage = archilUsageBody.parse(raw);
   const asOf = usage.as_of === undefined ? Number.NaN : Date.parse(usage.as_of);
-  const ended = state.finishedAt === null ? Number.NaN : Date.parse(state.finishedAt);
+  const ended = state.endedAt === undefined ? Number.NaN : Date.parse(state.endedAt);
   const settled = state.deleted && asOf >= ended + archilSettleMs;
 
   const why = !state.deleted
@@ -1226,19 +1232,22 @@ export async function collectProvider(
         const headers = { Authorization: `Bearer ${key ?? ""}` };
         const base = archilControlUrl(env);
 
-        // Deletion first, so a usage read after it is known to be final.
-        const deleted = await transport(`${base}/api/sandboxes/${id}`, headers).then(
-          (raw) => archilSandboxBody.parse(raw).status === "deleted",
+        // Deletion and Archil's own end of the last session first, so a usage read after them is
+        // known to be final. A sandbox already dropped (404) has no end time left: provisional.
+        const native = await transport(`${base}/api/sandboxes/${id}`, headers).then(
+          (raw) => {
+            const found = archilSandboxBody.parse(raw);
+
+            return { deleted: found.status === "deleted", endedAt: found.finishedAt };
+          },
           (cause: unknown) => {
-            if (cause instanceof BillingHttpError && cause.status === 404) return true;
+            if (cause instanceof BillingHttpError && cause.status === 404)
+              return { deleted: true, endedAt: undefined };
             throw cause;
           },
         );
 
-        cost = decodeArchil(await transport(`${base}/api/sandboxes/${id}/usage`, headers), {
-          deleted,
-          finishedAt: row.finishedAt,
-        });
+        cost = decodeArchil(await transport(`${base}/api/sandboxes/${id}/usage`, headers), native);
       } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
       else cost = unavailable("No supported per-sandbox billing source");
       result.sandboxes.push({ id: row.id, source: spec.source, cost });
