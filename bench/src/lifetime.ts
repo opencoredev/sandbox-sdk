@@ -6,16 +6,21 @@ const defaultStepTimeoutMs = 180_000;
 
 /**
  * Providers whose sandboxes stop at a hard lifetime the factory sets as `timeoutMs`, with that
- * lifetime's maximum. Modal stops a sandbox after 5 minutes unless told otherwise.
+ * lifetime's maximum. Modal stops a sandbox after 5 minutes unless told otherwise. Maritime's
+ * adapter asks for an hour unless told otherwise (`timeLimitSeconds`, at most 24 hours, counted
+ * from the create or the last resume).
  */
-const lifetimeLimits: ReadonlyMap<string, number> = new Map([["modal", 24 * 3_600_000]]);
+const lifetimeLimits: ReadonlyMap<string, number> = new Map([
+  ["modal", 24 * 3_600_000],
+  ["maritime", 24 * 3_600_000],
+]);
 
 /**
  * The factory's hard sandbox lifetime: `--lifetime-ms provider=ms` when given, else long enough
  * for one whole iteration, restores included. Longer harnesses, such as the realistic workloads'
  * build and 60-minute held-open test, pass `--lifetime-ms` themselves.
  */
-/** The factory option a lifetime becomes: Modal's `timeoutMs`, or nothing for other providers. */
+/** The factory option a lifetime becomes: Modal's and Maritime's `timeoutMs`, or nothing for other providers. */
 export interface LifetimeOptions {
   timeoutMs?: number;
 }

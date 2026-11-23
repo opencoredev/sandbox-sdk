@@ -17,7 +17,7 @@ import {
 } from "./ownership.js";
 import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
-import { snapshotsFromSource, deleteProvenSnapshot } from "./snapshots.js";
+import { snapshotsFromSource, deleteProvenSnapshot, settleJournaledSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import {
@@ -38,10 +38,12 @@ const resource = z.object({
   kind: z.enum(["sandbox", "snapshot", "snapshot-source"]),
   parent: z.string().nullable(),
   snapshotProof: snapshotProvenanceSchema.optional(),
+  /** A Maritime save's idempotency key: present only while that save is unsettled. */
+  idempotencyKey: z.string().optional(),
 });
 
 const reviewSchema = resource
-  .omit({ parent: true, snapshotProof: true })
+  .omit({ parent: true, snapshotProof: true, idempotencyKey: true })
   .extend({ reason: z.string(), status: z.enum(["checking", "unresolved"]).optional() });
 
 /** Recovery never treats a journal ID as permission to delete. */
@@ -305,8 +307,14 @@ export async function reapRun(
         if (proof.sourceId !== entry.id || proof.runLabel !== config.run)
           throw new Error("Snapshot-source provenance mismatch");
 
+        const journaled = new Set(
+          (journal?.resources ?? [])
+            .filter((r) => r.provider === p.name && r.kind === "snapshot" && r.parent === entry.id)
+            .map((r) => r.id),
+        );
+
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, entry.id),
+          snapshotsFromSource(p.name, entry.id, journaled),
         )) {
           const item = {
             provider: p.name,
@@ -347,15 +355,18 @@ export async function reapRun(
       try {
         if (restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
-        await deleteProvenSnapshot(
-          p.name,
-          p.provider,
-          entry.id,
-          entry.parent,
-          entry.snapshotProof,
-          config.run,
-          config["timeout-ms"],
-        );
+
+        if ((await settleJournaledSnapshot(p.name, entry, config["timeout-ms"])) === "exists")
+          await deleteProvenSnapshot(
+            p.name,
+            p.provider,
+            entry.id,
+            entry.parent,
+            entry.snapshotProof,
+            config.run,
+            config["timeout-ms"],
+          );
+
         await forget(entry);
       } catch (error) {
         review(

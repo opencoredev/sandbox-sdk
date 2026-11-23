@@ -310,6 +310,14 @@ Instabox limits starts per account: 30 a minute on Pro, 50 on Builder (create, s
 
 Instabox blocks outbound HTTPS to public DNS resolvers (1.1.1.1, 1.0.0.1, 8.8.8.8 and 9.9.9.9 on port 443), so the `tcp-ms` probe, which connects to `1.1.1.1:443`, times out on every attempt. Other port 443 connections (GitHub, npm, Cloudflare) work, as does `1.1.1.1` on ports 80 and 53. The collection policy records it as documented not-run, so the harness writes no `tcp-ms` row for Instabox and notes the reason on the provider instead of counting a failure. If the probe ever returns a value, the harness records it and says on the provider note that the policy entry is stale. Remove the entry before merging, because the merge drops every row a not-run rule matches.
 
+### Maritime
+
+Maritime refuses about one create in three with `503 out_of_capacity` (2026-11-23), sometimes several in a row; the adapter tries again with a new idempotency key for up to 3 minutes, so a cold create under pressure includes that wait. The account's plan caps machines awake at once (25 on Growth), and the runner's burst admission assumes that limit unless `--account-limits maritime=<n>` says otherwise.
+
+Maritime's billing source is per sandbox: `GET /v1/sandboxes/{id}/info` and every page of `GET /v1/usage?sandbox={id}`. A cost is final only when the sandbox has ended, every running interval has an end, and the intervals add up to the info's `costSoFarUsd`; a sandbox with no interval is $0 only when the info says it ran 0 seconds at $0. The intervals are compute while awake (disk included); a paused sandbox's disk ($0.08/GB-month) is not in them, so Maritime stays out of the held-open idle diagnostic.
+
+Snapshots are named by the run (`bench-<run>-<8 hex>`) and journaled with their source and the save's `Idempotency-Key` before `POST /v1/sandboxes/{id}/save`. A save whose answer was lost is settled by sending it again with that key and reading the snapshot, so a first 404 never drops the journal entry; an unsettled save keeps the entry, and its source, for `bench reap`.
+
 ## Measure SDK overhead
 
 `scripts/sdk-overhead.ts` measures what Sandbox SDK adds over the adapter and the provider's official SDK. It is separate from the published benchmark.

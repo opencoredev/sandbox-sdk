@@ -36,7 +36,8 @@ export const lookupSchema = z.object({
 
 export type LookupEvidence = z.infer<typeof lookupSchema>;
 
-const terminal = new Set(["deleted", "destroyed", "terminated"]);
+// Maritime keeps an ended sandbox readable for 7 days with `state: "ended"`.
+const terminal = new Set(["deleted", "destroyed", "terminated", "ended"]);
 
 function redact(value: string) {
   for (const [key, secret] of Object.entries(process.env))
@@ -337,7 +338,13 @@ const lookupKeys = new Map([
   ["baseten", "BASETEN_API_KEY"],
   ["instabox", "INSTABOX_API_KEY"],
   ["beam", "BEAM_TOKEN"],
+  ["maritime", "MARITIME_API_KEY"],
 ]);
+
+/** Maritime's control plane, as the adapter resolves it. */
+export function maritimeBase() {
+  return `${(process.env.MARITIME_API_URL ?? "https://api.maritime.sh").replace(/\/+$/, "")}/v1`;
+}
 
 /** Beam's gateway container listing, as the existence check reads it. */
 const beamContainers = z.object({
@@ -471,6 +478,19 @@ export async function lookupSandbox(
           const response = await new BoatApi(config).get({ sandboxId: id });
 
           return nativeInfo.parse(response.sandbox);
+        }
+
+        case "maritime": {
+          // GET only: it never resumes a paused sandbox. An ended one reads `state: "ended"`.
+          const response = await fetch(`${maritimeBase()}/sandboxes/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${process.env.MARITIME_API_KEY ?? ""}` },
+            signal,
+          });
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          return nativeInfo.parse(await response.json());
         }
 
         case "instabox": {

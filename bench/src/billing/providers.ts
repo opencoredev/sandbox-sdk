@@ -179,6 +179,18 @@ const sources = new Map<string, BillingSource>(
         "Metered, not invoice: Instabox's own per-machine usage (running time only, not starting, paused or stopped) at the published rates, $0.004/vCPU-hour and $0.00225/GiB-hour (https://instabox.sh/docs/account/pricing.md). Disk is included in paid plans (Builder: 1 TiB across machines) and egress within the plan's allowance, so neither is priced. Plan fee, monthly credits and tax are excluded.",
       ],
     },
+    maritime: {
+      source:
+        "https://api.maritime.sh/v1/sandboxes/{id}/info and https://api.maritime.sh/v1/usage?sandbox={id}",
+      granularity: "per running interval of one sandbox, each with its cost in USD",
+      delay:
+        "live; final once the sandbox has ended and every running interval has an end (ended sandboxes stay readable for 7 days)",
+      key: "MARITIME_API_KEY",
+      notes: [
+        "Metered, not invoice: Maritime's own cost of each running interval ($0.0055/vCPU-hour and $0.00275/GiB-hour per second, disk included while running; https://maritime.sh/docs/billing). A paused sandbox's disk ($0.08/GB-month) is not in these intervals and is not priced. Plan fee, its equal usage credit and tax are excluded.",
+        "A sandbox with no usage interval counts as $0 only when Maritime's info says it ended with 0 running seconds and $0 so far; otherwise its cost is unavailable, never zero.",
+      ],
+    },
     beam: {
       source: "No verified public billing endpoint",
       granularity: "not available",
@@ -307,6 +319,125 @@ export function instaboxUsageQuery(row: Pick<OwnedSandbox, "startedAt">, now = D
   if (Number.isFinite(started)) query.set("from", new Date(started - 24 * 3_600_000).toISOString());
 
   return query;
+}
+
+/** The fields of `GET /v1/sandboxes/{id}/info` the Maritime collector reads. It never resumes the sandbox. */
+export const maritimeInfoSchema = z.object({
+  id: z.string(),
+  state: z.string(),
+  createdAt: z.string(),
+  endedAt: z.string().nullable(),
+  runningSeconds: z.number().int().nonnegative(),
+  costSoFarUsd: z.string().nullable(),
+  storedBytes: z.number().int().nonnegative(),
+});
+
+export type MaritimeInfo = z.infer<typeof maritimeInfoSchema>;
+
+/** One running interval of `GET /v1/usage`. */
+export const maritimeUsageRecordSchema = z.object({
+  sandboxId: z.string(),
+  startedAt: z.string(),
+  endedAt: z.string().nullable(),
+  costUsd: z.string(),
+});
+
+export type MaritimeUsageRecord = z.infer<typeof maritimeUsageRecordSchema>;
+
+export const maritimeUsagePageSchema = z.object({
+  data: z.array(maritimeUsageRecordSchema),
+  nextCursor: z.string().nullable(),
+});
+
+/** A decimal USD amount as Maritime writes it (`"0.000038"`), or null when it is not one. */
+function usdOf(text: string | null): number | null {
+  if (text === null || !/^\d+(?:\.\d+)?$/.test(text)) return null;
+
+  const value = Number(text);
+
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** How many usage pages (100 intervals each) the collector reads before it gives up. */
+export const maritimeUsagePages = 100;
+
+/**
+ * The usage query for one sandbox: every interval overlapping its life, from an hour before Maritime's
+ * own `createdAt` to five minutes after its `endedAt` (or now, while it lives).
+ */
+export function maritimeUsageQuery(info: MaritimeInfo, now = Date.now(), cursor?: string) {
+  const created = Date.parse(info.createdAt);
+  const ended = info.endedAt === null ? now : Date.parse(info.endedAt);
+
+  if (!Number.isFinite(created) || !Number.isFinite(ended))
+    throw new Error("Maritime info has unreadable timestamps");
+
+  const query = new URLSearchParams({
+    from: new Date(created - 3_600_000).toISOString(),
+    to: new Date(ended + 5 * 60_000).toISOString(),
+    sandbox: info.id,
+    limit: "100",
+  });
+
+  if (cursor !== undefined) query.set("cursor", cursor);
+
+  return query;
+}
+
+/**
+ * One sandbox's cost from Maritime's info and every usage interval of it. Complete only when the sandbox
+ * has ended, every interval has an end, and the intervals add up to the info's running total. No interval
+ * at all is $0 only when the info itself says the sandbox ended having run 0 seconds at $0; otherwise it
+ * is unavailable, since missing usage is not zero.
+ */
+export function decodeMaritime(
+  info: MaritimeInfo,
+  records: MaritimeUsageRecord[],
+  id: string,
+): Cost {
+  if (info.id !== id) throw new Error("Billing ID mismatch");
+
+  const costs = records.map((record) => {
+    if (record.sandboxId !== id) throw new Error("Billing ID mismatch");
+
+    const usd = usdOf(record.costUsd);
+
+    if (usd === null) throw new Error("Maritime usage cost is not a non-negative amount");
+
+    return usd;
+  });
+
+  const soFar = usdOf(info.costSoFarUsd);
+  const ended = info.state === "ended";
+  const neverRan = ended && info.runningSeconds === 0 && soFar === 0;
+
+  if (records.length === 0 && !neverRan)
+    return unavailable(
+      ended
+        ? `Maritime lists no usage for a sandbox that ran ${info.runningSeconds} seconds; not counted as $0`
+        : `Maritime lists no usage yet for a sandbox that is ${info.state}`,
+    );
+
+  const usd = costs.reduce((sum, cost) => sum + cost, 0);
+  const closed = records.every((record) => record.endedAt !== null);
+  // The intervals and the info's running total agree to Maritime's precision (a millionth of a dollar).
+  const agrees = soFar !== null && Math.abs(soFar - usd) <= 0.000002 + usd * 0.01;
+  const complete = ended && closed && agrees;
+
+  return {
+    kind: "metered",
+    usd,
+    scope: "sandbox-lifetime",
+    complete,
+    confidence: complete ? "medium" : "low",
+    note: complete
+      ? `Metered, not invoice: Maritime's ${records.length} running interval(s) of this sandbox (${info.runningSeconds} running seconds); disk while paused excluded`
+      : !ended
+        ? `Partial: the sandbox is ${info.state}, so its intervals are not final`
+        : !closed
+          ? "Partial: an interval of this ended sandbox has no end yet"
+          : `Partial: the intervals sum to $${usd.toFixed(6)} but Maritime's info says $${info.costSoFarUsd ?? "unknown"} so far`,
+  };
 }
 
 export function decodeUpstash(raw: Json, id: string): Cost {
@@ -913,6 +1044,7 @@ export async function collectProvider(
     "modal",
     "vercel",
     "instabox",
+    "maritime",
   ].includes(provider);
 
   let blocked = offline
@@ -1175,6 +1307,39 @@ export async function collectProvider(
         );
 
         cost = decodeInstabox(usage, { deleted, started: row.startedAt !== null });
+      } else if (provider === "maritime") {
+        const headers = { Authorization: `Bearer ${key}` };
+        const root = (env.MARITIME_API_URL ?? "https://api.maritime.sh").replace(/\/+$/, "");
+
+        const info = maritimeInfoSchema.parse(
+          await transport(`${root}/v1/sandboxes/${id}/info`, headers),
+        );
+
+        const records: MaritimeUsageRecord[] = [];
+        let cursor: string | undefined;
+        let exhausted = false;
+
+        for (let page = 0; page < maritimeUsagePages; page++) {
+          const answer = maritimeUsagePageSchema.parse(
+            await transport(
+              `${root}/v1/usage?${maritimeUsageQuery(info, extra.now, cursor)}`,
+              headers,
+            ),
+          );
+
+          records.push(...answer.data);
+
+          if (answer.nextCursor === null) {
+            exhausted = true;
+            break;
+          }
+
+          cursor = answer.nextCursor;
+        }
+
+        cost = exhausted
+          ? decodeMaritime(info, records, row.id)
+          : unavailable("Maritime usage pagination limit; history incomplete");
       } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
       else cost = unavailable("No supported per-sandbox billing source");
       result.sandboxes.push({ id: row.id, source: spec.source, cost });

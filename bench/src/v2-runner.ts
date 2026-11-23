@@ -61,6 +61,10 @@ import {
   snapshotCleaner,
   undeletableSnapshots,
   createNamedDaytonaSnapshot,
+  createNamedMaritimeSnapshot,
+  maritimeSnapshotName,
+  settleJournaledSnapshot,
+  settleMaritimeSave,
   snapshotsFromSource,
   deleteProvenSnapshot,
 } from "./snapshots.js";
@@ -150,6 +154,19 @@ function burstOutcome(burst: {
   if (attempted > k) return { kind: "failure", note };
 
   return { kind: "failure", note, stage: `burst-${k}/all-ready`, elapsedMs: burst.durationMs };
+}
+
+/** The snapshot IDs the ownership journal holds for one source sandbox of one provider. */
+export function journaledSnapshots(
+  entries: Iterable<{ provider: string; id: string; kind: string; parent: string | null }>,
+  provider: string,
+  sourceId: string,
+): ReadonlySet<string> {
+  return new Set(
+    Array.from(entries)
+      .filter((e) => e.provider === provider && e.kind === "snapshot" && e.parent === sourceId)
+      .map((e) => e.id),
+  );
 }
 
 const errorNote = (cause: unknown) =>
@@ -377,6 +394,8 @@ export async function runV2(
       kind: "sandbox" | "snapshot" | "snapshot-source";
       parent: string | null;
       snapshotProof?: SnapshotProvenance;
+      /** The save's idempotency key, journaled before a Maritime save so an unanswered one can be settled. */
+      idempotencyKey?: string;
     }
   >();
 
@@ -1266,13 +1285,23 @@ export async function runV2(
           });
 
           if (!targets.slice(1).some(selected)) continue;
-          const preview = await measure("preview-provisioning", () => active.preview(3000));
+          // The preview's URL and headers can carry its credentials (Maritime's `?token=`, Styne's and
+          // Boat's auth headers), so they stay in this variable: the measured result, which the runner
+          // writes to samples.ndjson and the merged output, is nothing.
+          let access: { url: string; headers?: Record<string, string> } | undefined;
+
+          const preview = await measure("preview-provisioning", async () => {
+            access = await active.preview(3000);
+
+            return null;
+          });
+
           await measure("dev-server", async () => {
-            if (preview.kind !== "success")
+            if (preview.kind !== "success" || !access)
               throw new Error("Preview provisioning did not return a URL");
 
             const h = await active.start("npm run dev", {
-              env: { BENCH_PREVIEW_HOST: new URL(preview.result.url).hostname },
+              env: { BENCH_PREVIEW_HOST: new URL(access.url).hostname },
               name: "bench-vite",
               cwd: "/workspace/bench-app",
               ready: { log: /Local:/ },
@@ -1289,8 +1318,8 @@ export async function runV2(
               const result = await measure(
                 "preview-first-byte",
                 async (signal) => {
-                  if (preview.kind !== "success") throw new Error("Preview unavailable");
-                  await firstByteAttempt(preview.result, signal, clock, (work) => {
+                  if (preview.kind !== "success" || !access) throw new Error("Preview unavailable");
+                  await firstByteAttempt(access, signal, clock, (work) => {
                     void pending.track(work);
                   });
 
@@ -1337,6 +1366,8 @@ export async function runV2(
 
           let snapshotId: string | undefined;
           let snapshotReady = false;
+          // A Maritime save's idempotency key, journaled with its name before the request.
+          let saveKey: string | undefined;
           let clean: ((id: string) => Promise<void>) | undefined;
           let snapshotProof: SnapshotProvenance | undefined;
 
@@ -1385,7 +1416,7 @@ export async function runV2(
                 );
               };
 
-              if (["daytona", "superserve"].includes(p.name)) {
+              if (["daytona", "superserve", "maritime"].includes(p.name)) {
                 owned.set(`${p.name}/snapshot-source/${active.id}`, {
                   provider: p.name,
                   id: active.id,
@@ -1394,6 +1425,7 @@ export async function runV2(
                   snapshotProof,
                 });
 
+                // Named and journaled before the request, so a lost answer still names it for cleanup.
                 if (p.name === "daytona") {
                   snapshotId = `bench-${config.run.slice(0, 25)}-${crypto.randomUUID().slice(0, 8)}`;
                   owned.set(`${p.name}/snapshot/${snapshotId}`, {
@@ -1402,6 +1434,21 @@ export async function runV2(
                     kind: "snapshot",
                     parent: active.id,
                     snapshotProof,
+                  });
+                }
+
+                // Maritime: the name, the source and the save's idempotency key, so a save whose answer is
+                // lost is settled by replaying it, never forgotten on a first 404.
+                if (p.name === "maritime") {
+                  snapshotId = maritimeSnapshotName(config.run);
+                  saveKey = crypto.randomUUID();
+                  owned.set(`${p.name}/snapshot/${snapshotId}`, {
+                    provider: p.name,
+                    id: snapshotId,
+                    kind: "snapshot",
+                    parent: active.id,
+                    snapshotProof,
+                    idempotencyKey: saveKey,
                   });
                 }
 
@@ -1439,9 +1486,11 @@ export async function runV2(
               let snap: { id: string };
 
               try {
-                snap = snapshotId
-                  ? await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId)
-                  : await p.provider.snapshot(active.id);
+                snap = !snapshotId
+                  ? await p.provider.snapshot(active.id)
+                  : p.name === "maritime" && saveKey
+                    ? await createNamedMaritimeSnapshot(active.id, snapshotId, saveKey)
+                    : await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId);
               } finally {
                 snapshotClock.finish();
               }
@@ -1636,6 +1685,26 @@ export async function runV2(
                 if (pendingRestore) await remove(p, pendingRestore);
 
                 if (restoredId && owned.has(`${p.name}/${restoredId}`)) await remove(p, restoredId);
+
+                // A Maritime save that never confirmed may still land: settle it first. Only a refused
+                // save, or a source gone with no snapshot, drops the journal entry without a delete; an
+                // unsettled one throws and stays journaled for recovery.
+                if (p.name === "maritime" && !snapshotReady && saveKey) {
+                  const settled = await settleMaritimeSave({
+                    sandboxId: active.id,
+                    name: id,
+                    idempotencyKey: saveKey,
+                    timeoutMs: timeout,
+                  });
+
+                  if (settled === "absent") {
+                    owned.delete(`${p.name}/snapshot/${id}`);
+                    await persist();
+
+                    return;
+                  }
+                }
+
                 await clean?.(id);
                 report.cleanupReview = report.cleanupReview?.filter(
                   (r) => !(r.provider === p.name && r.id === id && r.kind === "snapshot"),
@@ -1928,10 +1997,11 @@ export async function runV2(
               .parse(source.snapshotProof);
 
             const sourceCleaner = await snapshotCleaner(p.name, p.provider, source.id);
+            const journaled = journaledSnapshots(owned.values(), p.name, source.id);
             await deadline(timeout, async (signal) => {
               for (;;) {
                 if (signal.aborted) throw new Error("Snapshot source recovery deadline expired");
-                const snapshots = await snapshotsFromSource(p.name, source.id);
+                const snapshots = await snapshotsFromSource(p.name, source.id, journaled);
 
                 if (!snapshots.length) break;
 
@@ -2112,9 +2182,17 @@ export async function runV2(
 
         const configured =
           config["account-limits"][p.name] ??
-          { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5, baseten: 10, instabox: 25 }[
-            p.name
-          ] ??
+          {
+            boxd: 50,
+            e2b: 20,
+            upstash: 10,
+            freestyle: 10,
+            tenki: 5,
+            baseten: 10,
+            instabox: 25,
+            // Maritime's Growth plan: 25 machines awake at once.
+            maritime: 25,
+          }[p.name] ??
           10;
 
         const account = Math.min(configured, p.name === "boxd" ? 50 : configured);
@@ -2291,16 +2369,18 @@ export async function runV2(
       try {
         if (restores.blocksSnapshot(p.name, item.id) || restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
-        await deleteProvenSnapshot(
-          p.name,
-          p.provider,
-          item.id,
-          item.parent,
-          item.snapshotProof,
-          config.run,
-          config["timeout-ms"],
-          await snapshotCleaner(p.name, p.provider, item.parent ?? ""),
-        );
+
+        if ((await settleJournaledSnapshot(p.name, item, config["timeout-ms"])) === "exists")
+          await deleteProvenSnapshot(
+            p.name,
+            p.provider,
+            item.id,
+            item.parent,
+            item.snapshotProof,
+            config.run,
+            config["timeout-ms"],
+            await snapshotCleaner(p.name, p.provider, item.parent ?? ""),
+          );
         owned.delete(`${p.name}/snapshot/${item.id}`);
         report.cleanupReview = report.cleanupReview?.filter(
           (r) => !(r.provider === p.name && r.id === item.id && r.kind === "snapshot"),
@@ -2325,7 +2405,7 @@ export async function runV2(
         const sourceCleaner = await snapshotCleaner(p.name, p.provider, item.id);
 
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, item.id),
+          snapshotsFromSource(p.name, item.id, journaledSnapshots(owned.values(), p.name, item.id)),
         )) {
           owned.set(`${p.name}/snapshot/${snapshot.id}`, {
             provider: p.name,
