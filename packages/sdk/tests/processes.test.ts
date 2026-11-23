@@ -1482,6 +1482,21 @@ test("no-awk detached fallback holds incomplete lines whole so secrets across 4 
     expect(wrapRaw).not.toContain("SHORT_SE");
     expect(wrapLogs.text).not.toContain("S200_MMMM");
     expect(wrapRaw).not.toContain("MMMM_E200");
+
+    // Large newline-terminated line under no-awk (256 KiB) must finish fast without per-read wc -c forks.
+    const t256 = performance.now();
+
+    const proc256 = await boxWrap.start(
+      `dd if=/dev/zero bs=1024 count=256 2>/dev/null | tr '\\0' 'a'; printf '\\ndone-256k\\n'`,
+      { name: "noawk-256k-fast" },
+    );
+
+    await proc256.wait();
+    const dt256 = performance.now() - t256;
+    const logs256Tail = await proc256.logs({ after: "250000", maxBytes: 65_536 });
+
+    expect(logs256Tail.text).toContain("done-256k\n");
+    expect(dt256).toBeLessThan(5_000);
   } finally {
     await fs.rm(binDir, { recursive: true, force: true });
   }

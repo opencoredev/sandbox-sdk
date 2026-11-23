@@ -532,7 +532,7 @@ function streamReader(input: {
 
   const computeHold = input.secretsPath
     ? [
-        `if command -v awk >/dev/null 2>&1`,
+        `if [ "$has_awk" -eq 1 ]`,
         `then clen=$(printf '%s\\n' "$chunk" | LC_ALL=C awk -v mh=${input.holdBytes} '${holdAwk}' ${quote(input.secretsPath)} - 2>/dev/null)`,
         `clen=\${clen:--1}`,
         `else clen=-1`,
@@ -544,7 +544,7 @@ function streamReader(input: {
   const scrubWrappedShDef = input.secretsPath
     ? [
         `scrub_wrapped_sh() { _sw_text=$1; _sw_eof=$2`,
-        `_sw_flat=$(printf '%s' "$_sw_text" | tr -d '\\n')`,
+        `case "$_sw_text" in *"$nl"*) _sw_flat=$(printf '%s' "$_sw_text" | tr -d '\\n');; *) _sw_flat=$_sw_text;; esac`,
         `while IFS= read -r _sw_sec || [ -n "$_sw_sec" ]`,
         `do [ "\${#_sw_sec}" -ge 2 ] || continue`,
         `case "[REDACTED]" in *"$_sw_sec"*) continue;; esac`,
@@ -595,7 +595,7 @@ function streamReader(input: {
     ? [
         `hcnt=0`,
         `emit_head=1`,
-        `if command -v awk >/dev/null 2>&1`,
+        `if [ "$has_awk" -eq 1 ]`,
         `then wrapped=$(printf '%s\\n' "$head" | LC_ALL=C awk -v mh=${input.holdBytes} -v eof=0 '${wrapAwk}' ${quote(input.secretsPath)} - 2>/dev/null; printf .)`,
         `wrapped=\${wrapped%.}`,
         `if [ -n "$wrapped" ]`,
@@ -636,7 +636,7 @@ function streamReader(input: {
   const eofFlush = input.secretsPath
     ? [
         `if [ -n "$carry" ]`,
-        `then if command -v awk >/dev/null 2>&1`,
+        `then if [ "$has_awk" -eq 1 ]`,
         `then wrapped=$(printf '%s\\n' "$carry" | LC_ALL=C awk -v mh=${input.holdBytes} -v eof=1 '${wrapAwk}' ${quote(input.secretsPath)} - 2>/dev/null; printf .)`,
         `wrapped=\${wrapped%.}`,
         `if [ -n "$wrapped" ]`,
@@ -646,17 +646,12 @@ function streamReader(input: {
         `else scrub_wrapped_sh "$carry" 1`,
         `carry=$_sw_text`,
         `fi`,
-        `chunk=$(printf '%s\\n' "$carry" | sed -f ${quote(input.sedPath)}; printf .)`,
-        `chunk=\${chunk%.}`,
-        `chunk=\${chunk%"$nl"}`,
-        `while [ -n "$chunk" ]`,
-        `do case "$chunk" in *"$nl"*) line=\${chunk%%"$nl"*}`,
-        `append ${input.marker} "$line"`,
-        `chunk=\${chunk#*"$nl"};`,
-        `*) append ${input.marker.toLowerCase()} "$chunk"`,
-        `chunk=;`,
-        `esac`,
+        `printf '%s\\n' "$carry" | sed -f ${quote(input.sedPath)} | { _ef_has=0; _ef_prev=`,
+        `while IFS= read -r line`,
+        `do if [ "$_ef_has" -eq 1 ]; then append ${input.marker} "$_ef_prev"; fi`,
+        `_ef_prev=$line; _ef_has=1`,
         `done`,
+        `if [ "$_ef_has" -eq 1 ] && [ -n "$_ef_prev" ]; then append ${input.marker.toLowerCase()} "$_ef_prev"; fi; }`,
         `fi`,
       ]
     : [
@@ -671,12 +666,12 @@ function streamReader(input: {
   const partialTailLines = [
     `if [ -n "$held_h" ]`,
     `then carry="$held_h$nl$chunk"`,
-    `if [ "$(printf '%s' "$carry" | wc -c)" -gt 1048576 ]`,
+    `if [ "\${#carry}" -gt 1048576 ]`,
     `then drop_line=1`,
     `carry=`,
     `fi`,
     `elif [ -n "$chunk" ]`,
-    `then tlen=$(printf '%s' "$chunk" | wc -c)`,
+    `then tlen=\${#chunk}`,
     ...computeHold,
     `if [ "$clen" -lt 0 ]`,
     `then if [ "$tlen" -gt 1048576 ]`,
@@ -716,7 +711,11 @@ function streamReader(input: {
   ];
 
   return [
-    `(nl=$(printf '\\nX')`,
+    `(LC_ALL=C`,
+    `export LC_ALL`,
+    `has_awk=0`,
+    `command -v awk >/dev/null 2>&1 && has_awk=1`,
+    `nl=$(printf '\\nX')`,
     `nl=\${nl%X}`,
     ...scrubWrappedShDef,
     `carry=`,
@@ -768,15 +767,8 @@ function streamReader(input: {
     `head=\${chunk%"$nl$tail"}`,
     ...scrubWrappedHead,
     `if [ "$emit_head" -eq 1 ]`,
-    `then head=$(printf '%s\\n' "$head" | sed -f ${quote(input.sedPath)}; printf .)`,
-    `head=\${head%.}`,
-    `head=\${head%"$nl"}`,
-    `while :`,
-    `do case "$head" in *"$nl"*) line=\${head%%"$nl"*}`,
-    `append ${input.marker} "$line"`,
-    `head=\${head#*"$nl"};`,
-    `*) append ${input.marker} "$head"; break;`,
-    `esac`,
+    `then printf '%s\\n' "$head" | sed -f ${quote(input.sedPath)} | while IFS= read -r line`,
+    `do append ${input.marker} "$line"`,
     `done`,
     `fi`,
     `chunk=$tail;`,

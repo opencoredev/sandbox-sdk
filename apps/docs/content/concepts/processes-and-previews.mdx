@@ -76,7 +76,7 @@ for await (const line of box.process("dev").lines()) {
 }
 ```
 
-Every line carries its own `cursor`, so you can resume from the exact line you stopped at with `lines({ after: line.cursor })`.
+Every line carries its own `cursor`, so you can resume from the exact line you stopped at with `lines({ after: line.cursor })`. Individual lines longer than 64 KiB are truncated to their trailing 64 KiB with a `[line truncated]` prefix; use `logs()` if you need full pages of a very long line.
 
 ## Reattach by name
 

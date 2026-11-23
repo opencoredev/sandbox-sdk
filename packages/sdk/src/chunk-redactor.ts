@@ -11,7 +11,22 @@ interface RedactSegment extends RedactSpan {
   readonly text: string;
 }
 
-/** Hold suffixes so secrets split between transport chunks never escape. */
+const MAX_HOLD_BYTES = 1_048_576;
+
+/**
+ * Hold suffixes so secrets split between transport chunks never escape.
+ *
+ * Core invariants:
+ * 1. Raw-first holdback: ambiguous trailing prefixes (secrets, marker fragments, nested/cross-secret
+ *    overlaps, and right-of-marker suffixes) remain raw in the queue until resolved or flushed, so
+ *    streamed output matches batch `Redactor.text()` across arbitrary chunk splits.
+ * 2. Linear stall tracking: when a stream stalls with `safe === 0` and no match, `stallKmp` advances
+ *    KMP states only across newly arrived bytes (`O(|secrets| * |delta|)`), avoiding suffix rescans.
+ * 3. Bounded memory: if a held suffix or cross-stream backlog exceeds `MAX_HOLD_BYTES` (1 MiB),
+ *    the held prefix fails closed to `[REDACTED]` and sets `truncated = true`, then normal streaming resumes.
+ * 4. Stream attribution: non-interleaved mode isolates `stdout`/`stderr` while preserving arrival order;
+ *    interleaved mode attributes emitted ranges back to their originating stream chunks.
+ */
 export function chunkRedactor(
   redactor: Redactor,
   emit: (chunk: OutputChunk) => void,
@@ -1029,8 +1044,8 @@ export function chunkRedactor(
         headIdx === 0 &&
         cleanKey === stallKey &&
         cleanLen > 0 &&
-        selBytes <= 1_048_576 &&
-        queuedBytes <= 1_048_576 &&
+        selBytes <= MAX_HOLD_BYTES &&
+        queuedBytes <= MAX_HOLD_BYTES &&
         stallKmp !== undefined &&
         stallKmp.stream === stallKey &&
         stallKmp.secrets === redactor.secrets
@@ -1210,7 +1225,7 @@ export function chunkRedactor(
             continue;
           }
 
-          if (!final && selectedBytes > 1_048_576) {
+          if (!final && selectedBytes > MAX_HOLD_BYTES) {
             dropped = true;
             replaceSelected(indices, marker);
             pruneEmpty();
@@ -1219,7 +1234,7 @@ export function chunkRedactor(
             break;
           }
 
-          if (queuedBytes <= 1_048_576) {
+          if (queuedBytes <= MAX_HOLD_BYTES) {
             cleanKey = stallKey;
             cleanLen = head.length;
 
@@ -1313,7 +1328,7 @@ export function chunkRedactor(
         }
 
         if (safe === 0) {
-          if (!final && selectedBytes > 1_048_576) {
+          if (!final && selectedBytes > MAX_HOLD_BYTES) {
             dropped = true;
             replaceSelected(indices, marker);
             pruneEmpty();
@@ -1322,7 +1337,7 @@ export function chunkRedactor(
             break;
           }
 
-          if (!final && queuedBytes > 1_048_576) {
+          if (!final && queuedBytes > MAX_HOLD_BYTES) {
             dropped = true;
             failClosedEmitted[first.stream] = true;
             emitSafe({ stream: first.stream, text: marker });
