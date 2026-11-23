@@ -14,7 +14,12 @@ import type { Sandbox, SnapshotListOpts, SnapshotPaginator } from "e2b";
 import type { Freestyle } from "freestyle";
 import type { Sandbox as VercelSandbox, Snapshot as VercelSnapshot } from "@vercel/sandbox";
 import { archilControlUrl, archilSandboxBody } from "./archil.js";
-import { connectionOf, endpoint } from "./connections.js";
+import {
+  connectionOf,
+  endpoint,
+  modalClientParams,
+  type ModalClientParams,
+} from "./connections.js";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -140,9 +145,9 @@ export interface NativeModules {
       ...args: ConstructorParameters<typeof BasetenClient>
     ) => Pick<BasetenClient, "getInfo">;
   };
-  /** Modal's client: reads MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from the environment. */
+  /** Modal's client: params it is not given resolve from the environment, then ~/.modal.toml. */
   modal: {
-    ModalClient: new (params?: { grpcMiddleware?: GrpcMiddleware[] }) => {
+    ModalClient: new (params?: ModalClientParams & { grpcMiddleware?: GrpcMiddleware[] }) => {
       readonly images: {
         fromId(imageId: string): Promise<{ readonly imageId: string }>;
         delete(imageId: string): Promise<void>;
@@ -366,10 +371,10 @@ function isDaytonaSandboxApi(api: unknown): api is DaytonaSandboxApi {
  * Every native client below takes its endpoint, credentials and scope from the connection of the
  * adapter instance being read (`connectionOf`), never from the environment alone: a lookup sent to
  * another endpoint, account or team answers 404 for a sandbox that is running. Base URLs lose
- * their trailing slashes, as the adapters' own requests do. Modal's SDK resolves its connection
- * itself (environment, then ~/.modal.toml), as the adapter lets it.
+ * their trailing slashes, as the adapters' own requests do. Modal's client gets the token, secret
+ * and environment the adapter was bound with; only the ones it was not given resolve in the SDK
+ * (environment, then ~/.modal.toml), as they do for the adapter and its fingerprint.
  */
-const modalKey = "MODAL_TOKEN_SECRET";
 
 /** Beam's gateway container listing, as the existence check reads it. */
 const beamContainers = z.object({
@@ -405,9 +410,6 @@ export async function lookupSandbox(
     const info = await deadline(timeoutMs, async (signal) => {
       // Memory connect only reads its machine map.
       if (name === "memory") return nativeInfo.parse(await provider.connect(id));
-
-      if (name === "modal" && !process.env[modalKey])
-        throw new Error("Native lookup credentials unavailable");
 
       switch (name) {
         case "tenki": {
@@ -567,10 +569,16 @@ export async function lookupSandbox(
         case "modal": {
           const { ModalClient } = await nativeModules.load("modal");
           const { ClientError, Status } = await nativeModules.load("nice-grpc");
+
           // The deadline cancels the request in flight and closes the client, so a stalled poll
           // keeps no call or client open past it.
-          const client = new ModalClient({ grpcMiddleware: [cancelOn(signal)] });
+          const client = new ModalClient({
+            ...modalClientParams(connectionOf(provider, "modal")),
+            grpcMiddleware: [cancelOn(signal)],
+          });
+
           const close = () => client.close();
+
           signal.addEventListener("abort", close, { once: true });
 
           try {

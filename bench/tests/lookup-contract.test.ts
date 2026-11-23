@@ -604,7 +604,7 @@ describe("Baseten", () => {
 });
 
 describe("Modal", () => {
-  it("leaves credentials and environment to the SDK, as the adapter does with the bench's options", async () => {
+  it("passes the bound token, secret and environment, as the adapter does", async () => {
     setEnv({ MODAL_TOKEN_ID: "id1", MODAL_TOKEN_SECRET: "secret1" });
 
     const ModalClient = vi.fn().mockImplementation(function () {
@@ -623,11 +623,25 @@ describe("Modal", () => {
         Status: { NOT_FOUND: 5 },
       },
     });
-    expect((await lookupSandbox(named("modal"), id, budget)).result).toBe("present");
 
-    // Only the cancellation middleware: no token, secret or environment of the lookup's own.
-    expect(Object.keys(z.object({}).loose().parse(argument(ModalClient)))).toEqual([
+    const adapter = bound(
+      { ...memory(), name: "modal" },
+      { tokenId: "id2", tokenSecret: "secret2", environment: "env2" },
+    );
+
+    expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
+
+    // The bound connection plus the cancellation middleware, never the ambient id1/secret1.
+    expect(Object.keys(z.object({}).loose().parse(argument(ModalClient))).sort()).toEqual([
+      "environment",
       "grpcMiddleware",
+      "tokenId",
+      "tokenSecret",
     ]);
+    expect(argument(ModalClient)).toMatchObject({
+      tokenId: "id2",
+      tokenSecret: "secret2",
+      environment: "env2",
+    });
   });
 });

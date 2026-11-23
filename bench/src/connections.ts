@@ -345,6 +345,24 @@ export interface ModalClientParams {
   environment?: string;
 }
 
+/**
+ * The `ModalClient` params for a bound Modal connection, built as `modal()` builds its client:
+ * set fields are passed, unset ones stay unset so the SDK resolves them. Every Modal client the
+ * harness makes for an adapter instance (fingerprint, lookup, snapshot reads) uses these, so each
+ * reaches the connection the adapter and its fingerprint reach.
+ */
+export function modalClientParams(config: ModalConfig): ModalClientParams {
+  const params: ModalClientParams = {};
+
+  if (config.tokenId !== undefined) params.tokenId = config.tokenId;
+
+  if (config.tokenSecret !== undefined) params.tokenSecret = config.tokenSecret;
+
+  if (config.environment !== undefined) params.environment = config.environment;
+
+  return params;
+}
+
 const sdkPackage = new URL("../../packages/sdk/package.json", import.meta.url);
 
 /** Docker's `/info`: the daemon's ID, which stays the same across its restarts. */
@@ -491,15 +509,7 @@ const modalProfile = z.object({
  */
 async function modalProfileOf(config: ModalConfig) {
   const { ModalClient } = await connectionProbes.loadModal();
-  // As the adapter builds its client: unset fields stay unset, so the SDK resolves them.
-  const params: ModalClientParams = {};
-
-  if (config.tokenId !== undefined) params.tokenId = config.tokenId;
-
-  if (config.tokenSecret !== undefined) params.tokenSecret = config.tokenSecret;
-
-  if (config.environment !== undefined) params.environment = config.environment;
-  const client = new ModalClient(params);
+  const client = new ModalClient(modalClientParams(config));
 
   try {
     return modalProfile.parse(client.profile);

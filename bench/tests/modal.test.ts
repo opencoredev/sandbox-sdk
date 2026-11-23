@@ -13,7 +13,7 @@ import { loadProvider, type DestroyTiming, type FactoryOptions } from "../src/pr
 import * as snapshots from "../src/snapshots.js";
 import { runV2 } from "../src/v2-runner.js";
 import { parseV2 } from "../src/v2-config.js";
-import { fakeNativeModules, boundFake } from "./native-fakes.js";
+import { bound, boundFake, fakeNativeModules } from "./native-fakes.js";
 
 const dirs: string[] = [];
 
@@ -285,7 +285,8 @@ it("registers Modal snapshot cleanup and metadata through Modal's own client", a
     },
   });
 
-  const provider = memory();
+  const provider = bound({ ...memory(), name: "modal" });
+
   expect(await snapshots.inspectSnapshot("modal", provider, "sb-1", "im-1")).toEqual({
     exists: true,
   });

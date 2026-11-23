@@ -10,7 +10,7 @@ import {
   nativeModules,
   type NativeModules,
 } from "./existence.js";
-import { connectionOf, endpoint } from "./connections.js";
+import { connectionOf, endpoint, modalClientParams } from "./connections.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
 
@@ -39,15 +39,20 @@ async function tenkiClient(provider: Provider) {
   return new TenkiSandbox(connectionOf(provider, "tenki"));
 }
 
-/** Run `action` with a fresh Modal client, closed afterwards. Cleanup can outlive the adapter's client. */
+/**
+ * Run `action` with a fresh Modal client on `provider`'s bound connection, closed afterwards.
+ * Cleanup can outlive the adapter's client.
+ */
 async function withModal<T>(
+  provider: Provider,
   action: (
     client: InstanceType<NativeModules["modal"]["ModalClient"]>,
     modal: NativeModules["modal"],
   ) => Promise<T>,
 ): Promise<T> {
+  const params = modalClientParams(connectionOf(provider, "modal"));
   const modal = await nativeModules.load("modal");
-  const client = new modal.ModalClient();
+  const client = new modal.ModalClient(params);
 
   try {
     return await action(client, modal);
@@ -164,7 +169,7 @@ export async function snapshotCleaner(
 
   if (name === "modal")
     // A snapshot is a Modal Image. Its delete also succeeds for a missing image; inspect runs first.
-    return (id) => withModal((client) => client.images.delete(id));
+    return (id) => withModal(provider, (client) => client.images.delete(id));
 
   if (name === "vercel") {
     const { Snapshot } = await nativeModules.load("@vercel/sandbox");
@@ -353,7 +358,7 @@ export async function inspectSnapshot(
 
       case "modal": {
         // Modal Images record no source sandbox, so provenance rests on the ownership journal.
-        const found = await withModal(async (client, modal) => {
+        const found = await withModal(provider, async (client, modal) => {
           try {
             if ((await client.images.fromId(id)).imageId !== id)
               throw new Error("Snapshot metadata ID mismatch");

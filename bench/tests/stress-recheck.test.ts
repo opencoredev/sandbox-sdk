@@ -925,6 +925,18 @@ describe("PR 75 review: cpu-sustained projections price the whole sandbox lifeti
       );
     });
 
+    it("leaves out a past-the-runs iteration even when its probe was timed", () => {
+      // PR 75 re-review: a timed probe at iteration 1 pulled the extra 600 s lifetime in, and
+      // the projection jumped from $0.085218 to $0.468618.
+      const overrun = [
+        at(sampleRow("cpu-sustained", 1000, "vercel"), 1),
+        at(sampleRow("sandbox-lifetime", 600_000, "vercel"), 1),
+      ];
+
+      expect(project(blockedIteration)).toBeCloseTo(0.085218, 6);
+      expect(project([...blockedIteration, ...overrun])).toBeCloseTo(0.085218, 6);
+    });
+
     it("still sums the steps of a probed iteration that recorded no lifetime", () => {
       const steps = ["cold", "fingerprint", "cpu-sustained", "destroy"].map((name) =>
         sampleRow(name, 1000, "vercel"),

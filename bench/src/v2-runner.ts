@@ -377,6 +377,37 @@ export async function fingerprinted(candidates: readonly LoadedProvider[]): Prom
   return { loaded, connectionFingerprints };
 }
 
+/**
+ * What a sandbox's iteration charged the budget for it: its life from `since` to `chargedUntil`,
+ * at `price` for a whole lifetime of a given length (billing minimum and creation fee included).
+ * `chargedUntil` is `since` when nothing was charged (a sandbox no iteration claimed) and
+ * `Infinity` while its iteration is still open.
+ */
+export type Charge = {
+  since: number;
+  chargedUntil: number;
+  price: (lifetimeMs: number) => number | null;
+};
+
+/**
+ * What the budget still owes for a sandbox observed live until `end`: its whole observed life
+ * priced on the charge's basis, less what that basis already charged, never below zero. Pricing
+ * the time past `chargedUntil` as a lifetime of its own would charge the billing minimum and the
+ * creation fee a second time. Null when the life cannot be priced.
+ */
+export function chargeBeyond(charge: Charge, end: number): number | null {
+  if (end <= charge.chargedUntil) return 0;
+  const whole = charge.price(end - charge.since);
+
+  if (whole === null) return null;
+
+  const charged =
+    charge.chargedUntil > charge.since ? charge.price(charge.chargedUntil - charge.since) : 0;
+
+  // An unpriceable charged part is taken as nothing: the guard over-charges, never under.
+  return Math.max(0, whole - (charged ?? 0));
+}
+
 export async function runV2(
   candidates: LoadedProvider[],
   config: ConfigV2,
@@ -571,12 +602,6 @@ export async function runV2(
 
     watches.set(key, watch);
   }
-
-  /**
-   * What each sandbox's iteration charged the budget for it: from `since` to `chargedUntil`,
-   * at `price` per duration. Time past `chargedUntil` is priced again once the run's cleanup ends.
-   */
-  type Charge = { since: number; chargedUntil: number; price: (ms: number) => number | null };
 
   const charges = new Map<string, Charge>();
   const runStart = performance.now();
@@ -2946,8 +2971,7 @@ export async function runV2(
       // Never observed gone, whatever its delete returned: still a liability at the cutoff.
       if (!gone.has(key)) open.push({ id, liveMs: Math.round(cutoff - charge.since) });
 
-      if (end <= charge.chargedUntil) continue;
-      const usd = charge.price(end - charge.chargedUntil);
+      const usd = chargeBeyond(charge, end);
 
       if (usd === null) unpriced = true;
       else state.estimatedUSD += usd;

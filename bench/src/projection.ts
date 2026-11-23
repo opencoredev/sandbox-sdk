@@ -157,10 +157,12 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
 
       // A dedicated cpu-sustained iteration is one sandbox, priced on its own recorded lifetime
       // (`sandbox-lifetime`, create to destroy): that covers the probe's upload and first guest
-      // clock read, which run before the measured probe step. In a sustained run, every planned
-      // iteration (below `runs`) that recorded a lifetime is priced on it, even when its probe was
-      // blocked: the sandbox still ran. An iteration whose probe ran but whose lifetime is missing
-      // (an older pilot) falls back to the sum of its create, fingerprint, probe and destroy steps.
+      // clock read, which run before the measured probe step. In a sustained run only the planned
+      // iterations (below `runs`) are priced, whichever row places them: each that recorded a
+      // lifetime is priced on it, even when its probe was blocked (the sandbox still ran), and an
+      // iteration past the runs is left out even when its probe was timed. An iteration whose
+      // probe ran but whose lifetime is missing (an older pilot) falls back to the sum of its
+      // create, fingerprint, probe and destroy steps.
       const sustainedParts = ["cold", "fingerprint", "cpu-sustained", "destroy"];
       const timed = (s: (typeof rows)[number]) => ["sample", "failure"].includes(s.outcome.kind);
 
@@ -173,17 +175,18 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
         );
 
       const sustainedRun = selectsScenario(report.config.scenarios, "cpu-sustained");
+      const planned = (iteration: number) => !sustainedRun || iteration < report.config.runs;
 
       const sustainedIterations = [
         ...new Set(
           rows
             .filter(
               (s) =>
-                (s.scenario === "cpu-sustained" && timed(s)) ||
-                (sustainedRun &&
-                  s.scenario === "sandbox-lifetime" &&
-                  s.outcome.kind === "sample" &&
-                  s.iteration < report.config.runs),
+                planned(s.iteration) &&
+                ((s.scenario === "cpu-sustained" && timed(s)) ||
+                  (sustainedRun &&
+                    s.scenario === "sandbox-lifetime" &&
+                    s.outcome.kind === "sample")),
             )
             .map((s) => s.iteration),
         ),

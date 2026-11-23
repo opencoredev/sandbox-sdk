@@ -691,6 +691,17 @@ describe("a run never creates on a provider whose fingerprint it cannot journal"
     vi.spyOn(process.stdout, "write").mockReturnValue(true);
     const argv = process.argv;
     const exitCode = process.exitCode;
+    // Each CLI run makes the optional ipinfo.io metadata lookup: answer it 503, offline, and
+    // record every URL so nothing else leaves the process.
+    const requested: string[] = [];
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input: string | URL | Request) => {
+        requested.push(input instanceof Request ? input.url : String(input));
+
+        return new Response("fixture: unavailable", { status: 503 });
+      });
 
     const loader: typeof loadProvider = async (name, env, sizes, config) =>
       name === "memory"
@@ -741,7 +752,9 @@ describe("a run never creates on a provider whose fingerprint it cannot journal"
       ]);
       expect(mixed.report.samples.length).toBeGreaterThan(0);
       expect(mixed.exitCode).toBeUndefined();
+      expect(requested).toEqual(["https://ipinfo.io/json", "https://ipinfo.io/json"]);
     } finally {
+      fetchSpy.mockRestore();
       process.argv = argv;
       process.exitCode = exitCode;
     }
