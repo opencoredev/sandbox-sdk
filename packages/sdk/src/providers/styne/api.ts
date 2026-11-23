@@ -82,7 +82,7 @@ export function nestedAccessTokens(raw: JsonValue | undefined): string[] {
   for (let seen = 0; pending.length > 0 && seen < 1_000_000; seen++) {
     const value = pending.pop();
 
-    if (Array.isArray(value)) pending.push(...value);
+    if (Array.isArray(value)) for (const entry of value) pending.push(entry);
     else if (isJsonObject(value))
       for (const [key, entry] of Object.entries(value))
         if (tokenKeys.includes(key) && isString(entry) && entry) found.push(entry);

@@ -335,3 +335,35 @@ test("a kill that fails for another reason exits 1 at once", async () => {
     calls: ["-KILL -4242", "-0 -4242"],
   });
 });
+
+test("box.native.request handles large JSON arrays without overflowing the call stack", async () => {
+  const large = Array.from({ length: 160_000 }, (_, i) => i);
+
+  server.on("GET /sandboxes/{id}/large", { json: large });
+  const box = await attached();
+  const data = await box.native.request<number[]>("GET", `/sandboxes/${id}/large`);
+
+  expect(data).toHaveLength(160_000);
+  expect(data[159_999]).toBe(159_999);
+});
+
+test("the kill script creates a missing exec directory before writing the cancel marker", async () => {
+  const { script, args } = await killScript(42);
+  const root = await mkdtemp(join(tmpdir(), "review-styne-missing-dir-"));
+
+  try {
+    const missing = join(root, "nested", "exec");
+    const [tag] = args;
+
+    const run = spawnSync(
+      "sh",
+      ["-c", script.replaceAll("/tmp/.sandbox-sdk/exec", missing), "sandbox-sdk", String(tag), ""],
+      { timeout: 5000, encoding: "utf8" },
+    );
+
+    expect(run.status).toBe(0);
+    expect(await readFile(join(missing, `${String(tag)}.cancel`), "utf8")).toBe("");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

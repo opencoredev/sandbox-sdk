@@ -179,7 +179,8 @@ const execDir = "/tmp/.sandbox-sdk/exec";
  */
 const wrapper = [
   `d=${execDir}; t="$d/$3"`,
-  `{ echo $$ > "$t"; } 2>/dev/null || { mkdir -p "$d" && echo $$ > "$t"; }`,
+  `[ -d "$d" ] || mkdir -p "$d"`,
+  `echo $$ > "$t"`,
   `if [ -e "$t.cancel" ]; then rm -f "$t" "$t.cancel"; exit 137; fi`,
   `cd -- "$1" || { rm -f "$t"; exit 1; }`,
   `sh -c "$2"; s=$?`,
@@ -197,7 +198,8 @@ const wrapper = [
  */
 const killer = [
   `d=${execDir}; t="$d/$1"`,
-  `{ : > "$t.cancel"; } 2>/dev/null || { mkdir -p "$d" && : > "$t.cancel"; }`,
+  `[ -d "$d" ] || mkdir -p "$d"`,
+  `: > "$t.cancel"`,
   `p=$2`,
   `[ -n "$p" ] || read -r p < "$t" 2>/dev/null`,
   // Only a plain PID above 1: `kill -KILL -1` signals every process, `-0` the killer's own group.
