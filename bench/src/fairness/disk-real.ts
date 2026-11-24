@@ -174,13 +174,14 @@ export function verifyDisk(input: {
   if (output.seqWrite.writeS <= 0 || output.seqRead.readS <= 0)
     return { kind: "invalid", reason: "A sequential phase reports no time" };
 
-  // A random phase runs its full time unless it hit the operation cap.
-  const short = (wallS: number, capped: boolean) =>
-    !capped && wallS < input.randomSeconds - clockToleranceS;
+  // A random phase runs its full time unless it hit the operation cap, and a cap means exactly the
+  // cap's count, in time that passed.
+  const phaseOk = (wallS: number, capped: boolean, ops: number) =>
+    wallS > 0 && (capped ? ops === maxRandomOps : wallS >= input.randomSeconds - clockToleranceS);
 
   if (
-    short(output.randWrite.wallS, output.randWrite.capped) ||
-    short(output.randRead.wallS, output.randRead.capped)
+    !phaseOk(output.randWrite.wallS, output.randWrite.capped, writes.ops) ||
+    !phaseOk(output.randRead.wallS, output.randRead.capped, reads.ops)
   )
     return { kind: "invalid", reason: "A random phase stopped before its time" };
 

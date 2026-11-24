@@ -1,5 +1,5 @@
 /*
- * sbx-native: one static x86_64 Linux binary for the bench's fairness checks. It has no libc and
+ * sbx-native: one static Linux binary (x86_64, and aarch64 for ARM providers) for the bench's fairness checks. It has no libc and
  * no dynamic loader, so every provider runs the same machine code no matter which distribution,
  * interpreter or C library its image ships. Built by build.sh for baseline x86-64 (no AVX), so no
  * provider gets a faster code path because its CPU has wider vectors.
@@ -21,6 +21,7 @@ typedef unsigned char u8;
 /* ------------------------------------------------------------------------------------------ */
 /* Syscalls                                                                                    */
 
+#if defined(__x86_64__)
 enum {
   SYS_read = 0,
   SYS_write = 1,
@@ -52,15 +53,90 @@ static i64 sys6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) {
                    : "rcx", "r11", "memory");
   return ret;
 }
+#define O_DIRECT 040000
+#elif defined(__aarch64__)
+/* The generic syscall table: no open, unlink, pipe or fork; their *at, pipe2 and clone forms. */
+enum {
+  SYS_unlinkat = 35,
+  SYS_statfs = 43,
+  SYS_openat = 56,
+  SYS_close = 57,
+  SYS_pipe2 = 59,
+  SYS_read = 63,
+  SYS_write = 64,
+  SYS_pread64 = 67,
+  SYS_pwrite64 = 68,
+  SYS_fdatasync = 83,
+  SYS_exit_group = 94,
+  SYS_clock_gettime = 113,
+  SYS_munmap = 215,
+  SYS_clone = 220,
+  SYS_mmap = 222,
+  SYS_fadvise64 = 223,
+  SYS_wait4 = 260,
+};
+
+static i64 sys6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) {
+  register i64 x8 __asm__("x8") = n;
+  register i64 x0 __asm__("x0") = a;
+  register i64 x1 __asm__("x1") = b;
+  register i64 x2 __asm__("x2") = c;
+  register i64 x3 __asm__("x3") = d;
+  register i64 x4 __asm__("x4") = e;
+  register i64 x5 __asm__("x5") = f;
+  __asm__ volatile("svc #0"
+                   : "+r"(x0)
+                   : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
+                   : "memory");
+  return x0;
+}
+#define O_DIRECT 0200000
+#else
+#error "sbx-native builds for x86_64 and aarch64 Linux only"
+#endif
 
 #define SYS3(n, a, b, c) sys6((n), (i64)(a), (i64)(b), (i64)(c), 0, 0, 0)
 #define SYS4(n, a, b, c, d) sys6((n), (i64)(a), (i64)(b), (i64)(c), (i64)(d), 0, 0)
+
+#define AT_FDCWD (-100)
+#define SIGCHLD 17
+
+static i64 sys_open(const char *path, i64 flags, i64 mode) {
+#if defined(__x86_64__)
+  return SYS3(SYS_open, path, flags, mode);
+#else
+  return SYS4(SYS_openat, AT_FDCWD, path, flags, mode);
+#endif
+}
+
+static i64 sys_unlink(const char *path) {
+#if defined(__x86_64__)
+  return SYS3(SYS_unlink, path, 0, 0);
+#else
+  return SYS3(SYS_unlinkat, AT_FDCWD, path, 0);
+#endif
+}
+
+static i64 sys_pipe(int fds[2]) {
+#if defined(__x86_64__)
+  return SYS3(SYS_pipe, fds, 0, 0);
+#else
+  return SYS3(SYS_pipe2, fds, 0, 0);
+#endif
+}
+
+static i64 sys_fork(void) {
+#if defined(__x86_64__)
+  return SYS3(SYS_fork, 0, 0, 0);
+#else
+  return sys6(SYS_clone, SIGCHLD, 0, 0, 0, 0, 0);
+#endif
+}
 
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_CREAT 0100
 #define O_TRUNC 01000
-#define O_DIRECT 040000
 #define EINVAL 22
 #define PROT_RW 3
 #define MAP_PRIVATE_ANON 0x22
@@ -240,10 +316,10 @@ static int cmd_cpu(u64 seed, u64 workers, u64 target_ms, u64 chunk) {
   int go[2], res[2];
   struct cpu_row rows[64];
   if (workers < 1 || workers > 64 || chunk < 1) fail("cpu", "bad arguments", -EINVAL);
-  if (SYS3(SYS_pipe, go, 0, 0) < 0 || SYS3(SYS_pipe, res, 0, 0) < 0) fail("cpu", "pipe", -1);
+  if (sys_pipe(go) < 0 || sys_pipe(res) < 0) fail("cpu", "pipe", -1);
 
   for (u64 i = 0; i < workers; i++) {
-    i64 pid = SYS3(SYS_fork, 0, 0, 0);
+    i64 pid = sys_fork();
     if (pid < 0) fail("cpu", "fork", pid);
     if (pid == 0) {
       char token;
@@ -339,21 +415,23 @@ static int cmd_cpu(u64 seed, u64 workers, u64 target_ms, u64 chunk) {
 #define POOL_PAGES 16384ul /* 64 MiB of seeded words, reused with a stamp per page */
 #define MAX_RAND_OPS 1000000ul
 #define STAMP_MAGIC 0x53425844u /* "SBXD" */
-#define REWRITE_MIX 0x5bd1e995u     /* a rewritten page's stamp and content differ from the first */
+#define REWRITE_MIX 0x5bd1e995u /* each write's version changes the page's stamp and content */
 #define REWRITE_FLIP 0xa5a5a5a5u
 
 static u32 *pool;
 
-/* Page p's stamp word: version 1 as first written, version 2 once a random write rewrote it. */
-static u32 page_stamp(u32 seed, u64 p, int version) {
-  return fmix32(seed ^ ((u32)p * GOLDEN) ^ (version == 2 ? REWRITE_MIX : 0u));
+/* Page p's stamp word at a version: 1 as first written, k + 2 after random write k rewrote it. */
+static u32 page_stamp(u32 seed, u64 p, u32 version) {
+  return fmix32(seed ^ ((u32)p * GOLDEN) ^ (version == 1 ? 0u : version * REWRITE_MIX));
 }
 
-/* Page p of the test file: a 16-byte stamp, then the pool's page p mod POOL_PAGES (flipped in a
-   rewritten page, so a rewrite that never reached the disk reads back as version 1). */
-static void fill_page(u32 *dst, u32 seed, u64 p, int version) {
+static u32 page_flip(u32 version) { return version == 1 ? 0u : fmix32(version ^ REWRITE_FLIP); }
+
+/* Page p of the test file: a 16-byte stamp, then the pool's page p mod POOL_PAGES, flipped per
+   version, so a rewrite that never reached the disk reads back as the version before it. */
+static void fill_page(u32 *dst, u32 seed, u64 p, u32 version) {
   const u32 *src = pool + (p % POOL_PAGES) * PAGE_WORDS;
-  u32 flip = version == 2 ? REWRITE_FLIP : 0u;
+  u32 flip = page_flip(version);
   for (u64 k = 4; k < PAGE_WORDS; k++) dst[k] = src[k] ^ flip;
   dst[0] = STAMP_MAGIC;
   dst[1] = seed;
@@ -361,9 +439,9 @@ static void fill_page(u32 *dst, u32 seed, u64 p, int version) {
   dst[3] = page_stamp(seed, p, version);
 }
 
-static int page_ok(const u32 *got, u32 seed, u64 p, int version) {
+static int page_ok(const u32 *got, u32 seed, u64 p, u32 version) {
   const u32 *src = pool + (p % POOL_PAGES) * PAGE_WORDS;
-  u32 flip = version == 2 ? REWRITE_FLIP : 0u;
+  u32 flip = page_flip(version);
   if (got[0] != STAMP_MAGIC || got[1] != seed || got[2] != (u32)p || got[3] != page_stamp(seed, p, version))
     return 0;
   for (u64 k = 4; k < PAGE_WORDS; k++)
@@ -426,16 +504,16 @@ static void put_latency(const char *name, u64 *lat, u64 n) {
 
 static i64 open_file(const char *path, i64 flags, int *direct) {
   i64 fd = -EINVAL;
-  if (*direct) fd = SYS3(SYS_open, path, flags | O_DIRECT, 0600);
+  if (*direct) fd = sys_open(path, flags | O_DIRECT, 0600);
   if (fd == -EINVAL) {
     *direct = 0;
-    fd = SYS3(SYS_open, path, flags, 0600);
+    fd = sys_open(path, flags, 0600);
   }
   return fd;
 }
 
 static void drop_cache(const char *path) {
-  i64 fd = SYS3(SYS_open, path, O_RDONLY, 0);
+  i64 fd = sys_open(path, O_RDONLY, 0);
   if (fd >= 0) {
     SYS4(SYS_fadvise64, fd, 0, 0, FADV_DONTNEED);
     SYS3(SYS_close, fd, 0, 0);
@@ -473,8 +551,8 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
   pool = map(POOL_PAGES * PAGE);
   u32 *buf = map(BLOCK);
   u64 *lat = map(MAX_RAND_OPS * 8 * 2);
-  u8 *touched = map((pages + 7) / 8 + PAGE);
-  if (!pool || !buf || !lat || !touched) fail("disk", "mmap", -1);
+  u32 *versions = map(pages * 4 + PAGE); /* each page's latest version; 0 means 1 (never rewritten) */
+  if (!pool || !buf || !lat || !versions) fail("disk", "mmap", -1);
   for (u64 g = 0; g < POOL_PAGES * PAGE_WORDS; g++) pool[g] = stream_word(seed, g);
 
   /* Sequential write, 1 MiB at a time, then fdatasync. Only the syscalls are timed. */
@@ -490,14 +568,14 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
       /* The filesystem took O_DIRECT at open but refuses it on write: start again buffered. */
       SYS3(SYS_close, fd, 0, 0);
       direct = 0;
-      fd = SYS3(SYS_open, path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+      fd = sys_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
       if (fd < 0) fail("disk", "reopen for write", fd);
       write_ns = 0;
       b = (u64)-1;
       continue;
     }
     if (n != (i64)BLOCK) {
-      SYS3(SYS_unlink, path, 0, 0);
+      sys_unlink(path);
       fail("disk", "sequential write", n < 0 ? n : -1);
     }
   }
@@ -523,7 +601,7 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
       SYS3(SYS_close, fd, 0, 0);
       direct = 0;
       drop_cache(path);
-      fd = SYS3(SYS_open, path, O_RDONLY, 0);
+      fd = sys_open(path, O_RDONLY, 0);
       if (fd < 0) fail("disk", "reopen for read", fd);
       read_ns = 0;
       b = (u64)-1;
@@ -547,14 +625,15 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
   u64 wops = 0, phase_start = now_ns(), limit = rand_ms * 1000000ul;
   while (wops < MAX_RAND_OPS && now_ns() - phase_start < limit) {
     u64 p = xorshift32(&state) % pages;
-    fill_page(buf, seed, p, 2);
+    u32 version = (u32)wops + 2;
+    fill_page(buf, seed, p, version);
     t0 = now_ns();
     i64 n = sys6(SYS_pwrite64, fd, (i64)buf, (i64)PAGE, (i64)(p * PAGE), 0, 0);
     if (n == -EINVAL && direct && wops == 0) {
       /* 1 MiB direct writes worked but 4 KiB ones do not: run this phase buffered. */
       SYS3(SYS_close, fd, 0, 0);
       direct = 0;
-      fd = SYS3(SYS_open, path, O_WRONLY, 0600);
+      fd = sys_open(path, O_WRONLY, 0600);
       if (fd < 0) fail("disk", "reopen for random write", fd);
       state = fmix32(seed ^ 0xa5a5a5a5u) | 1u;
       phase_start = now_ns();
@@ -563,7 +642,7 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
     i64 s = SYS3(SYS_fdatasync, fd, 0, 0);
     lat[wops++] = now_ns() - t0;
     if (n != (i64)PAGE || s < 0) fail("disk", "random write", n < 0 ? n : s);
-    touched[p / 8] |= (u8)(1u << (p % 8));
+    versions[p] = version;
   }
   u64 rand_write_wall = now_ns() - phase_start;
   SYS3(SYS_close, fd, 0, 0);
@@ -586,7 +665,7 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
       SYS3(SYS_close, fd, 0, 0);
       direct = 0;
       drop_cache(path);
-      fd = SYS3(SYS_open, path, O_RDONLY, 0);
+      fd = sys_open(path, O_RDONLY, 0);
       if (fd < 0) fail("disk", "reopen for random read", fd);
       rstate = fmix32(seed ^ 0x5a5a5a5au) | 1u;
       phase_start = now_ns();
@@ -594,13 +673,13 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
     }
     rlat[rops++] = now_ns() - t0;
     if (n != (i64)PAGE) fail("disk", "random read", n < 0 ? n : -1);
-    if (!page_ok(buf, seed, p, (touched[p / 8] >> (p % 8)) & 1 ? 2 : 1)) rand_bad++;
+    if (!page_ok(buf, seed, p, versions[p] ? versions[p] : 1)) rand_bad++;
     read_digest += buf[3];
   }
   u64 rand_read_wall = now_ns() - phase_start;
   SYS3(SYS_close, fd, 0, 0);
   int rand_read_direct = direct;
-  SYS3(SYS_unlink, path, 0, 0);
+  sys_unlink(path);
 
   put("{\"mode\":\"disk\",");
   key("fsType");
@@ -680,7 +759,7 @@ static char status_buf[16384];
 
 /* The number after `name` in a /proc file, in kB, or -1 when absent. */
 static i64 proc_kb(const char *file, const char *name) {
-  i64 fd = SYS3(SYS_open, file, O_RDONLY, 0), n, total = 0;
+  i64 fd = sys_open(file, O_RDONLY, 0), n, total = 0;
   if (fd < 0) return -1;
   while ((n = SYS3(SYS_read, fd, status_buf + total, sizeof status_buf - 1 - total)) > 0) total += n;
   SYS3(SYS_close, fd, 0, 0);
@@ -742,10 +821,10 @@ static int cmd_mem(u64 seed64, u64 mib, const char *file, u64 file_mib) {
   i64 rss_filled = proc_kb("/proc/self/status", "VmRSS");
   i64 swap_filled = proc_kb("/proc/self/status", "VmSwap");
 
-  u64 file_ns = 0;
+  u64 file_ns = 0, file_written = 0;
   i64 file_error = 0;
   if (file_mib > 0) {
-    i64 fd = SYS3(SYS_open, file, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    i64 fd = sys_open(file, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0)
       file_error = fd;
     else {
@@ -754,6 +833,7 @@ static int cmd_mem(u64 seed64, u64 mib, const char *file, u64 file_mib) {
       for (u64 b = 0; b < file_mib && !file_error; b++) {
         i64 n = SYS3(SYS_write, fd, (u8 *)region + (b % chunks) * BLOCK, BLOCK);
         if (n != (i64)BLOCK) file_error = n < 0 ? n : -1;
+        else file_written++;
       }
       if (!file_error) {
         i64 s = SYS3(SYS_fdatasync, fd, 0, 0);
@@ -775,7 +855,7 @@ static int cmd_mem(u64 seed64, u64 mib, const char *file, u64 file_mib) {
   for (u64 p = 0; p < words / PAGE_WORDS; p++) digest += region[p * PAGE_WORDS + ((p * 7) & 1023)];
   u64 verify_ns = now_ns() - t0;
   phase("verified", verify_ns);
-  if (file_mib > 0) SYS3(SYS_unlink, file, 0, 0);
+  if (file_mib > 0) sys_unlink(file);
   SYS3(SYS_munmap, region, mib * BLOCK, 0);
 
   put("{\"mode\":\"mem\",");
@@ -787,6 +867,9 @@ static int cmd_mem(u64 seed64, u64 mib, const char *file, u64 file_mib) {
   put(",");
   key("fileMiB");
   put_u64(file_mib);
+  put(",");
+  key("fileWrittenMiB");
+  put_u64(file_written);
   put(",");
   key("fileS");
   put_secs(file_ns);
@@ -832,7 +915,7 @@ static int usage(void) {
 static int run(int argc, char **argv) {
   u64 a, b, c, d;
   if (argc >= 2 && same(argv[1], "version")) {
-    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":2}\n");
+    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":3}\n");
     return 0;
   }
   if (argc == 6 && same(argv[1], "cpu") && parse_u64(argv[2], &a) && parse_u64(argv[3], &b) &&
@@ -853,6 +936,7 @@ __attribute__((used)) void cmain(i64 *sp) {
   exit_now(run(argc, argv));
 }
 
+#if defined(__x86_64__)
 __asm__(".text\n"
         ".globl _start\n"
         "_start:\n"
@@ -861,3 +945,14 @@ __asm__(".text\n"
         "  and $-16, %rsp\n"
         "  call cmain\n"
         "  hlt\n");
+#else
+__asm__(".text\n"
+        ".globl _start\n"
+        "_start:\n"
+        "  mov x29, #0\n"
+        "  mov x30, #0\n"
+        "  mov x0, sp\n"
+        "  and sp, x0, #-16\n"
+        "  bl cmain\n"
+        "  brk #0\n");
+#endif

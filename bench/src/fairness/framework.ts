@@ -421,7 +421,12 @@ export function entryFromLog(input: {
     lines.flatMap((line) => (line.kind === "destroy" && line.ok ? [line.sandboxId] : [])),
   );
 
-  const sweptClean = lines.some((line) => line.kind === "sweep" && line.error === null);
+  // The last sweep decides: an earlier clean one says nothing about a late sandbox found after it.
+  const lastSweep = lines.filter((line) => line.kind === "sweep").at(-1);
+
+  const sweptClean =
+    lastSweep?.kind === "sweep" && lastSweep.error === null && lines.some((l) => l.kind === "stop");
+
   const last = lines.at(-1);
 
   return {
@@ -736,12 +741,11 @@ async function attempt<R>(input: {
       Array.from({ length: check.boxes }, async (_, index) => {
         const started = performance.now();
 
-        const box = await deadline(dependencies.createTimeoutMs ?? createTimeoutMs, (signal) => {
-          const call = ready.create(AbortSignal.any([signal, dependencies.signal]));
-          pendingCreates.push(call);
-
-          return call;
-        });
+        // The deadline stops the wait, not the create: aborting it would let the SDK reject while
+        // the provider still makes the sandbox. The call itself is kept and reclaimed in cleanup.
+        const call = ready.create(dependencies.signal);
+        pendingCreates.push(call);
+        const box = await deadline(dependencies.createTimeoutMs ?? createTimeoutMs, () => call);
 
         const readyAtMs = performance.now();
         const entry: CreatedBox = { box, index, createS: (readyAtMs - started) / 1000, readyAtMs };
@@ -864,28 +868,42 @@ async function cleanUp(input: {
     (id) => id !== null,
   );
 
-  // Creates that outlived their deadline: wait for them, and destroy whatever they made.
+  // Creates that outlived their deadline: each is reclaimed on its own as it settles, so one still
+  // in flight never holds up (or hides) another's sandbox.
   let late = false;
   let stillPending = 0;
 
-  const settled = await deadline(lateCreateWaitMs, () =>
-    Promise.allSettled(input.pendingCreates),
-  ).catch(() => null);
+  const reclaims = input.pendingCreates.map((call) => {
+    const state = { done: false };
 
-  if (settled === null) {
-    stillPending = input.pendingCreates.length;
-    problems.push(`a create was still in flight after ${lateCreateWaitMs / 1000}s`);
-  } else {
-    for (const outcome of settled) {
-      if (outcome.status !== "fulfilled" || known.has(outcome.value.id)) continue;
-      late = true;
-      await log({ kind: "sandbox", id: outcome.value.id, createS: -1, at: now() });
-      say(`late create returned ${outcome.value.id}; destroying`);
-      const id = await destroyBox(outcome.value);
+    const work = call.then(
+      async (box) => {
+        if (!known.has(box.id)) {
+          late = true;
+          await log({ kind: "sandbox", id: box.id, createS: -1, at: now() });
+          say(`late create returned ${box.id}; destroying`);
+          const id = await destroyBox(box);
 
-      if (id !== null) failed.push(id);
-    }
-  }
+          if (id !== null) failed.push(id);
+        }
+
+        state.done = true;
+      },
+      () => {
+        state.done = true;
+      },
+    );
+
+    return { state, work };
+  });
+
+  await deadline(lateCreateWaitMs, () => Promise.all(reclaims.map((r) => r.work))).catch(
+    () => null,
+  );
+  stillPending = reclaims.filter((r) => !r.state.done).length;
+
+  if (stillPending > 0)
+    problems.push(`${stillPending} create(s) still in flight after ${lateCreateWaitMs / 1000}s`);
 
   if (session === null)
     return failed.length === 0 && stillPending === 0

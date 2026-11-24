@@ -30,15 +30,28 @@ export interface MemoryOptions {
 
 export const defaultMemoryOptions: MemoryOptions = { memoryMiB: 6144, fileMiB: 2048 };
 
+/**
+ * The shell's own cgroup v2 directory: its path from /proc/self/cgroup, made relative to the
+ * cgroup2 mount's root (from /proc/self/mountinfo), since a container may mount only its own
+ * subtree. Falls back to the mount point itself. Sets `$d` and `$mnt`, and prints `cgroupDir=`.
+ */
+const ownCgroup = [
+  `cg=$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null)`,
+  `set -- $(awk '{for(i=1;i<=NF;i++) if($i=="-"){ if($(i+1)=="cgroup2"){print $4, $5; exit} break }}' /proc/self/mountinfo 2>/dev/null)`,
+  `root="\${1:-/}"; mnt="\${2:-/sys/fs/cgroup}"`,
+  `rel="\${cg#"$root"}"; [ "$root" = / ] && rel="$cg"`,
+  `d="$mnt\${rel%/}"; [ -d "$d" ] || d="$mnt"`,
+  `echo "cgroupDir=$d"`,
+].join("\n");
+
 /** Walks from the shell's own cgroup v2 directory up to the root, printing each limit it can read. */
 const cgroupWalk = [
-  `cg=$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null)`,
-  `d="/sys/fs/cgroup\${cg%/}"`,
+  ownCgroup,
   `while [ -d "$d" ]; do`,
   `  [ -r "$d/cpu.max" ] && echo "cpuMax=$(cat "$d/cpu.max")"`,
   `  [ -r "$d/memory.max" ] && echo "memMax=$(cat "$d/memory.max")"`,
   `  [ -r "$d/memory.swap.max" ] && echo "swapMax=$(cat "$d/memory.swap.max")"`,
-  `  if [ "$d" = /sys/fs/cgroup ]; then break; fi`,
+  `  if [ "$d" = "$mnt" ] || [ "$d" = / ]; then break; fi`,
   `  d=$(dirname "$d")`,
   `done`,
 ].join("\n");
@@ -61,8 +74,8 @@ export const limitsCommand = [
 
 /** The OOM kill counter of the shell's own cgroup (v2 memory.events, else v1 memory.oom_control). */
 export const oomCommand = [
-  `cg=$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null)`,
-  `f="/sys/fs/cgroup\${cg%/}/memory.events"`,
+  ownCgroup,
+  `f="$d/memory.events"`,
   `[ -r "$f" ] || f=/sys/fs/cgroup/memory/memory.oom_control`,
   `grep '^oom_kill ' "$f" 2>/dev/null || echo "oom_kill unknown"`,
 ].join("\n");
@@ -125,6 +138,19 @@ const round = (value: number, places: number) => {
 };
 
 const minOrNull = (values: readonly number[]) => (values.length === 0 ? null : Math.min(...values));
+
+/** The smallest numeric cgroup limit, else "max" when every level is unlimited, else null. */
+function tightest(values: readonly string[]): string | null {
+  const numbers = values.flatMap((v) => [intOrNull(v)].filter((n) => n !== null));
+
+  if (numbers.length > 0) return String(Math.min(...numbers));
+
+  return values.includes("max") ? "max" : null;
+}
+
+/** The cgroup directory a probe resolved, so OOM counts are compared only for the same one. */
+export const cgroupDirOf = (stdout: string) =>
+  /^cgroupDir=(.+)$/m.exec(stdout)?.[1]?.trim() ?? null;
 
 export function parseLimits(stdout: string): Limits {
   const values = new Map<string, string[]>();
@@ -200,7 +226,7 @@ export function parseLimits(stdout: string): Limits {
     memTotalGiB: memTotal === null ? null : round(memTotal / 2 ** 20, 2),
     memLimitGiB: limitBytes === null ? null : round(limitBytes / 2 ** 30, 2),
     swapTotalGiB: swapTotal === null ? null : round(swapTotal / 2 ** 20, 2),
-    swapLimit: all("swapMax").sort()[0] ?? null,
+    swapLimit: tightest(all("swapMax")),
     zramDevices: int("zram"),
     zswap: text("zswap"),
     overcommit: int("overcommit"),
@@ -230,8 +256,7 @@ const outcomeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("completed"),
     fillGiBps: z.number().positive(),
     verifyGiBps: z.number().positive(),
-    fileMiBps: z.number().positive().nullable(),
-    fileError: z.number().int().nullable(),
+    fileMiBps: z.number().positive(),
     swapUsedKiB: z.number().int().nonnegative(),
     raw: memOutputSchema,
   }),
@@ -244,6 +269,13 @@ const outcomeSchema = z.discriminatedUnion("kind", [
     oomKills: z.number().int().nonnegative().nullable(),
   }),
   z.object({ kind: z.literal("refused"), error: z.string(), errno: z.number().int().nullable() }),
+  /** Memory held and verified, but the file could not be written in full. */
+  z.object({
+    kind: z.literal("file-failed"),
+    errno: z.number().int().nullable(),
+    writtenMiB: z.number().int().nonnegative(),
+    swapUsedKiB: z.number().int().nonnegative(),
+  }),
   z.object({
     kind: z.literal("sandbox-lost"),
     lastPhase: z.string().nullable(),
@@ -320,20 +352,30 @@ export function judgeMemory(input: {
         `mem ran ${raw.mib} MiB and a ${raw.fileMiB} MiB file, asked ${memoryMiB} and ${fileMiB}`,
       );
 
-    if (raw.fillS <= 0 || raw.verifyS <= 0 || (raw.fileErrno === 0 && raw.fileS <= 0))
+    if (raw.fillS <= 0 || raw.verifyS <= 0)
       throw new CheckStop("mem reports a phase that took no time");
 
     if (raw.badWords > 0 || raw.digest !== memoryDigest(seed, memoryMiB))
       throw new CheckStop(`Memory read back wrong: ${raw.badWords} words, digest ${raw.digest}`);
+    const swapUsedKiB = Math.max(raw.swapFilledKiB, raw.swapAfterFileKiB, raw.end.vmSwapKiB, 0);
+
+    // The file counts only when every MiB was written and synced, and that took time.
+    if (raw.fileErrno !== 0 || raw.fileWrittenMiB !== fileMiB || raw.fileS <= 0)
+      return {
+        kind: "file-failed",
+        errno: raw.fileErrno === 0 ? null : raw.fileErrno,
+        writtenMiB: raw.fileWrittenMiB,
+        swapUsedKiB,
+      };
+
     const gib = memoryMiB / 1024;
 
     return {
       kind: "completed",
       fillGiBps: round(gib / raw.fillS, 2),
       verifyGiBps: round(gib / raw.verifyS, 2),
-      fileMiBps: raw.fileErrno === 0 ? round(fileMiB / raw.fileS, 1) : null,
-      fileError: raw.fileErrno === 0 ? null : raw.fileErrno,
-      swapUsedKiB: Math.max(raw.swapFilledKiB, raw.swapAfterFileKiB, raw.end.vmSwapKiB, 0),
+      fileMiBps: round(fileMiB / raw.fileS, 1),
+      swapUsedKiB,
       raw,
     };
   }
@@ -376,7 +418,8 @@ export const memoryHonestyCheck = (
     const installed = await installNative(context, box);
     const target = await diskTarget(context, box);
     const file = `${target.dir}/.sbx-mem-file.bin`;
-    const before = parseOomKills((await context.exec(box, oomCommand, 60_000)).stdout);
+    const beforeRun = (await context.exec(box, oomCommand, 60_000)).stdout;
+    const before = parseOomKills(beforeRun);
     const seed = randomInt(0, 0x1_0000_0000);
     let run: MemRun;
 
@@ -398,16 +441,22 @@ export const memoryHonestyCheck = (
     // Whether the sandbox still answers, the OOM counter after, and the file gone either way.
     let alive = false;
     let after: number | null = null;
+    let afterDir: string | null = null;
 
     try {
       const followUp = await context.exec(box, `${oomCommand}\nrm -f '${file}'`, 60_000);
       alive = followUp.exitCode !== null;
       after = parseOomKills(followUp.stdout);
+      afterDir = cgroupDirOf(followUp.stdout);
     } catch {
       alive = false;
     }
 
-    const oomDelta = before !== null && after !== null ? Math.max(0, after - before) : null;
+    const sameCgroup = afterDir !== null && afterDir === cgroupDirOf(beforeRun);
+
+    const oomDelta =
+      before !== null && after !== null && sameCgroup ? Math.max(0, after - before) : null;
+
     const outcome = judgeMemory({ run, seed, memoryMiB, fileMiB, oomDelta, alive });
     context.say(`memory: ${outcome.kind}`);
 
