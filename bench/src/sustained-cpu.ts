@@ -807,28 +807,29 @@ export const paths = (out: string) => ({
  * fail.
  */
 export function parseLog(text: string): LogLine[] {
-  const hasTrailingNewline = text.endsWith("\n");
   const raw = text.split("\n");
+  const out: LogLine[] = [];
 
-  while (raw.length > 0 && raw[raw.length - 1]?.trim() === "") raw.pop();
-  const lines = raw.filter((line) => line.trim() !== "");
-
-  return lines.flatMap((line, index) => {
+  for (const [rawIndex, line] of raw.entries()) {
+    if (line.trim() === "") continue;
+    const isUnterminatedLastLine = rawIndex === raw.length - 1;
     let parsed: unknown;
 
     try {
       parsed = JSON.parse(line);
     } catch (cause) {
-      if (index === lines.length - 1 && !hasTrailingNewline) return [];
-      throw new Error(`Log line ${index + 1}: ${errorText(cause)}`);
+      if (isUnterminatedLastLine) continue;
+      throw new Error(`Log line ${rawIndex + 1}: ${errorText(cause)}`);
     }
 
     try {
-      return [logLineSchema.parse(parsed)];
+      out.push(logLineSchema.parse(parsed));
     } catch (cause) {
-      throw new Error(`Log line ${index + 1}: ${errorText(cause)}`);
+      throw new Error(`Log line ${rawIndex + 1}: ${errorText(cause)}`);
     }
-  });
+  }
+
+  return out;
 }
 
 type StartLine = Extract<LogLine, { kind: "start" }>;
@@ -1598,8 +1599,8 @@ async function claimOut(plan: RunPlan): Promise<RunFile> {
     chunkSteps: plan.chunkSteps,
   };
 
-  const temporary = `${files.run}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(runFile, null, 2)}\n`);
+  const temporary = `${files.run}.${process.pid}.${randomBytes(16).toString("hex")}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(runFile, null, 2)}\n`, { flag: "wx" });
   let racedExisting = false;
 
   try {
