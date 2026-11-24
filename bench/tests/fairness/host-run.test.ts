@@ -57,11 +57,14 @@ describe.runIf(supported)("fairness checks on this machine", () => {
   it("cpu-native verifies every segment and summarizes the phases", async () => {
     const host = hostSession();
 
-    const check = cpuNativeCheck({
-      single: { segments: 2, seconds: 0.5, workers: 1 },
-      allCore: { segments: 1, seconds: 0.5, workers: 4 },
-      sustained: { segments: 3, seconds: 0.5, workers: 4 },
-    });
+    const check = cpuNativeCheck(
+      {
+        single: { segments: 2, seconds: 0.5, workers: 1 },
+        allCore: { segments: 1, seconds: 0.5, workers: 4 },
+        sustained: { segments: 3, seconds: 0.5, workers: 4 },
+      },
+      200,
+    );
 
     const { entry, log, outcome } = await runOnHost(check, host.open);
     expect(entry.status, entry.reason ?? "").toBe("completed");
@@ -106,11 +109,14 @@ describe.runIf(supported)("fairness checks on this machine", () => {
       },
     });
 
-    const check = cpuNativeCheck({
-      single: { segments: 1, seconds: 0.3, workers: 1 },
-      allCore: { segments: 1, seconds: 0.3, workers: 4 },
-      sustained: { segments: 1, seconds: 0.3, workers: 4 },
-    });
+    const check = cpuNativeCheck(
+      {
+        single: { segments: 1, seconds: 0.3, workers: 1 },
+        allCore: { segments: 1, seconds: 0.3, workers: 4 },
+        sustained: { segments: 1, seconds: 0.3, workers: 4 },
+      },
+      200,
+    );
 
     const { entry } = await runOnHost(check, open);
     expect(entry.status).toBe("failed");

@@ -6,6 +6,7 @@
  *
  *   sbx-native version
  *   sbx-native cpu  <seed> <workers> <target_ms> <chunk>
+ *   sbx-native cpu-stream <seed> <workers> <segment_ms> <segments> <chunk>
  *   sbx-native disk <dir> <seed> <size_mib> <rand_ms>
  *   sbx-native mem  <seed> <mib> <file_path> <file_mib>
  *
@@ -406,6 +407,119 @@ static int cmd_cpu(u64 seed, u64 workers, u64 target_ms, u64 chunk) {
   return 0;
 }
 
+/* cpu-stream: the same burn, but the workers never stop: each reports a checkpoint every
+   segment_ms, and the parent prints one line per segment once every worker has reported it. One
+   command runs the whole sustained phase, so no exec round trip between segments rests the CPU. */
+static void put_row(const struct cpu_row *row) {
+  put("{");
+  key("seed");
+  put_u64(row->seed);
+  put(",");
+  key("steps");
+  put_u64(row->steps);
+  put(",");
+  key("checksum");
+  put_u64(row->checksum);
+  put(",");
+  key("elapsedS");
+  put_secs(row->elapsed_ns);
+  put("}");
+}
+
+static int cmd_cpu_stream(u64 seed, u64 workers, u64 segment_ms, u64 segments, u64 chunk) {
+  int go[2], res[2];
+  struct cpu_row *rows;
+  u64 reported[64];
+  if (workers < 1 || workers > 64 || chunk < 1 || segments < 1 || segments > 1000 || segment_ms < 1)
+    fail("cpu-stream", "bad arguments", -EINVAL);
+  rows = map(workers * (segments + 1) * sizeof(struct cpu_row));
+  if (!rows) fail("cpu-stream", "mmap", -1);
+  if (sys_pipe(go) < 0 || sys_pipe(res) < 0) fail("cpu-stream", "pipe", -1);
+
+  for (u64 i = 0; i < workers; i++) {
+    i64 pid = sys_fork();
+    if (pid < 0) fail("cpu-stream", "fork", pid);
+    if (pid == 0) {
+      char token;
+      struct cpu_row row;
+      u32 x = (u32)seed ^ (u32)((i + 1) * GOLDEN);
+      u64 steps = 0, elapsed, start, next = segment_ms * 1000000ul;
+      row.index = (u32)i;
+      row.seed = x;
+      SYS3(SYS_close, go[1], 0, 0);
+      SYS3(SYS_close, res[0], 0, 0);
+      if (SYS3(SYS_read, go[0], &token, 1) != 1) exit_now(5);
+      start = now_ns();
+      for (u32 k = 1; k <= segments;) {
+        x = lcg_run(x, chunk);
+        steps += chunk;
+        elapsed = now_ns() - start;
+        if (elapsed >= next) {
+          row.steps = steps;
+          row.checksum = x;
+          row.pad = k;
+          row.elapsed_ns = elapsed;
+          if (SYS3(SYS_write, res[1], &row, sizeof row) != (i64)sizeof row) exit_now(6);
+          k++;
+          next += segment_ms * 1000000ul;
+        }
+      }
+      exit_now(0);
+    }
+  }
+
+  SYS3(SYS_close, go[0], 0, 0);
+  SYS3(SYS_close, res[1], 0, 0);
+  char tokens[64];
+  memset(tokens, 'g', sizeof tokens);
+  memset(reported, 0, sizeof reported);
+  u64 start = now_ns();
+  if (SYS3(SYS_write, go[1], tokens, workers) != (i64)workers) fail("cpu-stream", "release", -1);
+
+  /* Rows can arrive segments apart across workers; every one is kept until its line is printed. */
+  for (u64 printed = 0; printed < segments;) {
+    struct cpu_row row;
+    u64 have = 0;
+    while (have < sizeof row) {
+      i64 n = SYS3(SYS_read, res[0], (u8 *)&row + have, sizeof row - have);
+      if (n <= 0) fail("cpu-stream", "worker result", n);
+      have += (u64)n;
+    }
+    if (row.index >= workers || row.pad != reported[row.index] + 1) fail("cpu-stream", "worker order", -1);
+    rows[row.index * (segments + 1) + row.pad] = row;
+    reported[row.index] = row.pad;
+    for (;;) {
+      u64 k = printed + 1, ready = 1;
+      for (u64 i = 0; i < workers; i++)
+        if (reported[i] < k) ready = 0;
+      if (!ready) break;
+      put("{\"mode\":\"cpu-stream\",");
+      key("segment");
+      put_u64(k);
+      put(",\"workers\":[");
+      for (u64 i = 0; i < workers; i++) {
+        if (i) put(",");
+        put_row(&rows[i * (segments + 1) + k]);
+      }
+      put("]}\n");
+      flush(1);
+      printed = k;
+      if (printed == segments) break;
+    }
+  }
+  u64 wall = now_ns() - start;
+  for (u64 i = 0; i < workers; i++) {
+    int status = 0;
+    if (SYS4(SYS_wait4, -1, &status, 0, 0) < 0 || status != 0) fail("cpu-stream", "worker exit", -1);
+  }
+  put("{\"mode\":\"cpu-stream\",\"done\":true,");
+  key("wallS");
+  put_secs(wall);
+  put("}\n");
+  flush(1);
+  return 0;
+}
+
 /* ------------------------------------------------------------------------------------------ */
 /* disk: direct-I/O sequential and synced 4 KiB random I/O on one file                        */
 
@@ -679,6 +793,32 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
   u64 rand_read_wall = now_ns() - phase_start;
   SYS3(SYS_close, fd, 0, 0);
   int rand_read_direct = direct;
+
+  /* Untimed: read back every page a random write touched, in page order, and check it holds that
+     write's version, so a synced write the disk lost fails whether or not a timed read hit it. */
+  drop_cache(path);
+  direct = read_direct;
+  fd = open_file(path, O_RDONLY, &direct);
+  if (fd < 0) fail("disk", "open for readback", fd);
+  u64 written_pages = 0, written_bad = 0;
+  u32 written_digest = 0;
+  for (u64 p = 0; p < pages; p++) {
+    if (!versions[p]) continue;
+    i64 n = sys6(SYS_pread64, fd, (i64)buf, (i64)PAGE, (i64)(p * PAGE), 0, 0);
+    if (n == -EINVAL && direct) {
+      SYS3(SYS_close, fd, 0, 0);
+      direct = 0;
+      drop_cache(path);
+      fd = sys_open(path, O_RDONLY, 0);
+      if (fd < 0) fail("disk", "reopen for readback", fd);
+      n = sys6(SYS_pread64, fd, (i64)buf, (i64)PAGE, (i64)(p * PAGE), 0, 0);
+    }
+    if (n != (i64)PAGE) fail("disk", "readback", n < 0 ? n : -1);
+    written_pages++;
+    if (!page_ok(buf, seed, p, versions[p])) written_bad++;
+    written_digest += buf[3];
+  }
+  SYS3(SYS_close, fd, 0, 0);
   sys_unlink(path);
 
   put("{\"mode\":\"disk\",");
@@ -747,6 +887,18 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
   put(rops >= MAX_RAND_OPS ? "true" : "false");
   put("}");
   put_latency("randReadLatency", rlat, rops);
+  put(",");
+  key("readback");
+  put("{");
+  key("pages");
+  put_u64(written_pages);
+  put(",");
+  key("badPages");
+  put_u64(written_bad);
+  put(",");
+  key("digest");
+  put_u64(written_digest);
+  put("}");
   put("}\n");
   flush(1);
   return 0;
@@ -913,14 +1065,17 @@ static int usage(void) {
 }
 
 static int run(int argc, char **argv) {
-  u64 a, b, c, d;
+  u64 a, b, c, d, e;
   if (argc >= 2 && same(argv[1], "version")) {
-    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":3}\n");
+    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":4}\n");
     return 0;
   }
   if (argc == 6 && same(argv[1], "cpu") && parse_u64(argv[2], &a) && parse_u64(argv[3], &b) &&
       parse_u64(argv[4], &c) && parse_u64(argv[5], &d))
     return cmd_cpu(a, b, c, d);
+  if (argc == 7 && same(argv[1], "cpu-stream") && parse_u64(argv[2], &a) && parse_u64(argv[3], &b) &&
+      parse_u64(argv[4], &c) && parse_u64(argv[5], &d) && parse_u64(argv[6], &e))
+    return cmd_cpu_stream(a, b, c, d, e);
   if (argc == 6 && same(argv[1], "disk") && parse_u64(argv[3], &a) && parse_u64(argv[4], &b) &&
       parse_u64(argv[5], &c))
     return cmd_disk(argv[2], a, b, c);

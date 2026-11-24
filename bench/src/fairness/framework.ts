@@ -294,6 +294,9 @@ export const logLineSchema = z.discriminatedUnion("kind", [
     kind: z.literal("stop"),
     status: statusSchema,
     reason: z.string().nullable(),
+    /** The cleanup verdict, so a log alone says whether everything was confirmed gone. */
+    destroyed: z.boolean().optional(),
+    cleanupError: z.string().nullable().optional(),
     at: z.string(),
   }),
 ]);
@@ -422,10 +425,9 @@ export function entryFromLog(input: {
   );
 
   // The last sweep decides: an earlier clean one says nothing about a late sandbox found after it.
-  const lastSweep = lines.filter((line) => line.kind === "sweep").at(-1);
-
-  const sweptClean =
-    lastSweep?.kind === "sweep" && lastSweep.error === null && lines.some((l) => l.kind === "stop");
+  // Only the stop record's own verdict counts: sweeps can be clean while a create is still pending.
+  const stop = lines.filter((line) => line.kind === "stop").at(-1);
+  const sweptClean = stop?.kind === "stop" && stop.destroyed === true;
 
   const last = lines.at(-1);
 
@@ -442,7 +444,11 @@ export function entryFromLog(input: {
     sandboxes,
     createFailures,
     destroyed: sweptClean && sandboxes.every((box) => destroyedIds.has(box.id)),
-    cleanupError: sweptClean ? null : "No clean sweep in the log",
+    cleanupError: sweptClean
+      ? null
+      : stop?.kind === "stop" && stop.cleanupError
+        ? stop.cleanupError
+        : "The log has no confirmed cleanup",
     machine: input.machine,
     result: null,
   };
@@ -686,7 +692,15 @@ async function attempt<R>(input: {
     await appendFile(logPath, `${JSON.stringify(logLineSchema.parse(line))}\n`);
   };
 
+  let logClosed = false;
+
   const logQuietly = async (line: LogLine) => {
+    if (logClosed) {
+      say(`after the attempt: ${line.kind} ${JSON.stringify(line).slice(0, 200)}`);
+
+      return;
+    }
+
     try {
       await log(line);
     } catch (cause) {
@@ -806,7 +820,17 @@ async function attempt<R>(input: {
     });
   }
 
-  await logQuietly({ kind: "stop", status, reason, at: now() });
+  await logQuietly({
+    kind: "stop",
+    status,
+    reason,
+    destroyed: cleanup.destroyed,
+    cleanupError: cleanup.error,
+    at: now(),
+  });
+  // A create still in flight may settle after this attempt ends; its reclaim still destroys the
+  // sandbox but must not write into a later attempt's log.
+  logClosed = true;
 
   const file: ProviderFile = {
     schema: "fairness.provider.v1",

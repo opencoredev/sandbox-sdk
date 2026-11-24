@@ -20,6 +20,7 @@ import {
   clockToleranceS,
   diskOutputSchema,
   diskRandomReadDigest,
+  diskReadbackExpected,
   diskStampDigest,
   installNative,
   maxRandomOps,
@@ -203,6 +204,19 @@ export function verifyDisk(input: {
 
   if (output.randRead.digest !== expected)
     return { kind: "invalid", reason: "Random read digest does not match the seed and the writes" };
+
+  // Every page a synced random write touched must hold that write, whether or not a timed read hit it.
+  const readback = diskReadbackExpected({ seed, sizeMiB, writeOps: writes.ops });
+
+  if (
+    output.readback.badPages > 0 ||
+    output.readback.pages !== readback.pages ||
+    output.readback.digest !== readback.digest
+  )
+    return {
+      kind: "invalid",
+      reason: `Read back ${output.readback.pages} rewritten pages (${output.readback.badPages} wrong), expected ${readback.pages} holding their last write`,
+    };
 
   const guestS =
     output.seqWrite.writeS +

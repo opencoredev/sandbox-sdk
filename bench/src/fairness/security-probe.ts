@@ -123,10 +123,34 @@ const normalName = (name: string) => name.replaceAll("-", "_");
 
 /** Kernel parameters only: everything after a bare `--` goes to init, not the kernel. */
 export function kernelTokens(cmdline: string): string[] {
-  const all = cmdline.split(/\s+/).filter(Boolean);
-  const end = all.indexOf("--");
+  // As the kernel parses it: double quotes group a value with spaces and are dropped, and a bare
+  // unquoted `--` ends the kernel's own parameters.
+  const tokens: string[] = [];
+  let current = "";
+  let quoted = false;
+  let wasQuoted = false;
 
-  return end < 0 ? all : all.slice(0, end);
+  const push = () => {
+    if (current === "" && !wasQuoted) return;
+    tokens.push(current);
+    current = "";
+    wasQuoted = false;
+  };
+
+  for (const char of cmdline) {
+    if (char === '"') {
+      quoted = !quoted;
+      wasQuoted = true;
+    } else if (!quoted && /\s/.test(char)) {
+      if (current === "--" && !wasQuoted) return tokens;
+      push();
+    } else current += char;
+  }
+
+  if (current === "--" && !wasQuoted) return tokens;
+  push();
+
+  return tokens;
 }
 
 export function cmdlineFlags(cmdline: string) {
