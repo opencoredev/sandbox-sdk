@@ -64,6 +64,18 @@ export function chunkRedactor(
 
   let stallKmp: StallKmp | undefined;
   let stallDelta: string[] = [];
+
+  /** A held text that already contains a match (so `stallKmp` cannot track it) but is still
+   * exactly `secret.slice(0, len)` for a longer secret. Its raw hold cutoff is 0, so drain
+   * would emit nothing; pushes that keep extending that prefix skip the full rescan. */
+  interface DirtyHold {
+    readonly secrets: readonly string[];
+    readonly secret: string;
+    readonly stream: OutputChunk["stream"] | "*";
+    len: number;
+  }
+
+  let dirtyHold: DirtyHold | undefined;
   const emittedTail: Record<OutputChunk["stream"], string> = { stdout: "", stderr: "" };
   let markerAdjSecret: boolean | undefined;
   let markerAdjSecretsLen = -1;
@@ -254,6 +266,7 @@ export function chunkRedactor(
     holdZeroAt.clear();
     stallKmp = undefined;
     stallDelta = [];
+    dirtyHold = undefined;
   }
 
   /** Prefix of raw text that does not end with a proper prefix of `[REDACTED]`. */
@@ -1045,6 +1058,19 @@ export function chunkRedactor(
         !final &&
         !dirtyStats &&
         headIdx === 0 &&
+        dirtyHold !== undefined &&
+        dirtyHold.stream === stallKey &&
+        dirtyHold.secrets === redactor.secrets &&
+        dirtyHold.len === rawLen &&
+        selBytes <= MAX_HOLD_BYTES &&
+        queuedBytes <= MAX_HOLD_BYTES
+      )
+        break;
+
+      if (
+        !final &&
+        !dirtyStats &&
+        headIdx === 0 &&
         cleanKey === stallKey &&
         cleanLen > 0 &&
         selBytes <= MAX_HOLD_BYTES &&
@@ -1351,6 +1377,16 @@ export function chunkRedactor(
             continue;
           }
 
+          if (!final && raw.length === rawLen) {
+            const secret = redactor.secrets.find(
+              (value) => value.length > raw.length && value.startsWith(raw),
+            );
+
+            if (secret) {
+              dirtyHold = { secrets: redactor.secrets, secret, stream: stallKey, len: raw.length };
+            }
+          }
+
           break;
         }
 
@@ -1399,6 +1435,17 @@ export function chunkRedactor(
 
       if (stallKmp && (stallKmp.stream === "*" || stallKmp.stream === chunk.stream)) {
         stallDelta.push(chunk.text);
+      }
+
+      if (dirtyHold && (dirtyHold.stream === "*" || dirtyHold.stream === chunk.stream)) {
+        const next = dirtyHold.len + chunk.text.length;
+
+        if (
+          next < dirtyHold.secret.length &&
+          dirtyHold.secret.startsWith(chunk.text, dirtyHold.len)
+        )
+          dirtyHold.len = next;
+        else dirtyHold = undefined;
       }
 
       const prev = queue.at(-1);

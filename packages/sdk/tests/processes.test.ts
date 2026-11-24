@@ -329,6 +329,87 @@ test("concurrent start() calls with one name on a stream-mode provider launch on
   }
 });
 
+test("a lost launch reply keeps the records, so a retry cannot start a second copy", async () => {
+  const provider = await shellProvider();
+  const exec = provider.exec.bind(provider);
+  let lose = true;
+  // The launcher runs, then its reply is lost, as when a provider drops the response.
+  provider.exec = async (id, input) => {
+    const result = await exec(id, input);
+
+    if (lose && input.command.startsWith("nohup setsid")) {
+      lose = false;
+      throw new SandboxError("Launch reply lost", { code: "outcome_unknown" });
+    }
+
+    return result;
+  };
+
+  const box = await createSandbox(provider);
+
+  try {
+    await expect(box.start("sleep 30", { name: "lost" })).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+    await expect(box.start("sleep 30", { name: "lost" })).rejects.toMatchObject({
+      code: "invalid_argument",
+      message: expect.stringContaining("already running"),
+    });
+
+    const original = box.process("lost");
+    expect(await box.processes()).toEqual([
+      expect.objectContaining({ name: "lost", status: "running", pid: expect.any(Number) }),
+    ]);
+    expect((await box.processes())[0]?.pid).toBeGreaterThan(0);
+    await original.stop({ graceMs: 100 });
+
+    const retried = await box.start("sleep 30", { name: "lost" });
+    expect(retried.status).toBe("running");
+    await retried.stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("stop() clears a lost launch that never ran without signalling a pid", async () => {
+  const provider = await shellProvider();
+  const exec = provider.exec.bind(provider);
+  const commands: string[] = [];
+  let lose = true;
+  // The launch request never reaches the guest, yet its outcome is unknown to the SDK.
+  provider.exec = async (id, input) => {
+    commands.push(input.command);
+
+    if (lose && input.command.startsWith("nohup setsid")) {
+      lose = false;
+      throw new SandboxError("Launch reply lost", { code: "outcome_unknown" });
+    }
+
+    return exec(id, input);
+  };
+
+  const box = await createSandbox(provider);
+
+  try {
+    await expect(box.start("sleep 30", { name: "never" })).rejects.toMatchObject({
+      code: "outcome_unknown",
+    });
+
+    const record = box.process("never");
+    expect(await box.processes()).toEqual([
+      expect.objectContaining({ name: "never", status: "running", pid: 0 }),
+    ]);
+    await record.stop({ graceMs: 100 });
+    expect(commands.some((command) => command.startsWith("kill "))).toBe(false);
+
+    const retried = await box.start("sleep 30", { name: "never" });
+    expect(retried.status).toBe("running");
+    await retried.stop({ graceMs: 100 });
+  } finally {
+    await box.destroy();
+  }
+});
+
 /** Poll a process's log until it contains `text`. */
 async function waitForLog(process: { logs(): Promise<{ text: string }> }, text: string) {
   const end = Date.now() + 10_000;

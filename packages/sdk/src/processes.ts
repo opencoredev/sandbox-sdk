@@ -528,7 +528,8 @@ export function makeProcesses(
           const hook = native.get(name);
 
           if (hook) await hook.stop({ graceMs: options.graceMs ?? 1000 });
-          else {
+          // pid 0: no launcher recorded a process, so there is no group to signal.
+          else if (current.pid > 0) {
             await exec(`kill -TERM -${current.pid} 2>/dev/null || true`);
             await delay(options.graceMs ?? 1000);
             await exec(`kill -KILL -${current.pid} 2>/dev/null || true`);
@@ -971,6 +972,9 @@ export function makeProcesses(
             secretsPath,
           });
 
+          // Set while the launch call is in flight, whose lost reply may hide a running supervisor.
+          let launching = false;
+
           try {
             const sed = redactionSedScript(redactor.secrets);
 
@@ -995,6 +999,8 @@ export function makeProcesses(
               }
             }
 
+            launching = true;
+
             if (provider.startProcess) {
               const hook = await provider.startProcess(id, {
                 command: wrapper,
@@ -1003,6 +1009,7 @@ export function makeProcesses(
                 onChunk() {},
               });
 
+              launching = false;
               native.set(options.name, hook);
 
               try {
@@ -1056,6 +1063,12 @@ export function makeProcesses(
             }
           } catch (error) {
             native.delete(options.name);
+
+            // The supervisor may be running, so its records stay: a retry under this name then
+            // reports it as running instead of starting a second copy, and stop() clears them.
+            if (launching && error instanceof SandboxError && error.code === "outcome_unknown")
+              throw error;
+
             controller?.state("failed");
             await provider.files.remove(id, sedPath, { recursive: false }).catch(() => {});
 

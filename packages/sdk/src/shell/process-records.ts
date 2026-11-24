@@ -117,18 +117,18 @@ export function recordSetupScript(input: { dir: string; cwd: string }): string {
     `if [ -f ${file.spec} ] && [ ! -f ${file.exit} ]`,
     `then exit ${recordExit.running}`,
     `fi`,
-    // The next log continues the absolute offsets of the previous run.
+    // The next log continues the absolute offsets of the previous run. pid stays 0 until the
+    // launcher records one, so stop() never signals a stale pid from that run.
     `b=0`,
     `if [ -f ${file.base} ]`,
     `then b=$(cat ${file.base})`,
     `n=$(wc -c < ${file.log})`,
     `b=$((b+n))`,
     `fi`,
-    `IFS= read -r s && IFS= read -r r && printf '%s' "$s" | base64 -d > ${file.spec} && (umask 077; printf '%s' "$r" | base64 -d > ${file.restart}) && : > ${file.log} && printf '%s' "$b" > ${file.base} && rm -f ${file.exit} || exit 1`,
+    `IFS= read -r s && IFS= read -r r && printf '%s' "$s" | base64 -d > ${file.spec} && (umask 077; printf '%s' "$r" | base64 -d > ${file.restart}) && : > ${file.log} && printf '%s' "$b" > ${file.base} && rm -f ${file.exit} && printf 0 > ${file.pid} || exit 1`,
     `m=$(cd ${quote(input.cwd)} 2>&1) && exit 0`,
     `c=$?`,
     `printf '%s\n' "$m" | sed 's/^/E/' > ${file.log}`,
-    `printf 0 > ${file.pid}`,
     `printf '%s' "$c" > ${file.exit}`,
     `exit ${recordExit.badCwd}`,
   ].join("; ");

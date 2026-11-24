@@ -1040,6 +1040,41 @@ test("streaming redaction scales linearly on long repeating prefixes in small ch
   expect(elapsedMs).toBeLessThan(1_000);
 });
 
+test("streaming redaction scales linearly on a held prefix that already contains a shorter secret", async () => {
+  const n = 131_072;
+
+  await using box = await createSandbox(
+    memory({
+      handlers: {
+        nested({ stdout }) {
+          for (let offset = 0; offset < n; offset += 256) stdout("x".repeat(256));
+          stdout("y");
+
+          return 0;
+        },
+        broken({ stdout }) {
+          for (let offset = 0; offset < 4096; offset += 256) stdout("x".repeat(256));
+          stdout("z");
+
+          return 0;
+        },
+      },
+    }),
+    { secrets: { SHORT: "x", LONG: `${"x".repeat(n)}y` } },
+  );
+
+  const started = performance.now();
+  const res = await box.run("nested");
+  const elapsedMs = performance.now() - started;
+
+  expect(res.stdout).toBe("[REDACTED]");
+  expect(res.truncated).toBe(false);
+  expect(elapsedMs).toBeLessThan(1_000);
+
+  // A tail that leaves the longer secret releases the held prefix with each short match redacted.
+  expect((await box.run("broken")).stdout).toBe(`${"[REDACTED]".repeat(4096)}z`);
+});
+
 test("OutputBus and BufferCap release consumed slots and toolOutputFilter redacts per-stream secrets split by foreign streams", async () => {
   const bus = new OutputBus();
   const stream = bus.stream();
