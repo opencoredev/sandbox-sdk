@@ -16,7 +16,16 @@
  * into the same directory at once.
  */
 import { createHash, randomBytes, randomInt } from "node:crypto";
-import { appendFile, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  link,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { deflateRawSync } from "node:zlib";
@@ -793,17 +802,30 @@ export const paths = (out: string) => ({
 });
 
 /**
- * Parses a log. A crash can cut the last line short, so only an unparsable last line is dropped;
- * one anywhere else is an error.
+ * Parses a log. A crash can cut the last line short before its newline, so only a non-newline-
+ * terminated final line that fails JSON.parse is dropped; complete lines and schema errors always
+ * fail.
  */
 export function parseLog(text: string): LogLine[] {
-  const lines = text.split("\n").filter((line) => line.trim() !== "");
+  const hasTrailingNewline = text.endsWith("\n");
+  const raw = text.split("\n");
+
+  while (raw.length > 0 && raw[raw.length - 1]?.trim() === "") raw.pop();
+  const lines = raw.filter((line) => line.trim() !== "");
 
   return lines.flatMap((line, index) => {
+    let parsed: unknown;
+
     try {
-      return [logLineSchema.parse(JSON.parse(line))];
+      parsed = JSON.parse(line);
     } catch (cause) {
-      if (index === lines.length - 1) return [];
+      if (index === lines.length - 1 && !hasTrailingNewline) return [];
+      throw new Error(`Log line ${index + 1}: ${errorText(cause)}`);
+    }
+
+    try {
+      return [logLineSchema.parse(parsed)];
+    } catch (cause) {
       throw new Error(`Log line ${index + 1}: ${errorText(cause)}`);
     }
   });
@@ -1523,10 +1545,36 @@ async function sweep(input: {
   return error;
 }
 
+async function checkExistingRun(plan: RunPlan, raw: string): Promise<RunFile> {
+  const runFile = runFileSchema.parse(JSON.parse(raw));
+
+  if (runFile.run.id !== plan.runId)
+    throw new Error(
+      `${plan.out} belongs to run ${runFile.run.id}; pass --run ${runFile.run.id} to retry into it, or a new --out`,
+    );
+
+  if (
+    runFile.segmentsTarget !== plan.segmentsTarget ||
+    runFile.segmentDurationS !== plan.segmentDurationS
+  )
+    throw new Error(
+      `Run ${runFile.run.id} is ${runFile.segmentsTarget} x ${runFile.segmentDurationS}s; this is ${plan.segmentsTarget} x ${plan.segmentDurationS}s`,
+    );
+  const loaded = await loadResults(plan.out);
+
+  if (loaded.chunkSteps !== null && loaded.chunkSteps !== plan.chunkSteps)
+    throw new Error(
+      `Run ${runFile.run.id} uses chunkSteps ${loaded.chunkSteps}; this is ${plan.chunkSteps}`,
+    );
+
+  return runFile;
+}
+
 /**
- * Claims the output directory for this run: writes `run.json`, or checks that an existing one is
- * the same run with the same segment plan and chunk size (a retry of some providers), and that
- * everything already in it merges cleanly.
+ * Claims the output directory for this run: writes `run.json` atomically and exclusively (so two
+ * concurrent runs targeting a fresh directory cannot overwrite each other's `run.json`), or checks
+ * that an existing one is the same run with the same segment plan and chunk size (a retry of some
+ * providers), and that everything already in it merges cleanly.
  */
 async function claimOut(plan: RunPlan): Promise<RunFile> {
   const files = paths(plan.out);
@@ -1534,30 +1582,7 @@ async function claimOut(plan: RunPlan): Promise<RunFile> {
   await mkdir(files.logs, { recursive: true });
   const existing = await readOptional(files.run);
 
-  if (existing !== null) {
-    const runFile = runFileSchema.parse(JSON.parse(existing));
-
-    if (runFile.run.id !== plan.runId)
-      throw new Error(
-        `${plan.out} belongs to run ${runFile.run.id}; pass --run ${runFile.run.id} to retry into it, or a new --out`,
-      );
-
-    if (
-      runFile.segmentsTarget !== plan.segmentsTarget ||
-      runFile.segmentDurationS !== plan.segmentDurationS
-    )
-      throw new Error(
-        `Run ${runFile.run.id} is ${runFile.segmentsTarget} x ${runFile.segmentDurationS}s; this is ${plan.segmentsTarget} x ${plan.segmentDurationS}s`,
-      );
-    const loaded = await loadResults(plan.out);
-
-    if (loaded.chunkSteps !== null && loaded.chunkSteps !== plan.chunkSteps)
-      throw new Error(
-        `Run ${runFile.run.id} uses chunkSteps ${loaded.chunkSteps}; this is ${plan.chunkSteps}`,
-      );
-
-    return runFile;
-  }
+  if (existing !== null) return checkExistingRun(plan, existing);
 
   const metadata = await collectMetadata(false);
 
@@ -1573,7 +1598,24 @@ async function claimOut(plan: RunPlan): Promise<RunFile> {
     chunkSteps: plan.chunkSteps,
   };
 
-  await writeJsonAtomic(files.run, runFile);
+  const temporary = `${files.run}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(runFile, null, 2)}\n`);
+  let racedExisting = false;
+
+  try {
+    await link(temporary, files.run);
+  } catch (cause) {
+    if (lockHeld.safeParse(cause).success) racedExisting = true;
+    else throw cause;
+  } finally {
+    await unlink(temporary).catch(() => undefined);
+  }
+
+  if (racedExisting) {
+    const raced = await readFile(files.run, "utf8");
+
+    return checkExistingRun(plan, raced);
+  }
 
   return runFile;
 }
