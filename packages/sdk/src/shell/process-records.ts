@@ -824,11 +824,14 @@ export function detachedLaunchScript(input: {
   waitForExit: boolean;
 }): string {
   const file = records(input.dir);
+  // A stop() that ran after setup recorded an exit; report it instead of starting the command.
+  const stopped = `if [ -f ${file.exit} ]; then cat ${file.exit}; exit 0; fi`;
   const launch = `nohup setsid sh -c ${quote(input.supervisor)} > /dev/null 2>&1 < /dev/null & echo $! > ${file.pid}`;
 
-  if (!input.waitForExit) return launch;
+  if (!input.waitForExit) return `${stopped}; ${launch}`;
 
   return [
+    stopped,
     launch,
     `i=0`,
     `while [ "$i" -lt 10 ] && [ ! -f ${file.exit} ]`,

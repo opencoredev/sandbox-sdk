@@ -510,7 +510,19 @@ export function makeProcesses(
       },
       stop: (options = {}) =>
         safe(async () => {
-          const current = await info(name);
+          let current = await info(name);
+
+          // pid 0 with no exit: a start is between setup and launch. Give its launcher a moment to
+          // record the pid so the kill below reaches it; a launcher that runs later sees the exit.
+          for (
+            let waited = 0;
+            current.exitCode === null && current.pid === 0 && !native.get(name) && waited < 2000;
+            waited += 100
+          ) {
+            await delay(100);
+            current = await info(name);
+          }
+
           status = current.status;
 
           if (current.exitCode !== null) {

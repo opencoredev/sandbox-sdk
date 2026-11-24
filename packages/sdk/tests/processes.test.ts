@@ -68,7 +68,7 @@ test("start() reports a command that already exited as failed or exited, not run
   provider.exec = (id, input) =>
     exec(
       id,
-      input.command.startsWith("nohup setsid") && !input.command.includes("sleep 30")
+      input.command.includes("nohup setsid") && !input.command.includes("sleep 30")
         ? {
             ...input,
             command: input.command.replace(" < /dev/null & echo $!", " < /dev/null; echo $!"),
@@ -337,7 +337,7 @@ test("a lost launch reply keeps the records, so a retry cannot start a second co
   provider.exec = async (id, input) => {
     const result = await exec(id, input);
 
-    if (lose && input.command.startsWith("nohup setsid")) {
+    if (lose && input.command.includes("nohup setsid")) {
       lose = false;
       throw new SandboxError("Launch reply lost", { code: "outcome_unknown" });
     }
@@ -371,6 +371,50 @@ test("a lost launch reply keeps the records, so a retry cannot start a second co
   }
 });
 
+test("stop() during a pending start keeps the stopped command from launching", async () => {
+  const provider = await shellProvider();
+  const exec = provider.exec.bind(provider);
+  let reachLauncher = () => {};
+
+  const atLauncher = new Promise<void>((resolve) => {
+    reachLauncher = resolve;
+  });
+
+  let releaseLauncher = () => {};
+
+  const launcherReleased = new Promise<void>((resolve) => {
+    releaseLauncher = resolve;
+  });
+
+  // Hold the launcher after setup so stop() lands between the two.
+  provider.exec = async (id, input) => {
+    if (input.command.includes("nohup setsid")) {
+      reachLauncher();
+      await launcherReleased;
+    }
+
+    return exec(id, input);
+  };
+
+  const box = await createSandbox(provider);
+
+  try {
+    const pending = box.start("sleep 30", { name: "raced" });
+    await atLauncher;
+    await box.process("raced").stop({ graceMs: 100 });
+    releaseLauncher();
+
+    const started = await pending;
+    expect(started.status).not.toBe("running");
+    expect(await box.processes()).toEqual([
+      expect.objectContaining({ name: "raced", status: "failed", exitCode: 143, pid: 0 }),
+    ]);
+  } finally {
+    releaseLauncher();
+    await box.destroy();
+  }
+});
+
 test("stop() clears a lost launch that never ran without signalling a pid", async () => {
   const provider = await shellProvider();
   const exec = provider.exec.bind(provider);
@@ -380,7 +424,7 @@ test("stop() clears a lost launch that never ran without signalling a pid", asyn
   provider.exec = async (id, input) => {
     commands.push(input.command);
 
-    if (lose && input.command.startsWith("nohup setsid")) {
+    if (lose && input.command.includes("nohup setsid")) {
       lose = false;
       throw new SandboxError("Launch reply lost", { code: "outcome_unknown" });
     }
