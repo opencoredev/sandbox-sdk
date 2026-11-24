@@ -8,6 +8,7 @@ import {
   collect,
   collectExact,
   execute,
+  terminate,
   type ArchilOutput,
   type ArchilProcess,
   type ArchilProcessResult,
@@ -512,6 +513,26 @@ describe("Archil connections closed before the exit", () => {
       archilState.closeConnection = undefined;
       archilState.attachDelays = [];
       archilState.killDelayMs = 0;
+      await box.destroy();
+    }
+  });
+
+  test("a kill Archil carries out but never acknowledges is confirmed by the end", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      const process = await fake.run(`sleep 30 # kill-unanswered-${crypto.randomUUID()}`, {});
+
+      archilState.killUnanswered = true;
+      const started = Date.now();
+
+      expect(await terminate(process)).toBe(true);
+      expect(Date.now() - started).toBeLessThan(3000);
+    } finally {
+      archilState.killUnanswered = false;
       await box.destroy();
     }
   });

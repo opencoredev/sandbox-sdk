@@ -59,6 +59,8 @@ interface ArchilState {
   attachDelays: number[];
   /** Hold a kill this long before the process actually ends, as Archil's report can lag. */
   killDelayMs: number;
+  /** Carry out kills but never acknowledge them, as a stalled control connection would. */
+  killUnanswered: boolean;
   /** Connections `attach` made, with whether each was disconnected. */
   attached: { disconnected: boolean }[];
 }
@@ -82,6 +84,7 @@ export const archilState: ArchilState = {
   attachDelayMs: 0,
   attachDelays: [],
   killDelayMs: 0,
+  killUnanswered: false,
   attached: [],
 };
 
@@ -223,6 +226,8 @@ class FakeProcess implements ArchilProcess {
 
     if (delay > 0) setTimeout(() => this.#group("SIGKILL"), delay);
     else this.#group("SIGKILL");
+
+    if (archilState.killUnanswered) await new Promise(() => {});
   }
   async disconnect() {
     this.#disconnected = true;

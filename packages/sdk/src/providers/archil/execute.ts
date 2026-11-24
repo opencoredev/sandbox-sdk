@@ -214,9 +214,10 @@ export async function terminate(
   let expired = false;
 
   const ended = (async () => {
-    // The kill goes by process ID at once. A kill refused because the process already ended is
-    // confirmed by the end below.
-    await process.kill().catch(() => {});
+    // The kill goes by process ID at once, on its own connection; its acknowledgment isn't waited
+    // for, so an end that arrives first still counts. A kill refused because the process already
+    // ended is confirmed by the end below.
+    void process.kill().catch(() => {});
 
     const recovered = pending === undefined ? undefined : await pending.catch(() => undefined);
 
@@ -494,7 +495,8 @@ export async function execute({
       );
     } finally {
       settled = true;
-      await disconnect(process);
+      // Closed in the background: a close that stalls never delays the result.
+      void disconnect(process);
     }
   } finally {
     clearTimeout(timer);
@@ -702,6 +704,7 @@ export async function collect(
   } finally {
     done = true;
     closed = true;
-    await disconnect(process);
+    // Closed in the background: a close that stalls never delays the result.
+    void disconnect(process);
   }
 }
