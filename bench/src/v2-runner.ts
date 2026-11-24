@@ -2249,6 +2249,8 @@ export async function runV2(
             tenki: 5,
             baseten: 10,
             instabox: 25,
+            // Archil's Developer plan cap (Free 5, Team 250): docs.archil.com/administration/billing.md
+            archil: 20,
             // Maritime's Growth plan: 25 machines awake at once.
             maritime: 25,
           }[p.name] ??

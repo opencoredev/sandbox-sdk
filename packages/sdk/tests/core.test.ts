@@ -1,6 +1,8 @@
 import { describe, test, expect } from "vitest";
 import { createSandbox, connectSandbox, reapSandboxes, SandboxError } from "../src/index.js";
 import { memory } from "../src/memory.js";
+import { BufferCap, OutputBus } from "../src/run.js";
+import { toolOutputFilter } from "../src/tool-security.js";
 import type { Provider } from "../src/provider.js";
 import type { Files } from "../src/files.js";
 
@@ -356,6 +358,115 @@ describe("core safety guarantees", () => {
     const box = await createSandbox(provider, { timeoutMs: 20 });
     await pause(40);
     await expect(provider.connect(box.id)).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  test("streaming redaction stays linear for long self-repeating secrets", async () => {
+    const secret = `${"H".repeat(200_000)}END`;
+    const prefix = secret.slice(0, 180_000);
+
+    const provider = memory({
+      handlers: {
+        emit: ({ stdout }) => {
+          for (let offset = 0; offset < prefix.length; offset += 65_536) {
+            stdout(prefix.slice(offset, offset + 65_536));
+          }
+
+          stdout("tail\n");
+
+          return 0;
+        },
+      },
+    });
+
+    await using box = await createSandbox(provider, { secrets: { REPEAT: secret } });
+    const started = performance.now();
+    const result = await box.run("emit");
+    const elapsedMs = performance.now() - started;
+
+    expect(result.truncated).toBe(false);
+    expect(result.stdout.length).toBe(prefix.length + 5);
+    expect(result.stdout.endsWith("tail\n")).toBe(true);
+    expect(elapsedMs).toBeLessThan(2000);
+  });
+
+  test("redaction merges overlapping secrets across single-chunk and split-chunk streams", async () => {
+    const longKey = `ABCDE${"0123456789".repeat(5)}FGHIJxyz`;
+
+    const provider = memory({
+      handlers: {
+        single: ({ stdout }) => {
+          stdout(`pre xyz${longKey} post\n`);
+          stdout("id=tok-12345678901234567890;\n");
+          stdout("same=abcabcabdxy;\n");
+
+          return 0;
+        },
+        split: ({ stdout }) => {
+          stdout("pre xyzAB");
+          stdout(`${longKey.slice(2)} post\n`);
+          stdout("id=tok-12");
+          stdout("345678901234567890;\n");
+          stdout("same=abcabc");
+          stdout("abdxy;\n");
+
+          return 0;
+        },
+      },
+    });
+
+    await using box = await createSandbox(provider, {
+      secrets: {
+        SHORT1: "xyzAB",
+        LONG1: longKey,
+        SHORT2: "tok-12",
+        LONG2: "12345678901234567890",
+        SAME1: "abcabc",
+        SAME2: "cabdxy",
+      },
+    });
+
+    const single = await box.run("single");
+    const split = await box.run("split");
+    const expected = "pre [REDACTED] post\nid=[REDACTED];\nsame=[REDACTED];\n";
+
+    expect(single.stdout).toBe(expected);
+    expect(split.stdout).toBe(expected);
+  });
+
+  test("streaming keeps raw held segments so marker-prefixed secrets match single-chunk output", async () => {
+    const marker = "[REDACTED]";
+    const s0 = `${marker}ba`;
+    const s1 = `${marker.repeat(3)}b`;
+    const payload = `${s0}${s1}${s0}`;
+
+    const provider = memory({
+      handlers: {
+        single: ({ stdout }) => {
+          stdout(payload);
+
+          return 0;
+        },
+        oneChar: ({ stdout }) => {
+          for (const ch of payload) stdout(ch);
+
+          return 0;
+        },
+        prefixedOneChar: ({ stdout }) => {
+          for (const ch of `pre ${payload} post`) stdout(ch);
+
+          return 0;
+        },
+      },
+    });
+
+    await using box = await createSandbox(provider, { secrets: { S0: s0, S1: s1 } });
+    const single = await box.run("single");
+    const oneChar = await box.run("oneChar");
+    const prefixed = await box.run("prefixedOneChar");
+
+    expect(single.stdout).toBe(marker.repeat(3));
+    expect(oneChar.stdout).toBe(marker.repeat(3));
+    expect(prefixed.stdout).toBe(`pre ${marker.repeat(3)} post`);
   });
 });
 
@@ -815,3 +926,251 @@ test("shell process setup uses two execs and one upload, preserving UTF-8 and du
     await box.destroy();
   }
 }, 30_000);
+
+test("createSandbox passes its signal to find and stops waiting on a hung lookup", async () => {
+  const provider = memory();
+  const signals: (AbortSignal | undefined)[] = [];
+
+  provider.find = (_key, options) => {
+    signals.push(options?.signal);
+
+    // A lookup that never settles on its own.
+    return new Promise(() => {});
+  };
+
+  const controller = new AbortController();
+  const pending = createSandbox(provider, { key: "hung-find", signal: controller.signal });
+  setTimeout(() => controller.abort(), 50);
+
+  await expect(pending).rejects.toMatchObject({ code: "aborted" });
+  expect(signals).toEqual([controller.signal]);
+  expect(await provider.list({})).toEqual([]);
+});
+
+test("streaming redaction preserves exact chunk-split parity on replacement-created right suffixes and previous-span boundaries", async () => {
+  const cases: { secrets: Record<string, string>; inputs: string[]; expected: string[] }[] = [
+    {
+      secrets: { A: "b", B: "[REDACTED]ba" },
+      inputs: ["bba", "bbba", "bbbbbbba", "bbc", "pre bba post"],
+      expected: [
+        "[REDACTED]",
+        "[REDACTED][REDACTED]",
+        "[REDACTED]".repeat(6),
+        "[REDACTED][REDACTED]c",
+        "pre [REDACTED] post",
+      ],
+    },
+    {
+      secrets: { A: "[REDa[RED", B: "[REDTED]" },
+      inputs: ["[REDa[REDa[REDTED]"],
+      expected: ["[REDACTED]a[REDACTED]"],
+    },
+  ];
+
+  for (const entry of cases) {
+    for (let idx = 0; idx < entry.inputs.length; idx++) {
+      const text = entry.inputs[idx];
+      const expected = entry.expected[idx];
+
+      if (!text || !expected) continue;
+
+      const splits: string[][] = [
+        [text],
+        [...text],
+        ...Array.from({ length: Math.max(0, text.length - 1) }, (_, cut) => [
+          text.slice(0, cut + 1),
+          text.slice(cut + 1),
+        ]),
+      ];
+
+      for (const chunks of splits) {
+        await using box = await createSandbox(
+          memory({
+            handlers: {
+              emit({ stdout }) {
+                for (const part of chunks) stdout(part);
+
+                return 0;
+              },
+            },
+          }),
+          { secrets: entry.secrets },
+        );
+
+        const res = await box.run("emit");
+        expect(res.stdout).toBe(expected);
+        expect(res.output).toBe(expected);
+
+        const proc = box.run("emit");
+        let streamed = "";
+
+        for await (const chunk of proc) streamed += chunk.text;
+        expect(streamed).toBe(expected);
+      }
+    }
+  }
+});
+
+test("streaming redaction scales linearly on long repeating prefixes in small chunks", async () => {
+  const n = 262_144;
+  const secret = `${"a".repeat(n)}b`;
+
+  await using box = await createSandbox(
+    memory({
+      handlers: {
+        repeat({ stdout }) {
+          const piece = "a".repeat(256);
+
+          for (let offset = 0; offset < n; offset += 256) stdout(piece);
+          stdout("b");
+
+          return 0;
+        },
+      },
+    }),
+    { secrets: { LONG_REPEAT: secret } },
+  );
+
+  const started = performance.now();
+  const res = await box.run("repeat");
+  const elapsedMs = performance.now() - started;
+
+  expect(res.stdout).toBe("[REDACTED]");
+  expect(res.truncated).toBe(false);
+  expect(elapsedMs).toBeLessThan(1_000);
+});
+
+test("streaming redaction scales linearly on a held prefix that already contains a shorter secret", async () => {
+  const n = 131_072;
+
+  await using box = await createSandbox(
+    memory({
+      handlers: {
+        nested({ stdout }) {
+          for (let offset = 0; offset < n; offset += 256) stdout("x".repeat(256));
+          stdout("y");
+
+          return 0;
+        },
+        broken({ stdout }) {
+          for (let offset = 0; offset < 4096; offset += 256) stdout("x".repeat(256));
+          stdout("z");
+
+          return 0;
+        },
+      },
+    }),
+    { secrets: { SHORT: "x", LONG: `${"x".repeat(n)}y` } },
+  );
+
+  const started = performance.now();
+  const res = await box.run("nested");
+  const elapsedMs = performance.now() - started;
+
+  expect(res.stdout).toBe("[REDACTED]");
+  expect(res.truncated).toBe(false);
+  expect(elapsedMs).toBeLessThan(1_000);
+
+  // A tail that leaves the longer secret releases the held prefix with each short match redacted.
+  expect((await box.run("broken")).stdout).toBe(`${"[REDACTED]".repeat(4096)}z`);
+});
+
+test("OutputBus and BufferCap release consumed slots and toolOutputFilter redacts per-stream secrets split by foreign streams", async () => {
+  const bus = new OutputBus();
+  const stream = bus.stream();
+  const received: string[] = [];
+
+  for (let i = 0; i < 32; i++) {
+    const pending = stream.next();
+    bus.emit({ stream: "stdout", text: `chunk-${i}:${"x".repeat(1024)}` });
+    const next = await pending;
+    expect(next.done).toBe(false);
+
+    if (!next.done) received.push(next.value.text);
+  }
+
+  bus.end();
+  expect((await stream.next()).done).toBe(true);
+  expect(received).toHaveLength(32);
+
+  const cap = new BufferCap(128);
+
+  for (let i = 0; i < 64; i++) cap.add(`line-${String(i).padStart(2, "0")}-abcdefgh\n`);
+  const capped = cap.text();
+  expect(cap.truncated).toBe(true);
+  expect(capped).toContain("line-00-");
+  expect(capped).toContain("line-63-abcdefgh\n");
+
+  const secret = "SECRET_SPLIT_TOKEN";
+
+  await using box = await createSandbox(memory(), { secrets: { S: secret } });
+  const chunks: { stream: string; text: string }[] = [];
+  const filter = toolOutputFilter(box, (chunk) => chunks.push(chunk));
+
+  filter.push({ stream: "stdout", text: "prefix SECRET_SPLIT_" });
+  filter.push({ stream: "stderr", text: "foreign-stream " });
+  filter.push({ stream: "stdout", text: "TOKEN suffix" });
+  filter.flush();
+
+  const byStream = (s: string) => {
+    let out = "";
+
+    for (const c of chunks) if (c.stream === s) out += c.text;
+
+    return out;
+  };
+
+  expect(byStream("stdout")).toBe("prefix [REDACTED] suffix");
+  expect(byStream("stderr")).toBe("foreign-stream ");
+  expect(chunks.map((c) => c.text).join("")).not.toContain("SECRET_SPLIT");
+});
+
+test("Redactor compiles large marker-adjacent secrets linearly and OutputBus trims oversized UTF-8 chunks cleanly", async () => {
+  const largeMarkerSecret = `${"a".repeat(1_048_560)}[REDACTED]z`;
+  const t0 = performance.now();
+
+  await using box = await createSandbox(memory(), { secrets: { LARGE: largeMarkerSecret } });
+  const res = await box.run("echo safe");
+  const elapsedMs = performance.now() - t0;
+
+  expect(res.stdout).toBe("safe\n");
+  expect(elapsedMs).toBeLessThan(1_000);
+
+  const bus = new OutputBus();
+  const stream = bus.stream();
+  const pending = stream.next();
+  bus.emit({ stream: "stdout", text: "€".repeat(400_000) });
+  const first = await pending;
+  bus.end();
+
+  expect(first.done).toBe(false);
+
+  if (!first.done) {
+    expect(Buffer.byteLength(first.value.text)).toBeLessThanOrEqual(1_048_576);
+    expect(first.value.text.startsWith("\uFFFD")).toBe(false);
+    expect(first.value.text.startsWith("€")).toBe(true);
+  }
+});
+
+test("chunkRedactor holds preceding redacted segments across adjacent-marker secrets on arbitrary splits", async () => {
+  const text = "aTED]baaTED]ba";
+
+  await using box = await createSandbox(memory(), {
+    secrets: { A: "b", B: "TED][RED", C: "aTED]ba" },
+  });
+
+  const splits: string[][] = [[text], ["aTED]baaTED]b", "a"], [...text]];
+
+  for (let i = 1; i < text.length; i++) splits.push([text.slice(0, i), text.slice(i)]);
+
+  for (const pieces of splits) {
+    const streamed: string[] = [];
+    const filter = toolOutputFilter(box, (chunk) => streamed.push(chunk.text));
+
+    for (const piece of pieces) filter.push({ stream: "stdout", text: piece });
+    filter.flush();
+
+    expect(streamed.join("")).toBe("[REDACTED]");
+    expect(streamed.join("")).not.toContain("TED][RED");
+  }
+});

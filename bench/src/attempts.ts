@@ -19,6 +19,7 @@ export const cloudProviders = [
   "instabox",
   "maritime",
   "beam",
+  "archil",
 ];
 
 export const mainTests = [

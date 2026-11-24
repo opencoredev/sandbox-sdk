@@ -69,6 +69,9 @@ const defaults: DefaultAllocations = {
   instabox: { cpu: 4, memoryGiB: 8, diskGiB: 20 },
   // Beam's TypeScript SDK default, 1 CPU and 128 MiB; sandbox disk is not billed.
   beam: { cpu: 1, memoryGiB: 0.125, diskGiB: 0 },
+  // Archil's default, 1 vCPU and 2048 MiB. The root disk (about 1 TB, not configurable) bills
+  // stored data as storage, not a provisioned size, so none is counted.
+  archil: { cpu: 1, memoryGiB: 2, diskGiB: 0 },
   // Maritime's default size, small: 2 vCPU / 4 GiB with a 12 GiB root disk (nproc, df, 2026-11-23).
   maritime: { cpu: 2, memoryGiB: 4, diskGiB: 12 },
 };

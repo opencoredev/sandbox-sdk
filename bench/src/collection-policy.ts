@@ -30,5 +30,15 @@ export function collectionPolicy() {
       "Instabox blocks outbound 443 to public DNS resolvers, so the 1.1.1.1:443 TCP probe cannot connect",
   }));
 
-  return attemptPolicySchema.parse({ replacements: [], notRun: [...boat, ...instabox] });
+  const archil = (["default", "same-spec"] as const).flatMap((track) =>
+    ["snapshot", "create-from-snapshot"].map((scenario) => ({
+      provider: "archil",
+      track,
+      suite: "snapshot",
+      scenario,
+      reason: "Archil adapter has no snapshot/restore capability",
+    })),
+  );
+
+  return attemptPolicySchema.parse({ replacements: [], notRun: [...boat, ...instabox, ...archil] });
 }

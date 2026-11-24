@@ -3,6 +3,9 @@ import type { OutputChunk, Provider } from "./provider.js";
 import { invalid, Redactor, type SandboxError } from "./errors.js";
 import type { RunHandle, RunOptions, RunResult } from "./types.js";
 import { quote } from "./shared/shell.js";
+import { chunkRedactor } from "./chunk-redactor.js";
+
+export { chunkRedactor };
 
 // Providers built on run.ts helpers import quote from here.
 export { quote };
@@ -99,33 +102,91 @@ function trackRun(provider: string, id: string) {
 }
 
 export class BufferCap {
-  private head = Buffer.alloc(0);
-  private tail = Buffer.alloc(0);
+  private headParts: Buffer[] = [];
+  private headBytes = 0;
+  private tailParts: (Buffer | undefined)[] = [];
+  private tailHead = 0;
+  private tailBytes = 0;
   total = 0;
   constructor(readonly limit: number) {}
   add(text: string) {
     const data = Buffer.from(text);
     this.total += data.length;
     const headSize = Math.ceil(this.limit / 2);
-    const take = Math.min(data.length, headSize - this.head.length);
+    const tailLimit = this.limit - headSize;
+    const take = Math.min(data.length, headSize - this.headBytes);
 
-    if (take > 0) this.head = Buffer.concat([this.head, data.subarray(0, take)]);
-    this.tail = Buffer.concat([this.tail, data.subarray(Math.max(0, take))]);
+    if (take > 0) {
+      this.headParts.push(take === data.length ? data : Buffer.from(data.subarray(0, take)));
+      this.headBytes += take;
+    }
 
-    if (this.tail.length > this.limit - headSize)
-      this.tail = this.tail.subarray(this.tail.length - (this.limit - headSize));
+    const rest = take > 0 ? data.subarray(take) : data;
+
+    if (rest.length > 0 && tailLimit > 0) {
+      if (rest.length >= tailLimit) {
+        this.tailParts = [Buffer.from(rest.subarray(rest.length - tailLimit))];
+        this.tailHead = 0;
+        this.tailBytes = tailLimit;
+      } else {
+        this.tailParts.push(take > 0 ? Buffer.from(rest) : rest);
+        this.tailBytes += rest.length;
+
+        while (this.tailBytes > tailLimit && this.tailHead < this.tailParts.length) {
+          const front = this.tailParts[this.tailHead];
+
+          if (!front) {
+            this.tailHead += 1;
+            continue;
+          }
+
+          const excess = this.tailBytes - tailLimit;
+
+          if (front.length <= excess) {
+            this.tailBytes -= front.length;
+            this.tailParts[this.tailHead] = undefined;
+            this.tailHead += 1;
+          } else {
+            this.tailParts[this.tailHead] = front.subarray(excess);
+            this.tailBytes -= excess;
+          }
+        }
+
+        if (this.tailHead >= this.tailParts.length) {
+          this.tailParts.length = 0;
+          this.tailHead = 0;
+        } else if (this.tailHead > 1024 && this.tailHead * 2 >= this.tailParts.length) {
+          this.tailParts = this.tailParts.slice(this.tailHead);
+          this.tailHead = 0;
+        }
+      }
+    }
   }
   get truncated() {
     return this.total > this.limit;
   }
   text() {
-    if (!this.truncated) return Buffer.concat([this.head, this.tail]).toString();
+    const headBuf = this.headParts.length
+      ? Buffer.concat(this.headParts, this.headBytes)
+      : Buffer.alloc(0);
+
+    const tailSlice: Buffer[] = [];
+
+    for (let i = this.tailHead; i < this.tailParts.length; i++) {
+      const part = this.tailParts[i];
+
+      if (part) tailSlice.push(part);
+    }
+
+    const tailBuf = tailSlice.length ? Buffer.concat(tailSlice, this.tailBytes) : Buffer.alloc(0);
+
+    if (!this.truncated) return Buffer.concat([headBuf, tailBuf]).toString();
     // Decode the head in streaming mode to discard an incomplete trailing code point.
-    const head = new TextDecoder().decode(this.head, { stream: true });
+    const head = new TextDecoder().decode(headBuf, { stream: true });
     let start = 0;
 
-    while (start < this.tail.length && ((this.tail[start] ?? 0) & 0xc0) === 0x80) start++;
-    const tail = this.tail.subarray(start).toString();
+    while (start < tailBuf.length && ((tailBuf[start] ?? 0) & 0xc0) === 0x80) start++;
+    const tail = tailBuf.subarray(start).toString();
 
     return (
       head +
@@ -153,22 +214,44 @@ export class OutputBus {
     for (const listener of this.listeners) listener();
   }
   async *stream(): AsyncGenerator<OutputChunk> {
-    const queue: OutputChunk[] = [];
+    const queue: (OutputChunk | undefined)[] = [];
+    let head = 0;
     let bytes = 0;
     let wake = () => {};
 
+    const dequeue = (): OutputChunk | undefined => {
+      if (head >= queue.length) return undefined;
+      const item = queue[head];
+      queue[head++] = undefined;
+
+      if (head >= queue.length) {
+        queue.length = 0;
+        head = 0;
+      } else if (head >= 1024 && head * 2 >= queue.length) {
+        queue.splice(0, head);
+        head = 0;
+      }
+
+      return item;
+    };
+
     const listener = (chunk?: OutputChunk) => {
       if (chunk) {
-        const text =
-          Buffer.byteLength(chunk.text) > 1_048_576
-            ? Buffer.from(chunk.text).subarray(-1_048_576).toString()
-            : chunk.text;
+        let text = chunk.text;
+
+        if (Buffer.byteLength(text) > 1_048_576) {
+          const tail = Buffer.from(text).subarray(-1_048_576);
+          let start = 0;
+
+          while (start < tail.length && ((tail[start] ?? 0) & 0xc0) === 0x80) start++;
+          text = tail.subarray(start).toString();
+        }
 
         queue.push({ ...chunk, text });
         bytes += Buffer.byteLength(text);
 
-        while (bytes > 1_048_576 && queue.length > 1)
-          bytes -= Buffer.byteLength(queue.shift()?.text ?? "");
+        while (bytes > 1_048_576 && queue.length - head > 1)
+          bytes -= Buffer.byteLength(dequeue()?.text ?? "");
       }
 
       wake();
@@ -177,8 +260,8 @@ export class OutputBus {
     this.listeners.add(listener);
 
     try {
-      while (!this.ended || queue.length) {
-        const next = queue.shift();
+      while (!this.ended || head < queue.length) {
+        const next = dequeue();
 
         if (next) {
           bytes -= Buffer.byteLength(next.text);
@@ -191,94 +274,12 @@ export class OutputBus {
 
       if (this.failure) throw this.failure;
     } finally {
+      queue.length = 0;
+      head = 0;
+      bytes = 0;
       this.listeners.delete(listener);
     }
   }
-}
-
-/** Hold suffixes so secrets split between transport chunks never escape. */
-export function chunkRedactor(
-  redactor: Redactor,
-  emit: (chunk: OutputChunk) => void,
-  interleaved = false,
-) {
-  const queue: OutputChunk[] = [];
-
-  function drain(final = false) {
-    const secrets = redactor.secrets;
-    const leading = new Set(secrets.map((secret) => secret[0]));
-
-    while (queue.length) {
-      const first = queue[0];
-
-      if (!first) break;
-
-      if (!leading.has(first.text[0])) {
-        let count = 1;
-
-        while (count < first.text.length && !leading.has(first.text[count])) count++;
-        emit({ stream: first.stream, text: first.text.slice(0, count) });
-        first.text = first.text.slice(count);
-
-        if (!first.text) queue.shift();
-        continue;
-      }
-
-      const text = queue
-        .flatMap((chunk) => (interleaved || chunk.stream === first.stream ? [chunk.text] : []))
-        .join("");
-
-      const secret = secrets.find((secret) => text.startsWith(secret));
-
-      if (secret) {
-        emit({ stream: first.stream, text: "[REDACTED]" });
-        let remaining = secret.length;
-
-        for (const chunk of queue)
-          if ((interleaved || chunk.stream === first.stream) && remaining) {
-            const count = Math.min(remaining, chunk.text.length);
-            chunk.text = chunk.text.slice(count);
-            remaining -= count;
-          }
-      } else {
-        if (!final && secrets.some((secret) => secret.startsWith(text))) {
-          if (queue.reduce((size, chunk) => size + Buffer.byteLength(chunk.text), 0) <= 1_048_576)
-            break;
-          // A stalled stream must not retain arbitrary output from another stream.
-          // Conservatively redact its ambiguous prefix, preserving arrival order.
-          emit({ stream: first.stream, text: "[REDACTED]" });
-          queue.shift();
-          continue;
-        }
-
-        // Emit up to the next potentially secret-leading character.
-        let count = 1;
-
-        while (count < first.text.length && !leading.has(first.text[count])) count++;
-        emit({ stream: first.stream, text: first.text.slice(0, count) });
-        first.text = first.text.slice(count);
-      }
-
-      for (let index = queue.length - 1; index >= 0; index--)
-        if (!queue[index]?.text) queue.splice(index, 1);
-    }
-  }
-
-  return {
-    push(chunk: OutputChunk) {
-      if (!redactor.secrets.length) {
-        emit(chunk);
-
-        return;
-      }
-
-      queue.push({ ...chunk });
-      drain();
-    },
-    flush() {
-      drain(true);
-    },
-  };
 }
 
 /** `guard` runs before each command: it throws when the handle is closed and waits for secret recovery. baseEnv is read per command. */
@@ -389,7 +390,12 @@ export function makeRun(
           stderr: stderr.text(),
           output: output.text(),
           durationMs: Date.now() - started,
-          truncated: stdout.truncated || stderr.truncated || output.truncated,
+          truncated:
+            stdout.truncated ||
+            stderr.truncated ||
+            output.truncated ||
+            filter.truncated ||
+            interleaved.truncated,
           timedOut,
           cwd,
           command: redactor.text(command),

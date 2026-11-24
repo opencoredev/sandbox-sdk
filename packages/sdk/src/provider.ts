@@ -35,6 +35,12 @@ export interface CreateInput {
   key?: string;
   size?: "small" | "medium" | "large" | { cpu: number; memoryMb: number; diskGb?: number };
   env?: Record<string, string>;
+  /**
+   * The names in `env` that are secrets. The core records them in the sandbox after create; an
+   * adapter that publishes its own readiness marker writes the same record first, so a second
+   * client that finds the sandbox can always recover them.
+   */
+  secretNames?: readonly string[];
   network?: "all" | "none" | { allow: string[] };
   ports?: number[];
   idleTimeoutMs?: number;
@@ -267,13 +273,27 @@ export interface Provider<
    * core then runs commands without a marker and idle reaping scans `/proc` for the SDK's env tag.
    */
   readonly procActivity?: boolean;
+  /**
+   * The adapter writes the secret-names record from `CreateInput.secretNames` itself, atomically and
+   * before the sandbox can be found, so the core does not rewrite it after create.
+   */
+  readonly recordsSecretNames?: boolean;
+  /**
+   * A paused or stopped sandbox's key and labels can be read only by waking it (Archil keeps them in
+   * a file inside the sandbox). `connect` then reports such a sandbox without them and wakes nothing;
+   * the core reopens a keyed sandbox that is not running through `find`, which wakes and verifies it,
+   * idle-only reaping leaves it alone rather than wake it to look, and `await using` on a handle
+   * connected while it slept closes rather than destroys it.
+   */
+  readonly readsMetadataOnlyWhenRunning?: boolean;
   /** Native command dialect for portable run wrappers; defaults to POSIX sh. */
   readonly commandShell?: "bash";
   /** Durable absolute directory for core-owned process records. */
   readonly processRecordRoot?: string;
   readonly capabilities: ReadonlySet<C>;
   create(input: CreateInput): Promise<SandboxInfo>;
-  find(key: string): Promise<SandboxInfo | undefined>;
+  /** Look up a sandbox by key. `signal` is the create's signal; the core stops waiting when it fires either way. */
+  find(key: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo | undefined>;
   connect(id: string): Promise<SandboxInfo>;
   list(labels: Labels): Promise<SandboxInfo[]>;
   destroy(id: string): Promise<void>;

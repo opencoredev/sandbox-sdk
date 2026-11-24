@@ -101,7 +101,7 @@ export interface RunResult {
   output: string;
   /** Wall-clock time of the command, in milliseconds. */
   durationMs: number;
-  /** `true` when output exceeded `maxOutputBytes` and the oldest bytes were dropped. */
+  /** `true` when output exceeded `maxOutputBytes` or the redactor dropped an ambiguous stalled run. */
   truncated: boolean;
   /** `true` when `timeoutMs` ran out and the command was killed. */
   timedOut: boolean;

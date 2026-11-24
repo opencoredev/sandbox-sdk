@@ -370,6 +370,28 @@ export const providerSetups: readonly ProviderSetup[] = [
       },
     },
   },
+  {
+    // Archil (docs and the adapter, 2026-11-21): 1 to 32 whole vCPUs and 256 to 65536 MiB per
+    // sandbox. Default is Archil's own 1 vCPU / 2048 MiB; FIT.md measured 1 vCPU / 1 GiB, not
+    // 2 GiB, so no profile is ruled out until a default-track run shows one. The adapter's image is
+    // Archil's default node:24-bookworm (glibc). The root disk is about 1 TB and not configurable,
+    // so no 20 GB disk rule applies; its data is billed as storage, outside these sizes. Lifetime
+    // expiry and the idle timeout (default 1800 s) pause the sandbox rather than delete it.
+    name: "archil",
+    adapter: "archil",
+    product: null,
+    lifetime: true,
+    pricingKey: "archil",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 0),
+        tooSmall: {},
+      },
+      default: { vcpu: 1, provisioned: size(1, 2, 0), tooSmall: {} },
+    },
+  },
 ];
 
 /** The size an attempt of `profile` provisions: its track's, plus a profile volume's disk. */

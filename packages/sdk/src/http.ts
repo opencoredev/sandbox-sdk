@@ -689,6 +689,7 @@ export function createHttpClient<Plane extends string>(
     what: string,
     cause?: string,
     retryable = code === "unavailable" || code === "quota",
+    retryAfterMs?: number,
   ) {
     const hint = code === "auth" ? options.authHint : undefined;
 
@@ -697,6 +698,7 @@ export function createHttpClient<Plane extends string>(
       provider,
       sandboxId: request.sandboxId,
       retryable,
+      retryAfterMs: retryable ? retryAfterMs : undefined,
       hint,
       cause: cause === undefined ? undefined : redact(cause),
     });
@@ -726,9 +728,15 @@ export function createHttpClient<Plane extends string>(
             provider,
             sandboxId: mapped.sandboxId,
             retryable: mapped.retryable,
+            retryAfterMs: mapped.retryAfterMs,
             hint: mapped.hint,
             cause,
           });
+
+    // The status lives on the error mapDefault built; carry it to the one that replaces it.
+    const status = statuses.get(mapped);
+
+    if (status && error !== mapped) statuses.set(error, status);
 
     if (failed.kind === "network" && !failed.sent) unsentFailures.add(error);
 
@@ -779,6 +787,7 @@ export function createHttpClient<Plane extends string>(
           ` (${status})${message}.${code === "outcome_unknown" ? " The request may or may not have taken effect; check before repeating it." : ""}`,
           cause,
           code === "unavailable" || code === "quota" || code === "timeout",
+          retryAfter(failed.headers),
         );
 
         statuses.set(

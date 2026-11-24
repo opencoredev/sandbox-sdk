@@ -132,7 +132,7 @@ const providers = [
 ];
 ```
 
-The old names (`boxd.baseURL`, `daytona.apiUrl`, `boat.apiUrl`, `tenki.authToken`, and `boat.type`) still work as deprecated aliases until 1.0.0. When both names are set, the new name wins.
+The old names (`boxd.baseURL`, `daytona.apiUrl`, `boat.apiUrl`, `tenki.authToken`, and `boat.type`) still work as deprecated aliases until 2.0.0. When both names are set, the new name wins.
 
 ## Core API
 

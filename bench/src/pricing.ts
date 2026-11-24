@@ -211,6 +211,18 @@ export const pricing: PriceTable = {
     notes:
       "Published Sandboxes rates on the Performance tier, the default ($0.05/vCPU-hour, $0.01/GiB RAM-hour), priced on the allocation and billed per millisecond while running (2026-11-18). Shared ($0.011, $0.0055) and Spot ($0.0063, $0.00135) tiers are cheaper and not used. Disk not billed. The snapshot tests did not run: Beam has no API to delete a memory snapshot. Credits excluded.",
   },
+  archil: {
+    ...base,
+    // Compute bills the allocation while the sandbox runs, sampled each minute; stopped and paused
+    // sandboxes accrue none. Disk data is billed as storage ($0.20/GiB-month active), not here.
+    cpuSecond: 0.055 / 3600,
+    memoryGiBSecond: 0.02 / 3600,
+    diskGiBSecond: 0,
+    retrieved: "2026-11-21",
+    source: "https://docs.archil.com/administration/billing.md",
+    notes:
+      "Published sandbox rates ($0.055/vCPU-hour, $0.020/GiB RAM-hour), priced on the allocation while running (2026-11-21). Compute is sampled each minute; the billing increment and minimum are not stated, so this is a one-second estimate. Paused and stopped sandboxes accrue no compute. The root disk's data is billed as storage ($0.20/GiB-month active) and egress at $0.07/GB; neither is priced. No per-start fee stated. Plan minimums (Developer $10/month, Team $500/month) and credits excluded. The snapshot tests did not run: the adapter has no snapshot.",
+  },
   tenki: {
     ...base,
     cpuSecond: 0.000014,
@@ -326,6 +338,8 @@ export const defaultCompute: ComputeTable = {
   maritime: { cpu: 2, memoryGiB: 4 },
   // Beam's TypeScript SDK default: 1 CPU, 128 MiB.
   beam: { cpu: 1, memoryGiB: 0.125 },
+  // Archil's default: 1 vCPU, 2048 MiB.
+  archil: { cpu: 1, memoryGiB: 2 },
 };
 
 export function estimateCost(
