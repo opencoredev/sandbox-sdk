@@ -342,6 +342,14 @@ export function verifyCheckpoints(input: {
           reason: `${label} at ${worker.elapsedS}s, before ${k * phase.seconds}s`,
         };
 
+      // Every window is a full segment (rolling checkpoints): none can be a few milliseconds of
+      // catch-up scored as a whole segment.
+      if (worker.elapsedS - before.elapsedS < phase.seconds - 0.001)
+        return {
+          kind: "invalid",
+          reason: `${label} covers ${round(worker.elapsedS - before.elapsedS, 3)}s, under a ${phase.seconds}s segment`,
+        };
+
       if (seen !== undefined && worker.elapsedS > seen + clockToleranceS)
         return {
           kind: "invalid",
@@ -393,21 +401,23 @@ async function streamPhase(input: {
   const firstSeenS = new Map<number, number>();
   const startMs = performance.now();
 
-  const started = await context.exec(
-    box,
-    streamStartCommand({ path: installed.path, seed, phase }),
-    60_000,
-  );
-
-  if (!started.ok || !/^\d+$/m.test(started.stdout))
-    throw new CheckStop(
-      `The continuous burn did not start: exit ${started.exitCode} ${started.stderr.slice(0, 200)}`,
-    );
-
   const limitMs = (phase.segments * phase.seconds + 180) * 1000;
   let reported = 0;
 
+  // The start sits inside the try: a launch that worked in the guest but timed out on the host
+  // must still be stopped.
   try {
+    const started = await context.exec(
+      box,
+      streamStartCommand({ path: installed.path, seed, phase }),
+      60_000,
+    );
+
+    if (!started.ok || !/^\d+$/m.test(started.stdout))
+      throw new CheckStop(
+        `The continuous burn did not start: exit ${started.exitCode} ${started.stderr.slice(0, 200)}`,
+      );
+
     for (;;) {
       if (context.signal.aborted) throw new CheckStop("Interrupted");
       await sleep(input.pollMs);
@@ -435,10 +445,32 @@ async function streamPhase(input: {
 
       if (check.segments.length === phase.segments && check.done) return [...check.segments];
 
-      if (/^alive=0$/m.test(polled.stdout) && !check.done)
+      if (/^alive=0$/m.test(polled.stdout) && !check.done) {
+        // The burn may have printed its last line and exited between the read and the liveness
+        // test: read once more before calling it stopped.
+        const last = await context.exec(box, streamPollCommand, 60_000);
+        const finalOut = last.stdout.replace(/^alive=\d\n?/m, "");
+
+        const finalCount = finalOut
+          .split("\n")
+          .filter((l) => l.startsWith('{"mode":"cpu-stream","segment":')).length;
+
+        const lastS = (performance.now() - startMs) / 1000;
+
+        for (let k = 1; k <= finalCount; k++) if (!firstSeenS.has(k)) firstSeenS.set(k, lastS);
+        const final = verifyCheckpoints({ stdout: finalOut, seed, phase, firstSeenS });
+
+        if (final.kind === "invalid") throw new CheckStop(`Sustained: ${final.reason}`);
+
+        for (const segment of final.segments.slice(reported))
+          await context.note("sustained-segment", segment);
+
+        if (final.segments.length === phase.segments && final.done) return [...final.segments];
+
         throw new CheckStop(
-          `The continuous burn stopped after ${check.segments.length} of ${phase.segments} segments`,
+          `The continuous burn stopped after ${final.segments.length} of ${phase.segments} segments`,
         );
+      }
 
       if (performance.now() - startMs > limitMs)
         throw new CheckStop(
@@ -446,7 +478,7 @@ async function streamPhase(input: {
         );
     }
   } finally {
-    await context.exec(box, streamStopCommand, 60_000).catch(() => undefined);
+    await context.execCleanup(box, streamStopCommand, 60_000).catch(() => undefined);
   }
 }
 

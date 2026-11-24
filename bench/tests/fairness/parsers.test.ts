@@ -27,6 +27,7 @@ import {
   countCpuList,
   cpuView,
   judgeMemory,
+  oomFileOf,
   lastPhase,
   parseLimits,
   parseOomKills,
@@ -814,5 +815,58 @@ describe("third review regressions", () => {
         lines: lines({ destroyed: true, cleanupError: null }),
       })?.destroyed,
     ).toBe(true);
+  });
+});
+
+describe("fourth review regressions", () => {
+  it("rejects a catch-up checkpoint that covers less than a segment", () => {
+    const steps = nativeChunkSteps * 10;
+    const phase = { segments: 2, seconds: 1, workers: 1 };
+    const s = workerSeed(7, 0);
+
+    const row = (segment: number, n: number, elapsedS: number) =>
+      JSON.stringify({
+        mode: "cpu-stream",
+        segment,
+        workers: [{ seed: s, steps: n, checksum: lcgChecksum(s, n), elapsedS }],
+      });
+
+    const stdout = `${row(1, steps, 3.0)}\n${row(2, steps + nativeChunkSteps, 3.003)}\n`;
+    expect(verifyCheckpoints({ stdout, seed: 7, phase, firstSeenS: new Map() })).toMatchObject({
+      kind: "invalid",
+      reason: expect.stringMatching(/under a 1s segment/),
+    });
+  });
+
+  it("compares OOM counters only with a device and inode", () => {
+    expect(oomFileOf("oomFile=/sys/fs/cgroup/memory.events 41:1234\n")).toBe(
+      "/sys/fs/cgroup/memory.events 41:1234",
+    );
+    expect(oomFileOf("oomFile=/sys/fs/cgroup/memory.events \n")).toBeNull();
+  });
+
+  it("keeps a cleanup the sweep finished as destroyed", () => {
+    const at = "2026-11-24T00:00:00Z";
+
+    const lines = parseLog(
+      [
+        { kind: "start", check: "security-probe", provider: "e2b", runId: "r", attemptId: "a", at },
+        { kind: "sandbox", id: "x", createS: 1, at },
+        { kind: "destroy", sandboxId: "x", ok: false, attempts: 3, error: "timed out", at },
+        { kind: "sweep", found: ["x"], destroyed: ["x"], error: null, at },
+        { kind: "stop", status: "failed", reason: "x", destroyed: true, cleanupError: null, at },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n") + "\n",
+    );
+
+    expect(
+      entryFromLog({
+        check: "security-probe",
+        provider: "e2b",
+        machine: { cpu: 4, memoryGiB: 8, sameSize: true },
+        lines,
+      }),
+    ).toMatchObject({ destroyed: true, cleanupError: null });
   });
 });
