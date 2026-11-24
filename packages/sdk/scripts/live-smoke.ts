@@ -79,6 +79,10 @@ const registry = {
     env: [["INSTABOX_API_KEY"]],
     load: async () => (await import("../src/providers/instabox/index.js")).instabox(),
   },
+  maritime: {
+    env: [["MARITIME_API_KEY"]],
+    load: async () => (await import("../src/providers/maritime/index.js")).maritime(),
+  },
   boxd: {
     env: [["BOXD_API_KEY"]],
     load: async () => (await import("../src/providers/boxd/index.js")).boxd(),

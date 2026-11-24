@@ -75,6 +75,22 @@ export const pricing: PriceTable = {
     notes:
       "Published usage rates: $0.004/vCPU-hour and $0.00225/GiB-hour of memory, per second while running (not while starting, paused or stopped). Paid plans include disk (Builder 1 TiB across machines), beyond that $0.08/GiB-month; each machine's 20 GiB /data is counted as included. Plan fee and monthly credits ($20 Pro, $100 Builder) and egress ($0.02/GiB beyond the plan's) excluded. Default agent-browser template is 4 vCPU / 8 GiB.",
   },
+  maritime: {
+    ...base,
+    cpuSecond: 0.0055 / 3600,
+    memoryGiBSecond: 0.00275 / 3600,
+    diskGiBSecond: 0,
+    retrieved: "2026-11-23",
+    source: "https://maritime.sh/docs/billing",
+    offeredSizes: [
+      { cpu: 2, memoryGiB: 4 },
+      { cpu: 4, memoryGiB: 8 },
+      { cpu: 8, memoryGiB: 16 },
+      { cpu: 16, memoryGiB: 32 },
+    ],
+    notes:
+      "Published virtual machine rates: $0.0055/vCPU-hour and $0.00275/GiB-hour of memory, per second while running, no minimum, at any size from 1 to 16 vCPU and 1 to 64 GiB; disk is included while running (small 2/4 = $0.022/hour, medium 4/8 $0.044, large 8/16 $0.088, xlarge 16/32 $0.176). A paused (asleep) sandbox costs $0.08/GB-month of disk and no compute, which these estimates leave out. Plan fee and its equal monthly usage credit ($100 on Growth) excluded.",
+  },
   superserve: {
     ...base,
     cpuSecond: 0.0504 / 3600,
@@ -318,6 +334,8 @@ export const defaultCompute: ComputeTable = {
   vercel: { cpu: 2, memoryGiB: 4 },
   baseten: { cpu: 2, memoryGiB: 4 },
   instabox: { cpu: 4, memoryGiB: 8 },
+  // Maritime's default size, small.
+  maritime: { cpu: 2, memoryGiB: 4 },
   // Beam's TypeScript SDK default: 1 CPU, 128 MiB.
   beam: { cpu: 1, memoryGiB: 0.125 },
   // Archil's default: 1 vCPU, 2048 MiB.

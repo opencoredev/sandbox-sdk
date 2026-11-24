@@ -143,6 +143,10 @@
       "types": "./dist/providers/instabox/index.d.ts",
       "default": "./dist/providers/instabox/index.js"
     },
+    "./maritime": {
+      "types": "./dist/providers/maritime/index.d.ts",
+      "default": "./dist/providers/maritime/index.js"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

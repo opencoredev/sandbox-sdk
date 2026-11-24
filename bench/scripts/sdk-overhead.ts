@@ -11,6 +11,12 @@ import type { Boxd } from "@boxd-sh/sdk";
 import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { TenkiSandbox } from "@tenkicloud/sandbox";
 import type { Archil as ArchilClient } from "disk";
+import {
+  createRawMaritime,
+  maritimePlane,
+  maritimeRun,
+  rawRequestMs,
+} from "../src/maritime-raw.js";
 
 type Sdk = typeof Core;
 
@@ -72,6 +78,8 @@ const nativePackages = {
   instabox: "@insforge/instabox-sdk",
   beam: "@beamcloud/beam-js",
   archil: "disk",
+  // A direct-HTTP provider with no SDK of its own: the floor is fetch against its REST API.
+  maritime: null,
 } as const;
 
 /** A provider this script can measure. */
@@ -402,6 +410,43 @@ const providers = {
           },
         };
       },
+    };
+  },
+
+  async maritime() {
+    const m: typeof import("@opencoredev/sandbox-sdk/maritime") = await import(
+      moduleUrl("providers/maritime/index.js")
+    );
+
+    const template = templates.get("maritime");
+    const provider = m.maritime(template === undefined ? {} : { template });
+
+    // The adapter calls the REST API itself; the floor is the same API with plain fetch.
+    return {
+      provider,
+      floor: (id) => ({
+        exec: (command = "true") => maritimeRun(id, command),
+        write: async (path, data) => {
+          const plane = await maritimePlane(id);
+
+          const response = await fetch(
+            `${plane.dataPlaneUrl}/files?path=${encodeURIComponent(path)}`,
+            {
+              method: "PUT",
+              headers: {
+                "X-Maritime-Token": plane.secret,
+                "Content-Type": "application/octet-stream",
+              },
+              body: new Uint8Array(data),
+              signal: AbortSignal.timeout(rawRequestMs),
+            },
+          );
+
+          await response.body?.cancel();
+
+          if (!response.ok) throw new Error(`Maritime write failed: HTTP ${response.status}`);
+        },
+      }),
     };
   },
 } satisfies Record<ProviderName, () => Promise<Loaded>>;
@@ -945,6 +990,10 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     return raw;
   }
 
+  if (name === "maritime")
+    // Admitted for use and cleanup only once its answer carries this create's own owner marker.
+    return createRawMaritime({ template: templates.get(name) ?? "base", labels: label, admit });
+
   throw new Error(`Unknown provider ${name}`);
 }
 
@@ -952,9 +1001,12 @@ async function initCost(name: ProviderName): Promise<OpResult> {
   const pkg = nativePackages[name];
 
   const sample = async (ours: boolean) => {
+    // A provider with no SDK of its own has nothing to import: its baseline is the empty program.
     const code = ours
       ? `const t=performance.now(); await import(${JSON.stringify(moduleUrl("index.js"))}); const m=await import(${JSON.stringify(moduleUrl(`providers/${name}/index.js`))}); m[${JSON.stringify(name)}](${JSON.stringify(templates.has(name) ? { template: templates.get(name) } : {})}); console.log(performance.now()-t);`
-      : `const t=performance.now(); await import(${JSON.stringify(nativeUrl(pkg))}); console.log(performance.now()-t);`;
+      : pkg === null
+        ? "const t=performance.now(); console.log(performance.now()-t);"
+        : `const t=performance.now(); await import(${JSON.stringify(nativeUrl(pkg))}); console.log(performance.now()-t);`;
 
     const output = execFileSync(process.execPath, ["--eval", code], {
       encoding: "utf8",

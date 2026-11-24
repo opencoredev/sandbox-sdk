@@ -253,6 +253,15 @@ export function makeProcesses(
 
       // An absolute or protocol-relative path would hand the provider's headers to another host.
       if (target.origin !== base.origin) invalid("Preview path must stay on the preview's origin");
+
+      // A provider that authenticates by query string (Maritime's `?token=`) keeps it on every path, and
+      // a caller parameter of the same name never replaces it.
+      for (const name of new Set(base.searchParams.keys())) {
+        target.searchParams.delete(name);
+
+        for (const value of base.searchParams.getAll(name)) target.searchParams.append(name, value);
+      }
+
       access.url = target.toString();
     }
 

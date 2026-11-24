@@ -292,6 +292,28 @@ export const providerSetups: readonly ProviderSetup[] = [
     },
   },
   {
+    // Maritime (2026-11-23): the default is small, 2 vCPU / 4 GiB with a 12 GiB root disk, Ubuntu
+    // 24.04 with glibc, Node.js 22, Python 3.12 and git; same-machine asks for 4/8, which the adapter
+    // sends as the medium preset (50 GiB disk). Commands run as uid 1000 with passwordless sudo.
+    // `timeoutMs` is Maritime's time limit, counted from the create or the last resume, so it bounds
+    // the billable time the spend guard reserves. An idle sandbox pauses after 120 s by default and
+    // wakes on the next call. https://maritime.sh/docs/limits
+    name: "maritime",
+    adapter: "maritime",
+    product: null,
+    lifetime: true,
+    pricingKey: "maritime",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 50),
+        tooSmall: {},
+      },
+      default: { vcpu: 2, provisioned: size(2, 4, 12), tooSmall: {} },
+    },
+  },
+  {
     // Baseten (limits as of 2026-11-13): memory sets CPU, 2 GiB per vCPU up to 4. Baseten holds a
     // sandbox's files in its memory, so the build's workspace goes on an 8 GiB volume (the
     // account's cap, 2026-11-16), as Baseten advised: without one, its node_modules sat in RAM and

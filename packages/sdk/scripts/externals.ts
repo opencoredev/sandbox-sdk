@@ -24,6 +24,7 @@ export const externalPackages: readonly string[] = [
   "e2b",
   "freestyle",
   "modal",
+  "maritime-sdk",
   "railway",
   // Agent frameworks and test runners behind their own subpaths.
   "@mastra/core",
