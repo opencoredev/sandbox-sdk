@@ -178,6 +178,8 @@ export interface CheckContext {
   readonly signal: AbortSignal;
   /** Runs a command with the adapter's timeout plus an outer deadline in case the adapter hangs. */
   exec(box: Box, command: string, timeoutMs: number): Promise<CommandResult>;
+  /** As `exec`, but not cancelled by an interrupt: for stopping what the check started. */
+  execCleanup(box: Box, command: string, timeoutMs: number): Promise<CommandResult>;
   /** Appends an event to the provider's log; `data` must survive JSON (the log line is parsed). */
   note(name: string, data: Json): Promise<void>;
   say(text: string): void;
@@ -420,11 +422,6 @@ export function entryFromLog(input: {
     line.kind === "create-failed" ? [line.error] : [],
   );
 
-  const destroyedIds = new Set(
-    lines.flatMap((line) => (line.kind === "destroy" && line.ok ? [line.sandboxId] : [])),
-  );
-
-  // The last sweep decides: an earlier clean one says nothing about a late sandbox found after it.
   // Only the stop record's own verdict counts: sweeps can be clean while a create is still pending.
   const stop = lines.filter((line) => line.kind === "stop").at(-1);
   const sweptClean = stop?.kind === "stop" && stop.destroyed === true;
@@ -443,7 +440,9 @@ export function entryFromLog(input: {
     endedAt: last?.at ?? start.at,
     sandboxes,
     createFailures,
-    destroyed: sweptClean && sandboxes.every((box) => destroyedIds.has(box.id)),
+    // The stop record's verdict already counts the sweep: a failed direct destroy the sweep
+    // finished is still a confirmed cleanup.
+    destroyed: sweptClean,
     cleanupError: sweptClean
       ? null
       : stop?.kind === "stop" && stop.cleanupError
@@ -733,6 +732,9 @@ async function attempt<R>(input: {
       box.run(command, { timeoutMs, signal: AbortSignal.any([signal, dependencies.signal]) }),
     );
 
+  const execCleanup = (box: Box, command: string, timeoutMs: number) =>
+    deadline(timeoutMs + 60_000, (signal) => box.run(command, { timeoutMs, signal }));
+
   try {
     const opened = await dependencies.open(setup, {
       runId: plan.runId,
@@ -796,6 +798,7 @@ async function attempt<R>(input: {
       createFailures,
       signal: dependencies.signal,
       exec,
+      execCleanup,
       note: (eventName, data) => logQuietly({ kind: "event", name: eventName, data, at: now() }),
       say,
     });

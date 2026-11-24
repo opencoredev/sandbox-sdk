@@ -461,7 +461,9 @@ static int cmd_cpu_stream(u64 seed, u64 workers, u64 segment_ms, u64 segments, u
           row.elapsed_ns = elapsed;
           if (SYS3(SYS_write, res[1], &row, sizeof row) != (i64)sizeof row) exit_now(6);
           k++;
-          next += segment_ms * 1000000ul;
+          /* Rolling windows: the next checkpoint is a full segment after this one, so a late
+             checkpoint never leaves a catch-up window of a few milliseconds. */
+          next = elapsed + segment_ms * 1000000ul;
         }
       }
       exit_now(0);
@@ -1067,7 +1069,7 @@ static int usage(void) {
 static int run(int argc, char **argv) {
   u64 a, b, c, d, e;
   if (argc >= 2 && same(argv[1], "version")) {
-    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":4}\n");
+    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":5}\n");
     return 0;
   }
   if (argc == 6 && same(argv[1], "cpu") && parse_u64(argv[2], &a) && parse_u64(argv[3], &b) &&

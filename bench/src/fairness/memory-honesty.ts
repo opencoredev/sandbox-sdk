@@ -76,7 +76,7 @@ export const limitsCommand = [
 export const oomCommand = [
   ownCgroup,
   `if [ -n "$d" ]; then f="$d/memory.events"; else f=/sys/fs/cgroup/memory/memory.oom_control; fi`,
-  `echo "oomFile=$f $(stat -c %i "$f" 2>/dev/null)"`,
+  `echo "oomFile=$f $(stat -c %d:%i "$f" 2>/dev/null)"`,
   `grep '^oom_kill ' "$f" 2>/dev/null || echo "oom_kill unknown"`,
 ].join("\n");
 
@@ -153,7 +153,7 @@ export const cgroupDirOf = (stdout: string) =>
   /^cgroupDir=(.+)$/m.exec(stdout)?.[1]?.trim() || null;
 
 /** The OOM counter file and its inode, so two readings are compared only when they are one file. */
-export const oomFileOf = (stdout: string) => /^oomFile=(.+)$/m.exec(stdout)?.[1]?.trim() || null;
+export const oomFileOf = (stdout: string) => /^oomFile=(\S+ \d+:\d+)$/m.exec(stdout)?.[1] ?? null;
 
 export function parseLimits(stdout: string): Limits {
   const values = new Map<string, string[]>();
