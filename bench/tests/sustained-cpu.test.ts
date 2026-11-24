@@ -1429,4 +1429,73 @@ describe("sweep ownership", () => {
       expect([...account.sandboxes.keys()]).toEqual([running]);
     }
   });
+
+  it("refuses a complete or schema-invalid final start record in a log, while dropping an incomplete truncated line", async () => {
+    const out = await temporary();
+    await completedRun(out);
+    const start = (await readLog(out, "styne")).find((line) => line.kind === "start");
+
+    if (start?.kind !== "start") throw new Error("No start record");
+    // Newline-terminated schema-invalid start (chunkSteps as string) at EOF must fail, not be dropped.
+    const badStart = `${JSON.stringify({ ...start, chunkSteps: "2000" })}\n`;
+    await writeFile(
+      paths(out).log("styne"),
+      `${await readFile(paths(out).log("styne"), "utf8")}${badStart}`,
+    );
+    await expect(mergeResults(out)).rejects.toThrow(/Log line/);
+
+    // Same schema-invalid start even without trailing newline must still fail.
+    expect(() => parseLog(JSON.stringify({ ...start, chunkSteps: "2000" }))).toThrow(/Log line 1/);
+
+    // Truly truncated JSON without a trailing newline at EOF is safely dropped.
+    expect(parseLog(`${JSON.stringify(start)}\n{"kind":"segment","at":`)).toHaveLength(1);
+    // Invalid JSON with a trailing newline is a complete corrupt line and fails.
+    expect(() => parseLog(`${JSON.stringify(start)}\n{"kind":"segment","at":\n`)).toThrow(
+      /Log line 2/,
+    );
+  });
+
+  it("prevents concurrent runs with different run IDs from overwriting run.json on a fresh directory", async () => {
+    const out = await temporary();
+    const { box: boxA } = fakeBox({ id: "a" });
+    const { box: boxB } = fakeBox({ id: "b" });
+
+    const results = await Promise.allSettled([
+      runSustained(
+        [providerSetup("styne")],
+        { ...plan(out), runId: "run-alpha", concurrency: 1 },
+        { ...quiet, open: session(boxA).open },
+      ),
+      runSustained(
+        [providerSetup("styne")],
+        { ...plan(out), runId: "run-beta", concurrency: 1 },
+        { ...quiet, open: session(boxB).open },
+      ),
+    ]);
+
+    const fulfilled = results.flatMap((result) =>
+      result.status === "fulfilled" ? [result.value] : [],
+    );
+
+    const rejected = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String(rejected[0])).toMatch(/belongs to run/);
+
+    const winnerId = fulfilled[0]?.report.run.id;
+
+    expect(winnerId).toBeDefined();
+
+    const runFile = JSON.parse(await readFile(paths(out).run, "utf8"));
+
+    expect(runFile.run.id).toBe(winnerId);
+    const merged = await mergeResults(out);
+
+    expect(merged.run.id).toBe(winnerId);
+    expect(merged.providers).toHaveLength(1);
+    expect(merged.providers[0]?.status).toBe("completed");
+  });
 });
