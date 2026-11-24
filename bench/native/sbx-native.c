@@ -35,6 +35,8 @@ enum {
   SYS_pipe = 22,
   SYS_fork = 57,
   SYS_wait4 = 61,
+  SYS_getppid = 110,
+  SYS_clock_nanosleep = 230,
   SYS_fdatasync = 75,
   SYS_unlink = 87,
   SYS_statfs = 137,
@@ -75,6 +77,8 @@ enum {
   SYS_mmap = 222,
   SYS_fadvise64 = 223,
   SYS_wait4 = 260,
+  SYS_getppid = 173,
+  SYS_clock_nanosleep = 115,
 };
 
 static i64 sys6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) {
@@ -141,6 +145,8 @@ static i64 sys_fork(void) {
 #define EINVAL 22
 #define PROT_RW 3
 #define MAP_PRIVATE_ANON 0x22
+#define MAP_SHARED_ANON 0x21
+#define TIMER_ABSTIME 1
 #define FADV_DONTNEED 4
 #define CLOCK_MONOTONIC 1
 
@@ -407,109 +413,131 @@ static int cmd_cpu(u64 seed, u64 workers, u64 target_ms, u64 chunk) {
   return 0;
 }
 
-/* cpu-stream: the same burn, but the workers never stop: each reports a checkpoint every
-   segment_ms, and the parent prints one line per segment once every worker has reported it. One
-   command runs the whole sustained phase, so no exec round trip between segments rests the CPU. */
-static void put_row(const struct cpu_row *row) {
-  put("{");
-  key("seed");
-  put_u64(row->seed);
-  put(",");
-  key("steps");
-  put_u64(row->steps);
-  put(",");
-  key("checksum");
-  put_u64(row->checksum);
-  put(",");
-  key("elapsedS");
-  put_secs(row->elapsed_ns);
-  put("}");
+/* cpu-stream: the sustained burn as one command on one timeline. Workers never pause: after every
+   chunk each publishes its step count and current value to shared memory under a sequence lock.
+   The parent burns nothing; it sleeps to absolute deadlines T0 + k * segment on the monotonic clock
+   and samples every worker at once, so each segment is one common wall-clock window for all of
+   them, with no drift between workers and none across segments. Workers keep burning until after
+   the last sample, and exit on their own if the parent dies. */
+struct shared_worker {
+  u64 seq; /* odd while the worker is writing */
+  u64 steps;
+  u64 value;
+  u64 pad[5]; /* one cache line per worker */
+};
+
+struct shared_state {
+  u64 stop;
+  u64 pad[7];
+  struct shared_worker w[64];
+};
+
+static void sleep_until(u64 deadline_ns) {
+  i64 ts[2] = {(i64)(deadline_ns / 1000000000ul), (i64)(deadline_ns % 1000000000ul)};
+  while (sys6(SYS_clock_nanosleep, CLOCK_MONOTONIC, TIMER_ABSTIME, (i64)ts, 0, 0, 0) != 0) {
+  }
+}
+
+/* One consistent (steps, value) pair from a worker. */
+static void sample(struct shared_worker *w, u64 *steps, u32 *value) {
+  for (;;) {
+    u64 a = __atomic_load_n(&w->seq, __ATOMIC_ACQUIRE);
+    if (a & 1) continue;
+    u64 st = __atomic_load_n(&w->steps, __ATOMIC_RELAXED);
+    u64 v = __atomic_load_n(&w->value, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&w->seq, __ATOMIC_RELAXED) == a) {
+      *steps = st;
+      *value = (u32)v;
+      return;
+    }
+  }
 }
 
 static int cmd_cpu_stream(u64 seed, u64 workers, u64 segment_ms, u64 segments, u64 chunk) {
-  int go[2], res[2];
-  struct cpu_row *rows;
-  u64 reported[64];
+  int go[2];
   if (workers < 1 || workers > 64 || chunk < 1 || segments < 1 || segments > 1000 || segment_ms < 1)
     fail("cpu-stream", "bad arguments", -EINVAL);
-  rows = map(workers * (segments + 1) * sizeof(struct cpu_row));
-  if (!rows) fail("cpu-stream", "mmap", -1);
-  if (sys_pipe(go) < 0 || sys_pipe(res) < 0) fail("cpu-stream", "pipe", -1);
+  struct shared_state *st = 0;
+  {
+    i64 m = sys6(SYS_mmap, 0, (i64)sizeof(struct shared_state), PROT_RW, MAP_SHARED_ANON, -1, 0);
+    if (m < 0 && m > -4096) fail("cpu-stream", "mmap", m);
+    st = (struct shared_state *)m;
+  }
+  /* A worker that has not finished its first chunk still reads as zero steps from its seed. */
+  for (u64 i = 0; i < workers; i++) st->w[i].value = (u32)seed ^ (u32)((i + 1) * GOLDEN);
+  if (sys_pipe(go) < 0) fail("cpu-stream", "pipe", -1);
+  i64 self = 0;
+#if defined(__x86_64__)
+  self = SYS3(39 /* getpid */, 0, 0, 0);
+#else
+  self = SYS3(172 /* getpid */, 0, 0, 0);
+#endif
 
   for (u64 i = 0; i < workers; i++) {
     i64 pid = sys_fork();
     if (pid < 0) fail("cpu-stream", "fork", pid);
     if (pid == 0) {
       char token;
-      struct cpu_row row;
+      struct shared_worker *w = &st->w[i];
       u32 x = (u32)seed ^ (u32)((i + 1) * GOLDEN);
-      u64 steps = 0, elapsed, start, next = segment_ms * 1000000ul;
-      row.index = (u32)i;
-      row.seed = x;
+      u64 steps = 0;
       SYS3(SYS_close, go[1], 0, 0);
-      SYS3(SYS_close, res[0], 0, 0);
       if (SYS3(SYS_read, go[0], &token, 1) != 1) exit_now(5);
-      start = now_ns();
-      for (u32 k = 1; k <= segments;) {
+      while (!__atomic_load_n(&st->stop, __ATOMIC_ACQUIRE)) {
         x = lcg_run(x, chunk);
         steps += chunk;
-        elapsed = now_ns() - start;
-        if (elapsed >= next) {
-          row.steps = steps;
-          row.checksum = x;
-          row.pad = k;
-          row.elapsed_ns = elapsed;
-          if (SYS3(SYS_write, res[1], &row, sizeof row) != (i64)sizeof row) exit_now(6);
-          k++;
-          /* Rolling windows: the next checkpoint is a full segment after this one, so a late
-             checkpoint never leaves a catch-up window of a few milliseconds. */
-          next = elapsed + segment_ms * 1000000ul;
-        }
+        u64 q = w->seq;
+        __atomic_store_n(&w->seq, q + 1, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        __atomic_store_n(&w->steps, steps, __ATOMIC_RELAXED);
+        __atomic_store_n(&w->value, (u64)x, __ATOMIC_RELAXED);
+        __atomic_store_n(&w->seq, q + 2, __ATOMIC_RELEASE);
+        /* The parent is gone (killed or crashed): stop burning. */
+        if (SYS3(SYS_getppid, 0, 0, 0) != self) exit_now(7);
       }
       exit_now(0);
     }
   }
 
   SYS3(SYS_close, go[0], 0, 0);
-  SYS3(SYS_close, res[1], 0, 0);
   char tokens[64];
   memset(tokens, 'g', sizeof tokens);
-  memset(reported, 0, sizeof reported);
-  u64 start = now_ns();
+  u64 t0 = now_ns();
   if (SYS3(SYS_write, go[1], tokens, workers) != (i64)workers) fail("cpu-stream", "release", -1);
 
-  /* Rows can arrive segments apart across workers; every one is kept until its line is printed. */
-  for (u64 printed = 0; printed < segments;) {
-    struct cpu_row row;
-    u64 have = 0;
-    while (have < sizeof row) {
-      i64 n = SYS3(SYS_read, res[0], (u8 *)&row + have, sizeof row - have);
-      if (n <= 0) fail("cpu-stream", "worker result", n);
-      have += (u64)n;
+  for (u64 k = 1; k <= segments; k++) {
+    sleep_until(t0 + k * segment_ms * 1000000ul);
+    u64 steps[64];
+    u32 values[64];
+    for (u64 i = 0; i < workers; i++) sample(&st->w[i], &steps[i], &values[i]);
+    u64 at = now_ns() - t0;
+    put("{\"mode\":\"cpu-stream\",");
+    key("segment");
+    put_u64(k);
+    put(",");
+    key("elapsedS");
+    put_secs(at);
+    put(",\"workers\":[");
+    for (u64 i = 0; i < workers; i++) {
+      if (i) put(",");
+      put("{");
+      key("seed");
+      put_u64((u32)seed ^ (u32)((i + 1) * GOLDEN));
+      put(",");
+      key("steps");
+      put_u64(steps[i]);
+      put(",");
+      key("checksum");
+      put_u64(values[i]);
+      put("}");
     }
-    if (row.index >= workers || row.pad != reported[row.index] + 1) fail("cpu-stream", "worker order", -1);
-    rows[row.index * (segments + 1) + row.pad] = row;
-    reported[row.index] = row.pad;
-    for (;;) {
-      u64 k = printed + 1, ready = 1;
-      for (u64 i = 0; i < workers; i++)
-        if (reported[i] < k) ready = 0;
-      if (!ready) break;
-      put("{\"mode\":\"cpu-stream\",");
-      key("segment");
-      put_u64(k);
-      put(",\"workers\":[");
-      for (u64 i = 0; i < workers; i++) {
-        if (i) put(",");
-        put_row(&rows[i * (segments + 1) + k]);
-      }
-      put("]}\n");
-      flush(1);
-      printed = k;
-      if (printed == segments) break;
-    }
+    put("]}\n");
+    flush(1);
   }
-  u64 wall = now_ns() - start;
+
+  __atomic_store_n(&st->stop, 1, __ATOMIC_RELEASE);
+  u64 wall = now_ns() - t0;
   for (u64 i = 0; i < workers; i++) {
     int status = 0;
     if (SYS4(SYS_wait4, -1, &status, 0, 0) < 0 || status != 0) fail("cpu-stream", "worker exit", -1);
@@ -1069,7 +1097,7 @@ static int usage(void) {
 static int run(int argc, char **argv) {
   u64 a, b, c, d, e;
   if (argc >= 2 && same(argv[1], "version")) {
-    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":5}\n");
+    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":6}\n");
     return 0;
   }
   if (argc == 6 && same(argv[1], "cpu") && parse_u64(argv[2], &a) && parse_u64(argv[3], &b) &&

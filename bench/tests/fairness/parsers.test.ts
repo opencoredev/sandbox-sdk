@@ -718,10 +718,11 @@ describe("third review regressions", () => {
     JSON.stringify({
       mode: "cpu-stream",
       segment,
+      elapsedS,
       workers: [0, 1].map((index) => {
         const s = workerSeed(seed, index);
 
-        return { seed: s, steps, checksum: lcgChecksum(s, steps), elapsedS };
+        return { seed: s, steps, checksum: lcgChecksum(s, steps) };
       }),
     });
 
@@ -819,7 +820,7 @@ describe("third review regressions", () => {
 });
 
 describe("fourth review regressions", () => {
-  it("rejects a catch-up checkpoint that covers less than a segment", () => {
+  it("rejects a window much shorter than a segment", () => {
     const steps = nativeChunkSteps * 10;
     const phase = { segments: 2, seconds: 1, workers: 1 };
     const s = workerSeed(7, 0);
@@ -828,13 +829,14 @@ describe("fourth review regressions", () => {
       JSON.stringify({
         mode: "cpu-stream",
         segment,
-        workers: [{ seed: s, steps: n, checksum: lcgChecksum(s, n), elapsedS }],
+        elapsedS,
+        workers: [{ seed: s, steps: n, checksum: lcgChecksum(s, n) }],
       });
 
     const stdout = `${row(1, steps, 3.0)}\n${row(2, steps + nativeChunkSteps, 3.003)}\n`;
     expect(verifyCheckpoints({ stdout, seed: 7, phase, firstSeenS: new Map() })).toMatchObject({
       kind: "invalid",
-      reason: expect.stringMatching(/under a 1s segment/),
+      reason: expect.stringMatching(/covers 0.003s/),
     });
   });
 
@@ -871,24 +873,30 @@ describe("fourth review regressions", () => {
   });
 });
 
-describe("fifth review regressions", () => {
-  it("rejects checkpoints whose workers' windows don't line up", () => {
-    const phase = { segments: 1, seconds: 1, workers: 2 };
-    const steps = nativeChunkSteps * 10;
+describe("sixth review regressions", () => {
+  it("scores a late-starting worker over the common window, not its own", () => {
+    // One worker starts 120 s late: it adds nothing in the first windows, so the sandbox's rate there
+    // is the other three's, and the late one's steps count only in the windows it ran.
+    const phase = { segments: 2, seconds: 60, workers: 2 };
+    const rate = nativeChunkSteps; // steps per second per running worker
+    const s0 = workerSeed(7, 0);
+    const s1 = workerSeed(7, 1);
 
-    const stdout = `${JSON.stringify({
-      mode: "cpu-stream",
-      segment: 1,
-      workers: [1.01, 151.0].map((elapsedS, index) => {
-        const s = workerSeed(7, index);
+    const row = (segment: number, a: number, b: number) =>
+      JSON.stringify({
+        mode: "cpu-stream",
+        segment,
+        elapsedS: segment * 60,
+        workers: [
+          { seed: s0, steps: a, checksum: lcgChecksum(s0, a) },
+          { seed: s1, steps: b, checksum: lcgChecksum(s1, b) },
+        ],
+      });
 
-        return { seed: s, steps, checksum: lcgChecksum(s, steps), elapsedS };
-      }),
-    })}\n`;
+    const stdout = `${row(1, rate * 60, 0)}\n${row(2, rate * 120, 0)}\n`;
+    const check = verifyCheckpoints({ stdout, seed: 7, phase, firstSeenS: new Map() });
+    expect(check.kind).toBe("ok");
 
-    expect(verifyCheckpoints({ stdout, seed: 7, phase, firstSeenS: new Map() })).toMatchObject({
-      kind: "invalid",
-      reason: expect.stringMatching(/apart/),
-    });
+    if (check.kind === "ok") expect(check.segments.map((x) => x.opsPerSec)).toEqual([rate, rate]);
   });
 });
