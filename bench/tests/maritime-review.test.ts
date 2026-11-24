@@ -398,6 +398,72 @@ describe("finding 6: sdk-overhead's raw Maritime create admits only its own sand
     }
   });
 
+  it("a create whose answer was lost is found by its owner marker and admitted for cleanup", async () => {
+    let owner = "";
+    let lists = 0;
+
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        if (request.method === "POST") {
+          const body = z
+            .object({ metadata: z.record(z.string(), z.string()) })
+            .parse(JSON.parse(Buffer.concat(chunks).toString()));
+
+          owner = body.metadata[rawOwnerLabel] ?? "";
+          // The create happened; its answer never arrives.
+          response.socket?.destroy();
+
+          return;
+        }
+
+        const url = new URL(request.url ?? "/", "http://x");
+        lists++;
+
+        // The first list lags the create; the second shows it, next to an operator's sandbox.
+        const data =
+          lists === 1
+            ? []
+            : [
+                { id: "sbx-lost", state: "starting", metadata: { [rawOwnerLabel]: owner } },
+                { id: "sbx-operator", state: "running", metadata: { [rawOwnerLabel]: "other" } },
+              ];
+
+        expect(url.searchParams.get(`metadata[${rawOwnerLabel}]`)).toBe(owner);
+        response
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ data, nextCursor: null }));
+      });
+    });
+
+    const port = await new Promise<number>((done) =>
+      server.listen(0, "127.0.0.1", () =>
+        done(z.object({ port: z.number() }).parse(server.address()).port),
+      ),
+    );
+
+    vi.stubEnv("MARITIME_API_URL", `http://127.0.0.1:${port}`);
+    vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
+    const admitted: string[] = [];
+
+    try {
+      await expect(
+        createRawMaritime({
+          template: "base",
+          labels: { "sdk-overhead-run": "r1" },
+          admit: (raw) => admitted.push(raw.id),
+        }),
+      ).rejects.toThrow();
+
+      expect(admitted).toEqual(["sbx-lost"]);
+      expect(lists).toBe(2);
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  }, 20_000);
+
   it("a readiness read without this create's marker is refused, after the create was admitted", async () => {
     const plane = await rawPlane(["running"], "someone-else");
     const admitted: string[] = [];

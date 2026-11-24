@@ -119,7 +119,10 @@ export interface RawMaritimeBox {
  * A raw create with the adapter's defaults: the template, a one-hour time limit, a fresh idempotency key,
  * and a new key after each capacity refusal, which Maritime answers before anything runs. Each create
  * carries a fresh owner marker in its metadata, and an answer is admitted for use and cleanup only when
- * it carries that marker: an answer naming any other sandbox, such as an operator's, is left alone.
+ * it carries that marker: an answer naming any other sandbox, such as an operator's, is left alone. A
+ * create that fails without a definite refusal (a lost or unreadable answer, a 5xx, a timeout) may still
+ * have made one: before the failure is reported, the sandbox carrying this create's marker is looked for
+ * and admitted for cleanup.
  */
 export async function createRawMaritime(input: {
   template: string;
@@ -145,25 +148,83 @@ export async function createRawMaritime(input: {
         ).json(),
       );
     } catch (error) {
-      const refused = z.object({ code: z.literal("out_of_capacity") }).safeParse(error).success;
+      const capacity = z.object({ code: z.literal("out_of_capacity") }).safeParse(error).success;
 
-      if (!refused || attempt >= 5) throw error;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(20_000, 2000 * 2 ** attempt)));
+      if (capacity && attempt < 5) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(20_000, 2000 * 2 ** attempt)));
+        continue;
+      }
+
+      // A capacity refusal or another 4xx made nothing; anything else may have.
+      const refused =
+        capacity || z.object({ status: z.number().min(400).max(499) }).safeParse(error).success;
+
+      if (!refused) await recoverByOwner(owner, input.admit).catch(() => {});
+      throw error;
     }
 
   const id = created.id;
 
-  if (created.metadata?.[rawOwnerLabel] !== owner)
+  if (created.metadata?.[rawOwnerLabel] !== owner) {
+    // This create's own sandbox may exist all the same; only one carrying its marker is admitted.
+    await recoverByOwner(owner, input.admit).catch(() => {});
     throw new Error(
       `Maritime create answered with sandbox ${id}, which this create did not make; it was left alone`,
     );
+  }
 
   const answered = maritimeSandbox.safeParse(created);
   const running = created.state === "running" && answered.success ? answered.data : undefined;
+  const raw = rawBox(id, () => maritimeRun(id, "true"));
 
-  const raw: RawMaritimeBox = {
+  // Admitted before the wait, so cleanup knows the ID even when the sandbox never runs.
+  input.admit(raw);
+
+  // Like the adapter, a `starting` sandbox is waited for before its first command; the wait stays inside
+  // the timed create.
+  planes.set(id, Promise.resolve(running ?? (await untilRunning(id, owner))));
+
+  return raw;
+}
+
+/** How long, and how often, a lost create's sandbox is looked for by its owner marker. */
+const recoverReads = 5;
+const recoverGapMs = 2000;
+
+/**
+ * Finds the sandbox carrying `owner` (the list can lag a create by a moment, so it reads a few times) and
+ * admits it for cleanup. Its `exec` always fails: the timed create already failed.
+ */
+async function recoverByOwner(owner: string, admit: (box: RawMaritimeBox) => void) {
+  const query = new URLSearchParams({ [`metadata[${rawOwnerLabel}]`]: owner, limit: "100" });
+
+  for (let read = 0; read < recoverReads; read++) {
+    if (read > 0) await new Promise((resolve) => setTimeout(resolve, recoverGapMs));
+
+    const page = z
+      .object({ data: z.array(maritimeRecord) })
+      .parse(await (await maritimeCall(`/sandboxes?${query}`)).json());
+
+    const found = page.data.filter(
+      (s) => s.metadata?.[rawOwnerLabel] === owner && s.state !== "ended",
+    );
+
+    for (const s of found)
+      admit(
+        rawBox(s.id, async () => {
+          throw new Error("Maritime create answer was lost");
+        }),
+      );
+
+    if (found.length) return;
+  }
+}
+
+/** One raw sandbox for `sdk-overhead.ts`: `exec` as given, and the plain end and existence reads. */
+function rawBox(id: string, exec: () => Promise<void>): RawMaritimeBox {
+  return {
     id,
-    exec: () => maritimeRun(id, "true"),
+    exec,
     destroy: async () => {
       try {
         await (
@@ -182,15 +243,6 @@ export async function createRawMaritime(input: {
       return state !== "ended";
     },
   };
-
-  // Admitted before the wait, so cleanup knows the ID even when the sandbox never runs.
-  input.admit(raw);
-
-  // Like the adapter, a `starting` sandbox is waited for before its first command; the wait stays inside
-  // the timed create.
-  planes.set(id, Promise.resolve(running ?? (await untilRunning(id, owner))));
-
-  return raw;
 }
 
 /**
