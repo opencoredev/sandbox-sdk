@@ -221,14 +221,15 @@ async function runPhase(
 
 const streamWorkerSchema = z.object({
   seed: z.number().int().nonnegative(),
-  steps: z.number().int().positive(),
+  steps: z.number().int().nonnegative(),
   checksum: z.number().int().nonnegative(),
-  elapsedS: z.number().positive(),
 });
 
+/** One sample of every worker at one instant, `elapsedS` after the common start. */
 const checkpointSchema = z.object({
   mode: z.literal("cpu-stream"),
   segment: z.number().int().positive(),
+  elapsedS: z.number().positive(),
   workers: z.array(streamWorkerSchema).min(1),
 });
 
@@ -260,30 +261,30 @@ export const streamPollCommand =
   'cat /tmp/.sbx-cpu-stream.out 2>/dev/null; if kill -0 "$(cat /tmp/.sbx-cpu-stream.pid 2>/dev/null)" 2>/dev/null; then echo "alive=1"; else echo "alive=0"; fi';
 
 /**
- * Stops the burn by its recorded PID: the whole process group (setsid made the parent its leader),
- * then the parent's children, then the parent. No pattern match, so it never signals its own shell.
- * Prints `stopped=1` once nothing is left.
+ * Stops every process whose name is the binary's (`.sbx-native`, read from /proc/<pid>/comm, so it
+ * never matches the shell running this), then confirms none is left. Workers also exit by
+ * themselves once their parent is gone. Prints `stopped=1` only when no `.sbx-native` remains.
  */
 export const streamStopCommand = [
-  'P="$(cat /tmp/.sbx-cpu-stream.pid 2>/dev/null)"',
-  'if [ -n "$P" ]; then kill -KILL -- "-$P" 2>/dev/null; pkill -KILL -P "$P" 2>/dev/null; kill -KILL "$P" 2>/dev/null; fi',
+  'for d in /proc/[0-9]*; do [ "$(cat "$d/comm" 2>/dev/null)" = .sbx-native ] && kill -9 "${d#/proc/}" 2>/dev/null; done',
+  "sleep 0.5",
   "rm -f /tmp/.sbx-cpu-stream.out /tmp/.sbx-cpu-stream.pid",
-  'if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then echo stopped=0; else echo stopped=1; fi',
+  'left=0; for d in /proc/[0-9]*; do [ "$(cat "$d/comm" 2>/dev/null)" = .sbx-native ] && left=1; done',
+  "if [ $left = 0 ]; then echo stopped=1; else echo stopped=0; fi",
 ].join("\n");
-
-/** Most seconds the workers' checkpoints for one segment may be apart: wider and their windows don't line up. */
-export const maxCheckpointSkewS = 2;
 
 export type CheckpointCheck =
   | { readonly kind: "ok"; readonly segments: readonly Segment[]; readonly done: boolean }
   | { readonly kind: "invalid"; readonly reason: string };
 
 /**
- * Checks every complete checkpoint line so far: segments 1, 2, 3 ..., one row per worker with its
- * seed, whole chunks, steps and time that only grow, at least k segments' time by checkpoint k, a
- * final value equal to `lcgChecksum`, a plausible rate, and a guest time the host could have seen
- * (no later than the host's seconds since the start when the line first appeared, within
- * `clockToleranceS`). A segment's rate is the sum of each worker's steps over its own time.
+ * Checks every complete checkpoint line so far. The parent samples all workers at once at
+ * T0 + k * segment, so a segment's window is the same for every worker: its rate is the steps all
+ * workers added over the parent's elapsed time between samples. Each line needs segments 1, 2, 3
+ * ..., at least k segments of time and a full segment since the last, every worker with its seed,
+ * whole chunks, steps that never shrink and a final value equal to `lcgChecksum`, a plausible
+ * rate, and a time the host could have seen (no later than the host's seconds since the start when
+ * the line first appeared, within `clockToleranceS`).
  */
 export function verifyCheckpoints(input: {
   readonly stdout: string;
@@ -297,12 +298,8 @@ export function verifyCheckpoints(input: {
   const complete = end < 0 ? "" : input.stdout.slice(0, end + 1);
   const lines = complete.split("\n").filter((line) => line.startsWith("{"));
   const segments: Segment[] = [];
-
-  let previous: readonly { steps: number; elapsedS: number }[] = Array.from(
-    { length: phase.workers },
-    () => ({ steps: 0, elapsedS: 0 }),
-  );
-
+  let previousSteps: readonly number[] = Array.from({ length: phase.workers }, () => 0);
+  let previousS = 0;
   let done = false;
 
   for (const line of lines) {
@@ -331,12 +328,30 @@ export function verifyCheckpoints(input: {
 
     if (point.workers.length !== phase.workers)
       return { kind: "invalid", reason: `Checkpoint ${k} has ${point.workers.length} workers` };
+
+    if (point.elapsedS < k * phase.seconds)
+      return {
+        kind: "invalid",
+        reason: `Checkpoint ${k} at ${point.elapsedS}s, before ${k * phase.seconds}s`,
+      };
+    const windowS = point.elapsedS - previousS;
+
+    // Deadlines are absolute, so a window is never shorter than a segment by more than the sleep's
+    // own jitter; a late sample lengthens its window and shortens the next one at most that much.
+    if (windowS < phase.seconds * 0.5)
+      return { kind: "invalid", reason: `Checkpoint ${k} covers ${round(windowS, 3)}s` };
     const seen = input.firstSeenS.get(k);
-    let opsPerSec = 0;
+
+    if (seen !== undefined && point.elapsedS > seen + clockToleranceS)
+      return {
+        kind: "invalid",
+        reason: `Checkpoint ${k} claims ${point.elapsedS}s by host second ${round(seen, 3)}`,
+      };
+    let added = 0;
     const perWorker: number[] = [];
 
     for (const [index, worker] of point.workers.entries()) {
-      const before = previous[index] ?? { steps: 0, elapsedS: 0 };
+      const before = previousSteps[index] ?? 0;
       const label = `Checkpoint ${k} worker ${index}`;
 
       if (worker.seed !== workerSeed(input.seed, index))
@@ -345,62 +360,28 @@ export function verifyCheckpoints(input: {
       if (worker.steps % nativeChunkSteps !== 0)
         return { kind: "invalid", reason: `${label} steps not whole chunks` };
 
-      if (worker.steps <= before.steps || worker.elapsedS <= before.elapsedS)
-        return { kind: "invalid", reason: `${label} went backwards` };
-
-      if (worker.elapsedS < k * phase.seconds)
-        return {
-          kind: "invalid",
-          reason: `${label} at ${worker.elapsedS}s, before ${k * phase.seconds}s`,
-        };
-
-      // Every window is a full segment (rolling checkpoints): none can be a few milliseconds of
-      // catch-up scored as a whole segment.
-      if (worker.elapsedS - before.elapsedS < phase.seconds - 0.001)
-        return {
-          kind: "invalid",
-          reason: `${label} covers ${round(worker.elapsedS - before.elapsedS, 3)}s, under a ${phase.seconds}s segment`,
-        };
-
-      if (seen !== undefined && worker.elapsedS > seen + clockToleranceS)
-        return {
-          kind: "invalid",
-          reason: `${label} claims ${worker.elapsedS}s by host second ${round(seen, 3)}`,
-        };
-      const rate = (worker.steps - before.steps) / (worker.elapsedS - before.elapsedS);
+      if (worker.steps < before) return { kind: "invalid", reason: `${label} went backwards` };
+      const rate = (worker.steps - before) / windowS;
 
       if (rate > maxNativeOpsPerSec)
         return { kind: "invalid", reason: `${label} claims ${rate} ops/s` };
 
       if (worker.checksum !== lcgChecksum(worker.seed, worker.steps))
         return { kind: "invalid", reason: `${label} checksum does not match` };
-      opsPerSec += rate;
+      added += worker.steps - before;
       perWorker.push(Math.round(rate));
     }
 
-    // The workers' windows must line up in time: the segment's rate adds their rates, which is the
-    // sandbox's rate only if they ran over the same interval.
-    const times = point.workers.map((w) => w.elapsedS);
-    const skew = Math.max(...times) - Math.min(...times);
-
-    if (skew > maxCheckpointSkewS)
-      return {
-        kind: "invalid",
-        reason: `Checkpoint ${k}'s workers are ${round(skew, 3)}s apart, more than ${maxCheckpointSkewS}s`,
-      };
-
-    const guestS = Math.max(...times);
-    const priorS = Math.max(...previous.map((w) => w.elapsedS));
-
     segments.push({
       segment: k,
-      minute: round(guestS / 60, 3),
-      opsPerSec: Math.round(opsPerSec),
+      minute: round(point.elapsedS / 60, 3),
+      opsPerSec: Math.round(added / windowS),
       perWorker,
-      guestS: round(guestS - priorS, 3),
+      guestS: round(windowS, 3),
       hostS: round(seen ?? 0, 3),
     });
-    previous = point.workers.map((w) => ({ steps: w.steps, elapsedS: w.elapsedS }));
+    previousSteps = point.workers.map((w) => w.steps);
+    previousS = point.elapsedS;
   }
 
   return { kind: "ok", segments, done };
