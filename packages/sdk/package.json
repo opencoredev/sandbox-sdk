@@ -147,6 +147,10 @@
       "types": "./dist/providers/maritime/index.d.ts",
       "default": "./dist/providers/maritime/index.js"
     },
+    "./microsandbox": {
+      "types": "./dist/providers/microsandbox/index.d.ts",
+      "default": "./dist/providers/microsandbox/index.js"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {
@@ -182,6 +186,7 @@
     "e2b": "2.56.0",
     "esbuild": "0.28.1",
     "freestyle": "0.2.20",
+    "microsandbox": "0.8.1",
     "modal": "0.11.1",
     "railway": "3.16.0",
     "vitest": "^4.1.12",
@@ -199,6 +204,7 @@
     "@vercel/sandbox": "^3.8.0",
     "ai": "^7.0.143",
     "disk": "^1.12.1",
+    "microsandbox": "^0.8.1",
     "modal": "^0.11.1",
     "railway": "^3.16.0",
     "vitest": ">=3",
@@ -248,6 +254,9 @@
       "optional": true
     },
     "disk": {
+      "optional": true
+    },
+    "microsandbox": {
       "optional": true
     }
   },

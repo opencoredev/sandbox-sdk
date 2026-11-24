@@ -25,6 +25,8 @@ export const externalPackages: readonly string[] = [
   "freestyle",
   "modal",
   "maritime-sdk",
+  "microsandbox",
+  "@microsandbox/core",
   "railway",
   // Agent frameworks and test runners behind their own subpaths.
   "@mastra/core",
