@@ -6,21 +6,21 @@ published: 2026-11-24
 
 A Node.js sandbox that holds up against untrusted code runs that code outside your process. `node:vm` and the permission model are not security boundaries, isolated-vm and QuickJS contain only JavaScript, and containers or microVMs contain whole programs.
 
-Every sample below ran on Node 24.22 in November 2026, and the output shown is what it printed. The last two use [Sandbox SDK by OpenCore](/) (`@opencoredev/sandbox-sdk`) to run code a model wrote in a microVM.
+The `node:vm`, isolated-vm, QuickJS, permission-model and `memory()` samples below ran on Node 24.22 in November 2026, and the output shown is what they printed. The Vercel Sandbox sample uses [Sandbox SDK by OpenCore](/) (`@opencoredev/sandbox-sdk`) to run code a model wrote in a microVM; it was typechecked against version 1.3.1, not run against a live account.
 
 ## The options at a glance
 
-| Option                        | Where the code runs                   | What it can reach                            | Fit for untrusted code          |
-| ----------------------------- | ------------------------------------- | -------------------------------------------- | ------------------------------- |
-| `node:vm`                     | Your process, a new V8 context        | Your whole process, through one escape       | No                              |
-| vm2                           | Your process, wrapped `node:vm`       | Your process, whenever the wrapper has a gap | No                              |
-| isolated-vm                   | Your process, a separate V8 isolate   | Only values you pass in                      | JavaScript only, used with care |
-| QuickJS in WebAssembly        | Your process, a Wasm interpreter      | Only values you pass in                      | JavaScript only                 |
-| Permission model              | A separate Node process               | What the `--allow-*` flags grant             | No                              |
-| Docker container              | A separate process on the same kernel | Its own files and network, your kernel       | Partly: the kernel is shared    |
-| MicroVM (E2B, Vercel Sandbox) | Another machine with its own kernel   | Its own disk, and the network you allow      | Yes, any language or program    |
+| Option                        | Where the code runs                          | What it can reach                             | Fit for untrusted code              |
+| ----------------------------- | -------------------------------------------- | --------------------------------------------- | ----------------------------------- |
+| `node:vm`                     | Your process, a new V8 context               | Your whole process, through one escape        | No                                  |
+| vm2                           | Your process, wrapped `node:vm`              | Your process, whenever the wrapper has a gap  | Not for arbitrary submissions       |
+| isolated-vm                   | A separate V8 isolate in a Node process      | Only values you pass in                       | JavaScript only, in its own process |
+| QuickJS in WebAssembly        | A Wasm interpreter in a Node process         | Only values you pass in                       | JavaScript only, unaudited          |
+| Permission model              | The Node process started with `--permission` | Selected APIs, as the `--allow-*` flags grant | No                                  |
+| Docker container              | A separate process on the same kernel        | Its own files and network, your kernel        | Partly: the kernel is shared        |
+| MicroVM (E2B, Vercel Sandbox) | Another machine with its own kernel          | Its own disk, and the network you allow       | Yes, any language or program        |
 
-The first four never leave your server's process, so they answer quickly and can only run JavaScript. The last two run a real program, so the code can `npm install`, start a server or run Python.
+The first four run JavaScript only, inside a Node process. The last two run real programs, so the code can start a server, or install packages and run Python when the image has them and the network allows it.
 
 ## Is node:vm a sandbox?
 
@@ -31,7 +31,7 @@ One line of code shows why:
 ```js
 import vm from "node:vm";
 
-// Code a user or a model wrote. It never mentions `process`.
+// Pretend a user wrote this string. The context gets no `process`.
 const untrusted = `this.constructor.constructor("return process")().version`;
 
 console.log(vm.runInNewContext(untrusted, {}));
@@ -45,9 +45,9 @@ The object you pass as the context was created in your realm. Its `constructor` 
 
 ## Is vm2 safe to use?
 
-Not for untrusted code. Its [README](https://github.com/patriksimek/vm2) opens with "Project Discontinued" and says the library "contains critical security issues and should not be used for production", and it points users to isolated-vm.
+Not for arbitrary user submissions. vm2 is maintained again (3.12.2 shipped in September 2026), and its [README](https://github.com/patriksimek/vm2#important-security-disclaimer) is direct about the limits: it sandboxes code inside your Node.js process through a network of proxies, new bypasses "will likely be discovered", and for "completely untrusted sources (e.g., arbitrary user submissions)" it recommends stronger isolation. The README called the project discontinued in 2023; releases resumed in October 2025 and that notice is gone.
 
-Releases still appear on npm (3.12.2 in September 2026), and escapes keep being found. In January 2026 [Semgrep](https://semgrep.dev/blog/2026/calling-back-to-vm2-and-escaping-sandbox/) described a sandbox escape scored 9.8 on CVSS, fixed in 3.10.2. vm2 wraps `node:vm` in proxies, so every gap in the wrapper reaches your process.
+Escapes keep being found. In January 2026 [Semgrep](https://semgrep.dev/blog/2026/calling-back-to-vm2-and-escaping-sandbox/) described one scored 9.8 on CVSS, fixed in 3.10.2. Every gap in the wrapper reaches your process, so vm2 fits code from vetted authors, kept up to date and paired with other layers.
 
 ## isolated-vm: a separate V8 isolate
 
@@ -80,6 +80,8 @@ The isolate has no `process`, `require` or file system unless you hand it one. W
 - **It's in maintenance mode.** The author supports it "for as long as is technically feasible" and is working on a new version in a separate branch.
 - **Don't leak its objects.** Handing untrusted code a `Reference` or an `ExternalCopy` is "usually trivial" to turn into "complete control over a process", in the README's words.
 - **Keep Node patched.** A V8 bug is an escape into your process, so V8 updates in Node point releases matter.
+- **Run it in its own process.** The README suggests keeping isolates in a different Node process from other critical infrastructure, since plain JavaScript can still crash or hang a process.
+- **`memoryLimit` is a guideline.** The README says a determined attacker can use 2 to 3 times the limit before the script is stopped.
 - **It's a native addon matched to Node.** 7.x is for Node 26, 6.x or 5.x for Node 24, 5.x or 4.x for Node 22, and odd-numbered Node versions aren't supported.
 
 It runs JavaScript only. Code that needs npm packages, a shell or another language doesn't fit.
@@ -113,13 +115,13 @@ undefined 42
 interrupted
 ```
 
-It's a different engine from V8, and it needs no native build. It suits formulas, rules and small plugins written in plain JavaScript. Code that expects Node APIs or npm packages won't run in it.
+It's a different engine from V8, and it needs no native build. Its README says the project "has not been audited" and asks for care in production. It suits formulas, rules and small plugins written in plain JavaScript, run in a process that holds nothing critical. Code that expects Node APIs or npm packages won't run in it.
 
 ## Does the Node.js permission model sandbox code?
 
 No. The [permission model](https://nodejs.org/api/permissions.html), stable since Node 22.13 and 23.5, "does not protect against malicious code", and Node's docs say malicious code can bypass it. It's a seat belt that stops your own scripts from touching files or APIs by mistake.
 
-Run a script with `--permission` and only what you allow works. This one tries to spawn a process:
+It applies to the Node process you start with `--permission`, so your app has to launch the script as its own process. In that process, the restricted APIs work only where you allow them. This one tries to spawn a process:
 
 ```js
 // job/main.mjs
@@ -141,7 +143,7 @@ The error's code is `ERR_ACCESS_DENIED`. Use the permission model to fence in co
 
 A Docker container gives the code its own file system, process tree and network namespace, and it can run any program. It shares your machine's kernel, so a kernel bug or a mount that exposes the host is a way out. [Docker sandbox for AI agents in TypeScript](/blog/docker-sandbox-for-ai-agents) shows how to start and lock down a container from TypeScript with `local()`.
 
-Run code from strangers in a container only on a machine that holds no secrets. For code from your own team or your own agent, it's often enough.
+Whether a container is enough depends on what the code is and what it can reach. An agent you wrote can still run instructions it read from untrusted input, and a machine with no secrets can still expose mounts or network services. A container fits code from your own team on a host you've locked down; for code from strangers, use a microVM.
 
 ## MicroVM sandboxes: another kernel, any language
 
@@ -149,7 +151,7 @@ To run untrusted programs safely, run them on another machine. E2B and Vercel Sa
 
 Write the runner against the sandbox, not the provider:
 
-```ts
+```ts title="run-snippet.ts"
 import type { Sandbox } from "@opencoredev/sandbox-sdk";
 
 export async function runSnippet(box: Sandbox, code: string) {
@@ -160,12 +162,12 @@ export async function runSnippet(box: Sandbox, code: string) {
 }
 ```
 
-Then call it with a real sandbox, network off:
+Then call it with a real sandbox, network off. Install `@vercel/sandbox` next to the SDK and set the credentials from the [Vercel provider page](/docs/providers/vercel) first:
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { vercel } from "@opencoredev/sandbox-sdk/vercel";
-import { runSnippet } from "./run-snippet";
+import { runSnippet } from "./run-snippet.ts";
 
 const code = `console.log(process.version, 6 * 7)`; // what the model wrote
 
@@ -180,10 +182,10 @@ What this gives you:
 
 - **`process` is the sandbox's, not yours.** The snippet sees the sandbox's environment and files, and no provider keys. Those stay on your server.
 - **The network is off, or creation fails.** A provider that can't enforce `network: "none"` throws `unsupported` instead of creating an open sandbox. The [No network row of the provider table](/docs/reference/capabilities#matrix) lists which providers can.
-- **Time limits on both levels.** A command that runs past its `timeoutMs` is killed and returns `timedOut: true`, and the sandbox's own `timeoutMs` bounds its lifetime.
-- **Cleanup on throw.** `await using` destroys the sandbox when the block ends, even if your code throws.
+- **Time limits on both levels.** A command that runs past its `timeoutMs` is killed and returns `timedOut: true`. The `timeoutMs` passed to `createSandbox` is the provider's hard limit: Vercel applies it to each session, and some providers don't support it and fail with `unsupported`.
+- **Cleanup on throw.** This sandbox has no `key`, so `await using` destroys it when the block ends, even if your code throws. A keyed sandbox is meant to outlive the request, and `await using` only closes its handle.
 
-`runSnippet` takes any provider. Swap `vercel()` for `e2b()` or `daytona()` to run the same code on another one, as long as its image has Node.js. The [security reference](/docs/reference/security) covers what the provider isolates and what the SDK adds for secrets.
+`runSnippet` takes any provider. Swap `vercel()` for `e2b()` or `daytona()` to run the same code on another one, as long as its image has Node.js and it supports the options you pass; check the provider table linked above before you rely on `network` or `timeoutMs`. The [security reference](/docs/reference/security) covers what the provider isolates and what the SDK adds for secrets.
 
 ## Test it without a cloud
 
@@ -192,7 +194,7 @@ What this gives you:
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
-import { runSnippet } from "./run-snippet";
+import { runSnippet } from "./run-snippet.ts";
 
 const provider = memory({
   handlers: {
@@ -216,19 +218,19 @@ The [memory() handler guide](/docs/guides/testing-with-memory) covers the rest o
 
 ## Which Node.js sandbox should I use?
 
-- **A formula, a rule or a small plugin in plain JavaScript:** isolated-vm or QuickJS. Pass in data only, and set memory and time limits.
+- **A formula, a rule or a small plugin in plain JavaScript:** isolated-vm or QuickJS, in a worker process that holds no secrets. Pass in data only, set memory and time limits, and treat them as a first layer, not the only one.
 - **Anything a model or a stranger wrote that may use npm, a shell, files or another language:** a microVM sandbox.
 - **Your own scripts that you want to keep away from files and APIs:** the permission model.
-- **Your own team's or agent's code on a machine with no secrets:** a Docker container.
-- **Untrusted code of any kind:** not `node:vm`, not vm2.
+- **Your own team's code on a host you've locked down:** a Docker container.
+- **Untrusted code of any kind:** not `node:vm`, and not vm2 on its own.
 
 ## Common questions
 
-**What is the best Node.js sandbox library?** For untrusted JavaScript that needs no Node APIs, isolated-vm or quickjs-emscripten. For untrusted programs, no library that runs in your process is enough: run them in a container or microVM and drive it from Node, for example with `@opencoredev/sandbox-sdk`.
+**What is the best Node.js sandbox library?** For JavaScript that needs no Node APIs, isolated-vm or quickjs-emscripten, run in a separate process with limits. For untrusted programs, no library that runs in your process is enough: run them in a container or microVM and drive it from Node, for example with `@opencoredev/sandbox-sdk`.
 
-**Is vm2 deprecated?** Its README says the project is discontinued, that it has critical security issues and that it shouldn't be used in production. New versions still ship to fix escapes.
+**Is vm2 deprecated?** Not anymore. It was marked discontinued in 2023 and is maintained again, with releases through 2026 that patch escapes. Its README still recommends stronger isolation for arbitrary user submissions.
 
-**Can I run Python from Node.js in a sandbox?** Yes, in a container or microVM. Write the file with `box.files.write("main.py", code)` and run `box.run("python3 main.py")`. [Files and git](/docs/concepts/files-and-git) has the details.
+**Can I run Python from Node.js in a sandbox?** Yes, in a container or microVM whose image has `python3`. Write the file with `box.files.write("main.py", code)` and run `box.run("python3 main.py")`. [Files and git](/docs/concepts/files-and-git) has the details.
 
 **How do I limit time and memory?** isolated-vm takes `memoryLimit` on the isolate and `timeout` on each `eval`. QuickJS takes `memoryLimitBytes` and a `shouldInterrupt` deadline. With Sandbox SDK, `timeoutMs` on `box.run` limits one command, `timeoutMs` on `createSandbox` limits the sandbox, and `size` sets CPU and memory where the provider allows it.
 
