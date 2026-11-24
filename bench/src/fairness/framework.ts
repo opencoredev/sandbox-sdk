@@ -56,6 +56,12 @@ const destroyTimeoutMs = 120_000;
 const destroyAttempts = 3;
 const destroyRetryDelayMs = 5_000;
 const listTimeoutMs = 60_000;
+/** How long cleanup waits for creates still in flight past their deadline. */
+
+const lateCreateWaitMs = 5 * 60_000;
+/** A provider may list a sandbox from a refused or abandoned create only after a while. */
+
+const lateSweepDelayMs = 30_000;
 
 // ---------------------------------------------------------------------------------------------
 // Sandboxes
@@ -211,6 +217,30 @@ export type RunFile = z.infer<typeof runFileSchema>;
 
 const sandboxEntrySchema = z.object({ id: z.string(), createS: z.number() });
 
+/**
+ * The size the provider's same-machine setup asks for. `sameSize` is false for one that is not
+ * 4 vCPU / 8 GiB (boxd's nearest shape is 16 GiB), so a comparison can leave it out or mark it.
+ */
+const machineSchema = z.object({
+  cpu: z.number().positive(),
+  memoryGiB: z.number().positive(),
+  sameSize: z.boolean(),
+});
+
+export type Machine = z.infer<typeof machineSchema>;
+
+export const targetMachine = { cpu: 4, memoryGiB: 8 } as const;
+
+export function machineOf(setup: ProviderSetup): Machine {
+  const { cpu, memoryGiB } = setup.tracks[track].provisioned;
+
+  return {
+    cpu,
+    memoryGiB,
+    sameSize: cpu === targetMachine.cpu && memoryGiB === targetMachine.memoryGiB,
+  };
+}
+
 /** `<out>/providers/<provider>.json`. `result` is the check's own shape, parsed by the check. */
 export const providerFileSchema = z.object({
   schema: z.literal("fairness.provider.v1"),
@@ -227,6 +257,7 @@ export const providerFileSchema = z.object({
   /** True only when every sandbox the attempt made or its sweep found is confirmed gone. */
   destroyed: z.boolean(),
   cleanupError: z.string().nullable(),
+  machine: machineSchema,
   result: z.unknown(),
 });
 
@@ -367,6 +398,7 @@ export function parseLog(text: string): LogLine[] {
 export function entryFromLog(input: {
   readonly check: CheckId;
   readonly provider: string;
+  readonly machine: Machine;
   readonly lines: readonly LogLine[];
 }): ProviderFile | null {
   let startIndex = -1;
@@ -406,6 +438,7 @@ export function entryFromLog(input: {
     createFailures,
     destroyed: sweptClean && sandboxes.every((box) => destroyedIds.has(box.id)),
     cleanupError: sweptClean ? null : "No clean sweep in the log",
+    machine: input.machine,
     result: null,
   };
 }
@@ -415,7 +448,7 @@ export function entryFromLog(input: {
  * to this run and check and is filed under its own name. The log decides which attempt is live:
  * a summary from another attempt is stale.
  */
-export async function loadResults(out: string, check: CheckId) {
+export async function loadResults(out: string, check: CheckId, resultSchema?: z.ZodType<unknown>) {
   const files = paths(out, check);
   const runFile = await readParsed(files.run, runFileSchema);
 
@@ -452,11 +485,29 @@ export async function loadResults(out: string, check: CheckId) {
     const latest = starts.at(-1);
 
     if (summary !== null && (latest === undefined || latest.attemptId === summary.attemptId)) {
+      const where = `providers/${setup.name}.json`;
+
+      if ((summary.status === "completed") !== (summary.result !== null))
+        throw new Error(
+          `${where} is ${summary.status} but ${summary.result === null ? "has no" : "has a"} result`,
+        );
+
+      if (
+        summary.status === "completed" &&
+        resultSchema &&
+        !resultSchema.safeParse(summary.result).success
+      )
+        throw new Error(`${where} has a result that does not fit the ${check} schema`);
       providers.push(summary);
       continue;
     }
 
-    const rebuilt = entryFromLog({ check, provider: setup.name, lines: log });
+    const rebuilt = entryFromLog({
+      check,
+      provider: setup.name,
+      machine: machineOf(setup),
+      lines: log,
+    });
 
     if (rebuilt !== null) providers.push(rebuilt);
   }
@@ -464,8 +515,12 @@ export async function loadResults(out: string, check: CheckId) {
   return { runFile, providers };
 }
 
-export async function mergeResults(out: string, check: CheckId): Promise<Report> {
-  const { runFile, providers } = await loadResults(out, check);
+export async function mergeResults(
+  out: string,
+  check: CheckId,
+  resultSchema?: z.ZodType<unknown>,
+): Promise<Report> {
+  const { runFile, providers } = await loadResults(out, check, resultSchema);
 
   const report: Report = {
     schema: "fairness.v1",
@@ -495,6 +550,10 @@ export interface RunDependencies {
   readonly progress: (line: string) => void;
   /** Pause between destroy retries; tests pass 0. */
   readonly retryDelayMs?: number;
+  /** Wait before a second sweep after a failed or late create; tests pass 0. */
+  readonly lateSweepDelayMs?: number;
+  /** A create's deadline; tests pass a short one. */
+  readonly createTimeoutMs?: number;
 }
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -613,8 +672,10 @@ async function attempt<R>(input: {
   const startedAt = now();
 
   const stamp = `${startedAt.replaceAll(":", "-")}.${attemptId}`;
-  await setAside(logPath, join(files.logs, `${name}.${stamp}.prev.jsonl`));
+  // Summary first: a merge in between then sees the old log without its summary and reports the
+  // attempt as unfinished, never the old summary as current.
   await setAside(files.provider(name), join(files.providers, `${name}.${stamp}.prev.json`));
+  await setAside(logPath, join(files.logs, `${name}.${stamp}.prev.jsonl`));
 
   const log = async (line: LogLine) => {
     await appendFile(logPath, `${JSON.stringify(logLineSchema.parse(line))}\n`);
@@ -639,6 +700,8 @@ async function attempt<R>(input: {
 
   const created: CreatedBox[] = [];
   const createFailures: string[] = [];
+  /** Every create call itself, not its deadline: one that outlives the deadline is still cleaned up. */
+  const pendingCreates: Promise<Box>[] = [];
   let session: Session | null = null;
   let status: AttemptStatus = "failed";
   let reason: string | null = null;
@@ -673,9 +736,12 @@ async function attempt<R>(input: {
       Array.from({ length: check.boxes }, async (_, index) => {
         const started = performance.now();
 
-        const box = await deadline(createTimeoutMs, (signal) =>
-          ready.create(AbortSignal.any([signal, dependencies.signal])),
-        );
+        const box = await deadline(dependencies.createTimeoutMs ?? createTimeoutMs, (signal) => {
+          const call = ready.create(AbortSignal.any([signal, dependencies.signal]));
+          pendingCreates.push(call);
+
+          return call;
+        });
 
         const readyAtMs = performance.now();
         const entry: CreatedBox = { box, index, createS: (readyAtMs - started) / 1000, readyAtMs };
@@ -724,7 +790,16 @@ async function attempt<R>(input: {
     if (status !== "skipped") status = "failed";
     say(`stopped: ${reason}`);
   } finally {
-    cleanup = await cleanUp({ boxes: created, session, log: logQuietly, say, delay });
+    cleanup = await cleanUp({
+      boxes: created,
+      pendingCreates,
+      createFailed: createFailures.length > 0,
+      session,
+      log: logQuietly,
+      say,
+      delay,
+      lateSweepDelayMs: dependencies.lateSweepDelayMs ?? lateSweepDelayMs,
+    });
   }
 
   await logQuietly({ kind: "stop", status, reason, at: now() });
@@ -745,6 +820,7 @@ async function attempt<R>(input: {
     createFailures,
     destroyed: cleanup.destroyed,
     cleanupError: cleanup.error,
+    machine: machineOf(setup),
     result,
   };
 
@@ -756,33 +832,93 @@ async function attempt<R>(input: {
 
 type QuietLog = (line: LogLine) => Promise<void>;
 
-/** Destroys every created sandbox, then sweeps the attempt's labels. Never throws. */
+/**
+ * Destroys every created sandbox, then any create that returned after its deadline (waiting for
+ * those still in flight, up to `lateCreateWaitMs`), then sweeps the attempt's labels; after a failed
+ * or late create, sweeps again `lateSweepDelayMs` later. Never throws.
+ */
 async function cleanUp(input: {
   readonly boxes: readonly CreatedBox[];
+  readonly pendingCreates: readonly Promise<Box>[];
+  readonly createFailed: boolean;
   readonly session: Session | null;
   readonly log: QuietLog;
   readonly say: (text: string) => void;
   readonly delay: number;
+  readonly lateSweepDelayMs: number;
 }): Promise<Cleanup> {
   const { boxes, session, log, say, delay } = input;
+  const known = new Set(boxes.map((entry) => entry.box.id));
+  const problems: string[] = [];
 
-  const failed = (
-    await Promise.all(
-      boxes.map(async ({ box }) => {
-        const outcome = await destroyWithRetry(() => box.destroy(), delay);
-        await log({ kind: "destroy", sandboxId: box.id, ...outcome, at: now() });
+  const destroyBox = async (box: Box) => {
+    const outcome = await destroyWithRetry(() => box.destroy(), delay);
+    await log({ kind: "destroy", sandboxId: box.id, ...outcome, at: now() });
 
-        if (!outcome.ok) say(`DESTROY FAILED ${box.id}: ${outcome.error}`);
+    if (!outcome.ok) say(`DESTROY FAILED ${box.id}: ${outcome.error}`);
 
-        return outcome.ok ? null : box.id;
-      }),
-    )
-  ).filter((id) => id !== null);
+    return outcome.ok ? null : box.id;
+  };
+
+  const failed = (await Promise.all(boxes.map(({ box }) => destroyBox(box)))).filter(
+    (id) => id !== null,
+  );
+
+  // Creates that outlived their deadline: wait for them, and destroy whatever they made.
+  let late = false;
+  let stillPending = 0;
+
+  const settled = await deadline(lateCreateWaitMs, () =>
+    Promise.allSettled(input.pendingCreates),
+  ).catch(() => null);
+
+  if (settled === null) {
+    stillPending = input.pendingCreates.length;
+    problems.push(`a create was still in flight after ${lateCreateWaitMs / 1000}s`);
+  } else {
+    for (const outcome of settled) {
+      if (outcome.status !== "fulfilled" || known.has(outcome.value.id)) continue;
+      late = true;
+      await log({ kind: "sandbox", id: outcome.value.id, createS: -1, at: now() });
+      say(`late create returned ${outcome.value.id}; destroying`);
+      const id = await destroyBox(outcome.value);
+
+      if (id !== null) failed.push(id);
+    }
+  }
 
   if (session === null)
-    return failed.length === 0
+    return failed.length === 0 && stillPending === 0
       ? { destroyed: true, error: null }
-      : { destroyed: false, error: `${failed.join(", ")} did not destroy` };
+      : {
+          destroyed: false,
+          error: [...problems, ...failed.map((id) => `${id} did not destroy`)].join("; "),
+        };
+
+  let error = await sweep({ session, failed, log, say, delay });
+
+  if (error === null && (late || input.createFailed || stillPending > 0)) {
+    await sleep(input.lateSweepDelayMs);
+    error = await sweep({ session, failed: [], log, say, delay });
+  }
+
+  if (error !== null) problems.push(error);
+
+  // A sandbox whose destroy failed is gone when the listing no longer shows it or the sweep got it.
+  return problems.length === 0
+    ? { destroyed: true, error: null }
+    : { destroyed: false, error: problems.join("; ") };
+}
+
+/** Lists the attempt's sandboxes and destroys any left. Returns null only when all are gone. */
+async function sweep(input: {
+  readonly session: Session;
+  readonly failed: readonly string[];
+  readonly log: QuietLog;
+  readonly say: (text: string) => void;
+  readonly delay: number;
+}): Promise<string | null> {
+  const { session, failed, log, say, delay } = input;
   let found: string[];
 
   try {
@@ -792,7 +928,7 @@ async function cleanUp(input: {
     await log({ kind: "sweep", found: [], destroyed: [], error, at: now() });
     say(`SWEEP FAILED: ${error}`);
 
-    return { destroyed: false, error };
+    return error;
   }
 
   const destroyed: string[] = [];
@@ -811,8 +947,7 @@ async function cleanUp(input: {
   if (error !== null) say(`SWEEP FAILED: ${error}`);
   else if (found.length > 0) say(`sweep found ${found.join(", ")}; destroyed ${destroyed.length}`);
 
-  // A sandbox whose destroy failed is gone when the listing no longer shows it or the sweep got it.
-  return error === null ? { destroyed: true, error: null } : { destroyed: false, error };
+  return error;
 }
 
 const round = (value: number, places: number) => {
@@ -836,6 +971,12 @@ async function claimOut(check: CheckId, plan: RunPlan): Promise<RunFile> {
     if (runFile.run.id !== plan.runId || runFile.check !== check)
       throw new Error(
         `${plan.out} belongs to ${runFile.check} run ${runFile.run.id}; pass --run ${runFile.run.id} to retry into it, or a new --out`,
+      );
+    const commit = (await collectMetadata(false)).repositoryCommit ?? "unknown";
+
+    if (commit !== runFile.run.sdkCommit)
+      throw new Error(
+        `${plan.out} was run at ${runFile.run.sdkCommit}; this checkout is ${commit}, so a retry would mix code`,
       );
     await loadResults(plan.out, check);
 
@@ -894,7 +1035,7 @@ export async function runCheck<R>(
 
   const mergeQuietly = () => {
     merging = merging.then(() =>
-      mergeResults(plan.out, check.id).then(
+      mergeResults(plan.out, check.id, check.resultSchema).then(
         () => {},
         (cause) => progress(`merge failed: ${errorText(cause)}`),
       ),
@@ -927,5 +1068,9 @@ export async function runCheck<R>(
     if (settled.status === "rejected")
       failures.push({ provider: "runner", error: errorText(settled.reason) });
 
-  return { report: await mergeResults(plan.out, check.id), failures, cleanupProblems };
+  return {
+    report: await mergeResults(plan.out, check.id, check.resultSchema),
+    failures,
+    cleanupProblems,
+  };
 }

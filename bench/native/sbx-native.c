@@ -253,6 +253,7 @@ static int cmd_cpu(u64 seed, u64 workers, u64 target_ms, u64 chunk) {
       row.index = (u32)i;
       row.seed = x;
       SYS3(SYS_close, go[1], 0, 0);
+      SYS3(SYS_close, res[0], 0, 0);
       if (SYS3(SYS_read, go[0], &token, 1) != 1) exit_now(5);
       start = now_ns();
       do {
@@ -269,6 +270,10 @@ static int cmd_cpu(u64 seed, u64 workers, u64 target_ms, u64 chunk) {
     }
   }
 
+  /* Only the workers keep the result pipe's write end: a worker that dies before reporting
+     closes it, so the read below ends instead of waiting for the exec timeout. */
+  SYS3(SYS_close, go[0], 0, 0);
+  SYS3(SYS_close, res[1], 0, 0);
   char tokens[64];
   memset(tokens, 'g', sizeof tokens);
   u64 start = now_ns();
@@ -332,28 +337,37 @@ static int cmd_cpu(u64 seed, u64 workers, u64 target_ms, u64 chunk) {
 #define PAGE_WORDS 1024ul
 #define BLOCK (1ul << 20)
 #define POOL_PAGES 16384ul /* 64 MiB of seeded words, reused with a stamp per page */
-#define MAX_RAND_OPS 100000ul
+#define MAX_RAND_OPS 1000000ul
 #define STAMP_MAGIC 0x53425844u /* "SBXD" */
+#define REWRITE_MIX 0x5bd1e995u     /* a rewritten page's stamp and content differ from the first */
+#define REWRITE_FLIP 0xa5a5a5a5u
 
 static u32 *pool;
 
-/* Page p of the test file: a 16-byte stamp, then the pool's page p mod POOL_PAGES. */
-static void fill_page(u32 *dst, u32 seed, u64 p) {
+/* Page p's stamp word: version 1 as first written, version 2 once a random write rewrote it. */
+static u32 page_stamp(u32 seed, u64 p, int version) {
+  return fmix32(seed ^ ((u32)p * GOLDEN) ^ (version == 2 ? REWRITE_MIX : 0u));
+}
+
+/* Page p of the test file: a 16-byte stamp, then the pool's page p mod POOL_PAGES (flipped in a
+   rewritten page, so a rewrite that never reached the disk reads back as version 1). */
+static void fill_page(u32 *dst, u32 seed, u64 p, int version) {
   const u32 *src = pool + (p % POOL_PAGES) * PAGE_WORDS;
-  for (u64 k = 4; k < PAGE_WORDS; k++) dst[k] = src[k];
+  u32 flip = version == 2 ? REWRITE_FLIP : 0u;
+  for (u64 k = 4; k < PAGE_WORDS; k++) dst[k] = src[k] ^ flip;
   dst[0] = STAMP_MAGIC;
   dst[1] = seed;
   dst[2] = (u32)p;
-  dst[3] = fmix32(seed ^ ((u32)p * GOLDEN));
+  dst[3] = page_stamp(seed, p, version);
 }
 
-static int page_ok(const u32 *got, u32 seed, u64 p) {
+static int page_ok(const u32 *got, u32 seed, u64 p, int version) {
   const u32 *src = pool + (p % POOL_PAGES) * PAGE_WORDS;
-  if (got[0] != STAMP_MAGIC || got[1] != seed || got[2] != (u32)p ||
-      got[3] != fmix32(seed ^ ((u32)p * GOLDEN)))
+  u32 flip = version == 2 ? REWRITE_FLIP : 0u;
+  if (got[0] != STAMP_MAGIC || got[1] != seed || got[2] != (u32)p || got[3] != page_stamp(seed, p, version))
     return 0;
   for (u64 k = 4; k < PAGE_WORDS; k++)
-    if (got[k] != src[k]) return 0;
+    if (got[k] != (src[k] ^ flip)) return 0;
   return 1;
 }
 
@@ -398,11 +412,12 @@ static void put_latency(const char *name, u64 *lat, u64 n) {
   key("ops");
   put_u64(n);
   put(",");
+  /* Nearest rank: the ceil(q * n)-th smallest sample. */
   key("p50Ns");
-  put_u64(n ? lat[n / 2] : 0);
+  put_u64(n ? lat[(n + 1) / 2 - 1] : 0);
   put(",");
   key("p99Ns");
-  put_u64(n ? lat[(n * 99) / 100 < n ? (n * 99) / 100 : n - 1] : 0);
+  put_u64(n ? lat[(n * 99 + 99) / 100 - 1] : 0);
   put(",");
   key("maxNs");
   put_u64(n ? lat[n - 1] : 0);
@@ -458,7 +473,8 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
   pool = map(POOL_PAGES * PAGE);
   u32 *buf = map(BLOCK);
   u64 *lat = map(MAX_RAND_OPS * 8 * 2);
-  if (!pool || !buf || !lat) fail("disk", "mmap", -1);
+  u8 *touched = map((pages + 7) / 8 + PAGE);
+  if (!pool || !buf || !lat || !touched) fail("disk", "mmap", -1);
   for (u64 g = 0; g < POOL_PAGES * PAGE_WORDS; g++) pool[g] = stream_word(seed, g);
 
   /* Sequential write, 1 MiB at a time, then fdatasync. Only the syscalls are timed. */
@@ -466,7 +482,7 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
   if (fd < 0) fail("disk", "open for write", fd);
   u64 write_ns = 0;
   for (u64 b = 0; b < blocks; b++) {
-    for (u64 i = 0; i < BLOCK / PAGE; i++) fill_page(buf + i * PAGE_WORDS, seed, b * (BLOCK / PAGE) + i);
+    for (u64 i = 0; i < BLOCK / PAGE; i++) fill_page(buf + i * PAGE_WORDS, seed, b * (BLOCK / PAGE) + i, 1);
     u64 t0 = now_ns();
     i64 n = SYS3(SYS_write, fd, buf, BLOCK);
     write_ns += now_ns() - t0;
@@ -516,7 +532,7 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
     if (n != (i64)BLOCK) fail("disk", "sequential read", n < 0 ? n : -1);
     for (u64 i = 0; i < BLOCK / PAGE; i++) {
       u64 p = b * (BLOCK / PAGE) + i;
-      if (!page_ok(buf + i * PAGE_WORDS, seed, p)) bad_pages++;
+      if (!page_ok(buf + i * PAGE_WORDS, seed, p, 1)) bad_pages++;
       stamp_digest += buf[i * PAGE_WORDS + 3];
     }
   }
@@ -531,12 +547,23 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
   u64 wops = 0, phase_start = now_ns(), limit = rand_ms * 1000000ul;
   while (wops < MAX_RAND_OPS && now_ns() - phase_start < limit) {
     u64 p = xorshift32(&state) % pages;
-    fill_page(buf, seed, p);
+    fill_page(buf, seed, p, 2);
     t0 = now_ns();
     i64 n = sys6(SYS_pwrite64, fd, (i64)buf, (i64)PAGE, (i64)(p * PAGE), 0, 0);
+    if (n == -EINVAL && direct && wops == 0) {
+      /* 1 MiB direct writes worked but 4 KiB ones do not: run this phase buffered. */
+      SYS3(SYS_close, fd, 0, 0);
+      direct = 0;
+      fd = SYS3(SYS_open, path, O_WRONLY, 0600);
+      if (fd < 0) fail("disk", "reopen for random write", fd);
+      state = fmix32(seed ^ 0xa5a5a5a5u) | 1u;
+      phase_start = now_ns();
+      continue;
+    }
     i64 s = SYS3(SYS_fdatasync, fd, 0, 0);
     lat[wops++] = now_ns() - t0;
     if (n != (i64)PAGE || s < 0) fail("disk", "random write", n < 0 ? n : s);
+    touched[p / 8] |= (u8)(1u << (p % 8));
   }
   u64 rand_write_wall = now_ns() - phase_start;
   SYS3(SYS_close, fd, 0, 0);
@@ -555,9 +582,19 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
     u64 p = xorshift32(&rstate) % pages;
     t0 = now_ns();
     i64 n = sys6(SYS_pread64, fd, (i64)buf, (i64)PAGE, (i64)(p * PAGE), 0, 0);
+    if (n == -EINVAL && direct && rops == 0) {
+      SYS3(SYS_close, fd, 0, 0);
+      direct = 0;
+      drop_cache(path);
+      fd = SYS3(SYS_open, path, O_RDONLY, 0);
+      if (fd < 0) fail("disk", "reopen for random read", fd);
+      rstate = fmix32(seed ^ 0x5a5a5a5au) | 1u;
+      phase_start = now_ns();
+      continue;
+    }
     rlat[rops++] = now_ns() - t0;
     if (n != (i64)PAGE) fail("disk", "random read", n < 0 ? n : -1);
-    if (!page_ok(buf, seed, p)) rand_bad++;
+    if (!page_ok(buf, seed, p, (touched[p / 8] >> (p % 8)) & 1 ? 2 : 1)) rand_bad++;
     read_digest += buf[3];
   }
   u64 rand_read_wall = now_ns() - phase_start;
@@ -607,6 +644,9 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
   put(",");
   key("wallS");
   put_secs(rand_write_wall);
+  put(",");
+  key("capped");
+  put(wops >= MAX_RAND_OPS ? "true" : "false");
   put("}");
   put_latency("randWriteLatency", lat, wops);
   put(",");
@@ -623,6 +663,9 @@ static int cmd_disk(const char *dir, u64 seed64, u64 size_mib, u64 rand_ms) {
   put(",");
   key("digest");
   put_u64(read_digest);
+  put(",");
+  key("capped");
+  put(rops >= MAX_RAND_OPS ? "true" : "false");
   put("}");
   put_latency("randReadLatency", rlat, rops);
   put("}\n");
@@ -789,7 +832,7 @@ static int usage(void) {
 static int run(int argc, char **argv) {
   u64 a, b, c, d;
   if (argc >= 2 && same(argv[1], "version")) {
-    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":1}\n");
+    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":2}\n");
     return 0;
   }
   if (argc == 6 && same(argv[1], "cpu") && parse_u64(argv[2], &a) && parse_u64(argv[3], &b) &&

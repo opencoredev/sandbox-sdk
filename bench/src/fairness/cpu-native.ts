@@ -107,8 +107,10 @@ export async function burn(input: {
 
   if (check.kind === "invalid") throw new CheckStop(`${input.label}: ${check.reason}`);
 
+  // Aggregate rate over the guest's whole wall time (bounded by the host's exec time), not the sum
+  // of per-worker rates: a worker scheduled late then lowers the figure instead of hiding.
   return {
-    opsPerSec: Math.round(check.opsPerSec),
+    opsPerSec: Math.round(check.output.totalSteps / check.output.wallS),
     perWorker: check.output.workers.map((w) => Math.round(w.steps / w.elapsedS)),
     guestS: round(check.output.wallS, 3),
     hostS: round(hostS, 3),

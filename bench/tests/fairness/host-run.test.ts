@@ -32,7 +32,13 @@ async function runOnHost<R>(check: Check<R>, open: OpenSession) {
     check,
     [setup],
     { runId: "host-test", out, concurrency: 1 },
-    { open, signal: new AbortController().signal, progress: () => {}, retryDelayMs: 0 },
+    {
+      open,
+      signal: new AbortController().signal,
+      progress: () => {},
+      retryDelayMs: 0,
+      lateSweepDelayMs: 0,
+    },
   );
 
   const report = reportSchema.parse(
@@ -115,7 +121,7 @@ describe.runIf(supported)("fairness checks on this machine", () => {
   it("disk-real writes, reads back and checks a file", async () => {
     const home = await mkdtemp(join(tmpdir(), "fairness-home-"));
     const host = hostSession({ env: { HOME: home } });
-    const check = diskRealCheck({ randomSeconds: 0.3, sizesMiB: [64] });
+    const check = diskRealCheck({ randomSeconds: 0.3, sizeMiB: 64 });
     const { entry } = await runOnHost(check, host.open);
     expect(entry.status, entry.reason ?? "").toBe("completed");
     const result = check.resultSchema.parse(entry.result) satisfies DiskResult;
@@ -180,8 +186,91 @@ describe.runIf(supported)("fairness checks on this machine", () => {
       kind: "killed",
       exitCode: 137,
       lastPhase: "filled",
-      sandboxAlive: true,
     });
+  }, 30_000);
+
+  it("memory-honesty fails, not finds, on a timeout, a short file or a gateway error", async () => {
+    const outputs = [
+      // Timed out: never a finding.
+      { ok: false, exitCode: null, stdout: "#phase start 0\n", stderr: "", timedOut: true },
+      // A 503 from the provider's gateway with the sandbox still up: no kill evidence.
+      { ok: false, exitCode: 1, stdout: "", stderr: "503 Service Unavailable", timedOut: false },
+    ];
+
+    for (const fake of outputs) {
+      const real = hostBox();
+
+      const box: Box = {
+        ...real,
+        run: async (command, options) =>
+          / mem /.test(command) ? fake : real.run(command, options),
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => box,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const { entry } = await runOnHost(memoryHonestyCheck({ memoryMiB: 64, fileMiB: 16 }), open);
+      expect(entry.status).toBe("failed");
+    }
+
+    // A run that wrote half the file it was asked for.
+    const real = hostBox();
+
+    const halved: Box = {
+      ...real,
+      run: async (command, options) => {
+        const result = await real.run(command.replace(/ 16$/, " 8"), options);
+
+        return result;
+      },
+    };
+
+    const open: OpenSession = async () => ({
+      kind: "ready",
+      session: {
+        create: async () => halved,
+        leftovers: async () => [],
+        destroyById: async () => {},
+      },
+    });
+
+    const { entry } = await runOnHost(memoryHonestyCheck({ memoryMiB: 64, fileMiB: 16 }), open);
+    expect(entry.status).toBe("failed");
+    expect(entry.reason).toMatch(/8 MiB file, asked 64 and 16/);
+  }, 60_000);
+
+  it("cleans up a sandbox whose create returned after its deadline", async () => {
+    // The framework's deadline is minutes; a check with a short one is not configurable, so a
+    // create that resolves only after the attempt has given up is simulated by a failing first
+    // create whose sandbox appears in the provider's listing afterwards.
+    const late = hostBox({ id: "late-box" });
+    let listed = false;
+    const destroyed: string[] = [];
+
+    const open: OpenSession = async () => ({
+      kind: "ready",
+      session: {
+        create: async () => {
+          listed = true;
+          throw new Error("create timed out at the gateway");
+        },
+        leftovers: async () => (listed && !destroyed.includes(late.id) ? [late.id] : []),
+        destroyById: async (id) => {
+          destroyed.push(id);
+        },
+      },
+    });
+
+    const { entry } = await runOnHost(securityProbe, open);
+    expect(entry.status).toBe("failed");
+    expect(destroyed).toEqual(["late-box"]);
+    expect(entry.destroyed).toBe(true);
   }, 30_000);
 
   it("security-probe reads the guest without changing it", async () => {
@@ -196,11 +285,12 @@ describe.runIf(supported)("fairness checks on this machine", () => {
     expect(result.kernel).toMatch(/Linux/);
     expect(result.cpu.vendor).not.toBeNull();
     expect(result.vulnerabilities.length).toBeGreaterThan(0);
+    expect(result.vulnerableCount).not.toBeNull();
   }, 30_000);
 
   it("cpu-burst-10 runs a solo baseline and an overlapping cohort", async () => {
     const host = hostSession();
-    const check = cpuBurstCheck({ cohortSize: 3, soloSeconds: 0.5, cohortSeconds: 1 });
+    const check = cpuBurstCheck({ cohortSize: 3, cohortSeconds: 1 });
     const { entry } = await runOnHost(check, host.open);
     expect(entry.status, entry.reason ?? "").toBe("completed");
     const result = check.resultSchema.parse(entry.result) satisfies BurstResult;
@@ -211,6 +301,8 @@ describe.runIf(supported)("fairness checks on this machine", () => {
     expect(result.spread).toBeGreaterThanOrEqual(1);
     // Three "sandboxes" on one machine share its boot ID: what a clone looks like.
     expect(result.distinctBootIds).toBe(1);
+    expect(result.boxes.filter((b) => b.solo)).toHaveLength(1);
+    expect(result.comparable).toBe(result.notComparableWhy === null);
     expect(entry.sandboxes).toHaveLength(3);
     expect(host.boxes.every((box) => box.destroyed())).toBe(true);
   }, 60_000);
@@ -233,7 +325,7 @@ describe.runIf(supported)("fairness checks on this machine", () => {
       },
     });
 
-    const check = cpuBurstCheck({ cohortSize: 4, soloSeconds: 0.3, cohortSeconds: 0.5 });
+    const check = cpuBurstCheck({ cohortSize: 4, cohortSeconds: 0.5 });
     const { entry } = await runOnHost(check, open);
     expect(entry.status, entry.reason ?? "").toBe("completed");
     const result = check.resultSchema.parse(entry.result);
