@@ -719,6 +719,7 @@ describe("third review regressions", () => {
       mode: "cpu-stream",
       segment,
       elapsedS,
+      scanS: 0.0001,
       workers: [0, 1].map((index) => {
         const s = workerSeed(seed, index);
 
@@ -830,6 +831,7 @@ describe("fourth review regressions", () => {
         mode: "cpu-stream",
         segment,
         elapsedS,
+        scanS: 0.0001,
         workers: [{ seed: s, steps: n, checksum: lcgChecksum(s, n) }],
       });
 
@@ -887,6 +889,7 @@ describe("sixth review regressions", () => {
         mode: "cpu-stream",
         segment,
         elapsedS: segment * 60,
+        scanS: 0.0001,
         workers: [
           { seed: s0, steps: a, checksum: lcgChecksum(s0, a) },
           { seed: s1, steps: b, checksum: lcgChecksum(s1, b) },
@@ -898,5 +901,18 @@ describe("sixth review regressions", () => {
     expect(check.kind).toBe("ok");
 
     if (check.kind === "ok") expect(check.segments.map((x) => x.opsPerSec)).toEqual([rate, rate]);
+  });
+});
+
+describe("seventh review regressions", () => {
+  it("rejects a checkpoint whose scan of the workers took too long", () => {
+    const phase = { segments: 1, seconds: 1, workers: 1 };
+    const s0 = workerSeed(7, 0);
+    const n = nativeChunkSteps * 10;
+    const stdout = `${JSON.stringify({ mode: "cpu-stream", segment: 1, elapsedS: 1.0, scanS: 0.18, workers: [{ seed: s0, steps: n, checksum: lcgChecksum(s0, n) }] })}\n`;
+    expect(verifyCheckpoints({ stdout, seed: 7, phase, firstSeenS: new Map() })).toMatchObject({
+      kind: "invalid",
+      reason: expect.stringMatching(/to sample/),
+    });
   });
 });

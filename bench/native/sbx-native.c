@@ -426,23 +426,37 @@ struct shared_worker {
   u64 pad[5]; /* one cache line per worker */
 };
 
+/* Longest a sampling scan of every worker may take: 2 ms, under 0.01% of a 30 s segment. */
+#define MAX_SCAN_NS 2000000ul
+
 struct shared_state {
   u64 stop;
   u64 pad[7];
   struct shared_worker w[64];
 };
 
+#define EINTR 4
+
+/* Sleeps to an absolute monotonic deadline; an interrupted sleep resumes, any other error fails. */
 static void sleep_until(u64 deadline_ns) {
   i64 ts[2] = {(i64)(deadline_ns / 1000000000ul), (i64)(deadline_ns % 1000000000ul)};
-  while (sys6(SYS_clock_nanosleep, CLOCK_MONOTONIC, TIMER_ABSTIME, (i64)ts, 0, 0, 0) != 0) {
+  for (;;) {
+    i64 r = sys6(SYS_clock_nanosleep, CLOCK_MONOTONIC, TIMER_ABSTIME, (i64)ts, 0, 0, 0);
+    if (r == 0) return;
+    if (r != -EINTR) fail("cpu-stream", "clock_nanosleep", r);
   }
 }
 
-/* One consistent (steps, value) pair from a worker. */
+/* One consistent (steps, value) pair from a worker. A worker that died mid-write leaves its
+   sequence odd forever: after a second of that, the run fails instead of spinning. */
 static void sample(struct shared_worker *w, u64 *steps, u32 *value) {
+  u64 started = now_ns();
   for (;;) {
     u64 a = __atomic_load_n(&w->seq, __ATOMIC_ACQUIRE);
-    if (a & 1) continue;
+    if (a & 1) {
+      if (now_ns() - started > 1000000000ul) fail("cpu-stream", "worker stuck mid-write", -1);
+      continue;
+    }
     u64 st = __atomic_load_n(&w->steps, __ATOMIC_RELAXED);
     u64 v = __atomic_load_n(&w->value, __ATOMIC_RELAXED);
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
@@ -510,14 +524,27 @@ static int cmd_cpu_stream(u64 seed, u64 workers, u64 segment_ms, u64 segments, u
     sleep_until(t0 + k * segment_ms * 1000000ul);
     u64 steps[64];
     u32 values[64];
-    for (u64 i = 0; i < workers; i++) sample(&st->w[i], &steps[i], &values[i]);
-    u64 at = now_ns() - t0;
+    u64 before = 0, after = 0;
+    /* The scan must be near-instant, or steps done while it ran fall on the wrong side of the
+       boundary: rescan until every worker was read within MAX_SCAN_NS (the parent may be
+       descheduled mid-scan on a busy sandbox), and report the scan's length. */
+    for (u64 tries = 0;; tries++) {
+      before = now_ns();
+      for (u64 i = 0; i < workers; i++) sample(&st->w[i], &steps[i], &values[i]);
+      after = now_ns();
+      if (after - before <= MAX_SCAN_NS) break;
+      if (tries >= 10000) fail("cpu-stream", "could not sample every worker at once", -1);
+    }
+    u64 at = before + (after - before) / 2 - t0;
     put("{\"mode\":\"cpu-stream\",");
     key("segment");
     put_u64(k);
     put(",");
     key("elapsedS");
     put_secs(at);
+    put(",");
+    key("scanS");
+    put_secs(after - before);
     put(",\"workers\":[");
     for (u64 i = 0; i < workers; i++) {
       if (i) put(",");
@@ -1097,7 +1124,7 @@ static int usage(void) {
 static int run(int argc, char **argv) {
   u64 a, b, c, d, e;
   if (argc >= 2 && same(argv[1], "version")) {
-    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":6}\n");
+    say("{\"mode\":\"version\",\"name\":\"sbx-native\",\"version\":7}\n");
     return 0;
   }
   if (argc == 6 && same(argv[1], "cpu") && parse_u64(argv[2], &a) && parse_u64(argv[3], &b) &&
