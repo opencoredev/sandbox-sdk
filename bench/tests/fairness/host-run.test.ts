@@ -147,7 +147,7 @@ describe.runIf(supported)("fairness checks on this machine", () => {
 
     if (result.outcome.kind === "completed") {
       expect(result.outcome.raw.badWords).toBe(0);
-      expect(result.outcome.fileError).toBeNull();
+      expect(result.outcome.raw.fileWrittenMiB).toBe(16);
     }
   }, 60_000);
 

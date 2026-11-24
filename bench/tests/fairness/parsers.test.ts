@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -16,10 +16,11 @@ import {
   summarizeDisk,
   verifyDisk,
 } from "../../src/fairness/disk-real.js";
-import { checkIds } from "../../src/fairness/framework.js";
+import { checkIds, entryFromLog, parseLog } from "../../src/fairness/framework.js";
 import {
   countCpuList,
   cpuView,
+  judgeMemory,
   lastPhase,
   parseLimits,
   parseOomKills,
@@ -30,12 +31,13 @@ import {
   diskStampDigest,
   fmix32,
   memoryDigest,
+  archOf,
   nativeBytes,
   parseNativeOutput,
   parsePlaced,
   xorshift32,
 } from "../../src/fairness/native.js";
-import { nativeCompiler, nativeSha256 } from "../../src/fairness/native-binary.js";
+import { nativeBinaries } from "../../src/fairness/native-binary.js";
 import {
   classifyIsolation,
   cmdlineFlags,
@@ -47,12 +49,15 @@ import {
 const run = promisify(execFile);
 
 describe("sbx-native binary", () => {
-  it("is the static, interpreter-free x86_64 ELF its hash says", () => {
-    const bytes = Buffer.from(nativeBytes());
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe(nativeSha256);
+  it.each([
+    ["x86_64", 0x3e],
+    ["aarch64", 0xb7],
+  ] as const)("the %s build is the static, interpreter-free ELF its hash says", (arch, machine) => {
+    const bytes = Buffer.from(nativeBytes(arch));
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(nativeBinaries[arch].sha256);
     expect(bytes.subarray(0, 4).toString("latin1")).toBe("\x7fELF");
     expect(bytes[4]).toBe(2); // 64-bit
-    expect(bytes.readUInt16LE(18)).toBe(0x3e); // x86-64
+    expect(bytes.readUInt16LE(18)).toBe(machine);
     const phoff = Number(bytes.readBigUInt64LE(0x20));
     const phentsize = bytes.readUInt16LE(0x36);
     const phnum = bytes.readUInt16LE(0x38);
@@ -66,43 +71,40 @@ describe("sbx-native binary", () => {
     expect(bytes.length).toBeLessThan(64 * 1024);
   });
 
-  it("rebuilds to the same bytes with the same compiler", async () => {
-    const gcc = await run("gcc", ["--version"]).catch(() => null);
-
-    if (gcc === null || gcc.stdout.split("\n")[0] !== nativeCompiler) return;
-    const work = await mkdtemp(join(tmpdir(), "sbx-native-build-"));
-    const source = new URL("../../native/sbx-native.c", import.meta.url).pathname;
-    const output = join(work, "sbx-native");
-
-    await run("gcc", [
-      "-std=c11",
-      "-O2",
-      "-march=x86-64",
-      "-mtune=generic",
-      "-static",
-      "-nostdlib",
-      "-ffreestanding",
-      "-fno-builtin",
-      "-fno-stack-protector",
-      "-fno-pie",
-      "-no-pie",
-      "-fno-tree-loop-distribute-patterns",
-      "-fno-asynchronous-unwind-tables",
-      "-fcf-protection=none",
-      "-Wall",
-      "-Wextra",
-      "-Werror",
-      "-Wl,--build-id=none",
-      "-Wl,-z,noexecstack",
-      "-s",
-      "-o",
-      output,
-      source,
-    ]);
-    await run("objcopy", ["--remove-section", ".comment", output]);
-    const built = await readFile(output);
-    expect(createHash("sha256").update(built).digest("hex")).toBe(nativeSha256);
+  it("maps uname -m to a build", () => {
+    expect(archOf("x86_64\n")).toBe("x86_64");
+    expect(archOf("aarch64")).toBe("aarch64");
+    expect(archOf("arm64")).toBe("aarch64");
+    expect(archOf("riscv64")).toBeNull();
   });
+
+  it("rebuilds to the same bytes with the same compilers", async () => {
+    const gcc = await run("gcc", ["--version"]).catch(() => null);
+    const clang = await run("clang", ["--version"]).catch(() => null);
+
+    if (
+      gcc?.stdout.split("\n")[0] !== nativeBinaries.x86_64.compiler ||
+      clang?.stdout.split("\n")[0] !== nativeBinaries.aarch64.compiler
+    )
+      return;
+
+    const native = new URL("../../native/", import.meta.url).pathname;
+
+    // build.sh writes beside itself and into ../src/fairness; run a copy in a scratch tree.
+    const tree = await mkdtemp(join(tmpdir(), "sbx-native-tree-"));
+    await mkdir(join(tree, "native"));
+    await mkdir(join(tree, "src", "fairness"), { recursive: true });
+    await run("cp", [`${native}sbx-native.c`, `${native}build.sh`, join(tree, "native")]);
+    await run("bash", [join(tree, "native", "build.sh")]);
+
+    for (const [arch, file] of [
+      ["x86_64", "sbx-native"],
+      ["aarch64", "sbx-native-aarch64"],
+    ] as const) {
+      const built = await readFile(join(tree, "native", file));
+      expect(createHash("sha256").update(built).digest("hex")).toBe(nativeBinaries[arch].sha256);
+    }
+  }, 60_000);
 
   it("matches the C arithmetic", () => {
     // murmur3's fmix32 reference values.
@@ -575,5 +577,102 @@ describe("cpu checks", () => {
 describe("check registry", () => {
   it("files every check under its own ID", () => {
     for (const id of checkIds) expect(checks[id].id).toBe(id);
+  });
+});
+
+describe("second review regressions", () => {
+  const memRaw = (overrides: Record<string, number>) =>
+    JSON.stringify({
+      mode: "mem",
+      mib: 16,
+      fillS: 0.1,
+      fileMiB: 4,
+      fileWrittenMiB: 4,
+      fileS: 0.05,
+      fileErrno: 0,
+      verifyS: 0.1,
+      badWords: 0,
+      digest: memoryDigest(3, 16),
+      rssFilledKiB: 1,
+      swapFilledKiB: 0,
+      rssAfterFileKiB: 1,
+      swapAfterFileKiB: 0,
+      end: { vmRssKiB: 1, vmSwapKiB: 0, memAvailableKiB: 1, swapFreeKiB: 0 },
+      ...overrides,
+    });
+
+  const judge = (stdout: string) =>
+    judgeMemory({
+      run: { kind: "returned", exitCode: 0, timedOut: false, stdout, stderr: "" },
+      seed: 3,
+      memoryMiB: 16,
+      fileMiB: 4,
+      oomDelta: 0,
+      alive: true,
+    });
+
+  it("calls a run whose file failed file-failed, never completed", () => {
+    expect(judge(memRaw({})).kind).toBe("completed");
+    expect(judge(memRaw({ fileErrno: 20, fileWrittenMiB: 0, fileS: 0 }))).toMatchObject({
+      kind: "file-failed",
+      errno: 20,
+      writtenMiB: 0,
+    });
+    expect(judge(memRaw({ fileWrittenMiB: 2 }))).toMatchObject({
+      kind: "file-failed",
+      errno: null,
+      writtenMiB: 2,
+    });
+  });
+
+  it("recovers a log as clean only when its last sweep was", () => {
+    const at = "2026-11-24T00:00:00Z";
+
+    const lines = parseLog(
+      [
+        { kind: "start", check: "security-probe", provider: "e2b", runId: "r", attemptId: "a", at },
+        { kind: "sandbox", id: "x", createS: 1, at },
+        { kind: "destroy", sandboxId: "x", ok: true, attempts: 1, error: null, at },
+        { kind: "sweep", found: [], destroyed: [], error: null, at },
+        { kind: "sweep", found: ["late"], destroyed: [], error: "Could not destroy late", at },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n") + "\n",
+    );
+
+    const machine = { cpu: 4, memoryGiB: 8, sameSize: true };
+    expect(
+      entryFromLog({ check: "security-probe", provider: "e2b", machine, lines })?.destroyed,
+    ).toBe(false);
+  });
+
+  it("takes the numerically tightest swap limit", () => {
+    expect(parseLimits("swapMax=1073741824\nswapMax=536870912\nswapMax=max\n").swapLimit).toBe(
+      "536870912",
+    );
+    expect(parseLimits("swapMax=max\n").swapLimit).toBe("max");
+  });
+
+  it("ignores virtio-mmio after the init separator", () => {
+    expect(
+      classifyIsolation({ ...facts({}), cmdline: "console=ttyS0 -- virtio_mmio.device=4K@0x1:5" })
+        .kind,
+    ).toBe("vm");
+  });
+
+  it("rejects a capped phase without the cap's count", () => {
+    const output = diskOutput(11, 4, 50);
+    const fakeCap = { ...output, randRead: { ...output.randRead, capped: true, wallS: 0.01 } };
+    expect(
+      verifyDisk({ output: fakeCap, seed: 11, sizeMiB: 4, randomSeconds: 10, hostS: 30 }).kind,
+    ).toBe("invalid");
+  });
+
+  it("stamps every random write with its own version", () => {
+    const base = { seed: 5, sizeMiB: 1, readOps: 2000 };
+    // More writes change what the reads must see, even where pages repeat.
+    expect(diskRandomReadDigest({ ...base, writeOps: 2000 })).not.toBe(
+      diskRandomReadDigest({ ...base, writeOps: 1999 }),
+    );
   });
 });

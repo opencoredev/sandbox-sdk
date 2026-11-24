@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { deadline } from "../timing.js";
 import { CheckStop, type Box, type CheckContext } from "./framework.js";
-import { nativeBase64, nativeSha256, nativeSize } from "./native-binary.js";
+import { nativeBinaries } from "./native-binary.js";
 
 const golden = 0x9e3779b9;
 
@@ -41,8 +41,13 @@ const rewriteMix = 0x5bd1e995;
 /** Most random operations the binary runs in a phase (MAX_RAND_OPS). */
 export const maxRandomOps = 1_000_000;
 
-const pageStamp = (seed: number, page: number, version: 1 | 2 = 1) =>
-  fmix32((seed ^ Math.imul(page >>> 0, golden) ^ (version === 2 ? rewriteMix : 0)) >>> 0);
+const pageStamp = (seed: number, page: number, version = 1) =>
+  fmix32(
+    (seed ^
+      Math.imul(page >>> 0, golden) ^
+      (version === 1 ? 0 : Math.imul(version, rewriteMix))) >>>
+      0,
+  );
 
 /** The disk test's sequential-read digest: the sum of every page's stamp word, mod 2^32. */
 export function diskStampDigest(seed: number, sizeMiB: number): number {
@@ -54,9 +59,10 @@ export function diskStampDigest(seed: number, sizeMiB: number): number {
 }
 
 /**
- * The random-read digest over the reader's first `readOps` pages, each carrying version 2's stamp
- * when one of the writer's first `writeOps` pages rewrote it: so a synced random write that did not
- * persist fails the check. Both counts must be at most `maxRandomOps` (checked by the caller).
+ * The random-read digest over the reader's first `readOps` pages, each carrying the stamp of the
+ * last of the writer's first `writeOps` writes to it (write k is version k + 2; unwritten pages are
+ * version 1). So a synced random write that did not persist, even a repeat to the same page, fails
+ * the check. Both counts must be at most `maxRandomOps` (checked by the caller).
  */
 export function diskRandomReadDigest(input: {
   readonly seed: number;
@@ -66,13 +72,12 @@ export function diskRandomReadDigest(input: {
 }): number {
   const { seed, sizeMiB } = input;
   const pages = sizeMiB * 256;
-  const touched = new Uint8Array(Math.ceil(pages / 8));
+  const versions = new Uint32Array(pages);
   let write = (fmix32((seed ^ 0xa5a5a5a5) >>> 0) | 1) >>> 0;
 
   for (let op = 0; op < input.writeOps; op++) {
     write = xorshift32(write);
-    const page = write % pages;
-    touched[page >>> 3] = (touched[page >>> 3] ?? 0) | (1 << (page & 7));
+    versions[write % pages] = op + 2;
   }
 
   let read = (fmix32((seed ^ 0x5a5a5a5a) >>> 0) | 1) >>> 0;
@@ -81,8 +86,7 @@ export function diskRandomReadDigest(input: {
   for (let op = 0; op < input.readOps; op++) {
     read = xorshift32(read);
     const page = read % pages;
-    const rewritten = ((touched[page >>> 3] ?? 0) >> (page & 7)) & 1;
-    digest = (digest + pageStamp(seed, page, rewritten ? 2 : 1)) >>> 0;
+    digest = (digest + pageStamp(seed, page, versions[page] || 1)) >>> 0;
   }
 
   return digest;
@@ -160,6 +164,7 @@ export const memOutputSchema = z.object({
   mib: z.number().int().positive(),
   fillS: seconds,
   fileMiB: z.number().int().nonnegative(),
+  fileWrittenMiB: z.number().int().nonnegative(),
   fileS: seconds,
   fileErrno: z.number().int(),
   verifyS: seconds,
@@ -229,14 +234,30 @@ export function parseNativeOutput<T>(stdout: string, schema: z.ZodType<T>): Pars
 // ---------------------------------------------------------------------------------------------
 // Install
 
-/** The embedded binary, checked against its recorded hash and size before it is sent anywhere. */
-export function nativeBytes(): Uint8Array {
-  const bytes = Buffer.from(nativeBase64, "base64");
+export const nativeArches = ["x86_64", "aarch64"] as const;
+
+export type NativeArch = (typeof nativeArches)[number];
+
+/** `uname -m` to the build that runs there, or null for a machine sbx-native has no build for. */
+export function archOf(machine: string): NativeArch | null {
+  const name = machine.trim();
+
+  if (name === "x86_64" || name === "amd64") return "x86_64";
+
+  if (name === "aarch64" || name === "arm64") return "aarch64";
+
+  return null;
+}
+
+/** An embedded build, checked against its recorded hash and size before it is sent anywhere. */
+export function nativeBytes(arch: NativeArch = "x86_64"): Uint8Array {
+  const build = nativeBinaries[arch];
+  const bytes = Buffer.from(build.base64, "base64");
   const sha = createHash("sha256").update(bytes).digest("hex");
 
-  if (sha !== nativeSha256 || bytes.length !== nativeSize)
+  if (sha !== build.sha256 || bytes.length !== build.size)
     throw new Error(
-      `Embedded sbx-native is ${bytes.length} bytes, sha256 ${sha}; expected ${nativeSha256}`,
+      `Embedded sbx-native ${arch} is ${bytes.length} bytes, sha256 ${sha}; expected ${build.sha256}`,
     );
 
   return new Uint8Array(bytes);
@@ -248,6 +269,8 @@ export const installedSchema = z.object({
   shaVerified: z.boolean().nullable(),
   /** How the bytes got there. */
   via: z.enum(["files", "base64"]),
+  /** Which build: the guest's `uname -m`. */
+  arch: z.enum(nativeArches),
 });
 
 export type Installed = z.infer<typeof installedSchema>;
@@ -287,7 +310,13 @@ export function parsePlaced(stdout: string): { path: string; sha: string | null 
  * heredoc. Throws CheckStop when neither works.
  */
 export async function installNative(context: CheckContext, box: Box): Promise<Installed> {
-  const bytes = nativeBytes();
+  const machine = (await context.exec(box, "uname -m", installTimeoutMs)).stdout;
+  const arch = archOf(machine);
+
+  if (arch === null)
+    throw new CheckStop(`sbx-native has no build for ${machine.trim() || "this machine"}`);
+  const bytes = nativeBytes(arch);
+  const expectedSha = nativeBinaries[arch].sha256;
   const staging = "/tmp/.sbx-native";
   const errors: string[] = [];
 
@@ -303,10 +332,10 @@ export async function installNative(context: CheckContext, box: Box): Promise<In
       return null;
     }
 
-    if (found.sha !== null && found.sha !== nativeSha256)
-      throw new CheckStop(`sbx-native arrived as sha256 ${found.sha}, expected ${nativeSha256}`);
+    if (found.sha !== null && found.sha !== expectedSha)
+      throw new CheckStop(`sbx-native arrived as sha256 ${found.sha}, expected ${expectedSha}`);
 
-    return { path: found.path, shaVerified: found.sha === null ? null : true, via };
+    return { path: found.path, shaVerified: found.sha === null ? null : true, via, arch };
   };
 
   try {

@@ -117,7 +117,7 @@ export async function fairnessCommand(args: readonly string[]) {
   const check: Check<unknown> = checks[cli.check];
 
   if (cli.mergeOnly) {
-    const report = await mergeResults(out, cli.check);
+    const report = await mergeResults(out, cli.check, check.resultSchema);
     process.stdout.write(`Merged ${report.providers.length} providers\n${table(report)}`);
 
     return;

@@ -34,6 +34,7 @@ export const probeSections = [
   "dmesg",
   "pid1",
   "markers",
+  "end",
 ] as const;
 
 /** Each section is `@@<name>` then its lines; the parser keeps them apart. */
@@ -49,6 +50,7 @@ export const probeCommand = [
   `echo "@@dmesg"; dmesg 2>/dev/null | head -8`,
   `echo "@@pid1"; echo "comm=$(cat /proc/1/comm 2>/dev/null)"; head -3 /proc/1/cgroup 2>/dev/null | sed 's/^/cgroup=/'`,
   `echo "@@markers"; [ -e /.dockerenv ] && echo dockerenv; [ -e /run/.containerenv ] && echo containerenv; [ -e /dev/kvm ] && echo devkvm; command -v systemd-detect-virt >/dev/null 2>&1 && echo "detectVirt=$(systemd-detect-virt 2>/dev/null)" && echo "detectContainer=$(systemd-detect-virt -c 2>/dev/null)"; echo "rootfs=$(stat -f -c %T / 2>/dev/null)"`,
+  `echo "@@end"`,
 ].join("\n");
 
 export function sections(stdout: string): Map<string, string[]> {
@@ -120,10 +122,15 @@ export const notableFlags = ["cpuidle_haltpoll.force", "idle", "nosmt", "isolcpu
 const normalName = (name: string) => name.replaceAll("-", "_");
 
 /** Kernel parameters only: everything after a bare `--` goes to init, not the kernel. */
-export function cmdlineFlags(cmdline: string) {
+export function kernelTokens(cmdline: string): string[] {
   const all = cmdline.split(/\s+/).filter(Boolean);
   const end = all.indexOf("--");
-  const tokens = end < 0 ? all : all.slice(0, end);
+
+  return end < 0 ? all : all.slice(0, end);
+}
+
+export function cmdlineFlags(cmdline: string) {
+  const tokens = kernelTokens(cmdline);
 
   const parsed = tokens.map((token) => {
     const at = token.indexOf("=");
@@ -227,9 +234,9 @@ export function classifyIsolation(facts: IsolationFacts): Isolation {
     return { kind: "firecracker", evidence, insideVm: null };
   }
 
-  const cmdline = facts.cmdline ?? "";
+  const kernelArgs = kernelTokens(facts.cmdline ?? "");
 
-  if (/virtio_mmio\.device=/.test(cmdline) && facts.sysVendor === null) {
+  if (kernelArgs.some((t) => t.startsWith("virtio_mmio.device=")) && facts.sysVendor === null) {
     evidence.push(
       "virtio-mmio devices on the kernel command line and no DMI table: a microVM layout, as Firecracker's and QEMU's microvm machine use",
     );
@@ -415,7 +422,7 @@ export const securityProbe: Check<SecurityResult> = {
     // Every section must be there: a probe cut short would read as missing findings.
     const missing = probeSections.filter((name) => !sections(probe.stdout).has(name));
 
-    if (probe.timedOut || missing.length > 0)
+    if (probe.timedOut || !probe.ok || missing.length > 0)
       throw new CheckStop(
         `Probe ${probe.timedOut ? "timed out" : `exited ${probe.exitCode}`} without ${missing.join(", ") || "finishing"}: ${probe.stderr.slice(0, 200)}`,
       );
