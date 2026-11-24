@@ -17,7 +17,7 @@ export const rawReadyMs = 180_000;
 /** Maritime's control plane with the run's key. A non-2xx answer throws with its status and error code. */
 export async function maritimeCall(
   path: string,
-  init: { method?: string; json?: object; key?: string } = {},
+  init: { method?: string; json?: object; key?: string; timeoutMs?: number } = {},
 ) {
   const root = (process.env.MARITIME_API_URL ?? "https://api.maritime.sh").replace(/\/+$/, "");
   const headers = new Headers({ Authorization: `Bearer ${process.env.MARITIME_API_KEY ?? ""}` });
@@ -31,7 +31,7 @@ export async function maritimeCall(
     headers,
     body: init.json === undefined ? undefined : JSON.stringify(init.json),
     // Covers the body too: reading it after the deadline rejects.
-    signal: AbortSignal.timeout(rawRequestMs),
+    signal: AbortSignal.timeout(init.timeoutMs ?? rawRequestMs),
   });
 
   if (!response.ok) {
@@ -60,6 +60,12 @@ const maritimeSandbox = z.object({
 });
 
 type MaritimeSandbox = z.infer<typeof maritimeSandbox>;
+
+/** A create's or a read's answer before the sandbox runs: its data-plane credentials may not exist yet. */
+const maritimeRecord = maritimeSandbox.extend({
+  dataPlaneUrl: z.string().nullish(),
+  secret: z.string().nullish(),
+});
 
 /** One sandbox's data plane: its URL and secret, read once per sandbox. */
 const planes = new Map<string, Promise<MaritimeSandbox>>();
@@ -121,11 +127,11 @@ export async function createRawMaritime(input: {
   admit: (box: RawMaritimeBox) => void;
 }): Promise<RawMaritimeBox> {
   const owner = crypto.randomUUID();
-  let created: MaritimeSandbox | undefined;
+  let created: z.infer<typeof maritimeRecord> | undefined;
 
   for (let attempt = 0; !created; attempt++)
     try {
-      created = maritimeSandbox.parse(
+      created = maritimeRecord.parse(
         await (
           await maritimeCall("/sandboxes", {
             method: "POST",
@@ -152,7 +158,9 @@ export async function createRawMaritime(input: {
       `Maritime create answered with sandbox ${id}, which this create did not make; it was left alone`,
     );
 
-  planes.set(id, Promise.resolve(created));
+  const ready = maritimeSandbox.safeParse(created);
+
+  if (created.state === "running" && ready.success) planes.set(id, Promise.resolve(ready.data));
 
   const raw: RawMaritimeBox = {
     id,
@@ -181,26 +189,39 @@ export async function createRawMaritime(input: {
 
   // Like the adapter, a `starting` sandbox is waited for before its first command; the wait stays inside
   // the timed create.
-  if (created.state !== "running") planes.set(id, Promise.resolve(await untilRunning(id)));
+  if (!planes.has(id)) planes.set(id, Promise.resolve(await untilRunning(id)));
 
   return raw;
 }
 
-/** Reads the sandbox until it runs; throws when it ends, errors or is not running within {@link rawReadyMs}. */
+/**
+ * Reads the sandbox until it runs with its data-plane credentials; throws when it ends or errors, or
+ * when {@link rawReadyMs} passes. Each read gets only what is left of that one deadline.
+ */
 async function untilRunning(id: string): Promise<MaritimeSandbox> {
   const until = Date.now() + rawReadyMs;
 
   for (;;) {
-    const sandbox = maritimeSandbox.parse(
-      await (await maritimeCall(`/sandboxes/${encodeURIComponent(id)}`)).json(),
+    const left = until - Date.now();
+
+    if (left <= 0) throw new Error(`Maritime sandbox ${id} did not start in time`);
+
+    const record = maritimeRecord.parse(
+      await (
+        await maritimeCall(`/sandboxes/${encodeURIComponent(id)}`, {
+          timeoutMs: Math.min(rawRequestMs, left),
+        })
+      ).json(),
     );
 
-    if (sandbox.state === "running") return sandbox;
+    const ready = maritimeSandbox.safeParse(record);
 
-    if (sandbox.state === "ended" || sandbox.state === "error")
-      throw new Error(`Maritime sandbox ${id} is ${sandbox.state}, not running`);
+    if (record.state === "running" && ready.success) return ready.data;
 
-    if (Date.now() > until) throw new Error(`Maritime sandbox ${id} did not start in time`);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (record.state === "ended" || record.state === "error")
+      throw new Error(`Maritime sandbox ${id} is ${record.state}, not running`);
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(250, Math.max(0, until - Date.now()))),
+    );
   }
 }

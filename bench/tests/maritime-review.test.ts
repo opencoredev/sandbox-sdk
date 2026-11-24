@@ -324,13 +324,14 @@ describe("finding 6: sdk-overhead's raw Maritime create admits only its own sand
 
       request.on("data", (chunk: Buffer) => chunks.push(chunk));
       request.on("end", () => {
+        // A starting sandbox has no data-plane credentials yet.
         const box = (state: string, status = 200) =>
           response.writeHead(status, { "content-type": "application/json" }).end(
             JSON.stringify({
               id: "sbx-new",
               state,
-              dataPlaneUrl: "http://127.0.0.1:1/dp",
-              secret: "mst_new_secret_0123456789",
+              dataPlaneUrl: state === "running" ? "http://127.0.0.1:1/dp" : null,
+              ...(state === "running" ? { secret: "mst_new_secret_0123456789" } : {}),
               metadata: { [rawOwnerLabel]: owner },
             }),
           );

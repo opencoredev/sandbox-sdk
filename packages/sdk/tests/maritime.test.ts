@@ -434,16 +434,28 @@ describe("maritime exec", () => {
       const p = provider();
       const { id } = await p.create({ labels: {} });
 
-      const { input } = execInput("sudo -n sleep 30 & echo $! > /workspace/root-child; sleep 30", {
-        timeoutMs: 2000,
-      });
+      // The payload reports its own PID, UID and process group; the shell reports the command's group.
+      const { input } = execInput(
+        [
+          `cut -d" " -f5 /proc/$$/stat > /workspace/group`,
+          `sudo -n sh -c 'echo "$$ $(id -u) $(cut -d" " -f5 /proc/$$/stat)" > /workspace/root-child; exec sleep 30' &`,
+          "sleep 30",
+        ].join("\n"),
+        { timeoutMs: 2000 },
+      );
 
       expect(await p.exec(id, input)).toEqual({ exitCode: null, timedOut: true });
       const root = fake.sandboxes.get(id)?.root ?? "";
-      const pid = Number(await readFile(join(root, "workspace", "root-child"), "utf8"));
+      const group = (await readFile(join(root, "workspace", "group"), "utf8")).trim();
 
-      // A live root process answers EPERM, not ESRCH.
-      expect(spawnSync("sudo", ["-n", "kill", "-0", String(pid)]).status).not.toBe(0);
+      const [pid, uid, pgrp] = (await readFile(join(root, "workspace", "root-child"), "utf8"))
+        .trim()
+        .split(" ");
+
+      expect(uid).toBe("0");
+      expect(pgrp).toBe(group);
+      // Only sudo can probe a root process: a live one answers 0, a gone one ESRCH.
+      expect(spawnSync("sudo", ["-n", "kill", "-0", pid ?? ""]).status).not.toBe(0);
     },
   );
 

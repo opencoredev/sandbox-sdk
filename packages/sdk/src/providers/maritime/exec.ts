@@ -17,7 +17,10 @@ export const execDir = "/tmp/.sandbox-sdk/exec";
  * cancel could not find it. That exits 125 with a line on stderr. When the command's shell exits while
  * another process is still in the group (`cmd &`, which can hold the output stream open), the record
  * stays, so a cancel still finds and kills that group. `/proc/<pid>/stat` names each process's group
- * after its `(comm)`; reading it forks nothing into the group.
+ * after its `(comm)`; reading it forks nothing into the group. The scan errs toward keeping the record:
+ * every member that could fork one the glob missed existed when the glob ran, so it is either read as a
+ * member or fails its read, and both keep it. A record left behind is harmless: a later cancel finds its
+ * group gone and exits 0.
  */
 export const wrapper = [
   `d=${execDir}; t="$d/$3"`,
@@ -29,8 +32,11 @@ export const wrapper = [
   `sh -c "$2"; s=$?`,
   "for g in /proc/[0-9]*/stat; do",
   `  [ "$g" = "/proc/$$/stat" ] && continue`,
-  // The braces: a process that exits mid-scan fails the redirect itself, before a `2>` after it applies.
-  `  l=; { read -r l < "$g"; } 2>/dev/null || continue`,
+  // A process that exits mid-scan may have forked a member the glob missed, and a line with no `)` (a
+  // newline in the process name) cannot be read: both keep the record. The braces: a vanished process
+  // fails the redirect itself, before a `2>` after it applies.
+  `  l=; { read -r l < "$g"; } 2>/dev/null || exit $s`,
+  `  case $l in *")"*) ;; *) exit $s ;; esac`,
   "  l=${l##*)}; set -- $l",
   `  [ "$3" = "$$" ] && exit $s`,
   "done",

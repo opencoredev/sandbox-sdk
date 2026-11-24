@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { z } from "zod";
 import { createSandbox } from "../src/index.js";
 import { SandboxError } from "../src/errors.js";
 import { httpStatus } from "../src/http.js";
@@ -545,18 +546,39 @@ describe("review of b0405e7", () => {
     response.end(JSON.stringify({ name, sourceSandboxId: source }));
   };
 
-  test("a save refused on a retry is looked up: a snapshot of this sandbox under its name is the result", async () => {
-    server.on("POST /v1/sandboxes/{id}/save", {
-      status: 429,
-      json: { code: "rate_limited" },
-      headers: { "retry-after": "0" },
+  test("a save whose answer was lost, then refused on the retry, is looked up and returned", async () => {
+    // The first try saves (the snapshot exists from then on) and loses its answer; the retry is refused.
+    let saved = "";
+
+    server.on(
+      "POST /v1/sandboxes/{id}/save",
+      (request, response) => {
+        saved = z.object({ name: z.string() }).parse(JSON.parse(request.body.toString())).name;
+        response.socket?.destroy();
+      },
+      { status: 429, json: { code: "rate_limited" }, headers: { "retry-after": "0" } },
+    );
+    server.on("GET /v1/snapshots/{name}", (request, response) => {
+      const name = decodeURIComponent(request.url.split("/").pop() ?? "");
+
+      if (name !== saved) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ code: "snapshot_not_found" }));
+
+        return;
+      }
+
+      named("sbx-s")(request, response);
     });
-    server.on("GET /v1/snapshots/{name}", named("sbx-s"));
 
     const snap = await scripted().snapshot?.("sbx-s");
+    const tries = server.calls("POST /v1/sandboxes/{id}/save");
 
-    expect(snap?.id).toMatch(/^sandbox-sdk-/);
-    expect(server.calls("GET /v1/snapshots/{name}")).toHaveLength(1);
+    expect(snap?.id).toBe(saved);
+    expect(tries.length).toBeGreaterThanOrEqual(2);
+    // Every try carried the one save's key and name, so the refusal was a retry of the save that worked.
+    expect(new Set(tries.map((r) => r.headers["idempotency-key"])).size).toBe(1);
+    expect(new Set(tries.map((r) => r.body.toString())).size).toBe(1);
   });
 
   test("a refused save with no snapshot under its name keeps the refusal", async () => {
