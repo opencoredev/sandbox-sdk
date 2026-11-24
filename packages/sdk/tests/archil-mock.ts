@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import type { CreateSandboxRequest } from "disk";
 import type { ArchilModule } from "../src/providers/archil/provider.js";
 import type {
+  ArchilOutput,
   ArchilProcess,
   ArchilProcessResult,
   ArchilRunOptions,
@@ -41,6 +42,27 @@ interface ArchilState {
   refuseNextRun: number | undefined;
   /** Pause the sandbox while a command containing this text runs, cutting its stream, once. */
   pauseDuringCommand: string | undefined;
+  /**
+   * For a command containing `command`, once: Archil closes the process connection after `bytes`
+   * output bytes (the message crossing it delivered only up to it), so nothing more arrives and
+   * `wait` rejects at once, the process still running. `attach` replays the rest and reports the
+   * exit, as Archil's does.
+   */
+  closeConnection: { command: string; bytes: number } | undefined;
+  /** Offsets every `attach` was asked to replay from. */
+  attachOffsets: number[];
+  /** Fail this many `attach` handshakes, with no HTTP answer. */
+  failAttaches: number;
+  /** Hold every `attach` this long before it answers. */
+  attachDelayMs: number;
+  /** Per-attach holds, in order, before `attachDelayMs` applies. */
+  attachDelays: number[];
+  /** Hold a kill this long before the process actually ends, as Archil's report can lag. */
+  killDelayMs: number;
+  /** Carry out kills but never acknowledge them, as a stalled control connection would. */
+  killUnanswered: boolean;
+  /** Connections `attach` made, with whether each was disconnected. */
+  attached: { disconnected: boolean }[];
 }
 
 export const archilState: ArchilState = {
@@ -56,10 +78,35 @@ export const archilState: ArchilState = {
   pauseOnCommand: undefined,
   refuseNextRun: undefined,
   pauseDuringCommand: undefined,
+  closeConnection: undefined,
+  attachOffsets: [],
+  failAttaches: 0,
+  attachDelayMs: 0,
+  attachDelays: [],
+  killDelayMs: 0,
+  killUnanswered: false,
+  attached: [],
 };
 
+/** Every process the fake started, by ID, so `attach` can find a finished one too. */
+const processes = new Map<string, FakeProcess>();
+
 class FakeProcess implements ArchilProcess {
+  readonly id = crypto.randomUUID();
+  /** The sandbox that started it. */
+  sandbox = "";
   cursor = 0;
+  /** Every output message, delivered or not, for `attach` to replay. */
+  readonly log: ArchilOutput[] = [];
+  /** Live output listeners an attach added. */
+  readonly listeners = new Set<(output: ArchilOutput) => void>();
+  /** Closes the connection that owns the process now; a new attach takes it over (Archil's rule). */
+  closeOwner = () => {};
+  /** Output past this many bytes is not delivered on this connection (Archil closed it). */
+  closedAfter: number | undefined;
+  /** Rejects once this connection is closed early. */
+  #closed: Promise<never> | undefined;
+  #close = () => {};
   readonly #child: ChildProcess;
   readonly #ended: Promise<ArchilProcessResult>;
   #killed = false;
@@ -92,9 +139,21 @@ class FakeProcess implements ArchilProcess {
       // Archil counts one offset across both streams.
       const offset = this.cursor;
       this.cursor += data.length;
+      this.log.push({ stream, offset, data });
 
-      // A disconnected client gets nothing more.
+      for (const listener of this.listeners) listener({ stream, offset, data });
+
+      // A disconnected client gets nothing more, nor one whose connection Archil closed.
       if (this.#disconnected) return;
+
+      if (this.closedAfter !== undefined && offset + data.length > this.closedAfter) {
+        // The message crossing the cut arrives only up to it; the connection then closes.
+        if (offset < this.closedAfter)
+          options.onOutput?.({ stream, offset, data: data.subarray(0, this.closedAfter - offset) });
+        this.#close();
+
+        return;
+      }
 
       // Like Archil's stream under load: a message past the drop threshold skips its bytes.
       if (archilState.dropOutputAbove !== undefined && offset >= archilState.dropOutputAbove) {
@@ -144,12 +203,31 @@ class FakeProcess implements ArchilProcess {
   async resize() {}
   /** Set when the sandbox paused under this process: its stream is cut, as Archil does. */
   cut: Promise<never> | undefined;
+  /** The process's own end, whatever this connection saw. */
+  get ended() {
+    return this.#ended;
+  }
+  /** Close this connection early when it reaches `closedAfter` (closeConnection). */
+  closeAt(bytes: number) {
+    this.closedAfter = bytes;
+    this.#closed = new Promise<never>((_, reject) => {
+      this.#close = () => reject(new Error("Process connection closed before exit"));
+    });
+    this.#closed.catch(() => {});
+  }
   wait() {
+    if (this.#closed !== undefined) return this.#closed;
+
     return this.cut === undefined ? this.#ended : Promise.race([this.#ended, this.cut]);
   }
   async kill() {
     this.#killed = true;
-    this.#group("SIGKILL");
+    const delay = archilState.killDelayMs;
+
+    if (delay > 0) setTimeout(() => this.#group("SIGKILL"), delay);
+    else this.#group("SIGKILL");
+
+    if (archilState.killUnanswered) await new Promise(() => {});
   }
   async disconnect() {
     this.#disconnected = true;
@@ -192,6 +270,13 @@ class FakeSandbox {
       throw new FakeApiError("Sandbox is not running", 409, "sandbox_not_running");
     archilState.runs.push(command);
     const process = new FakeProcess(this.guest, command, options, this.env);
+    process.sandbox = this.id;
+    processes.set(process.id, process);
+
+    if (archilState.closeConnection && command.includes(archilState.closeConnection.command)) {
+      process.closeAt(archilState.closeConnection.bytes);
+      archilState.closeConnection = undefined;
+    }
 
     if (
       archilState.pauseDuringCommand !== undefined &&
@@ -204,6 +289,75 @@ class FakeSandbox {
     }
 
     return process;
+  }
+  /** A new connection to a process, finished or not: its output from `offset`, then its end. */
+  async attach(
+    processId: string,
+    options: { offset?: number; onOutput?: (output: ArchilOutput) => void } = {},
+  ): Promise<ArchilProcess> {
+    archilState.attachOffsets.push(options.offset ?? 0);
+
+    const hold = archilState.attachDelays.shift() ?? archilState.attachDelayMs;
+
+    if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold));
+
+    if (archilState.failAttaches > 0) {
+      archilState.failAttaches--;
+      throw new Error("Process connection closed during the handshake");
+    }
+
+    // A new connection needs the sandbox running, as Archil's connection endpoint does.
+    if (this.status !== "running")
+      throw new FakeApiError("Sandbox is not running", 409, "sandbox_not_running");
+    const target = processes.get(processId);
+
+    if (!target) throw new FakeApiError("Process not found", 404, "not_found");
+    const from = options.offset ?? 0;
+    let detached = false;
+    const record = { disconnected: false };
+    archilState.attached.push(record);
+
+    // Archil gives the process to the newest connection and closes the one that had it.
+    target.closeOwner();
+    let closeMine = () => {};
+
+    const closed = new Promise<never>((_, reject) => {
+      closeMine = () => {
+        detached = true;
+        reject(new Error("Process connection closed: another connection took the process"));
+      };
+    });
+
+    closed.catch(() => {});
+    target.closeOwner = closeMine;
+
+    const send = ({ stream, offset, data }: ArchilOutput) => {
+      if (detached || offset + data.length <= from) return;
+      const skip = Math.max(0, from - offset);
+      options.onOutput?.({ stream, offset: offset + skip, data: data.subarray(skip) });
+    };
+
+    for (const output of target.log) send(output);
+    target.listeners.add(send);
+
+    return {
+      id: processId,
+      get cursor() {
+        return target.cursor;
+      },
+      sendInput: (data) => target.sendInput(data),
+      closeStdin: () => target.closeStdin(),
+      resize: async () => {},
+      wait: () => Promise.race([target.ended, closed]),
+      kill: () => target.kill(),
+      disconnect: async () => {
+        detached = true;
+        record.disconnected = true;
+        target.listeners.delete(send);
+        // Like disk's handle: a disconnected connection no longer reports the end.
+        closeMine();
+      },
+    };
   }
   async refresh() {
     if (this.status === "deleted") throw new FakeApiError("Sandbox not found", 404, "not_found");
@@ -240,6 +394,9 @@ class FakeSandbox {
       throw new FakeApiError("Sandbox must be stopped", 409, "sandbox_not_stopped");
     this.status = "deleted";
     archilState.sandboxes.delete(this.id);
+
+    // Its processes and their output go with it.
+    for (const [id, process] of processes) if (process.sandbox === this.id) processes.delete(id);
     await this.guest.destroy();
   }
   async exposePort(port: number) {

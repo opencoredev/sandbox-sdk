@@ -8,8 +8,11 @@ import {
   collect,
   collectExact,
   execute,
+  terminate,
+  type ArchilOutput,
   type ArchilProcess,
   type ArchilProcessResult,
+  type ArchilRunOptions,
 } from "../src/providers/archil/execute.js";
 import { createArchilProvider } from "../src/providers/archil/provider.js";
 import type { ExecInput } from "../src/provider.js";
@@ -339,6 +342,244 @@ describe("Archil output gaps", () => {
       expect(range).toEqual(bytes.subarray(10, 1_500_010));
     } finally {
       archilState.dropOutputAbove = undefined;
+      await box.destroy();
+    }
+  });
+});
+
+describe("Archil connections closed before the exit", () => {
+  test("a command whose connection Archil closes early returns its exit and every byte, once", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      archilState.closeConnection = { command: "seq 1 40000", bytes: 1000 };
+      archilState.attachOffsets = [];
+      const result = await box.run("seq 1 40000; exit 3");
+      const expected = Array.from({ length: 40000 }, (_, i) => `${i + 1}\n`).join("");
+
+      expect(result.exitCode).toBe(3);
+      expect(result.stdout).toBe(expected);
+      // It resumed mid-stream, from the byte after the cut, not from the start.
+      expect(archilState.attachOffsets).toEqual([1000]);
+
+      // The same command again, connection intact: nothing left over from the first.
+      const again = await box.run("seq 1 3");
+      expect(again.stdout).toBe("1\n2\n3\n");
+    } finally {
+      archilState.closeConnection = undefined;
+      await box.destroy();
+    }
+  });
+
+  test("a reattach whose handshake fails is retried within the attempts", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      archilState.closeConnection = { command: "seq 1 20000", bytes: 2000 };
+      archilState.failAttaches = 1;
+      const result = await box.run("seq 1 20000");
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(Array.from({ length: 20000 }, (_, i) => `${i + 1}\n`).join(""));
+    } finally {
+      archilState.closeConnection = undefined;
+      archilState.failAttaches = 0;
+      await box.destroy();
+    }
+  });
+
+  test("an abort while a reattach is pending stops the command and closes the late connection", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      archilState.closeConnection = { command: "sleep 30", bytes: 500 };
+      archilState.attachDelayMs = 1500;
+      archilState.attached = [];
+      const controller = new AbortController();
+      const marker = `reattach-abort-${crypto.randomUUID()}`;
+
+      const run = input({
+        command: `head -c 4000 /dev/zero | tr '\\0' y; sleep 30 # ${marker}`,
+        signal: controller.signal,
+      });
+
+      const runner = {
+        run: (command: string, options: ArchilRunOptions) => fake.run(command, options),
+        attach: (id: string, options: { offset: number; onOutput?: (o: ArchilOutput) => void }) =>
+          fake.attach(id, options),
+      };
+
+      setTimeout(() => controller.abort(), 200);
+      const started = Date.now();
+      const result = await execute({ runner, sandboxId: box.id, input: run });
+
+      expect(result).toEqual({ exitCode: null, timedOut: true });
+      expect(Date.now() - started).toBeLessThan(8000);
+
+      // Every connection made is closed, and nothing more arrives once the call has settled.
+      const seen = run.chunks.join("").length;
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      expect(archilState.attached.every((c) => c.disconnected)).toBe(true);
+      expect(run.chunks.join("").length).toBe(seen);
+      // The bracket keeps pgrep from matching its own command line.
+      const pattern = `[r]${marker.slice(1)}`;
+
+      expect((await box.run(`pgrep -f '${pattern}' || true`)).stdout).toBe("");
+    } finally {
+      archilState.closeConnection = undefined;
+      archilState.attachDelayMs = 0;
+      await box.destroy();
+    }
+  });
+
+  test("a stop during a reattach confirms the end on the recovery connection, not a rival one", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      const marker = `reattach-owner-${crypto.randomUUID()}`;
+
+      // The recovery attach answers last; a separate confirmation attach would answer first and then
+      // be closed by it, as Archil hands the process to the newest connection.
+      archilState.closeConnection = { command: marker, bytes: 500 };
+      archilState.attachDelays = [1500, 100];
+      // The kill's end comes after the recovery connection has taken the process over.
+      archilState.killDelayMs = 2000;
+      archilState.attached = [];
+      const controller = new AbortController();
+
+      const run = input({
+        command: `head -c 4000 /dev/zero | tr '\\0' y; sleep 30 # ${marker}`,
+        signal: controller.signal,
+      });
+
+      const runner = {
+        run: (command: string, options: ArchilRunOptions) => fake.run(command, options),
+        attach: (id: string, options: { offset: number; onOutput?: (o: ArchilOutput) => void }) =>
+          fake.attach(id, options),
+      };
+
+      setTimeout(() => controller.abort(), 200);
+
+      await expect(execute({ runner, sandboxId: box.id, input: run })).resolves.toEqual({
+        exitCode: null,
+        timedOut: true,
+      });
+      expect(archilState.attached).toHaveLength(1);
+    } finally {
+      archilState.closeConnection = undefined;
+      archilState.attachDelays = [];
+      archilState.killDelayMs = 0;
+      await box.destroy();
+    }
+  });
+
+  test("a helper timing out during a reattach confirms the kill on the recovery connection", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      const marker = `helper-timeout-${crypto.randomUUID()}`;
+
+      // The recovery attach lands after the helper's deadline; any second attach would miss the window.
+      archilState.closeConnection = { command: marker, bytes: 500 };
+      archilState.attachDelays = [1500, 20_000];
+      // The kill's end comes after the recovery connection lands.
+      archilState.killDelayMs = 2000;
+      archilState.attached = [];
+
+      const runner = {
+        run: (command: string, options: ArchilRunOptions) => fake.run(command, options),
+        attach: (id: string, options: { offset: number; onOutput?: (o: ArchilOutput) => void }) =>
+          fake.attach(id, options),
+      };
+
+      await expect(
+        collect(runner, box.id, `head -c 4000 /dev/zero | tr '\\0' y; sleep 30 # ${marker}`, {
+          timeoutMs: 500,
+        }),
+      ).rejects.toMatchObject({ code: "timeout" });
+      expect(archilState.attached).toHaveLength(1);
+      expect(archilState.attached[0]?.disconnected).toBe(true);
+    } finally {
+      archilState.closeConnection = undefined;
+      archilState.attachDelays = [];
+      archilState.killDelayMs = 0;
+      await box.destroy();
+    }
+  });
+
+  test("a kill Archil carries out but never acknowledges is confirmed by the end", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      const process = await fake.run(`sleep 30 # kill-unanswered-${crypto.randomUUID()}`, {});
+
+      archilState.killUnanswered = true;
+      const started = Date.now();
+
+      expect(await terminate(process)).toBe(true);
+      expect(Date.now() - started).toBeLessThan(3000);
+    } finally {
+      archilState.killUnanswered = false;
+      await box.destroy();
+    }
+  });
+
+  test("a helper whose connection Archil closes early still returns its whole output", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const bytes = new Uint8Array(300_000).map((_, i) => i % 253);
+      await box.files.write("big.bin", bytes);
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      archilState.closeConnection = { command: "cat -- ", bytes: 5000 };
+
+      const runner = {
+        run: (command: string, options: ArchilRunOptions) => fake.run(command, options),
+        attach: (id: string, options: { offset: number; onOutput?: (o: ArchilOutput) => void }) =>
+          fake.attach(id, options),
+      };
+
+      const result = await collect(runner, box.id, "cat -- /workspace/big.bin");
+
+      expect(result.lost).toBe(0);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toEqual(bytes);
+    } finally {
+      archilState.closeConnection = undefined;
+      await box.destroy();
+    }
+  });
+
+  test("without a way to reattach, an early close still stops the command and says so", async () => {
+    const box = await createSandbox(provider());
+
+    try {
+      const fake = archilState.sandboxes.get(box.id);
+
+      if (!fake) throw new Error("fake sandbox missing");
+      archilState.closeConnection = { command: "seq 1 40000", bytes: 1000 };
+      const run = input({ command: "seq 1 40000" });
+
+      await expect(
+        execute({ runner: { run: (c, o) => fake.run(c, o) }, sandboxId: box.id, input: run }),
+      ).rejects.toMatchObject({ code: "outcome_unknown" });
+    } finally {
+      archilState.closeConnection = undefined;
       await box.destroy();
     }
   });
