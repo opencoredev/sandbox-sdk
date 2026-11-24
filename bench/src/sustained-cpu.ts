@@ -377,6 +377,8 @@ export function verifySegment(input: {
   readonly chunkSteps: number;
   /** Host-observed seconds from sending the exec to its result. */
   readonly hostExecS: number;
+  /** The plausible ceiling per worker; the fairness checks' native binary runs faster than Python. */
+  readonly maxRate?: number;
 }): SegmentCheck {
   const line = input.stdout.trim().split("\n").at(-1) ?? "";
   const parsed = parseJsonLine(line);
@@ -437,7 +439,7 @@ export function verifySegment(input: {
       };
     const rate = worker.steps / worker.elapsedS;
 
-    if (rate > maxWorkerOpsPerSec)
+    if (rate > (input.maxRate ?? maxWorkerOpsPerSec))
       return { kind: "invalid", reason: `Worker ${index} claims ${rate} ops/s` };
     const expected = lcgChecksum(worker.seed, worker.steps);
 
