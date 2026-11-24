@@ -4,16 +4,24 @@
  *
  * - single core: 3 segments of 10 s with 1 worker;
  * - all cores: 3 segments of 10 s with 4 workers (the size's vCPUs);
- * - sustained: 30 segments of 30 s with 4 workers, 15 minutes, as sustained-cpu.
+ * - sustained: 30 segments of 30 s with 4 workers, 15 minutes without a pause: one detached
+ *   `cpu-stream` burn whose workers report a checkpoint every 30 s, polled by the host, so no
+ *   exec round trip between segments rests the CPU.
  *
  * Every segment uses a fresh seed; the host checks every worker's final value with `lcgChecksum`
  * and bounds the guest's clock by its own (`verifySegment`).
  */
 import { randomInt } from "node:crypto";
 import { z } from "zod";
-import { median, verifySegment, windowSegments } from "../sustained-cpu.js";
+import {
+  lcgChecksum,
+  median,
+  verifySegment,
+  windowSegments,
+  workerSeed,
+} from "../sustained-cpu.js";
 import { CheckStop, type Box, type Check, type CheckContext } from "./framework.js";
-import { installNative, type Installed } from "./native.js";
+import { clockToleranceS, installNative, type Installed } from "./native.js";
 
 /** 4 Mi steps: about 4 ms at 1 G steps/s, 25 ms at a 16% baseline. */
 export const nativeChunkSteps = 4_194_304;
@@ -208,6 +216,240 @@ async function runPhase(
   return segments;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Sustained, continuous
+
+const streamWorkerSchema = z.object({
+  seed: z.number().int().nonnegative(),
+  steps: z.number().int().positive(),
+  checksum: z.number().int().nonnegative(),
+  elapsedS: z.number().positive(),
+});
+
+const checkpointSchema = z.object({
+  mode: z.literal("cpu-stream"),
+  segment: z.number().int().positive(),
+  workers: z.array(streamWorkerSchema).min(1),
+});
+
+const streamDoneSchema = z.object({
+  mode: z.literal("cpu-stream"),
+  done: z.literal(true),
+  wallS: z.number().positive(),
+});
+
+/** Starts the burn detached, so the exec returns at once and the workers keep running. */
+export const streamStartCommand = (input: {
+  readonly path: string;
+  readonly seed: number;
+  readonly phase: Phase;
+}) => {
+  const run = `'${input.path}' cpu-stream ${input.seed} ${input.phase.workers} ${Math.round(input.phase.seconds * 1000)} ${input.phase.segments} ${nativeChunkSteps}`;
+
+  return [
+    "rm -f /tmp/.sbx-cpu-stream.out /tmp/.sbx-cpu-stream.pid",
+    `if command -v setsid >/dev/null 2>&1; then L=setsid; else L=; fi`,
+    `$L nohup ${run} > /tmp/.sbx-cpu-stream.out 2>/dev/null < /dev/null &`,
+    "echo $! > /tmp/.sbx-cpu-stream.pid",
+    "sleep 0.2; cat /tmp/.sbx-cpu-stream.pid",
+  ].join("\n");
+};
+
+/** Prints the output so far, then `alive=1` while the burn runs. */
+export const streamPollCommand =
+  'cat /tmp/.sbx-cpu-stream.out 2>/dev/null; if kill -0 "$(cat /tmp/.sbx-cpu-stream.pid 2>/dev/null)" 2>/dev/null; then echo "alive=1"; else echo "alive=0"; fi';
+
+export const streamStopCommand =
+  'kill "$(cat /tmp/.sbx-cpu-stream.pid 2>/dev/null)" 2>/dev/null; pkill -f "sbx-native cpu-stream" 2>/dev/null; rm -f /tmp/.sbx-cpu-stream.out /tmp/.sbx-cpu-stream.pid; true';
+
+export type CheckpointCheck =
+  | { readonly kind: "ok"; readonly segments: readonly Segment[]; readonly done: boolean }
+  | { readonly kind: "invalid"; readonly reason: string };
+
+/**
+ * Checks every complete checkpoint line so far: segments 1, 2, 3 ..., one row per worker with its
+ * seed, whole chunks, steps and time that only grow, at least k segments' time by checkpoint k, a
+ * final value equal to `lcgChecksum`, a plausible rate, and a guest time the host could have seen
+ * (no later than the host's seconds since the start when the line first appeared, within
+ * `clockToleranceS`). A segment's rate is the sum of each worker's steps over its own time.
+ */
+export function verifyCheckpoints(input: {
+  readonly stdout: string;
+  readonly seed: number;
+  readonly phase: Phase;
+  /** Host seconds since the burn started, when each segment's line was first seen. */
+  readonly firstSeenS: ReadonlyMap<number, number>;
+}): CheckpointCheck {
+  const { phase } = input;
+  const end = input.stdout.lastIndexOf("\n");
+  const complete = end < 0 ? "" : input.stdout.slice(0, end + 1);
+  const lines = complete.split("\n").filter((line) => line.startsWith("{"));
+  const segments: Segment[] = [];
+
+  let previous: readonly { steps: number; elapsedS: number }[] = Array.from(
+    { length: phase.workers },
+    () => ({ steps: 0, elapsedS: 0 }),
+  );
+
+  let done = false;
+
+  for (const line of lines) {
+    let value: unknown;
+
+    try {
+      value = JSON.parse(line);
+    } catch {
+      return { kind: "invalid", reason: `Checkpoint is not JSON: ${line.slice(0, 120)}` };
+    }
+
+    if (streamDoneSchema.safeParse(value).success) {
+      done = true;
+      continue;
+    }
+
+    const parsed = checkpointSchema.safeParse(value);
+
+    if (!parsed.success)
+      return { kind: "invalid", reason: `Checkpoint shape: ${line.slice(0, 120)}` };
+    const point = parsed.data;
+    const k = segments.length + 1;
+
+    if (done || point.segment !== k)
+      return { kind: "invalid", reason: `Checkpoint ${point.segment} where ${k} belongs` };
+
+    if (point.workers.length !== phase.workers)
+      return { kind: "invalid", reason: `Checkpoint ${k} has ${point.workers.length} workers` };
+    const seen = input.firstSeenS.get(k);
+    let opsPerSec = 0;
+    const perWorker: number[] = [];
+
+    for (const [index, worker] of point.workers.entries()) {
+      const before = previous[index] ?? { steps: 0, elapsedS: 0 };
+      const label = `Checkpoint ${k} worker ${index}`;
+
+      if (worker.seed !== workerSeed(input.seed, index))
+        return { kind: "invalid", reason: `${label} seed ${worker.seed}` };
+
+      if (worker.steps % nativeChunkSteps !== 0)
+        return { kind: "invalid", reason: `${label} steps not whole chunks` };
+
+      if (worker.steps <= before.steps || worker.elapsedS <= before.elapsedS)
+        return { kind: "invalid", reason: `${label} went backwards` };
+
+      if (worker.elapsedS < k * phase.seconds)
+        return {
+          kind: "invalid",
+          reason: `${label} at ${worker.elapsedS}s, before ${k * phase.seconds}s`,
+        };
+
+      if (seen !== undefined && worker.elapsedS > seen + clockToleranceS)
+        return {
+          kind: "invalid",
+          reason: `${label} claims ${worker.elapsedS}s by host second ${round(seen, 3)}`,
+        };
+      const rate = (worker.steps - before.steps) / (worker.elapsedS - before.elapsedS);
+
+      if (rate > maxNativeOpsPerSec)
+        return { kind: "invalid", reason: `${label} claims ${rate} ops/s` };
+
+      if (worker.checksum !== lcgChecksum(worker.seed, worker.steps))
+        return { kind: "invalid", reason: `${label} checksum does not match` };
+      opsPerSec += rate;
+      perWorker.push(Math.round(rate));
+    }
+
+    const guestS = Math.max(...point.workers.map((w) => w.elapsedS));
+    const priorS = Math.max(...previous.map((w) => w.elapsedS));
+
+    segments.push({
+      segment: k,
+      minute: round(guestS / 60, 3),
+      opsPerSec: Math.round(opsPerSec),
+      perWorker,
+      guestS: round(guestS - priorS, 3),
+      hostS: round(seen ?? 0, 3),
+    });
+    previous = point.workers.map((w) => ({ steps: w.steps, elapsedS: w.elapsedS }));
+  }
+
+  return { kind: "ok", segments, done };
+}
+
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+/**
+ * The sustained phase as one detached burn, polled every `pollMs`. Throws CheckStop with the
+ * reason if the burn stops early or any checkpoint fails its checks; always stops the burn.
+ */
+async function streamPhase(input: {
+  readonly context: CheckContext;
+  readonly box: Box;
+  readonly installed: Installed;
+  readonly phase: Phase;
+  readonly pollMs: number;
+}): Promise<Segment[]> {
+  const { context, box, installed, phase } = input;
+  const seed = randomInt(0, 0x1_0000_0000);
+  const firstSeenS = new Map<number, number>();
+  const startMs = performance.now();
+
+  const started = await context.exec(
+    box,
+    streamStartCommand({ path: installed.path, seed, phase }),
+    60_000,
+  );
+
+  if (!started.ok || !/^\d+$/m.test(started.stdout))
+    throw new CheckStop(
+      `The continuous burn did not start: exit ${started.exitCode} ${started.stderr.slice(0, 200)}`,
+    );
+
+  const limitMs = (phase.segments * phase.seconds + 180) * 1000;
+  let reported = 0;
+
+  try {
+    for (;;) {
+      if (context.signal.aborted) throw new CheckStop("Interrupted");
+      await sleep(input.pollMs);
+      const polled = await context.exec(box, streamPollCommand, 60_000);
+      const nowS = (performance.now() - startMs) / 1000;
+      const output = polled.stdout.replace(/^alive=\d\n?/m, "");
+
+      const count = output
+        .split("\n")
+        .filter((l) => l.startsWith('{"mode":"cpu-stream","segment":')).length;
+
+      for (let k = 1; k <= count; k++) if (!firstSeenS.has(k)) firstSeenS.set(k, nowS);
+      const check = verifyCheckpoints({ stdout: output, seed, phase, firstSeenS });
+
+      if (check.kind === "invalid") throw new CheckStop(`Sustained: ${check.reason}`);
+
+      for (const segment of check.segments.slice(reported)) {
+        await context.note("sustained-segment", segment);
+        context.say(
+          `sustained ${segment.segment}/${phase.segments}: ${(segment.opsPerSec / 1e6).toFixed(0)}M ops/s`,
+        );
+      }
+
+      reported = check.segments.length;
+
+      if (check.segments.length === phase.segments && check.done) return [...check.segments];
+
+      if (/^alive=0$/m.test(polled.stdout) && !check.done)
+        throw new CheckStop(
+          `The continuous burn stopped after ${check.segments.length} of ${phase.segments} segments`,
+        );
+
+      if (performance.now() - startMs > limitMs)
+        throw new CheckStop(
+          `The continuous burn passed ${Math.round(limitMs / 1000)}s at ${check.segments.length} segments`,
+        );
+    }
+  } finally {
+    await context.exec(box, streamStopCommand, 60_000).catch(() => undefined);
+  }
+}
+
 /** The sustained phase's first and last 3-minute medians, as sustained-cpu publishes them. */
 export function summarizeSustained(segments: readonly Segment[], phase: Phase) {
   const window = windowSegments({
@@ -240,8 +482,11 @@ export interface CpuPlan {
   readonly sustained: Phase;
 }
 
-/** The check with a phase plan; tests pass short ones. */
-export const cpuNativeCheck = (plan: CpuPlan = defaultCpuPlan): Check<CpuNativeResult> => ({
+/** The check with a phase plan and poll interval; tests pass short ones. */
+export const cpuNativeCheck = (
+  plan: CpuPlan = defaultCpuPlan,
+  pollMs = 30_000,
+): Check<CpuNativeResult> => ({
   id: "cpu-native",
   boxes: 1,
   minBoxes: 1,
@@ -259,7 +504,7 @@ export const cpuNativeCheck = (plan: CpuPlan = defaultCpuPlan): Check<CpuNativeR
 
     const single = await runPhase(context, box, installed, "single", plan.single);
     const allCore = await runPhase(context, box, installed, "all-core", plan.allCore);
-    const sustained = await runPhase(context, box, installed, "sustained", plan.sustained);
+    const sustained = await streamPhase({ context, box, installed, phase: plan.sustained, pollMs });
     const singleOps = medianOf(single);
     const allOps = medianOf(allCore);
 

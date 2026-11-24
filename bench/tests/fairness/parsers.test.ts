@@ -7,7 +7,12 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { checks } from "../../src/fairness/cli.js";
 import { guaranteedOverlap, groupErrors, notComparable } from "../../src/fairness/cpu-burst.js";
-import { parseCpuFingerprint, summarizeSustained } from "../../src/fairness/cpu-native.js";
+import {
+  nativeChunkSteps,
+  parseCpuFingerprint,
+  summarizeSustained,
+  verifyCheckpoints,
+} from "../../src/fairness/cpu-native.js";
 import {
   chooseDirectory,
   fsTypeName,
@@ -17,6 +22,7 @@ import {
   verifyDisk,
 } from "../../src/fairness/disk-real.js";
 import { checkIds, entryFromLog, parseLog } from "../../src/fairness/framework.js";
+import { lcgChecksum, workerSeed } from "../../src/sustained-cpu.js";
 import {
   countCpuList,
   cpuView,
@@ -28,6 +34,7 @@ import {
 import {
   diskOutputSchema,
   diskRandomReadDigest,
+  diskReadbackExpected,
   diskStampDigest,
   fmix32,
   memoryDigest,
@@ -41,6 +48,7 @@ import { nativeBinaries } from "../../src/fairness/native-binary.js";
 import {
   classifyIsolation,
   cmdlineFlags,
+  kernelTokens,
   parseFirst,
   parseProbe,
   type IsolationFacts,
@@ -163,6 +171,7 @@ const diskOutput = (seed: number, sizeMiB: number, ops: number, writeOps = 100) 
       capped: false,
     },
     randReadLatency: { ops, p50Ns: 80_000, p99Ns: 150_000, maxNs: 500_000 },
+    readback: { badPages: 0, ...diskReadbackExpected({ seed, sizeMiB, writeOps }) },
   });
 
 describe("disk-real", () => {
@@ -674,5 +683,136 @@ describe("second review regressions", () => {
     expect(diskRandomReadDigest({ ...base, writeOps: 2000 })).not.toBe(
       diskRandomReadDigest({ ...base, writeOps: 1999 }),
     );
+  });
+});
+
+describe("third review regressions", () => {
+  it("fails a run whose synced random write was lost, even if no timed read hit it", () => {
+    const output = diskOutput(11, 4, 50);
+    const expected = diskReadbackExpected({ seed: 11, sizeMiB: 4, writeOps: 100 });
+    expect(expected.pages).toBeGreaterThan(0);
+    expect(verifyDisk({ output, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 }).kind).toBe(
+      "ok",
+    );
+
+    // The disk kept the first version of one rewritten page: the readback digest moves off.
+    const lost = {
+      ...output,
+      readback: { ...output.readback, digest: (output.readback.digest + 1) >>> 0 },
+    };
+
+    expect(
+      verifyDisk({ output: lost, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 }),
+    ).toMatchObject({ reason: expect.stringMatching(/rewritten pages/) });
+
+    const fewer = { ...output, readback: { ...output.readback, pages: output.readback.pages - 1 } };
+    expect(
+      verifyDisk({ output: fewer, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 }).kind,
+    ).toBe("invalid");
+  });
+
+  const phase = { segments: 2, seconds: 1, workers: 2 };
+
+  const checkpoint = (seed: number, segment: number, steps: number, elapsedS: number) =>
+    JSON.stringify({
+      mode: "cpu-stream",
+      segment,
+      workers: [0, 1].map((index) => {
+        const s = workerSeed(seed, index);
+
+        return { seed: s, steps, checksum: lcgChecksum(s, steps), elapsedS };
+      }),
+    });
+
+  it("verifies a continuous burn's checkpoints against the seed and the host's clock", () => {
+    const steps = nativeChunkSteps * 10;
+    const stdout = `${checkpoint(7, 1, steps, 1.01)}\n${checkpoint(7, 2, steps * 2, 2.02)}\n{"mode":"cpu-stream","done":true,"wallS":2.03}\n`;
+
+    const seen = new Map([
+      [1, 1.5],
+      [2, 2.5],
+    ]);
+
+    const ok = verifyCheckpoints({ stdout, seed: 7, phase, firstSeenS: seen });
+    expect(ok.kind).toBe("ok");
+
+    if (ok.kind === "ok") {
+      expect(ok.done).toBe(true);
+      expect(ok.segments).toHaveLength(2);
+      expect(ok.segments[1]?.opsPerSec).toBe(Math.round((2 * steps) / 1.01));
+    }
+
+    // A checkpoint the host saw before the guest says it got there.
+    expect(
+      verifyCheckpoints({
+        stdout,
+        seed: 7,
+        phase,
+        firstSeenS: new Map([
+          [1, 1.5],
+          [2, 0.5],
+        ]),
+      }).kind,
+    ).toBe("invalid");
+    // A wrong seed's checksum.
+    expect(verifyCheckpoints({ stdout, seed: 8, phase, firstSeenS: seen }).kind).toBe("invalid");
+    // A partial last line is ignored, not failed.
+    expect(
+      verifyCheckpoints({
+        stdout: `${checkpoint(7, 1, steps, 1.01)}\n{"mode":"cpu`,
+        seed: 7,
+        phase,
+        firstSeenS: seen,
+      }),
+    ).toMatchObject({ kind: "ok", done: false });
+  });
+
+  it("tokenizes the kernel command line with its quoting", () => {
+    expect(
+      kernelTokens('BOOT_IMAGE="/boot/image -- rescue" mitigations=off -- init_on_free=0'),
+    ).toEqual(["BOOT_IMAGE=/boot/image -- rescue", "mitigations=off"]);
+    expect(cmdlineFlags('BOOT_IMAGE="/boot/image -- rescue" mitigations=off').weakening).toEqual([
+      "mitigations=off",
+    ]);
+  });
+
+  it("recovers a log as destroyed only from the stop record's own verdict", () => {
+    const at = "2026-11-24T00:00:00Z";
+    const machine = { cpu: 4, memoryGiB: 8, sameSize: true };
+
+    const lines = (stop: { destroyed: boolean; cleanupError: string | null }) =>
+      parseLog(
+        [
+          {
+            kind: "start",
+            check: "security-probe",
+            provider: "e2b",
+            runId: "r",
+            attemptId: "a",
+            at,
+          },
+          { kind: "sweep", found: [], destroyed: [], error: null, at },
+          { kind: "stop", status: "failed", reason: "x", at, ...stop },
+        ]
+          .map((l) => JSON.stringify(l))
+          .join("\n") + "\n",
+      );
+
+    expect(
+      entryFromLog({
+        check: "security-probe",
+        provider: "e2b",
+        machine,
+        lines: lines({ destroyed: false, cleanupError: "1 create(s) still in flight after 300s" }),
+      }),
+    ).toMatchObject({ destroyed: false, cleanupError: "1 create(s) still in flight after 300s" });
+    expect(
+      entryFromLog({
+        check: "security-probe",
+        provider: "e2b",
+        machine,
+        lines: lines({ destroyed: true, cleanupError: null }),
+      })?.destroyed,
+    ).toBe(true);
   });
 });

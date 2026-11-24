@@ -37,17 +37,17 @@ export const defaultMemoryOptions: MemoryOptions = { memoryMiB: 6144, fileMiB: 2
  */
 const ownCgroup = [
   `cg=$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null)`,
-  `set -- $(awk '{for(i=1;i<=NF;i++) if($i=="-"){ if($(i+1)=="cgroup2"){print $4, $5; exit} break }}' /proc/self/mountinfo 2>/dev/null)`,
-  `root="\${1:-/}"; mnt="\${2:-/sys/fs/cgroup}"`,
-  `rel="\${cg#"$root"}"; [ "$root" = / ] && rel="$cg"`,
-  `d="$mnt\${rel%/}"; [ -d "$d" ] || d="$mnt"`,
+  // The cgroup2 mount whose root is the longest prefix of $cg on a path-component boundary.
+  `set -- $(awk -v cg="$cg" '{for(i=1;i<=NF;i++) if($i=="-"){ if($(i+1)=="cgroup2"){ r=$4; if(r=="/" || cg==r || index(cg, r "/")==1){ if(length(r)>best){best=length(r); out=r " " $5} } } break }} END{print out}' /proc/self/mountinfo 2>/dev/null)`,
+  `d=""; mnt=""`,
+  `if [ -n "$cg" ] && [ -n "\${2:-}" ]; then root="$1"; mnt="$2"; if [ "$root" = / ]; then rel="$cg"; else rel="\${cg#"$root"}"; fi; d="$mnt\${rel%/}"; [ -d "$d" ] || d=""; fi`,
   `echo "cgroupDir=$d"`,
 ].join("\n");
 
 /** Walks from the shell's own cgroup v2 directory up to the root, printing each limit it can read. */
 const cgroupWalk = [
   ownCgroup,
-  `while [ -d "$d" ]; do`,
+  `while [ -n "$d" ] && [ -d "$d" ]; do`,
   `  [ -r "$d/cpu.max" ] && echo "cpuMax=$(cat "$d/cpu.max")"`,
   `  [ -r "$d/memory.max" ] && echo "memMax=$(cat "$d/memory.max")"`,
   `  [ -r "$d/memory.swap.max" ] && echo "swapMax=$(cat "$d/memory.swap.max")"`,
@@ -75,8 +75,8 @@ export const limitsCommand = [
 /** The OOM kill counter of the shell's own cgroup (v2 memory.events, else v1 memory.oom_control). */
 export const oomCommand = [
   ownCgroup,
-  `f="$d/memory.events"`,
-  `[ -r "$f" ] || f=/sys/fs/cgroup/memory/memory.oom_control`,
+  `if [ -n "$d" ]; then f="$d/memory.events"; else f=/sys/fs/cgroup/memory/memory.oom_control; fi`,
+  `echo "oomFile=$f $(stat -c %i "$f" 2>/dev/null)"`,
   `grep '^oom_kill ' "$f" 2>/dev/null || echo "oom_kill unknown"`,
 ].join("\n");
 
@@ -150,7 +150,10 @@ function tightest(values: readonly string[]): string | null {
 
 /** The cgroup directory a probe resolved, so OOM counts are compared only for the same one. */
 export const cgroupDirOf = (stdout: string) =>
-  /^cgroupDir=(.+)$/m.exec(stdout)?.[1]?.trim() ?? null;
+  /^cgroupDir=(.+)$/m.exec(stdout)?.[1]?.trim() || null;
+
+/** The OOM counter file and its inode, so two readings are compared only when they are one file. */
+export const oomFileOf = (stdout: string) => /^oomFile=(.+)$/m.exec(stdout)?.[1]?.trim() || null;
 
 export function parseLimits(stdout: string): Limits {
   const values = new Map<string, string[]>();
@@ -441,18 +444,18 @@ export const memoryHonestyCheck = (
     // Whether the sandbox still answers, the OOM counter after, and the file gone either way.
     let alive = false;
     let after: number | null = null;
-    let afterDir: string | null = null;
+    let afterFile: string | null = null;
 
     try {
       const followUp = await context.exec(box, `${oomCommand}\nrm -f '${file}'`, 60_000);
       alive = followUp.exitCode !== null;
       after = parseOomKills(followUp.stdout);
-      afterDir = cgroupDirOf(followUp.stdout);
+      afterFile = oomFileOf(followUp.stdout);
     } catch {
       alive = false;
     }
 
-    const sameCgroup = afterDir !== null && afterDir === cgroupDirOf(beforeRun);
+    const sameCgroup = afterFile !== null && afterFile === oomFileOf(beforeRun);
 
     const oomDelta =
       before !== null && after !== null && sameCgroup ? Math.max(0, after - before) : null;

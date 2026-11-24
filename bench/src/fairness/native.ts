@@ -92,6 +92,39 @@ export function diskRandomReadDigest(input: {
   return digest;
 }
 
+/**
+ * What the untimed readback must see: how many distinct pages the writer's first `writeOps`
+ * writes touched, and the sum of each one's stamp at its last write's version.
+ */
+export function diskReadbackExpected(input: {
+  readonly seed: number;
+  readonly sizeMiB: number;
+  readonly writeOps: number;
+}) {
+  const { seed, sizeMiB } = input;
+  const pages = sizeMiB * 256;
+  const versions = new Uint32Array(pages);
+  let write = (fmix32((seed ^ 0xa5a5a5a5) >>> 0) | 1) >>> 0;
+
+  for (let op = 0; op < input.writeOps; op++) {
+    write = xorshift32(write);
+    versions[write % pages] = op + 2;
+  }
+
+  let count = 0;
+  let digest = 0;
+
+  for (let page = 0; page < pages; page++) {
+    const version = versions[page] ?? 0;
+
+    if (version === 0) continue;
+    count++;
+    digest = (digest + pageStamp(seed, page, version)) >>> 0;
+  }
+
+  return { pages: count, digest };
+}
+
 /** The memory test's digest: word (p * 7) mod 1024 of every 4 KiB page, summed mod 2^32. */
 export function memoryDigest(seed: number, mib: number): number {
   let digest = 0;
@@ -153,6 +186,12 @@ export const diskOutputSchema = z.object({
     capped: z.boolean(),
   }),
   randReadLatency: latencySchema,
+  /** Every page a random write touched, read back untimed in page order. */
+  readback: z.object({
+    pages: z.number().int().nonnegative(),
+    badPages: z.number().int().nonnegative(),
+    digest: z.number().int().nonnegative(),
+  }),
 });
 
 export type DiskOutput = z.infer<typeof diskOutputSchema>;
