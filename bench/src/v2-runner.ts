@@ -1533,16 +1533,29 @@ export async function runV2(
 
               snapshotId = snap.id;
 
-              const write = persistConfirmedSnapshot(`${p.name}/snapshot/${snap.id}`, {
+              const snapKey = `${p.name}/snapshot/${snap.id}`;
+
+              const confirmed: OwnedEntry = {
                 provider: p.name,
                 id: snap.id,
                 kind: "snapshot",
                 parent: active.id,
                 snapshotProof,
-              });
+              };
 
-              pendingKeylessWrite = write;
-              await write;
+              if (owned.get(snapKey)?.idempotencyKey !== undefined) {
+                // A journaled save key (Maritime): disk drops the key before memory does, so a failed
+                // write keeps the key for settling and never lets cleanup DELETE behind it.
+                const write = persistConfirmedSnapshot(snapKey, confirmed);
+
+                pendingKeylessWrite = write;
+                await write;
+              } else {
+                // No save key, and the ID learned only now (E2B and most others): in memory first, so
+                // cleanup and the final sweep find the snapshot even when the journal write fails.
+                owned.set(snapKey, confirmed);
+                await persist();
+              }
 
               snapshotReady = true;
               saveKey = undefined;

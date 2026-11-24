@@ -97,12 +97,20 @@ with a `tag` chosen before the request. The wrapper writes its PID (the new
 group's leader) to `/tmp/.sandbox-sdk/exec/<tag>`, then checks for
 `<tag>.cancel` and exits 137 without running anything if it is there (a record
 it cannot write exits 125 without running anything), then
-`cd`s and runs the command with `sh -c`. On a timeout or abort the adapter
+`cd`s and runs the command with `sh -c`. When that shell exits, the wrapper
+removes the record only if no other process is in its group (it reads each
+`/proc/<pid>/stat`); a background child (`cmd &`) can hold the stream open, so
+its group stays findable. On a timeout or abort the adapter
 drops the stream and runs the killer, a JSON `POST /commands` on a fresh
 30-second deadline: it writes `<tag>.cancel` before it reads the PID (and
 exits 1 when it cannot), checks
 the PID is a plain number above 1, sends `kill -KILL -<pid>`, and exits 0 only
-once `kill -0` answers "No such process" for both the group and the PID. Only
+once `kill -0 -<pid>` answers "No such process". It signals only the group,
+never the bare PID, which after the group is gone can only name an unrelated
+process. When `sudo -n` works (passwordless on the base image), the killer
+signals and checks through `sudo -n kill`, so root-owned processes the
+command started in its group die too; without it a root-owned survivor
+answers "Operation not permitted" and the cancel is `outcome_unknown`. Only
 a killer record of `state: "exited"` with `exitCode: 0` counts; two failed
 tries fail `outcome_unknown`, never a clean `timedOut`. A `404` from the
 commands route counts as a cancel only when `GET /v1/sandboxes/{id}` then
@@ -116,9 +124,11 @@ command (`killed` with a known `signal` and a null `exitCode`); any other
 combination is unreadable. `error` with `command_timeout` (Maritime's own
 deadline, the caller's plus 10 seconds, at most one hour) still runs the
 killer and reads as timed out; `sandbox_ended` is `not_found` once a read
-confirms the sandbox ended; any other error,
-a stream that breaks, ends without a result, or sends an event the adapter
-does not know, runs the killer and fails `outcome_unknown`. A command is sent
+confirms the sandbox ended; any other error, a stream that breaks, ends
+without a result, or sends an event whose data is not JSON, or output that is
+not a string, runs the killer and fails `outcome_unknown`. Comments and events
+with other names are skipped, so a new event type does not fail a command. A
+command is sent
 again only when it provably did not run: it never left the process, Maritime
 answered `409 sandbox_paused` or `sandbox_starting`, or the data plane
 answered `401` with Maritime's `unauthenticated` code (the secret rotated; the

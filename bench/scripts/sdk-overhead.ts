@@ -11,7 +11,12 @@ import type { Boxd } from "@boxd-sh/sdk";
 import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { TenkiSandbox } from "@tenkicloud/sandbox";
 import type { Archil as ArchilClient } from "disk";
-import { createRawMaritime, maritimePlane, maritimeRun } from "../src/maritime-raw.js";
+import {
+  createRawMaritime,
+  maritimePlane,
+  maritimeRun,
+  rawRequestMs,
+} from "../src/maritime-raw.js";
 
 type Sdk = typeof Core;
 
@@ -433,6 +438,7 @@ const providers = {
                 "Content-Type": "application/octet-stream",
               },
               body: new Uint8Array(data),
+              signal: AbortSignal.timeout(rawRequestMs),
             },
           );
 

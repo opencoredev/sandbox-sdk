@@ -518,3 +518,55 @@ describe("re-review regressions on 6d6fea6", () => {
     ).resolves.toEqual({ exitCode: 0, timedOut: false });
   });
 });
+
+describe("review of b0405e7", () => {
+  const keyed = (id: string, state: string) =>
+    sandbox(state, { id, metadata: { "sandbox-sdk-key": "k1" } }).json;
+
+  test("find skips an errored sandbox under the key and returns a live one", async () => {
+    server.on("GET /v1/sandboxes", {
+      json: { data: [keyed("sbx-err", "error"), keyed("sbx-ok", "running")], nextCursor: null },
+    });
+
+    expect((await scripted().find("k1"))?.id).toBe("sbx-ok");
+  });
+
+  test("find answers nothing when the key names only errored sandboxes, so a new one is made", async () => {
+    server.on("GET /v1/sandboxes", {
+      json: { data: [keyed("sbx-err", "error")], nextCursor: null },
+    });
+
+    expect(await scripted().find("k1")).toBeUndefined();
+  });
+
+  const named = (source: string) => (request: { url: string }, response: ServerResponse) => {
+    const name = decodeURIComponent(request.url.split("/").pop() ?? "");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ name, sourceSandboxId: source }));
+  };
+
+  test("a save refused on a retry is looked up: a snapshot of this sandbox under its name is the result", async () => {
+    server.on("POST /v1/sandboxes/{id}/save", {
+      status: 429,
+      json: { code: "rate_limited" },
+      headers: { "retry-after": "0" },
+    });
+    server.on("GET /v1/snapshots/{name}", named("sbx-s"));
+
+    const snap = await scripted().snapshot?.("sbx-s");
+
+    expect(snap?.id).toMatch(/^sandbox-sdk-/);
+    expect(server.calls("GET /v1/snapshots/{name}")).toHaveLength(1);
+  });
+
+  test("a refused save with no snapshot under its name keeps the refusal", async () => {
+    server.on("POST /v1/sandboxes/{id}/save", {
+      status: 429,
+      json: { code: "rate_limited" },
+      headers: { "retry-after": "0" },
+    });
+    server.on("GET /v1/snapshots/{name}", { status: 404, json: { code: "snapshot_not_found" } });
+
+    await expect(scripted().snapshot?.("sbx-s")).rejects.toMatchObject({ code: "quota" });
+  });
+});

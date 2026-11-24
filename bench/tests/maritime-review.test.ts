@@ -10,9 +10,15 @@ import { createRawMaritime, rawOwnerLabel, type RawMaritimeBox } from "../src/ma
 import { journalFiles } from "../src/files.js";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
 import { reapRun } from "../src/recovery.js";
-import { inspectSnapshot, settleMaritimeSave, snapshotCleaner } from "../src/snapshots.js";
+import {
+  inspectSnapshot,
+  settleMaritimeSave,
+  snapshotCleaner,
+  snapshotMetadata,
+} from "../src/snapshots.js";
 import { parseV2 } from "../src/v2-config.js";
 import { sanitize } from "../src/v2-runner.js";
+import { fakeNativeModules } from "./native-fakes.js";
 
 const dirs: string[] = [];
 
@@ -306,6 +312,70 @@ describe("finding 6: sdk-overhead's raw Maritime create admits only its own sand
       expect(server.requests.filter((r) => r.startsWith("DELETE"))).toEqual([]);
     } finally {
       await server.close();
+    }
+  });
+
+  it("a create answered `starting` is admitted, then waited for until it runs, before it returns", async () => {
+    const reads: string[] = ["starting", "starting", "running"];
+    let owner = "";
+
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const box = (state: string, status = 200) =>
+          response.writeHead(status, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              id: "sbx-new",
+              state,
+              dataPlaneUrl: "http://127.0.0.1:1/dp",
+              secret: "mst_new_secret_0123456789",
+              metadata: { [rawOwnerLabel]: owner },
+            }),
+          );
+
+        if (request.method === "POST") {
+          const body = z
+            .object({ metadata: z.record(z.string(), z.string()) })
+            .parse(JSON.parse(Buffer.concat(chunks).toString()));
+
+          owner = body.metadata[rawOwnerLabel] ?? "";
+
+          return box("starting", 201);
+        }
+
+        box(reads.shift() ?? "running");
+      });
+    });
+
+    const port = await new Promise<number>((done) =>
+      server.listen(0, "127.0.0.1", () =>
+        done(z.object({ port: z.number() }).parse(server.address()).port),
+      ),
+    );
+
+    vi.stubEnv("MARITIME_API_URL", `http://127.0.0.1:${port}`);
+    vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
+    const admitted: string[] = [];
+
+    try {
+      const box = await createRawMaritime({
+        template: "base",
+        labels: { "sdk-overhead-run": "r1" },
+        admit: (raw) => {
+          // Admitted while still starting: no read has happened yet.
+          expect(reads).toHaveLength(3);
+          admitted.push(raw.id);
+        },
+      });
+
+      expect(box.id).toBe("sbx-new");
+      expect(admitted).toEqual(["sbx-new"]);
+      // Every starting read was used up: it returned only once a read said running.
+      expect(reads).toEqual([]);
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
     }
   });
 });
@@ -824,5 +894,95 @@ describe("re-review regressions on 6d6fea6", () => {
     expect(rejectedWrites).toBeGreaterThan(0);
     expect(await readFile(journalPath, "utf8")).toContain("idempotencyKey");
     expect(deleteJournals).toEqual([]);
+  }, 30_000);
+
+  it("runV2 still deletes a keyless snapshot whose ID came back but whose journal write failed", async () => {
+    vi.stubEnv("E2B_API_KEY", "e2b_test_key");
+    const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const { runV2 } = await import("../src/v2-runner.js");
+    const out = await directory("bench-keyless-journal-fail-");
+    const journalPath = join(out, "ownership.json");
+    const realRename = journalFiles.rename;
+    const snapshotId = "snap-e2b-keyless";
+    const deleted: string[] = [];
+    let rejectedWrites = 0;
+
+    // The first journal write that names the snapshot fails; later ones succeed.
+    vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (to === journalPath && rejectedWrites === 0) {
+        const next = await readFile(from, "utf8");
+
+        if (next.includes(snapshotId)) {
+          rejectedWrites += 1;
+          throw new Error("journal rename failed after the snapshot came back");
+        }
+      }
+
+      return realRename(from, to);
+    });
+
+    fakeNativeModules({
+      e2b: {
+        Sandbox: {
+          getInfo: vi.fn(),
+          listSnapshots: vi.fn(),
+          deleteSnapshot: async (id: string) => {
+            deleted.push(id);
+
+            return true;
+          },
+        },
+        SandboxNotFoundError: class extends Error {},
+      },
+    });
+
+    vi.spyOn(snapshotMetadata, "inspect").mockImplementation(
+      async (_name, _provider, _source, id) =>
+        deleted.includes(id) ? { exists: false } : { exists: true },
+    );
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ code: "not_found" }, { status: 404 }),
+    );
+
+    const base = memory();
+
+    await runV2(
+      [
+        {
+          kind: "ready",
+          name: "e2b",
+          cloud: true,
+          region: null,
+          provider: {
+            ...base,
+            capabilities: new Set([...base.capabilities, "snapshot"]),
+            async snapshot() {
+              return { id: snapshotId };
+            },
+          },
+        },
+      ],
+      parseV2([
+        "--providers",
+        "e2b",
+        "--scenarios",
+        "snapshot",
+        "--runs",
+        "1",
+        "--bursts",
+        "",
+        "--timeout-ms",
+        "5000",
+        "--run",
+        "keyless-run",
+        "--out",
+        out,
+      ]),
+      async () => {},
+    ).catch(() => {});
+
+    expect(rejectedWrites).toBe(1);
+    expect(deleted).toContain(snapshotId);
   }, 30_000);
 });

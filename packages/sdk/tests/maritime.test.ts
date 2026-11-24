@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -411,6 +412,40 @@ describe("maritime exec", () => {
 
     expect(killCalls().length).toBeGreaterThan(0);
   });
+
+  test("a background child that outlives the command's shell and holds the stream open is still killed", async () => {
+    const p = provider();
+    const { id } = await p.create({ labels: {} });
+
+    // The shell exits at once; the child keeps stdout, so the stream stays open until the timeout.
+    const { input } = execInput("sleep 30 & echo $! > /workspace/child", { timeoutMs: 1500 });
+
+    expect(await p.exec(id, input)).toEqual({ exitCode: null, timedOut: true });
+    const root = fake.sandboxes.get(id)?.root ?? "";
+    const child = Number(await readFile(join(root, "workspace", "child"), "utf8"));
+
+    expect(alive(child)).toBe(false);
+  });
+
+  // Needs passwordless sudo, as on Maritime's base image (and GitHub's runners).
+  test.runIf(spawnSync("sudo", ["-n", "true"]).status === 0)(
+    "a root-owned process in the command's group is killed through sudo",
+    async () => {
+      const p = provider();
+      const { id } = await p.create({ labels: {} });
+
+      const { input } = execInput("sudo -n sleep 30 & echo $! > /workspace/root-child; sleep 30", {
+        timeoutMs: 2000,
+      });
+
+      expect(await p.exec(id, input)).toEqual({ exitCode: null, timedOut: true });
+      const root = fake.sandboxes.get(id)?.root ?? "";
+      const pid = Number(await readFile(join(root, "workspace", "root-child"), "utf8"));
+
+      // A live root process answers EPERM, not ESRCH.
+      expect(spawnSync("sudo", ["-n", "kill", "-0", String(pid)]).status).not.toBe(0);
+    },
+  );
 
   test("an abort before the command registered its PID stops it from ever running", async () => {
     const p = provider();

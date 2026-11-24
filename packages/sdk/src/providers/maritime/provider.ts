@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { SandboxError } from "../../errors.js";
 import {
+  createDeadline,
   createHttpClient,
   httpStatus,
   neverSent,
@@ -519,9 +520,13 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
   /**
    * Ends a sandbox. Maritime answers a repeated end with the ended sandbox, and a 404 is gone too. An end
    * answered with a 5xx (a live `500 internal_error` on 2026-11-23) is sent again, since ending is
-   * idempotent; when every try fails, a read decides: only `ended` counts as gone.
+   * idempotent; when every try fails, a read decides: only `ended` counts as gone. With `budgetMs`,
+   * every try, the waits between them and that read share one deadline.
    */
-  async function destroy(id: string, request: Partial<HttpRequest<MaritimePlane>> = {}) {
+  async function destroy(id: string, budgetMs?: number) {
+    const deadline = budgetMs === undefined ? undefined : createDeadline(budgetMs);
+    const request: Partial<HttpRequest<MaritimePlane>> = deadline ? { deadline } : {};
+
     try {
       let last: unknown;
 
@@ -537,7 +542,11 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
           last = error;
         }
 
-        await delay(500 * 2 ** attempt);
+        const wait = 500 * 2 ** attempt;
+
+        // No time left for another try and the read: the read decides now.
+        if (deadline && deadline.remaining() <= wait) break;
+        await delay(wait);
       }
 
       const { sandbox } = await readSandbox(id, request).catch(() => {
@@ -620,14 +629,29 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
     const tag = randomUUID();
     // Ends the stream's reads once the adapter stops listening. Never the caller's signal.
     const reading = new AbortController();
-    let wake: () => void = () => {};
-    const stopped = new Promise<"stop">((resolve) => (wake = () => resolve("stop")));
+    // One waiter per read in flight, removed when that read settles: racing every read against one
+    // long-lived promise would keep a reaction per event until the command ends.
+    const waiters = new Set<() => void>();
     let cancelled = false;
 
     const cancel = () => {
       cancelled = true;
-      wake();
+
+      for (const stop of waiters) stop();
+      waiters.clear();
     };
+
+    /** `promise`, or `"stop"` once the command is cancelled. */
+    function orStop<T>(promise: Promise<T>): Promise<T | "stop"> {
+      return new Promise((resolve, reject) => {
+        const stop = () => resolve("stop");
+
+        waiters.add(stop);
+        promise.then(resolve, reject).finally(() => waiters.delete(stop));
+
+        if (cancelled) stop();
+      });
+    }
 
     // Node fires a timer longer than 2^31 - 1 ms at once; past that the command still ends at Maritime's hour.
     const timer = setTimeout(cancel, Math.min(input.timeoutMs, 2 ** 31 - 1));
@@ -674,7 +698,7 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
       let opened: Response | "stop";
 
       try {
-        opened = await Promise.race([opening, stopped]);
+        opened = await orStop(opening);
       } catch (error) {
         // The command may have been sent and started: stop it by its tag before reporting.
         if (isUnknown(error)) await killGroup(id, tag);
@@ -710,7 +734,7 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
         let next: IteratorResult<ServerSentEvent> | "stop";
 
         try {
-          next = await Promise.race([events.next(), stopped]);
+          next = await orStop(events.next());
         } catch (error) {
           if (cancelled) next = "stop";
           else return await unknown("the command stream broke before the command finished", error);
@@ -883,7 +907,7 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
   /** Ends a sandbox this call made, on a fresh deadline, then reports `cause`; `outcome_unknown` when the end is unconfirmed. */
   async function abandon(id: string, cause: unknown): Promise<never> {
     try {
-      await destroy(id, { timeoutMs: cleanupMs });
+      await destroy(id, cleanupMs);
     } catch {
       throw fail(
         `sandbox ${id} was created but did not finish setting up, and it could not be confirmed ended. End it before retrying`,
@@ -1156,7 +1180,8 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
     },
 
     async find(key) {
-      const [first] = await listSandboxes({ [keyLabel]: key });
+      // An errored sandbox never runs again: a key that names only those makes a new sandbox.
+      const first = (await listSandboxes({ [keyLabel]: key })).find((s) => s.state !== "error");
 
       return first ? toInfo(first) : undefined;
     },
@@ -1271,16 +1296,16 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
       const snapshotName = `sandbox-sdk-${randomUUID()}`;
 
       // The name was chosen before the request, so a lost or unreadable answer can be looked up, and
-      // only a snapshot of this sandbox counts.
-      const lookUp = async (unknown: SandboxError) => {
+      // only a snapshot of this sandbox counts. When there is none, `cause` is the result.
+      const lookUp = async (cause: unknown) => {
         const found = await http
           .cleanup({ method: "GET", path: "/snapshots/{name}", params: { name: snapshotName } })
           .then((response) => parseSnapshot(response.json()))
           .catch(() => {
-            throw unknown;
+            throw cause;
           });
 
-        if (found.name !== snapshotName || found.sourceSandboxId !== id) throw unknown;
+        if (found.name !== snapshotName || found.sourceSandboxId !== id) throw cause;
 
         return { id: found.name };
       };
@@ -1296,8 +1321,9 @@ export function createMaritimeProvider(options: MaritimeOptions = {}): MaritimeP
           timeoutMs: 600_000,
         });
       } catch (error) {
-        if (!isUnknown(error)) throw error;
-
+        // Any failure is looked up, not only an unknown one: the client resends the save with its
+        // idempotency key, so a refusal of a later try (a 429 after a lost answer) can follow a try that
+        // made the snapshot.
         return lookUp(error);
       }
 

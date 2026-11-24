@@ -8,6 +8,12 @@ import { z } from "zod";
 /** The metadata entry naming the one raw create that made a sandbox. */
 export const rawOwnerLabel = "sdk-overhead-owner";
 
+/** How long one raw request may take, its body included, so a stalled answer cannot hang the run. */
+export const rawRequestMs = 60_000;
+
+/** How long a raw create waits for a `starting` sandbox to run, inside the timed create. */
+export const rawReadyMs = 180_000;
+
 /** Maritime's control plane with the run's key. A non-2xx answer throws with its status and error code. */
 export async function maritimeCall(
   path: string,
@@ -24,6 +30,8 @@ export async function maritimeCall(
     method: init.method ?? "GET",
     headers,
     body: init.json === undefined ? undefined : JSON.stringify(init.json),
+    // Covers the body too: reading it after the deadline rejects.
+    signal: AbortSignal.timeout(rawRequestMs),
   });
 
   if (!response.ok) {
@@ -77,6 +85,7 @@ export async function maritimeRun(id: string, command: string) {
     method: "POST",
     headers: { "X-Maritime-Token": plane.secret, "Content-Type": "application/json" },
     body: JSON.stringify({ cmd: ["sh", "-c", command], cwd: "/" }),
+    signal: AbortSignal.timeout(rawRequestMs),
   });
 
   if (!response.ok) {
@@ -167,7 +176,31 @@ export async function createRawMaritime(input: {
     },
   };
 
+  // Admitted before the wait, so cleanup knows the ID even when the sandbox never runs.
   input.admit(raw);
 
+  // Like the adapter, a `starting` sandbox is waited for before its first command; the wait stays inside
+  // the timed create.
+  if (created.state !== "running") planes.set(id, Promise.resolve(await untilRunning(id)));
+
   return raw;
+}
+
+/** Reads the sandbox until it runs; throws when it ends, errors or is not running within {@link rawReadyMs}. */
+async function untilRunning(id: string): Promise<MaritimeSandbox> {
+  const until = Date.now() + rawReadyMs;
+
+  for (;;) {
+    const sandbox = maritimeSandbox.parse(
+      await (await maritimeCall(`/sandboxes/${encodeURIComponent(id)}`)).json(),
+    );
+
+    if (sandbox.state === "running") return sandbox;
+
+    if (sandbox.state === "ended" || sandbox.state === "error")
+      throw new Error(`Maritime sandbox ${id} is ${sandbox.state}, not running`);
+
+    if (Date.now() > until) throw new Error(`Maritime sandbox ${id} did not start in time`);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 }

@@ -415,7 +415,9 @@ export const billingRules: readonly BillingRule[] = [
     countsFileCacheAsMemory: allocationCache,
     storage: known(
       "not-charged",
-      `${docs.maritime} (disk is included in the running rate; no separate storage fee while awake)`,
+      // The billed time is running time, when disk is in the rate: adding disk at list price would count it
+      // twice. Paused disk is a real, separate charge outside the intervals: see `keepsCharging`.
+      `${docs.maritime} (disk is included in the running rate, so no storage fee accrues while awake; a paused sandbox's disk, $0.08/GB-month, is billed separately and is not in the usage intervals)`,
     ),
     settledChargeSource: known(
       "Per-sandbox usage intervals with their cost, readable for 7 days after the sandbox ends",
