@@ -112,7 +112,12 @@ never the bare PID, which after the group is gone can only name an unrelated
 process. When `sudo -n` works (passwordless on the base image), the killer
 signals and checks through `sudo -n kill`, so root-owned processes the
 command started in its group die too; without it a root-owned survivor
-answers "Operation not permitted" and the cancel is `outcome_unknown`. Only
+answers "Operation not permitted" and the cancel is `outcome_unknown`. A known
+limit: a record kept because the group still had members can outlive them. If
+they all exit and Linux gives that number to a new group before this same
+command's pending cancel runs, the cancel signals that unrelated group in the
+sandbox. That needs the PID counter to reach the number again inside that
+window. Only
 a killer record of `state: "exited"` with `exitCode: 0` counts; two failed
 tries fail `outcome_unknown`, never a clean `timedOut`. A `404` from the
 commands route counts as a cancel only when `GET /v1/sandboxes/{id}` then

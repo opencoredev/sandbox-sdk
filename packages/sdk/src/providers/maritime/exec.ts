@@ -33,8 +33,9 @@ export const wrapper = [
  * still has members (`kill -0 -PGID`, from outside, so it never counts itself). A group keeps its number
  * while any member lives, a background child (`cmd &`) included, so only "No such process" removes the
  * record; members alive, root-owned ones ("Operation not permitted") or any other answer keep it, and a
- * later cancel still finds the group. A record left behind is harmless: such a cancel finds the group gone
- * and exits 0. Exits with the command's status.
+ * later cancel still finds the group. A record whose group has since emptied is not always harmless: a
+ * cancel usually finds the group gone and exits 0, but if Linux has given the number to a new group by
+ * then, it signals that group (see {@link killer}). Exits with the command's status.
  */
 export const supervisor = [
   `i=$1; shift`,
