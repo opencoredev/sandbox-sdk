@@ -134,6 +134,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 - [E2B SDK and API in TypeScript, with examples](https://sandbox-sdk.app/blog/e2b-sdk-api-typescript): the `e2b` package, E2B's REST API, and the same task on Daytona.
 - [Daytona SDK and API in TypeScript, with examples](https://sandbox-sdk.app/blog/daytona-sdk-api-typescript): `@daytona/sdk`, Daytona's REST and toolbox APIs, and moving code from E2B.
 - [OpenAI Agents SDK sandbox in TypeScript](https://sandbox-sdk.app/blog/openai-agents-sdk-sandbox-typescript): OpenAI's `SandboxAgent` and its sandbox clients next to `sandboxTools` on a regular `Agent`, and when to use which.
+- [Node.js sandbox: vm, isolated-vm, Docker or a microVM](https://sandbox-sdk.app/blog/nodejs-sandbox): which ways to run untrusted code from Node.js hold up, with tested code for each.
 
 More on the [blog](https://sandbox-sdk.app/blog).
 
