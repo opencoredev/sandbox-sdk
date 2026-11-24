@@ -1,6 +1,6 @@
 // Regressions for the review of d422348: each block names the finding it pins.
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -13,7 +13,7 @@ import type { ServerResponse } from "node:http";
 import type { ExecInput } from "../src/provider.js";
 import type { JsonValue } from "../src/shared/json.js";
 import { maritime } from "../src/providers/maritime/index.js";
-import { execDir, killer, wrapper } from "../src/providers/maritime/exec.js";
+import { execDir, killer, supervisor, wrapper } from "../src/providers/maritime/exec.js";
 import { fakeServer, type FakeServer } from "./http-fake.js";
 import { maritimeFake } from "./maritime-fake.js";
 
@@ -590,5 +590,47 @@ describe("review of b0405e7", () => {
     server.on("GET /v1/snapshots/{name}", { status: 404, json: { code: "snapshot_not_found" } });
 
     await expect(scripted().snapshot?.("sbx-s")).rejects.toMatchObject({ code: "quota" });
+  });
+});
+
+describe("the supervisor asks the kernel whether the command's group is empty", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "sdk-maritime-supervisor-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const at = (script: string) => script.replaceAll(execDir, join(root, "exec"));
+
+  const supervise = (command: string, tag: string) =>
+    run("sh", ["-c", at(supervisor), "--", at(wrapper), root, command, tag]);
+
+  test("a command whose group is empty when it exits leaves no record", async () => {
+    await supervise("true", "empty");
+
+    await expect(stat(join(root, "exec", "empty"))).rejects.toThrow();
+  });
+
+  test("an orphan still in the group keeps the record, naming the live group", async () => {
+    // Forked twice, so its parent is gone and the shell exits at once; it keeps the group alive.
+    await supervise("(sleep 3 >/dev/null 2>&1 &)", "orphan");
+
+    const group = Number((await readFile(join(root, "exec", "orphan"), "utf8")).trim());
+
+    expect(() => process.kill(-group, 0)).not.toThrow();
+    process.kill(-group, "SIGKILL");
+  });
+
+  test("the command's exit status passes through", async () => {
+    const code = await supervise("exit 7", "status").then(
+      () => 0,
+      (error: { code?: number }) => error.code ?? -1,
+    );
+
+    expect(code).toBe(7);
   });
 });

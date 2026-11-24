@@ -158,9 +158,8 @@ export async function createRawMaritime(input: {
       `Maritime create answered with sandbox ${id}, which this create did not make; it was left alone`,
     );
 
-  const ready = maritimeSandbox.safeParse(created);
-
-  if (created.state === "running" && ready.success) planes.set(id, Promise.resolve(ready.data));
+  const answered = maritimeSandbox.safeParse(created);
+  const running = created.state === "running" && answered.success ? answered.data : undefined;
 
   const raw: RawMaritimeBox = {
     id,
@@ -189,16 +188,17 @@ export async function createRawMaritime(input: {
 
   // Like the adapter, a `starting` sandbox is waited for before its first command; the wait stays inside
   // the timed create.
-  if (!planes.has(id)) planes.set(id, Promise.resolve(await untilRunning(id)));
+  planes.set(id, Promise.resolve(running ?? (await untilRunning(id, owner))));
 
   return raw;
 }
 
 /**
- * Reads the sandbox until it runs with its data-plane credentials; throws when it ends or errors, or
- * when {@link rawReadyMs} passes. Each read gets only what is left of that one deadline.
+ * Reads the sandbox until it runs with its data-plane credentials; throws when it ends or errors, when a
+ * read names another sandbox or lacks this create's `owner` marker, or when {@link rawReadyMs} passes.
+ * Each read gets only what is left of that one deadline.
  */
-async function untilRunning(id: string): Promise<MaritimeSandbox> {
+async function untilRunning(id: string, owner: string): Promise<MaritimeSandbox> {
   const until = Date.now() + rawReadyMs;
 
   for (;;) {
@@ -213,6 +213,10 @@ async function untilRunning(id: string): Promise<MaritimeSandbox> {
         })
       ).json(),
     );
+
+    // Credentials are taken only from a read of this sandbox that still carries this create's marker.
+    if (record.id !== id || record.metadata?.[rawOwnerLabel] !== owner)
+      throw new Error(`Maritime read of ${id} answered with a sandbox this create did not make`);
 
     const ready = maritimeSandbox.safeParse(record);
 

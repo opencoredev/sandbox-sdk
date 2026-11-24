@@ -9,18 +9,13 @@
 export const execDir = "/tmp/.sandbox-sdk/exec";
 
 /**
- * Runs as `setsid -w sh -c wrapper -- cwd command tag`, so `$$` leads a new session and process group.
- * It records that PID before it checks for a cancel marker, and the killer writes the marker before it
- * reads the PID. So a cancel that reaches the guest before the command either stops it from starting
- * (exit 137) or finds its group to kill. A missing cwd is a non-zero exit, like a failed `cd`. When the
- * record cannot be made (the directory cannot be created or written), the user's command never runs: a
- * cancel could not find it. That exits 125 with a line on stderr. When the command's shell exits while
- * another process is still in the group (`cmd &`, which can hold the output stream open), the record
- * stays, so a cancel still finds and kills that group. `/proc/<pid>/stat` names each process's group
- * after its `(comm)`; reading it forks nothing into the group. The scan errs toward keeping the record:
- * every member that could fork one the glob missed existed when the glob ran, so it is either read as a
- * member or fails its read, and both keep it. A record left behind is harmless: a later cancel finds its
- * group gone and exits 0.
+ * The command's own session, run by {@link supervisor} as `setsid -w sh -c wrapper -- cwd command tag`, so
+ * `$$` leads a new session and process group. It records that PID before it checks for a cancel marker,
+ * and the killer writes the marker before it reads the PID. So a cancel that reaches the guest before the
+ * command either stops it from starting (exit 137) or finds its group to kill. A missing cwd is a non-zero
+ * exit, like a failed `cd`. When the record cannot be made (the directory cannot be created or written),
+ * the user's command never runs: a cancel could not find it. That exits 125 with a line on stderr. The
+ * record stays when the command exits: whether its group still has members is asked from outside it.
  */
 export const wrapper = [
   `d=${execDir}; t="$d/$3"`,
@@ -29,18 +24,26 @@ export const wrapper = [
   `{ echo $$ > "$t"; } 2>/dev/null || f`,
   `if [ -e "$t.cancel" ]; then rm -f "$t" "$t.cancel"; exit 137; fi`,
   `cd -- "$1" || { rm -f "$t"; exit 1; }`,
-  `sh -c "$2"; s=$?`,
-  "for g in /proc/[0-9]*/stat; do",
-  `  [ "$g" = "/proc/$$/stat" ] && continue`,
-  // A process that exits mid-scan may have forked a member the glob missed, and a line with no `)` (a
-  // newline in the process name) cannot be read: both keep the record. The braces: a vanished process
-  // fails the redirect itself, before a `2>` after it applies.
-  `  l=; { read -r l < "$g"; } 2>/dev/null || exit $s`,
-  `  case $l in *")"*) ;; *) exit $s ;; esac`,
-  "  l=${l##*)}; set -- $l",
-  `  [ "$3" = "$$" ] && exit $s`,
-  "done",
-  `rm -f "$t"`,
+  `sh -c "$2"`,
+].join("\n");
+
+/**
+ * What Maritime starts: `sh -c supervisor -- wrapper cwd command tag`. It stays outside the command's
+ * group, runs {@link wrapper} in a new session, and once that exits asks the kernel whether the group
+ * still has members (`kill -0 -PGID`, from outside, so it never counts itself). A group keeps its number
+ * while any member lives, a background child (`cmd &`) included, so only "No such process" removes the
+ * record; members alive, root-owned ones ("Operation not permitted") or any other answer keep it, and a
+ * later cancel still finds the group. A record left behind is harmless: such a cancel finds the group gone
+ * and exits 0. Exits with the command's status.
+ */
+export const supervisor = [
+  `i=$1; shift`,
+  `setsid -w sh -c "$i" -- "$@"; s=$?`,
+  `t=${execDir}/$3; g=`,
+  `{ read -r g < "$t"; } 2>/dev/null`,
+  `case $g in "" | *[!0-9]* | 0*) exit $s ;; esac`,
+  `[ "$g" -gt 1 ] || exit $s`,
+  `e=$(kill -0 -"$g" 2>&1) || case $e in *"No such process"*) rm -f "$t" ;; esac`,
   `exit $s`,
 ].join("\n");
 
@@ -53,7 +56,10 @@ export const wrapper = [
  * exits 1 and leaves the record for a retry. `gone` returns 0 when the group is gone, 1 while a member
  * still exists (a killed process stays until reaped), 2 when `kill` failed another way. Only the group
  * is signalled, never the bare PID: the wrapper always leads its group, so once the group is gone the
- * PID can only name an unrelated process that reused it. A marker it cannot write (the directory cannot
+ * PID can only name an unrelated process that reused it. A record left by a group whose members have
+ * since all exited names a free number, which Linux can give a new group: a cancel arriving after that
+ * would signal it. That needs the PID counter to wrap between the group's end and this command's own
+ * cancel, while its exec is still in flight. A marker it cannot write (the directory cannot
  * be created or written) exits 1: it would not stop a command that has not started yet. Commands run as
  * Maritime's guest user, which has passwordless sudo, so a command can start root-owned processes in its
  * group. When `sudo -n` works, every signal and check goes through it, and those die too; otherwise the
@@ -85,9 +91,9 @@ export const killer = [
   `exit 0`,
 ].join("\n");
 
-/** The `cmd` argv of one command under {@link wrapper}. */
+/** The `cmd` argv of one command: {@link supervisor} running it under {@link wrapper}. */
 export function wrappedCommand(input: { cwd: string; command: string; tag: string }): string[] {
-  return ["setsid", "-w", "sh", "-c", wrapper, "--", input.cwd, input.command, input.tag];
+  return ["sh", "-c", supervisor, "--", wrapper, input.cwd, input.command, input.tag];
 }
 
 /** The `cmd` argv that cancels the command `tag`. */

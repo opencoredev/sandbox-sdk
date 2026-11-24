@@ -91,16 +91,18 @@ allowed host in a live test.
 a command in its guest daemon's process group, and closing the stream does not
 stop it, so every command runs as
 
-    setsid -w sh -c <wrapper> -- <cwd> <command> <tag>
+    sh -c <supervisor> -- <wrapper> <cwd> <command> <tag>
 
-with a `tag` chosen before the request. The wrapper writes its PID (the new
+which runs `setsid -w sh -c <wrapper> -- <cwd> <command> <tag>`, with a
+`tag` chosen before the request. The wrapper writes its PID (the new
 group's leader) to `/tmp/.sandbox-sdk/exec/<tag>`, then checks for
 `<tag>.cancel` and exits 137 without running anything if it is there (a record
 it cannot write exits 125 without running anything), then
-`cd`s and runs the command with `sh -c`. When that shell exits, the wrapper
-removes the record only if no other process is in its group (it reads each
-`/proc/<pid>/stat`); a background child (`cmd &`) can hold the stream open, so
-its group stays findable. On a timeout or abort the adapter
+`cd`s and runs the command with `sh -c`. The wrapper runs under a supervisor,
+a plain `sh` outside the command's group that Maritime starts: once the wrapper
+exits, it asks the kernel with `kill -0 -<pid>` and removes the record only on
+"No such process". A background child (`cmd &`) can hold the stream open and
+keeps the group's number in use, so its group stays findable. On a timeout or abort the adapter
 drops the stream and runs the killer, a JSON `POST /commands` on a fresh
 30-second deadline: it writes `<tag>.cancel` before it reads the PID (and
 exits 1 when it cannot), checks
@@ -126,8 +128,9 @@ deadline, the caller's plus 10 seconds, at most one hour) still runs the
 killer and reads as timed out; `sandbox_ended` is `not_found` once a read
 confirms the sandbox ended; any other error, a stream that breaks, ends
 without a result, or sends an event whose data is not JSON, or output that is
-not a string, runs the killer and fails `outcome_unknown`. Comments and events
-with other names are skipped, so a new event type does not fail a command. A
+not a string, runs the killer and fails `outcome_unknown`. Every event's data
+is parsed as JSON first, so an event with another name is skipped only when
+its data is JSON; comments are skipped. A
 command is sent
 again only when it provably did not run: it never left the process, Maritime
 answered `409 sandbox_paused` or `sandbox_starting`, or the data plane

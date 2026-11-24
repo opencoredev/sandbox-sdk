@@ -315,8 +315,11 @@ describe("finding 6: sdk-overhead's raw Maritime create admits only its own sand
     }
   });
 
-  it("a create answered `starting` is admitted, then waited for until it runs, before it returns", async () => {
-    const reads: string[] = ["starting", "starting", "running"];
+  /**
+   * A control plane whose create answers `starting` with the create's own owner marker, and whose reads
+   * answer `reads` in turn (then `running`), marked with `readOwner` or, by default, the create's marker.
+   */
+  async function rawPlane(reads: string[], readOwner?: string) {
     let owner = "";
 
     const server = createServer((request, response) => {
@@ -324,17 +327,25 @@ describe("finding 6: sdk-overhead's raw Maritime create admits only its own sand
 
       request.on("data", (chunk: Buffer) => chunks.push(chunk));
       request.on("end", () => {
-        // A starting sandbox has no data-plane credentials yet.
-        const box = (state: string, status = 200) =>
-          response.writeHead(status, { "content-type": "application/json" }).end(
-            JSON.stringify({
-              id: "sbx-new",
-              state,
-              dataPlaneUrl: state === "running" ? "http://127.0.0.1:1/dp" : null,
-              ...(state === "running" ? { secret: "mst_new_secret_0123456789" } : {}),
-              metadata: { [rawOwnerLabel]: owner },
-            }),
-          );
+        const box = (state: string, marker: string, status = 200) => {
+          const metadata = { [rawOwnerLabel]: marker };
+
+          // A starting sandbox has no data-plane credentials yet.
+          const record =
+            state === "running"
+              ? {
+                  id: "sbx-new",
+                  state,
+                  dataPlaneUrl: "http://127.0.0.1:1/dp",
+                  secret: "mst_new_secret_0123456789",
+                  metadata,
+                }
+              : { id: "sbx-new", state, dataPlaneUrl: null, metadata };
+
+          response
+            .writeHead(status, { "content-type": "application/json" })
+            .end(JSON.stringify(record));
+        };
 
         if (request.method === "POST") {
           const body = z
@@ -343,10 +354,10 @@ describe("finding 6: sdk-overhead's raw Maritime create admits only its own sand
 
           owner = body.metadata[rawOwnerLabel] ?? "";
 
-          return box("starting", 201);
+          return box("starting", owner, 201);
         }
 
-        box(reads.shift() ?? "running");
+        box(reads.shift() ?? "running", readOwner ?? owner);
       });
     });
 
@@ -358,6 +369,13 @@ describe("finding 6: sdk-overhead's raw Maritime create admits only its own sand
 
     vi.stubEnv("MARITIME_API_URL", `http://127.0.0.1:${port}`);
     vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
+
+    return { close: () => new Promise<void>((done) => server.close(() => done())) };
+  }
+
+  it("a create answered `starting` is admitted, then waited for until it runs, before it returns", async () => {
+    const reads = ["starting", "starting", "running"];
+    const plane = await rawPlane(reads);
     const admitted: string[] = [];
 
     try {
@@ -376,7 +394,27 @@ describe("finding 6: sdk-overhead's raw Maritime create admits only its own sand
       // Every starting read was used up: it returned only once a read said running.
       expect(reads).toEqual([]);
     } finally {
-      await new Promise<void>((done) => server.close(() => done()));
+      await plane.close();
+    }
+  });
+
+  it("a readiness read without this create's marker is refused, after the create was admitted", async () => {
+    const plane = await rawPlane(["running"], "someone-else");
+    const admitted: string[] = [];
+
+    try {
+      await expect(
+        createRawMaritime({
+          template: "base",
+          labels: { "sdk-overhead-run": "r1" },
+          admit: (raw) => admitted.push(raw.id),
+        }),
+      ).rejects.toThrow(/did not make/);
+
+      // Admitted on the create's own answer, so the script's cleanup still ends it.
+      expect(admitted).toEqual(["sbx-new"]);
+    } finally {
+      await plane.close();
     }
   });
 });
