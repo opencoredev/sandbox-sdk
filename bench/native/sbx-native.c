@@ -450,11 +450,16 @@ static void sleep_until(u64 deadline_ns) {
 /* One consistent (steps, value) pair from a worker. A worker that died mid-write leaves its
    sequence odd forever: after a second of that, the run fails instead of spinning. */
 static void sample(struct shared_worker *w, u64 *steps, u32 *value) {
-  u64 started = now_ns();
+  u64 started = now_ns(), last = (u64)-1;
   for (;;) {
     u64 a = __atomic_load_n(&w->seq, __ATOMIC_ACQUIRE);
     if (a & 1) {
-      if (now_ns() - started > 1000000000ul) fail("cpu-stream", "worker stuck mid-write", -1);
+      /* Only a sequence that stays on one odd value is stuck; any change restarts the clock. */
+      if (a != last) {
+        last = a;
+        started = now_ns();
+      } else if (now_ns() - started > 1000000000ul)
+        fail("cpu-stream", "worker stuck mid-write", -1);
       continue;
     }
     u64 st = __atomic_load_n(&w->steps, __ATOMIC_RELAXED);
