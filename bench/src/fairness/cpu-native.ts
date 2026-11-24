@@ -230,6 +230,8 @@ const checkpointSchema = z.object({
   mode: z.literal("cpu-stream"),
   segment: z.number().int().positive(),
   elapsedS: z.number().positive(),
+  /** How long the parent took to read every worker; the window edges are this uncertain. */
+  scanS: z.number().nonnegative(),
   workers: z.array(streamWorkerSchema).min(1),
 });
 
@@ -272,6 +274,9 @@ export const streamStopCommand = [
   'left=0; for d in /proc/[0-9]*; do [ "$(cat "$d/comm" 2>/dev/null)" = .sbx-native ] && left=1; done',
   "if [ $left = 0 ]; then echo stopped=1; else echo stopped=0; fi",
 ].join("\n");
+
+/** The binary's MAX_SCAN_NS: a checkpoint's workers were all read within this many seconds. */
+export const maxScanS = 0.002;
 
 export type CheckpointCheck =
   | { readonly kind: "ok"; readonly segments: readonly Segment[]; readonly done: boolean }
@@ -328,6 +333,9 @@ export function verifyCheckpoints(input: {
 
     if (point.workers.length !== phase.workers)
       return { kind: "invalid", reason: `Checkpoint ${k} has ${point.workers.length} workers` };
+
+    if (point.scanS > maxScanS)
+      return { kind: "invalid", reason: `Checkpoint ${k} took ${point.scanS}s to sample` };
 
     if (point.elapsedS < k * phase.seconds)
       return {
