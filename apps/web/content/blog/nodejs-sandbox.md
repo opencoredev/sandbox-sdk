@@ -171,7 +171,7 @@ import { runSnippet } from "./run-snippet.ts";
 
 const code = `console.log(process.version, 6 * 7)`; // what the model wrote
 
-await using box = await createSandbox(vercel(), {
+await using box = await createSandbox(vercel({ persistent: false }), {
   network: "none",
   timeoutMs: 5 * 60_000,
 });
@@ -182,8 +182,8 @@ What this gives you:
 
 - **`process` is the sandbox's, not yours.** The snippet sees the sandbox's environment and files, and no provider keys. Those stay on your server.
 - **The network is off, or creation fails.** A provider that can't enforce `network: "none"` throws `unsupported` instead of creating an open sandbox. The [No network row of the provider table](/docs/reference/capabilities#matrix) lists which providers can.
-- **Time limits on both levels.** A command that runs past its `timeoutMs` is killed and returns `timedOut: true`. The `timeoutMs` passed to `createSandbox` is the provider's hard limit: Vercel applies it to each session, and some providers don't support it and fail with `unsupported`.
-- **Cleanup on throw.** This sandbox has no `key`, so `await using` destroys it when the block ends, even if your code throws. A keyed sandbox is meant to outlive the request, and `await using` only closes its handle.
+- **Time limits on both levels.** A command that runs past its `timeoutMs` is killed and returns `timedOut: true`. The `timeoutMs` passed to `createSandbox` is the provider's hard limit: Vercel applies it to each session, some providers don't support it and fail with `unsupported`, and `local()` only stores it: Docker enforces it when a client reconnects or `reapSandboxes` runs.
+- **Cleanup on throw.** This sandbox has no `key`, so `await using` destroys it when the block ends, even if your code throws. A keyed sandbox is meant to outlive the request, and `await using` only closes its handle. `persistent: false` makes Vercel discard the file system when the session stops, so no snapshot of the untrusted code's files outlives the sandbox; by default Vercel keeps that snapshot until it expires.
 
 `runSnippet` takes any provider. Swap `vercel()` for `e2b()` or `daytona()` to run the same code on another one, as long as its image has Node.js and it supports the options you pass; check the provider table linked above before you rely on `network` or `timeoutMs`. The [security reference](/docs/reference/security) covers what the provider isolates and what the SDK adds for secrets.
 
@@ -232,7 +232,7 @@ The [memory() handler guide](/docs/guides/testing-with-memory) covers the rest o
 
 **Can I run Python from Node.js in a sandbox?** Yes, in a container or microVM whose image has `python3`. Write the file with `box.files.write("main.py", code)` and run `box.run("python3 main.py")`. [Files and git](/docs/concepts/files-and-git) has the details.
 
-**How do I limit time and memory?** isolated-vm takes `memoryLimit` on the isolate and `timeout` on each `eval`. QuickJS takes `memoryLimitBytes` and a `shouldInterrupt` deadline. With Sandbox SDK, `timeoutMs` on `box.run` limits one command, `timeoutMs` on `createSandbox` limits the sandbox, and `size` sets CPU and memory where the provider allows it.
+**How do I limit time and memory?** isolated-vm takes `memoryLimit` on the isolate and `timeout` on each `eval`. QuickJS takes `memoryLimitBytes` and a `shouldInterrupt` deadline. With Sandbox SDK, `timeoutMs` on `box.run` limits one command, `timeoutMs` on `createSandbox` limits the sandbox (on `local()`, only when a client reconnects or a reaper runs), and `size` sets CPU and memory where the provider allows it.
 
 ## Next steps
 

@@ -217,7 +217,7 @@ esbuild server.ts --bundle --platform=node --format=esm --outfile=dist/server.mj
   --banner:js='import { createRequire } from "node:module"; const require = createRequire(import.meta.url);'
 ```
 
-A CommonJS bundle (`--format=cjs`) needs no shim. Minifying is fine in either format.
+A CommonJS bundle (`--format=cjs`) needs no shim. Minifying is fine in either format. Keep `disk` external even then if you use [Archil](/providers/archil#install): it loads its HTTP client with a computed `import()` that no bundle can resolve.
 
 ## What the package exports
 
