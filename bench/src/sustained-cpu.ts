@@ -12,12 +12,14 @@
  * summary goes to `<out>/providers/<provider>.json` when it ends; `<out>/sustained-cpu.json` is
  * rebuilt from those after every provider, and offline by `--merge-only`. A retry sets the earlier
  * attempt's log and summary aside first, and both carry the attempt's ID, so a merge never mixes
- * attempts.
+ * attempts. `<out>/logs/<provider>.lock` keeps a second invocation from running the same provider
+ * into the same directory at once.
  */
-import { randomBytes, randomInt } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash, randomBytes, randomInt } from "node:crypto";
+import { appendFile, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { deflateRawSync } from "node:zlib";
 import { createSandbox, type CreateOptions } from "@opencoredev/sandbox-sdk";
 import type { Labels, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
@@ -274,6 +276,7 @@ export const providerFileSchema = z.object({
   segmentDurationS: z.number().positive(),
   chunkSteps: z.number().int().positive().optional(),
   sandboxId: z.string().nullable(),
+  /** True only when every sandbox the attempt made or its sweep found is confirmed gone. */
   destroyed: z.boolean(),
   result: providerResultSchema,
 });
@@ -662,13 +665,38 @@ export type OpenSession = (
 export const newAttemptId = () => randomBytes(6).toString("hex");
 
 /**
+ * Boat has no labels: its adapter (`packages/sdk/src/providers/boat-api`) stores them in the
+ * sandbox's name as `sandbox-sdk:1:` and the deflated `[key, labels]` JSON in base64url, and
+ * refuses a name over 120 characters. This is that encoding's length for an unkeyed create.
+ */
+const boatNamePrefix = "sandbox-sdk:1:";
+const boatNameLimit = 120;
+
+const boatNameLength = (labels: Labels) =>
+  boatNamePrefix.length +
+  deflateRawSync(JSON.stringify([null, labels])).toString("base64url").length;
+
+/**
+ * Boat's one label, `<run>.<attempt>`, three labels being too many for its name. A run ID too long
+ * to encode beside the attempt is replaced by 16 hex characters of its SHA-256: with a 12-character
+ * attempt ID the JSON is 60 bytes, at most 101 characters encoded even stored uncompressed.
+ */
+function boatLabels(attempt: Attempt): Labels {
+  const readable = { [runLabel]: `${attempt.runId}.${attempt.attemptId}` };
+
+  if (boatNameLength(readable) <= boatNameLimit) return readable;
+  const digest = createHash("sha256").update(attempt.runId).digest("hex").slice(0, 16);
+
+  return { [runLabel]: `${digest}.${attempt.attemptId}` };
+}
+
+/**
  * The labels an attempt creates its sandbox with and sweeps by. The attempt ID keeps two
  * invocations under one `--run` from sweeping each other's running sandboxes.
  */
 export function labelsFor(setup: ProviderSetup, attempt: Attempt): Labels {
-  // Boat stores labels in a 120-character encoded name, too short for three; it has no sibling
-  // setup on its adapter to tell apart, so one label carries the run and the attempt.
-  if (setup.adapter === "boat") return { [runLabel]: `${attempt.runId}.${attempt.attemptId}` };
+  // Boat has no sibling setup on its adapter to tell apart, so one label carries run and attempt.
+  if (setup.adapter === "boat") return boatLabels(attempt);
 
   return {
     [runLabel]: attempt.runId,
@@ -761,6 +789,7 @@ export const paths = (out: string) => ({
   logs: join(out, "logs"),
   provider: (name: string) => join(out, "providers", `${name}.json`),
   log: (name: string) => join(out, "logs", `${name}.jsonl`),
+  lock: (name: string) => join(out, "logs", `${name}.lock`),
 });
 
 /**
@@ -868,6 +897,20 @@ function checkPoints(source: string, points: readonly Point[], segmentsTarget: n
     throw new Error(`${source} has ${points.length} segments; the run has ${segmentsTarget}`);
 }
 
+/**
+ * A provider's summary and every attempt in its log must share one chunk size, whether or not
+ * `run.json` records it: otherwise a newer log would hide a summary that ran with another.
+ */
+function checkChunkSteps(
+  provider: string,
+  ran: readonly { readonly source: string; readonly chunkSteps: number }[],
+) {
+  if (new Set(ran.map((entry) => entry.chunkSteps)).size > 1)
+    throw new Error(
+      `${provider} ran with more than one chunkSteps: ${ran.map((entry) => `${entry.chunkSteps} in ${entry.source}`).join(", ")}`,
+    );
+}
+
 /** A provider's chosen result and the chunk size it ran with, when known. */
 interface Chosen {
   readonly result: ProviderResult;
@@ -904,19 +947,33 @@ function choose(input: {
       );
   }
 
-  const attempt = input.log === null || input.log.length === 0 ? null : latestAttempt(input.log);
+  const log = input.log ?? [];
+  const starts = log.flatMap((line) => (line.kind === "start" ? [line] : []));
 
-  if (input.log !== null && input.log.length > 0 && attempt === null)
-    throw new Error(`${logPath} has no start record`);
+  if (log.length > 0 && starts.length === 0) throw new Error(`${logPath} has no start record`);
+
+  // Every attempt in the log, not only the latest, must be this run's and this provider's: runs
+  // before attempts were set aside appended them all to one log.
+  for (const start of starts) {
+    checkPlan(logPath, runFile, start);
+
+    if (start.provider !== provider) throw new Error(`${logPath} is ${start.provider}'s log`);
+  }
+
+  checkChunkSteps(provider, [
+    ...(summary?.chunkSteps === undefined
+      ? []
+      : [{ source: summaryPath, chunkSteps: summary.chunkSteps }]),
+    ...starts.map((start) => ({ source: logPath, chunkSteps: start.chunkSteps })),
+  ]);
 
   const fromSummary =
     summary === null ? null : { result: summary.result, chunkSteps: summary.chunkSteps };
 
+  const attempt = latestAttempt(log);
+
   if (attempt === null) return fromSummary;
   const start: StartLine = attempt.start;
-  checkPlan(logPath, runFile, start);
-
-  if (start.provider !== provider) throw new Error(`${logPath} is ${start.provider}'s log`);
   const rebuilt = resultFromLog(provider, attempt.lines);
 
   if (rebuilt === null) return fromSummary;
@@ -936,13 +993,6 @@ function choose(input: {
     throw new Error(
       `${summaryPath} and ${logPath} are the same attempt but disagree on its segments`,
     );
-
-  if (
-    summary.chunkSteps !== undefined &&
-    start.chunkSteps !== undefined &&
-    summary.chunkSteps !== start.chunkSteps
-  )
-    throw new Error(`${summaryPath} and ${logPath} disagree on chunkSteps`);
 
   return { result: summary.result, chunkSteps: summary.chunkSteps ?? start.chunkSteps };
 }
@@ -1086,19 +1136,24 @@ async function destroyWithRetry(
 
 class StopError extends Error {}
 
-/** Whether an attempt's sandboxes are gone, and what went wrong if not. */
-interface Cleanup {
-  /** False only when the attempt's own sandbox may still be running. */
-  readonly destroyed: boolean;
-  /** Null when every sandbox the attempt made or found is confirmed gone. */
-  readonly error: string | null;
-}
+/**
+ * Whether every sandbox an attempt made or found is confirmed gone. A lost create's sandbox counts:
+ * the attempt never learned its ID, but the sweep may have found it.
+ */
+type Cleanup =
+  | { readonly kind: "clean" }
+  | { readonly kind: "unconfirmed"; readonly error: string };
 
-interface AttemptOutcome {
-  readonly result: ProviderResult;
-  readonly sandboxId: string | null;
-  readonly cleanup: Cleanup;
-}
+/** Progress is best effort: a closed stdout must not skip a destroy. */
+const quietly =
+  (progress: (line: string) => void) =>
+  (line: string): void => {
+    try {
+      progress(line);
+    } catch {
+      /* Nothing to report it to. */
+    }
+  };
 
 /** Runs one provider's burn end to end and writes its summary. Never throws for provider faults. */
 export async function runProvider(
@@ -1106,7 +1161,40 @@ export async function runProvider(
   plan: RunPlan,
   dependencies: RunDependencies,
 ): Promise<ProviderResult> {
-  return (await runAttempt(setup, plan, dependencies)).result;
+  return runAttempt({ setup, plan, dependencies, onCleanup: () => {} });
+}
+
+const lockHeld = z.object({ code: z.literal("EEXIST") });
+
+/**
+ * Takes `<out>/logs/<provider>.lock`, so two invocations never run one provider into one output
+ * directory: the second would set the first's live log aside and interleave both into a new one.
+ * Returns the release. A lock left by a killed process stays until someone deletes it.
+ */
+async function lockProvider(path: string, holder: string): Promise<() => Promise<void>> {
+  let handle;
+
+  try {
+    handle = await open(path, "wx");
+  } catch (cause) {
+    if (!lockHeld.safeParse(cause).success) throw cause;
+    const owner = (await readOptional(path))?.trim() || "holder unknown";
+
+    throw new Error(
+      `${path} is held by another invocation (${owner}); wait for it to finish, or delete the lock if no sustained-cpu process is running`,
+    );
+  }
+
+  try {
+    await handle.writeFile(`${holder}\n`);
+  } catch (cause) {
+    await unlink(path).catch(() => {});
+    throw cause;
+  } finally {
+    await handle.close();
+  }
+
+  return () => unlink(path);
 }
 
 /** Moves a file aside if it exists. */
@@ -1118,27 +1206,51 @@ async function setAside(path: string, aside: string) {
   }
 }
 
-async function runAttempt(
-  setup: ProviderSetup,
-  plan: RunPlan,
-  dependencies: RunDependencies,
-): Promise<AttemptOutcome> {
+interface AttemptInput {
+  readonly setup: ProviderSetup;
+  readonly plan: RunPlan;
+  readonly dependencies: RunDependencies;
+  /**
+   * Called once cleanup has run, before the summary is written, so a failed write cannot hide a
+   * sandbox that may still be running.
+   */
+  readonly onCleanup: (cleanup: Cleanup) => void;
+}
+
+/** One provider attempt under its lock. Throws only when the lock or a file write fails. */
+async function runAttempt(input: AttemptInput): Promise<ProviderResult> {
+  const { setup, plan } = input;
+  const files = paths(plan.out);
+  const attemptId = newAttemptId();
+  await mkdir(files.providers, { recursive: true });
+  await mkdir(files.logs, { recursive: true });
+  const lockPath = files.lock(setup.name);
+
+  const release = await lockProvider(
+    lockPath,
+    `pid ${process.pid}, run ${plan.runId}, attempt ${attemptId}, since ${now()}`,
+  );
+
+  try {
+    return await burnAttempt({ ...input, attemptId });
+  } finally {
+    await release().catch((cause) =>
+      quietly(input.dependencies.progress)(
+        `[${setup.name}] could not remove ${lockPath}: ${errorText(cause)}`,
+      ),
+    );
+  }
+}
+
+async function burnAttempt(
+  input: AttemptInput & { readonly attemptId: string },
+): Promise<ProviderResult> {
+  const { setup, plan, dependencies, attemptId } = input;
   const files = paths(plan.out);
   const name = setup.name;
   const logPath = files.log(name);
-  const attemptId = newAttemptId();
-
-  // Progress is best effort: a closed stdout must not skip a destroy.
-  const say = (text: string) => {
-    try {
-      dependencies.progress(`[${name}] ${text}`);
-    } catch {
-      /* Nothing to report it to. */
-    }
-  };
-
-  await mkdir(files.providers, { recursive: true });
-  await mkdir(files.logs, { recursive: true });
+  const progress = quietly(dependencies.progress);
+  const say = (text: string) => progress(`[${name}] ${text}`);
 
   // A retry keeps the earlier attempt's log and summary beside the new ones, so the live pair is
   // always one attempt's.
@@ -1176,7 +1288,7 @@ async function runAttempt(
   let stopReason: string | null = null;
   let box: BurnBox | null = null;
   let session: BurnSession | null = null;
-  let cleanup: Cleanup = { destroyed: true, error: null };
+  let cleanup: Cleanup = { kind: "clean" };
   const delay = dependencies.retryDelayMs ?? destroyRetryDelayMs;
 
   const exec = async (command: string, timeoutMs: number) => {
@@ -1292,6 +1404,7 @@ async function runAttempt(
     say(`stopped: ${stopReason}`);
   } finally {
     cleanup = await cleanUp({ box, session, log: logQuietly, say, delay });
+    input.onCleanup(cleanup);
   }
 
   const status = statusOf(points.length, plan.segmentsTarget);
@@ -1317,14 +1430,14 @@ async function runAttempt(
     segmentDurationS: plan.segmentDurationS,
     chunkSteps: plan.chunkSteps,
     sandboxId,
-    destroyed: cleanup.destroyed,
+    destroyed: cleanup.kind === "clean",
     result,
   });
   say(
     `${result.status}: ${result.segmentsCompleted} segments, retention ${result.retention ?? "n/a"}`,
   );
 
-  return { result, sandboxId, cleanup };
+  return result;
 }
 
 type QuietLog = (line: LogLine) => Promise<void>;
@@ -1352,24 +1465,19 @@ async function cleanUp(input: {
   }
 
   if (session === null)
-    return {
-      destroyed: failed === null,
-      error: failed === null ? null : `${failed} did not destroy`,
-    };
-  const swept = await sweep({ session, failed, log, say, delay });
+    return failed === null
+      ? { kind: "clean" }
+      : { kind: "unconfirmed", error: `${failed} did not destroy` };
+  const error = await sweep({ session, failed, log, say, delay });
 
-  // A sandbox that a successful listing no longer shows is gone; the listing is the provider's.
-  const destroyed =
-    failed === null ||
-    swept.destroyed.includes(failed) ||
-    (swept.listed && !swept.found.includes(failed));
-
-  return { destroyed, error: swept.error };
+  // The sweep's error is null only when its listing worked and it destroyed everything listed, so
+  // a sandbox the destroy left behind was swept or is no longer listed: gone, by the provider.
+  return error === null ? { kind: "clean" } : { kind: "unconfirmed", error };
 }
 
 /**
- * Lists this attempt's sandboxes and destroys any still there. Its record's `error` is null only
- * when the listing worked and everything it found was destroyed.
+ * Lists this attempt's sandboxes and destroys any still there. Returns its record's `error`: null
+ * only when the listing worked and everything it found was destroyed.
  */
 async function sweep(input: {
   readonly session: BurnSession;
@@ -1378,7 +1486,7 @@ async function sweep(input: {
   readonly log: QuietLog;
   readonly say: (text: string) => void;
   readonly delay: number;
-}) {
+}): Promise<string | null> {
   const { session, failed, log, say, delay } = input;
   let found: string[];
 
@@ -1393,7 +1501,7 @@ async function sweep(input: {
     await log({ kind: "sweep", at: now(), found: [], destroyed: [], error });
     say(`SWEEP FAILED: ${error}`);
 
-    return { listed: false, found: [], destroyed: [], error };
+    return error;
   }
 
   const destroyed: string[] = [];
@@ -1412,7 +1520,7 @@ async function sweep(input: {
   if (error !== null) say(`SWEEP FAILED: ${error}`);
   else if (found.length > 0) say(`sweep found ${found.join(", ")}; destroyed ${destroyed.length}`);
 
-  return { listed: true, found, destroyed, error };
+  return error;
 }
 
 /**
@@ -1494,13 +1602,7 @@ export async function runSustained(
     throw new Error(`Each provider runs once per invocation: ${names.join(", ")}`);
   await claimOut(plan);
 
-  const progress = (line: string) => {
-    try {
-      dependencies.progress(line);
-    } catch {
-      /* Nothing to report it to. */
-    }
-  };
+  const progress = quietly(dependencies.progress);
 
   const failures: { provider: string; error: string }[] = [];
   const cleanupProblems: { provider: string; error: string }[] = [];
@@ -1521,16 +1623,15 @@ export async function runSustained(
 
   const runOne = async (setup: ProviderSetup) => {
     try {
-      const outcome = await runAttempt(setup, plan, dependencies);
-      const { cleanup } = outcome;
-
-      if (!cleanup.destroyed)
-        cleanupProblems.push({
-          provider: setup.name,
-          error: `${outcome.sandboxId ?? "Its sandbox"} may still run: ${cleanup.error ?? "destroy failed"}`,
-        });
-      else if (cleanup.error !== null)
-        cleanupProblems.push({ provider: setup.name, error: cleanup.error });
+      await runAttempt({
+        setup,
+        plan,
+        dependencies,
+        onCleanup: (cleanup) => {
+          if (cleanup.kind === "unconfirmed")
+            cleanupProblems.push({ provider: setup.name, error: cleanup.error });
+        },
+      });
     } catch (cause) {
       failures.push({ provider: setup.name, error: errorText(cause) });
       progress(`[${setup.name}] RUN FAILED: ${errorText(cause)}`);
