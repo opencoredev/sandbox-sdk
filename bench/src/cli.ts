@@ -34,6 +34,12 @@ export async function main(load: typeof loadProvider = loadProvider) {
     return;
   }
 
+  if (args[0] === "fairness") {
+    await (await import("./fairness/cli.js")).fairnessCommand(args.slice(1));
+
+    return;
+  }
+
   if (args[0] === "sustained-cpu") {
     await (await import("./sustained-cpu.js")).sustainedCpuCommand(args.slice(1));
 
