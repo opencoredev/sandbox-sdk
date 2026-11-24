@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   copyFile,
   mkdir,
@@ -12,8 +13,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { boat } from "@opencoredev/sandbox-sdk/boat";
 import type { Labels } from "@opencoredev/sandbox-sdk/provider";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { isMissingFile } from "../src/files.js";
 import { providerSetup, providerSetups } from "../src/realistic/setup.js";
 import {
   burnScript,
@@ -50,6 +55,8 @@ const exec = promisify(execFile);
 const directories: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+
   for (const directory of directories.splice(0))
     await rm(directory, { recursive: true, force: true });
 });
@@ -186,6 +193,41 @@ async function readLog(out: string, provider: string) {
     .trim()
     .split("\n")
     .map((line) => logLineSchema.parse(JSON.parse(line)));
+}
+
+async function exists(path: string) {
+  try {
+    await readFile(path);
+
+    return true;
+  } catch (cause) {
+    if (isMissingFile(cause)) return false;
+    throw cause;
+  }
+}
+
+/** A promise and the function that resolves it. */
+function latch() {
+  let open = () => {};
+  const opened = new Promise<void>((done) => (open = done));
+
+  return { open, opened };
+}
+
+/** A session whose create response is lost: the sandbox is listed but never returned. */
+function lostCreate(leftovers: () => Promise<string[]>): OpenSession {
+  return async () => ({
+    kind: "ready",
+    session: {
+      create: async () => {
+        throw new Error("create response lost");
+      },
+      leftovers,
+      destroyById: async () => {
+        throw new Error("sweep delete refused");
+      },
+    },
+  });
 }
 
 describe("lcgChecksum", () => {
@@ -841,6 +883,164 @@ describe("cleanup", () => {
       error: expect.stringMatching(/list unavailable.*stuck|stuck.*list unavailable/),
     });
   });
+
+  it("reports a lost create's sandbox the sweep could not delete as not destroyed", async () => {
+    const out = await temporary();
+
+    const { cleanupProblems } = await runSustained(
+      [providerSetup("styne")],
+      { ...plan(out), concurrency: 1 },
+      { ...quiet, open: lostCreate(async () => ["unknown-create"]) },
+    );
+
+    const sweep = (await readLog(out, "styne")).find((line) => line.kind === "sweep");
+
+    expect(sweep).toMatchObject({
+      found: ["unknown-create"],
+      destroyed: [],
+      error: expect.stringMatching(/unknown-create.*sweep delete refused/),
+    });
+    const summary = JSON.parse(await readFile(paths(out).provider("styne"), "utf8"));
+
+    expect(summary).toMatchObject({ sandboxId: null, destroyed: false });
+    expect(cleanupProblems).toEqual([
+      { provider: "styne", error: expect.stringContaining("unknown-create") },
+    ]);
+  });
+
+  it("reports a lost create whose sweep could not list as not destroyed", async () => {
+    const out = await temporary();
+
+    const { cleanupProblems } = await runSustained(
+      [providerSetup("styne")],
+      { ...plan(out), concurrency: 1 },
+      {
+        ...quiet,
+        open: lostCreate(async () => {
+          throw new Error("list unavailable");
+        }),
+      },
+    );
+
+    const summary = JSON.parse(await readFile(paths(out).provider("styne"), "utf8"));
+
+    expect(summary).toMatchObject({ sandboxId: null, destroyed: false });
+    expect(cleanupProblems).toEqual([
+      { provider: "styne", error: expect.stringContaining("list unavailable") },
+    ]);
+  });
+
+  it("keeps a cleanup problem when the summary cannot be written either", async () => {
+    const out = await temporary();
+    // The summary write fails: its temporary file's path is a directory.
+    await mkdir(`${paths(out).provider("styne")}.${process.pid}.tmp`, { recursive: true });
+    const { box } = fakeBox({ id: "stuck", destroyFailures: 99 });
+
+    const open: OpenSession = async () => ({
+      kind: "ready",
+      session: {
+        create: async () => box,
+        leftovers: async () => ["stuck"],
+        destroyById: async () => {
+          throw new Error("sweep delete refused");
+        },
+      },
+    });
+
+    const { failures, cleanupProblems } = await runSustained(
+      [providerSetup("styne")],
+      { ...plan(out), concurrency: 1 },
+      { ...quiet, open },
+    );
+
+    const sweep = (await readLog(out, "styne")).find((line) => line.kind === "sweep");
+
+    expect(sweep).toMatchObject({ error: expect.stringMatching(/stuck.*sweep delete refused/) });
+    expect(failures).toEqual([{ provider: "styne", error: expect.stringContaining("EISDIR") }]);
+    expect(cleanupProblems).toEqual([
+      { provider: "styne", error: expect.stringContaining("stuck") },
+    ]);
+  });
+});
+
+describe("provider lock", () => {
+  it("refuses a second invocation for the same provider and output directory", async () => {
+    const out = await temporary();
+    const entered = latch();
+    const release = latch();
+
+    const first = fakeBox({
+      id: "first",
+      beforeSegment: async () => {
+        entered.open();
+        await release.opened;
+      },
+    });
+
+    const running = runSustained(
+      [providerSetup("styne")],
+      { ...plan(out), concurrency: 1 },
+      { ...quiet, open: session(first.box).open },
+    );
+
+    await entered.opened;
+    expect(await exists(paths(out).lock("styne"))).toBe(true);
+    let secondOpened = 0;
+
+    const second = await runSustained(
+      [providerSetup("styne")],
+      { ...plan(out), concurrency: 1 },
+      {
+        ...quiet,
+        open: async (setup, attempt) => {
+          secondOpened++;
+
+          return session(fakeBox({ id: "second" }).box).open(setup, attempt);
+        },
+      },
+    );
+
+    expect(secondOpened).toBe(0);
+    expect(second.failures).toEqual([
+      { provider: "styne", error: expect.stringMatching(/styne\.lock.*another invocation/) },
+    ]);
+
+    release.open();
+    const done = await running;
+
+    expect(done.failures).toEqual([]);
+    expect(done.report.providers[0]).toMatchObject({ status: "completed", segmentsCompleted: 3 });
+    const log = await readLog(out, "styne");
+
+    expect(log.filter((line) => line.kind === "start")).toHaveLength(1);
+    expect(log.flatMap((line) => (line.kind === "destroy" ? [line.sandboxId] : []))).toEqual([
+      "first",
+    ]);
+    expect(await exists(paths(out).lock("styne"))).toBe(false);
+
+    // Once the first is done, a retry takes the lock.
+    const retry = await runSustained(
+      [providerSetup("styne")],
+      { ...plan(out), concurrency: 1 },
+      { ...quiet, open: session(fakeBox({ id: "retry" }).box).open },
+    );
+
+    expect(retry.failures).toEqual([]);
+  });
+
+  it("releases the lock when the attempt fails past its own handling", async () => {
+    const out = await temporary();
+    await mkdir(`${paths(out).provider("styne")}.${process.pid}.tmp`, { recursive: true });
+
+    const { failures } = await runSustained(
+      [providerSetup("styne")],
+      { ...plan(out), concurrency: 1 },
+      { ...quiet, open: session(fakeBox({}).box).open },
+    );
+
+    expect(failures).toHaveLength(1);
+    expect(await exists(paths(out).lock("styne"))).toBe(false);
+  });
 });
 
 /** One completed run of each provider into `out`. */
@@ -993,6 +1193,49 @@ describe("merge validation", () => {
     }
   });
 
+  it("refuses a log with a foreign or misfiled start record before a valid one", async () => {
+    for (const [edit, error] of [
+      [{ runId: "other-run" }, /other-run/],
+      [{ provider: "daytona" }, /daytona/],
+    ] as const) {
+      const out = await temporary();
+      await completedRun(out);
+      await unlink(paths(out).provider("styne"));
+      await editLog(paths(out).log("styne"), (lines) => {
+        const start = lines.find((line) => line.kind === "start");
+
+        return start ? [{ ...start, ...edit }, ...lines] : lines;
+      });
+
+      await expect(mergeResults(out)).rejects.toThrow(error);
+    }
+  });
+
+  it("refuses a summary and a log that disagree on chunkSteps under a legacy run.json", async () => {
+    const out = await temporary();
+    await completedRun(out);
+    await editRun(out, (file) => ({ ...file, chunkSteps: undefined }));
+    const start = (await readLog(out, "styne")).find((line) => line.kind === "start");
+
+    if (start?.kind !== "start") throw new Error("No start record");
+    // A newer attempt's log, started with another chunk size, beside the earlier summary.
+    await writeFile(
+      paths(out).log("styne"),
+      `${JSON.stringify({ ...start, attemptId: "newer", chunkSteps: 2000 })}\n`,
+    );
+
+    await expect(mergeResults(out)).rejects.toThrow(/chunkSteps/);
+
+    // Two attempts in one log that disagree, with no summary.
+    await unlink(paths(out).provider("styne"));
+    await writeFile(
+      paths(out).log("styne"),
+      `${JSON.stringify(start)}\n${JSON.stringify({ ...start, attemptId: "newer", chunkSteps: 2000 })}\n`,
+    );
+
+    await expect(mergeResults(out)).rejects.toThrow(/chunkSteps/);
+  });
+
   it("keeps a finished attempt's summary when its log matches", async () => {
     const out = await temporary();
     await completedRun(out);
@@ -1043,6 +1286,56 @@ function sharedAccount() {
   return { sandboxes, add, open };
 }
 
+const patchBody = z.object({ name: z.string() });
+
+/**
+ * Boat's control plane for the real adapter, offline: create, rename and list. Every other request
+ * is a 404, and any other host throws.
+ */
+function fakeBoatApi() {
+  const names = new Map<string, string>();
+  let next = 0;
+
+  const sandbox = (id: string) => ({
+    id,
+    name: names.get(id) ?? "",
+    state: "running",
+    createdAt: "2026-11-23T00:00:00Z",
+  });
+
+  const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+
+    if (url.host !== "boat.invalid") throw new Error(`Network forbidden: ${url.host}`);
+    const path = url.pathname.replace(/^\/api\/v1/, "");
+    const one = /^\/sandboxes\/([^/]+)$/.exec(path)?.[1];
+
+    if (request.method === "POST" && path === "/sandboxes") {
+      const id = `boat-${++next}`;
+      names.set(id, "");
+
+      return Response.json({ sandbox: sandbox(id) });
+    }
+
+    if (request.method === "PATCH" && one !== undefined) {
+      names.set(one, patchBody.parse(await request.json()).name);
+
+      return Response.json({ sandbox: sandbox(one) });
+    }
+
+    if (request.method === "GET" && path === "/sandboxes")
+      return Response.json({
+        sandboxes: [...names.keys()].map(sandbox),
+        pageInfo: { hasMore: false },
+      });
+
+    return new Response("not stubbed", { status: 404 });
+  };
+
+  return { names, fetch };
+}
+
 describe("sweep ownership", () => {
   it("labels every attempt apart, Boat in its one label", () => {
     const first = { runId: "sustained15m-20261123", attemptId: "aaaaaaaaaaaa" };
@@ -1061,6 +1354,61 @@ describe("sweep ownership", () => {
       "sandbox-bench-run": "sustained15m-20261123",
       "sc-provider": "styne",
       "sc-attempt": "aaaaaaaaaaaa",
+    });
+  });
+
+  it("fits any valid run ID into Boat's 120-character name, on the real adapter", async () => {
+    const api = fakeBoatApi();
+    vi.spyOn(globalThis, "fetch").mockImplementation(api.fetch);
+    const provider = boat({ apiKey: "offline-fixture", baseUrl: "https://boat.invalid/api/v1" });
+    const setup = providerSetup("boat");
+    const attemptId = "4ae573dc190f";
+
+    // The run ID that encoded to 130 characters, a long compressible one, and incompressible ones
+    // (SHA-256 in base64url) from 43 to 860 characters.
+    const runIds = [
+      "0123456789abcdef02345789abcedf018264a0b8e7c3d291f6a5",
+      "x".repeat(400),
+      ...Array.from({ length: 20 }, (_, index) =>
+        Array.from({ length: index + 1 }, (_, part) =>
+          createHash("sha256").update(`${index}:${part}`).digest("base64url"),
+        ).join(""),
+      ),
+    ];
+
+    const seen = new Set<string>();
+    let shortened = 0;
+
+    for (const runId of runIds) {
+      expect(parseCli(["--providers", "boat", `--run=${runId}`]).run).toBe(runId);
+      const labels = labelsFor(setup, { runId, attemptId });
+      const value = labels["sandbox-bench-run"] ?? "";
+
+      expect(value.endsWith(`.${attemptId}`)).toBe(true);
+
+      if (value !== `${runId}.${attemptId}`) shortened++;
+      // Deterministic, and apart from every other run's.
+      expect(labelsFor(setup, { runId, attemptId })).toEqual(labels);
+      expect(labelsFor(setup, { runId, attemptId: "000000000000" })).not.toEqual(labels);
+      expect(seen.has(value)).toBe(false);
+      seen.add(value);
+
+      const sandbox = await createSandbox(provider, { labels });
+      const name = api.names.get(sandbox.id) ?? "";
+
+      expect(name.length).toBeGreaterThan(0);
+      expect(name.length).toBeLessThanOrEqual(120);
+      // The sweep finds it again by the same labels.
+      expect((await provider.list(labels)).map((info) => info.id)).toEqual([sandbox.id]);
+      api.names.clear();
+    }
+
+    // Every incompressible ID past the budget, and the 130-character one, took the short form.
+    expect(shortened).toBe(21);
+
+    // A run ID that already fits keeps its readable label.
+    expect(labelsFor(setup, { runId: "sustained15m-20261123", attemptId })).toEqual({
+      "sandbox-bench-run": `sustained15m-20261123.${attemptId}`,
     });
   });
 
