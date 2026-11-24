@@ -259,8 +259,20 @@ export const streamStartCommand = (input: {
 export const streamPollCommand =
   'cat /tmp/.sbx-cpu-stream.out 2>/dev/null; if kill -0 "$(cat /tmp/.sbx-cpu-stream.pid 2>/dev/null)" 2>/dev/null; then echo "alive=1"; else echo "alive=0"; fi';
 
-export const streamStopCommand =
-  'kill "$(cat /tmp/.sbx-cpu-stream.pid 2>/dev/null)" 2>/dev/null; pkill -f "sbx-native cpu-stream" 2>/dev/null; rm -f /tmp/.sbx-cpu-stream.out /tmp/.sbx-cpu-stream.pid; true';
+/**
+ * Stops the burn by its recorded PID: the whole process group (setsid made the parent its leader),
+ * then the parent's children, then the parent. No pattern match, so it never signals its own shell.
+ * Prints `stopped=1` once nothing is left.
+ */
+export const streamStopCommand = [
+  'P="$(cat /tmp/.sbx-cpu-stream.pid 2>/dev/null)"',
+  'if [ -n "$P" ]; then kill -KILL -- "-$P" 2>/dev/null; pkill -KILL -P "$P" 2>/dev/null; kill -KILL "$P" 2>/dev/null; fi',
+  "rm -f /tmp/.sbx-cpu-stream.out /tmp/.sbx-cpu-stream.pid",
+  'if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then echo stopped=0; else echo stopped=1; fi',
+].join("\n");
+
+/** Most seconds the workers' checkpoints for one segment may be apart: wider and their windows don't line up. */
+export const maxCheckpointSkewS = 2;
 
 export type CheckpointCheck =
   | { readonly kind: "ok"; readonly segments: readonly Segment[]; readonly done: boolean }
@@ -366,7 +378,18 @@ export function verifyCheckpoints(input: {
       perWorker.push(Math.round(rate));
     }
 
-    const guestS = Math.max(...point.workers.map((w) => w.elapsedS));
+    // The workers' windows must line up in time: the segment's rate adds their rates, which is the
+    // sandbox's rate only if they ran over the same interval.
+    const times = point.workers.map((w) => w.elapsedS);
+    const skew = Math.max(...times) - Math.min(...times);
+
+    if (skew > maxCheckpointSkewS)
+      return {
+        kind: "invalid",
+        reason: `Checkpoint ${k}'s workers are ${round(skew, 3)}s apart, more than ${maxCheckpointSkewS}s`,
+      };
+
+    const guestS = Math.max(...times);
     const priorS = Math.max(...previous.map((w) => w.elapsedS));
 
     segments.push({
@@ -478,7 +501,12 @@ async function streamPhase(input: {
         );
     }
   } finally {
-    await context.execCleanup(box, streamStopCommand, 60_000).catch(() => undefined);
+    const stopped = await context.execCleanup(box, streamStopCommand, 60_000).catch(() => null);
+
+    if (stopped === null || !/^stopped=1$/m.test(stopped.stdout))
+      await context.note("burn-stop-unconfirmed", {
+        stdout: stopped?.stdout.slice(0, 200) ?? null,
+      });
   }
 }
 

@@ -870,3 +870,25 @@ describe("fourth review regressions", () => {
     ).toMatchObject({ destroyed: true, cleanupError: null });
   });
 });
+
+describe("fifth review regressions", () => {
+  it("rejects checkpoints whose workers' windows don't line up", () => {
+    const phase = { segments: 1, seconds: 1, workers: 2 };
+    const steps = nativeChunkSteps * 10;
+
+    const stdout = `${JSON.stringify({
+      mode: "cpu-stream",
+      segment: 1,
+      workers: [1.01, 151.0].map((elapsedS, index) => {
+        const s = workerSeed(7, index);
+
+        return { seed: s, steps, checksum: lcgChecksum(s, steps), elapsedS };
+      }),
+    })}\n`;
+
+    expect(verifyCheckpoints({ stdout, seed: 7, phase, firstSeenS: new Map() })).toMatchObject({
+      kind: "invalid",
+      reason: expect.stringMatching(/apart/),
+    });
+  });
+});
