@@ -10,9 +10,11 @@
  *
  * Crash safety: every record goes to `<out>/logs/<provider>.jsonl` as it happens; each provider's
  * summary goes to `<out>/providers/<provider>.json` when it ends; `<out>/sustained-cpu.json` is
- * rebuilt from those after every provider, and offline by `--merge-only`.
+ * rebuilt from those after every provider, and offline by `--merge-only`. A retry sets the earlier
+ * attempt's log and summary aside first, and both carry the attempt's ID, so a merge never mixes
+ * attempts.
  */
-import { randomInt } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -23,7 +25,7 @@ import { isMissingFile } from "./files.js";
 import { loadProvider } from "./providers.js";
 import { collectMetadata } from "./publication.js";
 import { providerSetups, type ProviderSetup } from "./realistic/setup.js";
-import { deadline, pool } from "./timing.js";
+import { deadline } from "./timing.js";
 import { sanitize } from "./v2-runner.js";
 
 export const schemaVersion = "sustained-cpu.v1";
@@ -51,9 +53,16 @@ const destroyTimeoutMs = 120_000;
 const destroyAttempts = 3;
 const destroyRetryDelayMs = 5_000;
 
-/** Label every sandbox with the run and the provider, so the sweep finds only its own. */
+/** Label every sandbox with the run, the provider and the attempt, so the sweep finds only its own. */
 const runLabel = "sandbox-bench-run";
 const providerLabel = "sc-provider";
+const attemptLabel = "sc-attempt";
+
+/**
+ * How far the guest's and the host's clocks may disagree on one segment: exec round trips,
+ * process start and barrier release.
+ */
+export const clockToleranceS = 1;
 
 // ---------------------------------------------------------------------------------------------
 // LCG
@@ -177,6 +186,11 @@ export const burnOutputSchema = z.object({
 
 export type BurnOutput = z.infer<typeof burnOutputSchema>;
 
+/**
+ * One verified segment. `elapsedS` is the guest's wall time for the burn, checked against the
+ * host's; `wallOffsetS` is host seconds from the burn's start to the segment's end, and `minute`
+ * is the same instant in minutes.
+ */
 const pointSchema = z.object({
   segment: z.number().int().positive(),
   minute: z.number(),
@@ -239,27 +253,32 @@ export const reportSchema = z.object({
 export type SustainedReport = z.infer<typeof reportSchema>;
 
 /** `<out>/run.json`: the run an output directory belongs to and its segment plan. */
-const runFileSchema = z.object({
+export const runFileSchema = z.object({
   schema: z.literal("sustained-cpu.run.v1"),
   run: runInfoSchema,
   segmentsTarget: z.number().int().positive(),
   segmentDurationS: z.number().positive(),
+  /** Absent from runs started before it was recorded; their providers must then agree. */
+  chunkSteps: z.number().int().positive().optional(),
 });
 
-type RunFile = z.infer<typeof runFileSchema>;
+export type RunFile = z.infer<typeof runFileSchema>;
 
 /** `<out>/providers/<provider>.json`. */
-const providerFileSchema = z.object({
+export const providerFileSchema = z.object({
   schema: z.literal("sustained-cpu.provider.v1"),
   runId: z.string(),
+  /** Absent from summaries written before attempt IDs. */
+  attemptId: z.string().min(1).optional(),
   segmentsTarget: z.number().int().positive(),
   segmentDurationS: z.number().positive(),
+  chunkSteps: z.number().int().positive().optional(),
   sandboxId: z.string().nullable(),
   destroyed: z.boolean(),
   result: providerResultSchema,
 });
 
-type ProviderFile = z.infer<typeof providerFileSchema>;
+export type ProviderFile = z.infer<typeof providerFileSchema>;
 
 /** One line of `<out>/logs/<provider>.jsonl`. */
 export const logLineSchema = z.discriminatedUnion("kind", [
@@ -267,6 +286,8 @@ export const logLineSchema = z.discriminatedUnion("kind", [
     kind: z.literal("start"),
     provider: z.string(),
     runId: z.string(),
+    /** Absent from logs written before attempt IDs. */
+    attemptId: z.string().min(1).optional(),
     at: z.string(),
     segmentsTarget: z.number().int().positive(),
     segmentDurationS: z.number().positive(),
@@ -284,7 +305,7 @@ export const logLineSchema = z.discriminatedUnion("kind", [
     at: z.string(),
     point: pointSchema,
     seed: z.number().int().nonnegative(),
-    /** Host-observed time of the exec, for comparison with the guest's clock. */
+    /** Host-observed exec time (hostExecS), which bounds the guest's clock in `verifySegment`. */
     hostS: z.number(),
     workers: z.array(workerOutputSchema),
   }),
@@ -331,8 +352,10 @@ export type SegmentCheck =
 
 /**
  * Checks a segment's printed result: one worker per expected seed, whole chunks, at least the
- * target time, a plausible rate, and every final value equal to the host's `lcgChecksum`. The
- * segment's ops/s is the host's sum of the workers' verified rates.
+ * target time, a plausible rate, and every final value equal to the host's `lcgChecksum`. Guest
+ * times are bounded by what the host saw: the guest's wall by the exec's host time, each worker's
+ * time by both (within `clockToleranceS`). So a worker's rate, steps over its own time, has a time
+ * the host could have observed, and the segment's ops/s is the sum of those verified rates.
  */
 export function verifySegment(input: {
   readonly stdout: string;
@@ -340,6 +363,8 @@ export function verifySegment(input: {
   readonly workers: number;
   readonly targetSeconds: number;
   readonly chunkSteps: number;
+  /** Host-observed seconds from sending the exec to its result. */
+  readonly hostExecS: number;
 }): SegmentCheck {
   const line = input.stdout.trim().split("\n").at(-1) ?? "";
   const parsed = parseJsonLine(line);
@@ -358,6 +383,12 @@ export function verifySegment(input: {
     return {
       kind: "invalid",
       reason: `Expected ${input.workers} workers, got ${output.workers.length}`,
+    };
+
+  if (output.wallS > input.hostExecS + clockToleranceS)
+    return {
+      kind: "invalid",
+      reason: `Guest wall ${output.wallS}s exceeds the host's ${round(input.hostExecS, 3)}s exec`,
     };
 
   let opsPerSec = 0;
@@ -379,6 +410,18 @@ export function verifySegment(input: {
       return {
         kind: "invalid",
         reason: `Worker ${index} stopped at ${worker.elapsedS}s, before ${input.targetSeconds}s`,
+      };
+
+    if (worker.elapsedS > output.wallS + clockToleranceS)
+      return {
+        kind: "invalid",
+        reason: `Worker ${index} ran ${worker.elapsedS}s, longer than the guest wall ${output.wallS}s`,
+      };
+
+    if (worker.elapsedS > input.hostExecS + clockToleranceS)
+      return {
+        kind: "invalid",
+        reason: `Worker ${index} ran ${worker.elapsedS}s, longer than the host's ${round(input.hostExecS, 3)}s exec`,
       };
     const rate = worker.steps / worker.elapsedS;
 
@@ -604,18 +647,34 @@ export interface BurnSession {
   destroyById(id: string): Promise<void>;
 }
 
+/** One provider attempt: a run can hold several, and two invocations can share a run ID. */
+export interface Attempt {
+  readonly runId: string;
+  readonly attemptId: string;
+}
+
 export type OpenSession = (
   setup: ProviderSetup,
-  plan: { runId: string; segmentsTarget: number; segmentDurationS: number },
+  plan: Attempt & { readonly segmentsTarget: number; readonly segmentDurationS: number },
 ) => Promise<{ kind: "ready"; session: BurnSession } | { kind: "skipped"; note: string }>;
 
-function labelsFor(setup: ProviderSetup, runId: string): Labels {
-  const labels: Labels = { [runLabel]: runId };
+/** 12 hex characters, fresh for every provider attempt. */
+export const newAttemptId = () => randomBytes(6).toString("hex");
 
-  // Boat's labels share a short name budget; it has no sibling setup on its adapter to tell apart.
-  if (setup.adapter !== "boat") labels[providerLabel] = setup.name;
+/**
+ * The labels an attempt creates its sandbox with and sweeps by. The attempt ID keeps two
+ * invocations under one `--run` from sweeping each other's running sandboxes.
+ */
+export function labelsFor(setup: ProviderSetup, attempt: Attempt): Labels {
+  // Boat stores labels in a 120-character encoded name, too short for three; it has no sibling
+  // setup on its adapter to tell apart, so one label carries the run and the attempt.
+  if (setup.adapter === "boat") return { [runLabel]: `${attempt.runId}.${attempt.attemptId}` };
 
-  return labels;
+  return {
+    [runLabel]: attempt.runId,
+    [providerLabel]: setup.name,
+    [attemptLabel]: attempt.attemptId,
+  };
 }
 
 /**
@@ -636,7 +695,7 @@ export const openLiveSession: OpenSession = async (setup, plan) => {
 
   if (loaded.kind !== "ready") return { kind: "skipped", note: loaded.note };
   const provider: Provider = loaded.provider;
-  const labels = labelsFor(setup, plan.runId);
+  const labels = labelsFor(setup, plan);
 
   return {
     kind: "ready",
@@ -721,21 +780,31 @@ export function parseLog(text: string): LogLine[] {
   });
 }
 
-/** A provider's result from its log alone, for a run that ended before writing its summary. */
-export function resultFromLog(provider: string, lines: readonly LogLine[]): ProviderResult | null {
+type StartLine = Extract<LogLine, { kind: "start" }>;
+
+/** A log's latest attempt: its start record and every line after it. */
+function latestAttempt(lines: readonly LogLine[]) {
   let startIndex = -1;
 
   for (const [index, line] of lines.entries()) if (line.kind === "start") startIndex = index;
   const start = lines[startIndex];
 
   if (start?.kind !== "start") return null;
-  const attempt = lines.slice(startIndex);
+
+  return { start, lines: lines.slice(startIndex) };
+}
+
+/** A provider's result from its log alone, for a run that ended before writing its summary. */
+export function resultFromLog(provider: string, lines: readonly LogLine[]): ProviderResult | null {
+  const attempt = latestAttempt(lines);
+
+  if (attempt === null) return null;
   const points: Point[] = [];
   let fingerprint: Fingerprint | null = null;
   let workers: number | null = null;
   let stopReason: string | null = null;
 
-  for (const line of attempt) {
+  for (const line of attempt.lines) {
     if (line.kind === "fingerprint") {
       fingerprint = line.fingerprint;
       workers = line.workers;
@@ -746,12 +815,12 @@ export function resultFromLog(provider: string, lines: readonly LogLine[]): Prov
     if (line.kind === "stop") stopReason = line.stopReason;
   }
 
-  const stopped = attempt.some((line) => line.kind === "stop");
+  const stopped = attempt.lines.some((line) => line.kind === "stop");
 
   return summarize({
     provider,
-    segmentsTarget: start.segmentsTarget,
-    segmentDurationS: start.segmentDurationS,
+    segmentsTarget: attempt.start.segmentsTarget,
+    segmentDurationS: attempt.start.segmentDurationS,
     points,
     fingerprint,
     workers,
@@ -759,42 +828,202 @@ export function resultFromLog(provider: string, lines: readonly LogLine[]): Prov
   });
 }
 
-/**
- * Rebuilds `<out>/sustained-cpu.json` from `run.json` and each provider's summary, or its log when
- * the summary is missing, in `providerSetups` order. No sandboxes are touched.
- */
-export async function mergeResults(out: string): Promise<SustainedReport> {
-  const files = paths(out);
-  const runText = await readOptional(files.run);
+/** What a summary or a log says it ran, to check against `run.json`. */
+interface RanPlan {
+  readonly runId: string;
+  readonly segmentsTarget: number;
+  readonly segmentDurationS: number;
+  readonly chunkSteps?: number | undefined;
+}
 
-  if (runText === null) throw new Error(`${files.run} is missing; nothing to merge`);
-  const runFile = runFileSchema.parse(JSON.parse(runText));
-  const providers: ProviderResult[] = [];
+function checkPlan(source: string, runFile: RunFile, ran: RanPlan) {
+  if (ran.runId !== runFile.run.id)
+    throw new Error(`${source} is from run ${ran.runId}, not ${runFile.run.id}`);
+
+  if (
+    ran.segmentsTarget !== runFile.segmentsTarget ||
+    ran.segmentDurationS !== runFile.segmentDurationS
+  )
+    throw new Error(
+      `${source} ran ${ran.segmentsTarget} x ${ran.segmentDurationS}s, the run ${runFile.segmentsTarget} x ${runFile.segmentDurationS}s`,
+    );
+
+  if (
+    runFile.chunkSteps !== undefined &&
+    ran.chunkSteps !== undefined &&
+    ran.chunkSteps !== runFile.chunkSteps
+  )
+    throw new Error(`${source} used chunkSteps ${ran.chunkSteps}, the run ${runFile.chunkSteps}`);
+}
+
+/** Segments must be 1, 2, 3, ... with none repeated, skipped or past the plan. */
+function checkPoints(source: string, points: readonly Point[], segmentsTarget: number) {
+  for (const [index, point] of points.entries())
+    if (point.segment !== index + 1)
+      throw new Error(
+        `${source} has segment ${point.segment} where segment ${index + 1} belongs (repeated, missing or out of order)`,
+      );
+
+  if (points.length > segmentsTarget)
+    throw new Error(`${source} has ${points.length} segments; the run has ${segmentsTarget}`);
+}
+
+/** A provider's chosen result and the chunk size it ran with, when known. */
+interface Chosen {
+  readonly result: ProviderResult;
+  readonly chunkSteps: number | undefined;
+}
+
+/**
+ * Picks a provider's result from its summary and its log, after checking both belong to this run
+ * and this provider. The log is always the latest attempt (each attempt sets the previous log
+ * aside before it starts), so a summary from any other attempt is stale and the log wins. Without
+ * attempt IDs (files from before them), a summary can only belong to a log that reached its stop
+ * record, since the summary is written after it.
+ */
+function choose(input: {
+  readonly provider: string;
+  readonly runFile: RunFile;
+  readonly summary: ProviderFile | null;
+  readonly log: readonly LogLine[] | null;
+}): Chosen | null {
+  const { provider, runFile, summary } = input;
+  const summaryPath = `providers/${provider}.json`;
+  const logPath = `logs/${provider}.jsonl`;
+
+  if (summary !== null) {
+    checkPlan(summaryPath, runFile, summary);
+
+    if (summary.result.provider !== provider)
+      throw new Error(`${summaryPath} holds ${summary.result.provider}'s result`);
+    checkPoints(summaryPath, summary.result.points, summary.segmentsTarget);
+
+    if (summary.result.segmentsCompleted !== summary.result.points.length)
+      throw new Error(
+        `${summaryPath} claims ${summary.result.segmentsCompleted} segments and has ${summary.result.points.length}`,
+      );
+  }
+
+  const attempt = input.log === null || input.log.length === 0 ? null : latestAttempt(input.log);
+
+  if (input.log !== null && input.log.length > 0 && attempt === null)
+    throw new Error(`${logPath} has no start record`);
+
+  const fromSummary =
+    summary === null ? null : { result: summary.result, chunkSteps: summary.chunkSteps };
+
+  if (attempt === null) return fromSummary;
+  const start: StartLine = attempt.start;
+  checkPlan(logPath, runFile, start);
+
+  if (start.provider !== provider) throw new Error(`${logPath} is ${start.provider}'s log`);
+  const rebuilt = resultFromLog(provider, attempt.lines);
+
+  if (rebuilt === null) return fromSummary;
+  checkPoints(logPath, rebuilt.points, start.segmentsTarget);
+  const fromLog = { result: rebuilt, chunkSteps: start.chunkSteps };
+
+  if (summary === null) return fromLog;
+
+  const sameAttempt =
+    summary.attemptId === undefined && start.attemptId === undefined
+      ? attempt.lines.some((line) => line.kind === "stop")
+      : summary.attemptId === start.attemptId;
+
+  if (!sameAttempt) return fromLog;
+
+  if (JSON.stringify(summary.result.points) !== JSON.stringify(rebuilt.points))
+    throw new Error(
+      `${summaryPath} and ${logPath} are the same attempt but disagree on its segments`,
+    );
+
+  if (
+    summary.chunkSteps !== undefined &&
+    start.chunkSteps !== undefined &&
+    summary.chunkSteps !== start.chunkSteps
+  )
+    throw new Error(`${summaryPath} and ${logPath} disagree on chunkSteps`);
+
+  return { result: summary.result, chunkSteps: summary.chunkSteps ?? start.chunkSteps };
+}
+
+/** A JSON file through its schema, or null when it is missing. */
+async function readParsed<T>(path: string, schema: z.ZodType<T>): Promise<T | null> {
+  const text = await readOptional(path);
+
+  if (text === null) return null;
+  let value: unknown;
+
+  try {
+    value = JSON.parse(text);
+  } catch (cause) {
+    throw new Error(`${path}: ${errorText(cause)}`);
+  }
+
+  const parsed = schema.safeParse(value);
+
+  if (!parsed.success)
+    throw new Error(
+      `${path}: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`,
+    );
+
+  return parsed.data;
+}
+
+/**
+ * Reads and checks a directory's results without writing: `run.json`, then each provider's
+ * summary and log, in `providerSetups` order. Throws on anything from another run or plan,
+ * misfiled, with repeated segments, or with mixed chunk sizes.
+ */
+export async function loadResults(out: string) {
+  const files = paths(out);
+  const runFile = await readParsed(files.run, runFileSchema);
+
+  if (runFile === null) throw new Error(`${files.run} is missing; nothing to merge`);
+  const chosen: { provider: string; result: ProviderResult; chunkSteps: number | undefined }[] = [];
 
   for (const setup of providerSetups) {
-    const summary = await readOptional(files.provider(setup.name));
+    const summary = await readParsed(files.provider(setup.name), providerFileSchema);
+    const logText = await readOptional(files.log(setup.name));
 
-    if (summary !== null) {
-      const file = providerFileSchema.parse(JSON.parse(summary));
+    const picked = choose({
+      provider: setup.name,
+      runFile,
+      summary,
+      log: logText === null ? null : parseLog(logText),
+    });
 
-      if (
-        file.segmentsTarget !== runFile.segmentsTarget ||
-        file.segmentDurationS !== runFile.segmentDurationS
-      )
-        throw new Error(
-          `${setup.name} ran ${file.segmentsTarget} x ${file.segmentDurationS}s, the run ${runFile.segmentsTarget} x ${runFile.segmentDurationS}s`,
-        );
-      providers.push(file.result);
-      continue;
-    }
-
-    const log = await readOptional(files.log(setup.name));
-
-    if (log === null) continue;
-    const rebuilt = resultFromLog(setup.name, parseLog(log));
-
-    if (rebuilt) providers.push(rebuilt);
+    if (picked !== null) chosen.push({ provider: setup.name, ...picked });
   }
+
+  const names = chosen.map((entry) => entry.result.provider);
+
+  if (new Set(names).size !== names.length)
+    throw new Error(`Duplicate providers: ${names.join(", ")}`);
+
+  const sizes = new Set(
+    chosen.flatMap((entry) => (entry.chunkSteps === undefined ? [] : [entry.chunkSteps])),
+  );
+
+  if (sizes.size > 1)
+    throw new Error(
+      `Mixed chunkSteps: ${chosen.map((entry) => `${entry.provider} ${entry.chunkSteps ?? "?"}`).join(", ")}`,
+    );
+  const [chunkSteps] = sizes;
+
+  return {
+    runFile,
+    providers: chosen.map((entry) => entry.result),
+    chunkSteps: runFile.chunkSteps ?? chunkSteps ?? null,
+  };
+}
+
+/**
+ * Rebuilds `<out>/sustained-cpu.json` from `run.json` and each provider's summary, or its log when
+ * the summary is missing or stale, in `providerSetups` order. No sandboxes are touched.
+ */
+export async function mergeResults(out: string): Promise<SustainedReport> {
+  const { runFile, providers } = await loadResults(out);
 
   const report: SustainedReport = {
     schema: schemaVersion,
@@ -807,7 +1036,7 @@ export async function mergeResults(out: string): Promise<SustainedReport> {
     providers,
   };
 
-  await writeJsonAtomic(files.report, reportSchema.parse(report));
+  await writeJsonAtomic(paths(out).report, reportSchema.parse(report));
 
   return report;
 }
@@ -857,37 +1086,84 @@ async function destroyWithRetry(
 
 class StopError extends Error {}
 
+/** Whether an attempt's sandboxes are gone, and what went wrong if not. */
+interface Cleanup {
+  /** False only when the attempt's own sandbox may still be running. */
+  readonly destroyed: boolean;
+  /** Null when every sandbox the attempt made or found is confirmed gone. */
+  readonly error: string | null;
+}
+
+interface AttemptOutcome {
+  readonly result: ProviderResult;
+  readonly sandboxId: string | null;
+  readonly cleanup: Cleanup;
+}
+
 /** Runs one provider's burn end to end and writes its summary. Never throws for provider faults. */
 export async function runProvider(
   setup: ProviderSetup,
   plan: RunPlan,
   dependencies: RunDependencies,
 ): Promise<ProviderResult> {
+  return (await runAttempt(setup, plan, dependencies)).result;
+}
+
+/** Moves a file aside if it exists. */
+async function setAside(path: string, aside: string) {
+  try {
+    await rename(path, aside);
+  } catch (cause) {
+    if (!isMissingFile(cause)) throw cause;
+  }
+}
+
+async function runAttempt(
+  setup: ProviderSetup,
+  plan: RunPlan,
+  dependencies: RunDependencies,
+): Promise<AttemptOutcome> {
   const files = paths(plan.out);
-  const logPath = files.log(setup.name);
   const name = setup.name;
-  const say = (text: string) => dependencies.progress(`[${name}] ${text}`);
+  const logPath = files.log(name);
+  const attemptId = newAttemptId();
+
+  // Progress is best effort: a closed stdout must not skip a destroy.
+  const say = (text: string) => {
+    try {
+      dependencies.progress(`[${name}] ${text}`);
+    } catch {
+      /* Nothing to report it to. */
+    }
+  };
 
   await mkdir(files.providers, { recursive: true });
   await mkdir(files.logs, { recursive: true });
 
-  // A retry keeps the earlier attempt's log beside the new one.
-  const previous = await readOptional(logPath);
-
-  if (previous !== null)
-    await rename(
-      logPath,
-      join(files.logs, `${name}.${new Date().toISOString().replaceAll(":", "-")}.prev.jsonl`),
-    );
+  // A retry keeps the earlier attempt's log and summary beside the new ones, so the live pair is
+  // always one attempt's.
+  const stamp = `${new Date().toISOString().replaceAll(":", "-")}.${attemptId}`;
+  await setAside(logPath, join(files.logs, `${name}.${stamp}.prev.jsonl`));
+  await setAside(files.provider(name), join(files.providers, `${name}.${stamp}.prev.json`));
 
   const log = async (line: LogLine) => {
     await appendFile(logPath, `${JSON.stringify(logLineSchema.parse(line))}\n`);
+  };
+
+  // During and after cleanup a failed write is reported, never thrown: it must not skip a destroy.
+  const logQuietly = async (line: LogLine) => {
+    try {
+      await log(line);
+    } catch (cause) {
+      say(`could not log ${line.kind}: ${errorText(cause)}`);
+    }
   };
 
   await log({
     kind: "start",
     provider: name,
     runId: plan.runId,
+    attemptId,
     at: now(),
     segmentsTarget: plan.segmentsTarget,
     segmentDurationS: plan.segmentDurationS,
@@ -899,8 +1175,8 @@ export async function runProvider(
   let workers: number | null = null;
   let stopReason: string | null = null;
   let box: BurnBox | null = null;
-  let destroyed = false;
   let session: BurnSession | null = null;
+  let cleanup: Cleanup = { destroyed: true, error: null };
   const delay = dependencies.retryDelayMs ?? destroyRetryDelayMs;
 
   const exec = async (command: string, timeoutMs: number) => {
@@ -917,7 +1193,7 @@ export async function runProvider(
   };
 
   try {
-    const opened = await dependencies.open(setup, plan);
+    const opened = await dependencies.open(setup, { ...plan, attemptId });
 
     if (opened.kind === "skipped") throw new StopError(`Skipped: ${opened.note}`);
     session = opened.session;
@@ -966,6 +1242,7 @@ export async function runProvider(
       );
 
       const ended = performance.now();
+      const hostExecS = (ended - started) / 1000;
 
       if (result.timedOut) throw new StopError(`Segment ${segment} timed out`);
 
@@ -980,15 +1257,19 @@ export async function runProvider(
         workers,
         targetSeconds: plan.segmentDurationS,
         chunkSteps: plan.chunkSteps,
+        hostExecS,
       });
 
       if (check.kind === "invalid") throw new StopError(`Segment ${segment}: ${check.reason}`);
+      const wallOffsetS = round((ended - burnStart) / 1000, 3);
 
       const point: Point = {
         segment,
-        minute: round((segment * plan.segmentDurationS) / 60, 3),
+        // Real time on the host, so exec gaps between segments show on the x-axis.
+        minute: round(wallOffsetS / 60, 3),
+        // The guest's burn time, verified to be within what the host timed.
         elapsedS: round(check.output.wallS, 3),
-        wallOffsetS: round((ended - burnStart) / 1000, 3),
+        wallOffsetS,
         opsPerSec: Math.round(check.opsPerSec),
       };
 
@@ -998,7 +1279,7 @@ export async function runProvider(
         at: now(),
         point,
         seed,
-        hostS: round((ended - started) / 1000, 3),
+        hostS: round(hostExecS, 3),
         workers: check.output.workers,
       });
       const first = points[0]?.opsPerSec ?? point.opsPerSec;
@@ -1010,19 +1291,11 @@ export async function runProvider(
     stopReason = cause instanceof StopError ? cause.message : errorText(cause);
     say(`stopped: ${stopReason}`);
   } finally {
-    if (box) {
-      const target = box;
-      const outcome = await destroyWithRetry(() => target.destroy(), delay);
-      destroyed = outcome.ok;
-      await log({ kind: "destroy", at: now(), sandboxId: target.id, ...outcome });
-      say(outcome.ok ? `destroyed ${target.id}` : `DESTROY FAILED ${target.id}: ${outcome.error}`);
-    }
-
-    if (session) await sweep(session, log, say, delay);
+    cleanup = await cleanUp({ box, session, log: logQuietly, say, delay });
   }
 
   const status = statusOf(points.length, plan.segmentsTarget);
-  await log({ kind: "stop", at: now(), status, stopReason });
+  await logQuietly({ kind: "stop", at: now(), status, stopReason });
 
   const result = summarize({
     provider: name,
@@ -1034,51 +1307,118 @@ export async function runProvider(
     stopReason,
   });
 
+  const sandboxId = box?.id ?? null;
+
   await writeJsonAtomic(files.provider(name), {
     schema: "sustained-cpu.provider.v1",
     runId: plan.runId,
+    attemptId,
     segmentsTarget: plan.segmentsTarget,
     segmentDurationS: plan.segmentDurationS,
-    sandboxId: box?.id ?? null,
-    destroyed: box === null || destroyed,
+    chunkSteps: plan.chunkSteps,
+    sandboxId,
+    destroyed: cleanup.destroyed,
     result,
   });
   say(
     `${result.status}: ${result.segmentsCompleted} segments, retention ${result.retention ?? "n/a"}`,
   );
 
-  return result;
+  return { result, sandboxId, cleanup };
 }
 
-/** Lists this run's sandboxes for the provider and destroys any still there (a lost create). */
-async function sweep(
-  session: BurnSession,
-  log: (line: LogLine) => Promise<void>,
-  say: (text: string) => void,
-  delay: number,
-) {
-  try {
-    const found = await deadline(setupTimeoutMs, () => session.leftovers());
-    const destroyedIds: string[] = [];
+type QuietLog = (line: LogLine) => Promise<void>;
 
-    for (const id of found) {
-      const outcome = await destroyWithRetry(() => session.destroyById(id), delay);
+/**
+ * Destroys the attempt's sandbox, then sweeps its labels for any left (a lost create, or the
+ * sandbox the destroy failed on). Never throws.
+ */
+async function cleanUp(input: {
+  readonly box: BurnBox | null;
+  readonly session: BurnSession | null;
+  readonly log: QuietLog;
+  readonly say: (text: string) => void;
+  readonly delay: number;
+}): Promise<Cleanup> {
+  const { box, session, log, say, delay } = input;
+  let failed: string | null = null;
 
-      if (outcome.ok) destroyedIds.push(id);
-    }
+  if (box) {
+    const outcome = await destroyWithRetry(() => box.destroy(), delay);
+    await log({ kind: "destroy", at: now(), sandboxId: box.id, ...outcome });
+    say(outcome.ok ? `destroyed ${box.id}` : `DESTROY FAILED ${box.id}: ${outcome.error}`);
 
-    await log({ kind: "sweep", at: now(), found, destroyed: destroyedIds, error: null });
-
-    if (found.length > 0) say(`sweep found ${found.join(", ")}; destroyed ${destroyedIds.length}`);
-  } catch (cause) {
-    await log({ kind: "sweep", at: now(), found: [], destroyed: [], error: errorText(cause) });
-    say(`sweep failed: ${errorText(cause)}`);
+    if (!outcome.ok) failed = box.id;
   }
+
+  if (session === null)
+    return {
+      destroyed: failed === null,
+      error: failed === null ? null : `${failed} did not destroy`,
+    };
+  const swept = await sweep({ session, failed, log, say, delay });
+
+  // A sandbox that a successful listing no longer shows is gone; the listing is the provider's.
+  const destroyed =
+    failed === null ||
+    swept.destroyed.includes(failed) ||
+    (swept.listed && !swept.found.includes(failed));
+
+  return { destroyed, error: swept.error };
+}
+
+/**
+ * Lists this attempt's sandboxes and destroys any still there. Its record's `error` is null only
+ * when the listing worked and everything it found was destroyed.
+ */
+async function sweep(input: {
+  readonly session: BurnSession;
+  /** The attempt's own sandbox when its destroy failed. */
+  readonly failed: string | null;
+  readonly log: QuietLog;
+  readonly say: (text: string) => void;
+  readonly delay: number;
+}) {
+  const { session, failed, log, say, delay } = input;
+  let found: string[];
+
+  try {
+    found = await deadline(setupTimeoutMs, () => session.leftovers());
+  } catch (cause) {
+    const error =
+      failed === null
+        ? `Listing failed: ${errorText(cause)}`
+        : `Listing failed, so ${failed} may still run: ${errorText(cause)}`;
+
+    await log({ kind: "sweep", at: now(), found: [], destroyed: [], error });
+    say(`SWEEP FAILED: ${error}`);
+
+    return { listed: false, found: [], destroyed: [], error };
+  }
+
+  const destroyed: string[] = [];
+  const failures: string[] = [];
+
+  for (const id of found) {
+    const outcome = await destroyWithRetry(() => session.destroyById(id), delay);
+
+    if (outcome.ok) destroyed.push(id);
+    else failures.push(`${id} (${outcome.error ?? "unknown error"})`);
+  }
+
+  const error = failures.length === 0 ? null : `Could not destroy ${failures.join("; ")}`;
+  await log({ kind: "sweep", at: now(), found, destroyed, error });
+
+  if (error !== null) say(`SWEEP FAILED: ${error}`);
+  else if (found.length > 0) say(`sweep found ${found.join(", ")}; destroyed ${destroyed.length}`);
+
+  return { listed: true, found, destroyed, error };
 }
 
 /**
  * Claims the output directory for this run: writes `run.json`, or checks that an existing one is
- * the same run with the same segment plan (a retry of some providers).
+ * the same run with the same segment plan and chunk size (a retry of some providers), and that
+ * everything already in it merges cleanly.
  */
 async function claimOut(plan: RunPlan): Promise<RunFile> {
   const files = paths(plan.out);
@@ -1101,6 +1441,12 @@ async function claimOut(plan: RunPlan): Promise<RunFile> {
       throw new Error(
         `Run ${runFile.run.id} is ${runFile.segmentsTarget} x ${runFile.segmentDurationS}s; this is ${plan.segmentsTarget} x ${plan.segmentDurationS}s`,
       );
+    const loaded = await loadResults(plan.out);
+
+    if (loaded.chunkSteps !== null && loaded.chunkSteps !== plan.chunkSteps)
+      throw new Error(
+        `Run ${runFile.run.id} uses chunkSteps ${loaded.chunkSteps}; this is ${plan.chunkSteps}`,
+      );
 
     return runFile;
   }
@@ -1116,6 +1462,7 @@ async function claimOut(plan: RunPlan): Promise<RunFile> {
     },
     segmentsTarget: plan.segmentsTarget,
     segmentDurationS: plan.segmentDurationS,
+    chunkSteps: plan.chunkSteps,
   };
 
   await writeJsonAtomic(files.run, runFile);
@@ -1123,28 +1470,88 @@ async function claimOut(plan: RunPlan): Promise<RunFile> {
   return runFile;
 }
 
-/** Runs the providers, `concurrency` at a time, merging after each one finishes. */
+export interface SustainedOutcome {
+  readonly report: SustainedReport;
+  /** Providers whose run threw past its own fault handling, after its cleanup ran. */
+  readonly failures: readonly { readonly provider: string; readonly error: string }[];
+  /** Providers whose sandboxes may still be running, or whose sweep could not confirm. */
+  readonly cleanupProblems: readonly { readonly provider: string; readonly error: string }[];
+}
+
+/**
+ * Runs the providers, `concurrency` at a time, merging after each one finishes. Every provider
+ * settles before this returns, so one provider's crash never ends the process while another's
+ * sandbox still runs.
+ */
 export async function runSustained(
   setups: readonly ProviderSetup[],
   plan: RunPlan & { readonly concurrency: number },
   dependencies: RunDependencies,
-): Promise<SustainedReport> {
+): Promise<SustainedOutcome> {
+  const names = setups.map((setup) => setup.name);
+
+  if (new Set(names).size !== names.length)
+    throw new Error(`Each provider runs once per invocation: ${names.join(", ")}`);
   await claimOut(plan);
+
+  const progress = (line: string) => {
+    try {
+      dependencies.progress(line);
+    } catch {
+      /* Nothing to report it to. */
+    }
+  };
+
+  const failures: { provider: string; error: string }[] = [];
+  const cleanupProblems: { provider: string; error: string }[] = [];
   let merging = Promise.resolve();
 
-  await pool(setups.length, plan.concurrency, async (index) => {
-    const setup = setups[index];
+  // One merge at a time: each rewrites the combined file from every summary on disk. A failed
+  // merge mid-run is reported; the final one below throws.
+  const mergeQuietly = () => {
+    merging = merging.then(() =>
+      mergeResults(plan.out).then(
+        () => {},
+        (cause) => progress(`merge failed: ${errorText(cause)}`),
+      ),
+    );
 
-    if (!setup) return;
-    await runProvider(setup, plan, dependencies);
-    // One merge at a time: each rewrites the combined file from every summary on disk.
-    merging = merging.then(async () => {
-      await mergeResults(plan.out);
-    });
-    await merging;
+    return merging;
+  };
+
+  const runOne = async (setup: ProviderSetup) => {
+    try {
+      const outcome = await runAttempt(setup, plan, dependencies);
+      const { cleanup } = outcome;
+
+      if (!cleanup.destroyed)
+        cleanupProblems.push({
+          provider: setup.name,
+          error: `${outcome.sandboxId ?? "Its sandbox"} may still run: ${cleanup.error ?? "destroy failed"}`,
+        });
+      else if (cleanup.error !== null)
+        cleanupProblems.push({ provider: setup.name, error: cleanup.error });
+    } catch (cause) {
+      failures.push({ provider: setup.name, error: errorText(cause) });
+      progress(`[${setup.name}] RUN FAILED: ${errorText(cause)}`);
+    }
+
+    await mergeQuietly();
+  };
+
+  // `concurrency` workers draining one queue. runOne catches everything, and allSettled waits for
+  // every worker even so: nothing returns while a provider is still cleaning up.
+  let next = 0;
+
+  const workers = Array.from({ length: Math.min(setups.length, plan.concurrency) }, async () => {
+    for (let setup = setups[next++]; setup; setup = setups[next++]) await runOne(setup);
   });
 
-  return mergeResults(plan.out);
+  for (const settled of await Promise.allSettled(workers))
+    if (settled.status === "rejected")
+      failures.push({ provider: "runner", error: errorText(settled.reason) });
+
+  return { report: await mergeResults(plan.out), failures, cleanupProblems };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1258,7 +1665,7 @@ export async function sustainedCpuCommand(args: readonly string[]) {
       `Run ${runId}: ${setups.length} providers, ${cli.segments} x ${cli.segmentSeconds}s, concurrency ${cli.concurrency}, out ${out}\n`,
     );
 
-    const report = await runSustained(
+    const { report, failures, cleanupProblems } = await runSustained(
       setups,
       {
         runId,
@@ -1276,9 +1683,19 @@ export async function sustainedCpuCommand(args: readonly string[]) {
     );
 
     process.stdout.write(`${table(report)}Report: ${paths(out).report}\n`);
+
+    for (const failure of failures)
+      process.stderr.write(`RUN FAILED ${failure.provider}: ${failure.error}\n`);
+
+    for (const problem of cleanupProblems)
+      process.stderr.write(`CLEANUP ${problem.provider}: ${problem.error}\n`);
     const ran = new Set(cli.providers);
 
-    if (report.providers.some((p) => ran.has(p.provider) && p.status !== "completed"))
+    if (
+      failures.length > 0 ||
+      cleanupProblems.length > 0 ||
+      report.providers.some((p) => ran.has(p.provider) && p.status !== "completed")
+    )
       process.exitCode = 1;
   } finally {
     process.off("SIGINT", onSignal);

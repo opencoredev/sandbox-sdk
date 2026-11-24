@@ -1,18 +1,32 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { Labels } from "@opencoredev/sandbox-sdk/provider";
 import { afterEach, describe, expect, it } from "vitest";
 import { providerSetup, providerSetups } from "../src/realistic/setup.js";
 import {
   burnScript,
   fingerprintCommand,
+  labelsFor,
   lcgChecksum,
   lifetimeMs,
   logLineSchema,
   mergeResults,
   parseCli,
+  parseLog,
+  providerFileSchema,
+  runFileSchema,
   parseFingerprint,
   paths,
   reportSchema,
@@ -25,8 +39,11 @@ import {
   workerSeed,
   type BurnBox,
   type CommandResult,
+  type LogLine,
   type OpenSession,
   type Point,
+  type ProviderFile,
+  type RunFile,
 } from "../src/sustained-cpu.js";
 
 const exec = promisify(execFile);
@@ -97,6 +114,10 @@ function fakeBox(options: {
   readonly steps?: number;
   readonly tamper?: (segment: number, output: ReturnType<typeof honestOutput>) => string | null;
   readonly destroyFailures?: number;
+  /** Awaited before each segment answers, to hold a provider mid-burn. */
+  readonly beforeSegment?: () => Promise<void>;
+  /** Runs on every destroy call, before it succeeds or fails. */
+  readonly onDestroy?: () => Promise<void>;
 }) {
   const commands: string[] = [];
   const state = { segments: 0, destroys: 0, commands };
@@ -111,6 +132,7 @@ function fakeBox(options: {
 
       if (command.startsWith("cat > /tmp/sustained_lcg.py")) return ok("");
       const [, , seed, workers, target, chunk] = command.split(" ");
+      await options.beforeSegment?.();
       state.segments++;
 
       const output = honestOutput({
@@ -126,6 +148,7 @@ function fakeBox(options: {
     },
     async destroy() {
       state.destroys++;
+      await options.onDestroy?.();
 
       if (failures > 0) {
         failures--;
@@ -178,6 +201,8 @@ describe("lcgChecksum", () => {
     await writeFile(script, burnScript);
     const seed = 0xdeadbeef;
 
+    const started = performance.now();
+
     const { stdout } = await exec("python3", [script, String(seed), "2", "0.2", "50000"], {
       timeout: 30_000,
     });
@@ -188,6 +213,7 @@ describe("lcgChecksum", () => {
       workers: 2,
       targetSeconds: 0.2,
       chunkSteps: 50_000,
+      hostExecS: (performance.now() - started) / 1000,
     });
 
     expect(check.kind).toBe("ok");
@@ -200,7 +226,7 @@ describe("lcgChecksum", () => {
 
 describe("verifySegment", () => {
   const seed = 1234567;
-  const base = { seed, workers: 4, targetSeconds: 30, chunkSteps: 1000 };
+  const base = { seed, workers: 4, targetSeconds: 30, chunkSteps: 1000, hostExecS: 30.5 };
   const honest = () => honestOutput({ seed, workers: 4, steps: 5000, elapsedS: 30.1 });
 
   it("accepts an honest segment and sums the workers' rates", () => {
@@ -260,6 +286,43 @@ describe("verifySegment", () => {
     expect(verifySegment({ ...base, stdout: "Traceback (most recent call last)" }).kind).toBe(
       "invalid",
     );
+  });
+
+  it("rejects timing the host could not have seen", () => {
+    // A near-zero guest wall beside 30 s workers: the shape of a fabricated segment.
+    const tiny = { ...honest(), wallS: 0.001 };
+
+    expect(verifySegment({ ...base, stdout: JSON.stringify(tiny) })).toMatchObject({
+      kind: "invalid",
+      reason: expect.stringContaining("longer than the guest wall"),
+    });
+
+    // The guest claims 40 s of burn inside a 30.5 s exec.
+    const long = honestOutput({ seed, workers: 4, steps: 5000, elapsedS: 40 });
+
+    expect(verifySegment({ ...base, stdout: JSON.stringify(long) })).toMatchObject({
+      kind: "invalid",
+      reason: expect.stringContaining("exceeds the host"),
+    });
+
+    // Inside the guest's own tolerance, but past what the host timed.
+    const past = {
+      ...honestOutput({ seed, workers: 4, steps: 5000, elapsedS: 32.4 }),
+      wallS: 31.4,
+    };
+
+    expect(verifySegment({ ...base, stdout: JSON.stringify(past) })).toMatchObject({
+      kind: "invalid",
+      reason: expect.stringContaining("longer than the host"),
+    });
+
+    // Small clock skew either way is fine.
+    const skew = {
+      ...honestOutput({ seed, workers: 4, steps: 5000, elapsedS: 31.2 }),
+      wallS: 31.1,
+    };
+
+    expect(verifySegment({ ...base, stdout: JSON.stringify(skew) }).kind).toBe("ok");
   });
 });
 
@@ -450,12 +513,14 @@ describe("runProvider", () => {
     const { box, state } = fakeBox({});
     const { open, swept } = session(box, ["lost-1"]);
 
-    const report = await runSustained(
+    const { report, failures, cleanupProblems } = await runSustained(
       [providerSetup("styne")],
       { ...plan(out), concurrency: 1 },
       { ...quiet, open },
     );
 
+    expect(failures).toEqual([]);
+    expect(cleanupProblems).toEqual([]);
     expect(reportSchema.parse(report).providers).toHaveLength(1);
     const [result] = report.providers;
 
@@ -466,7 +531,11 @@ describe("runProvider", () => {
       workers: 4,
     });
     expect(result?.points.map((p) => p.segment)).toEqual([1, 2, 3]);
-    expect(result?.points[2]?.minute).toBe(0.01);
+
+    // `minute` is host time since the burn began, at the segment's end.
+    for (const point of result?.points ?? [])
+      expect(point.minute).toBe(Math.round((point.wallOffsetS / 60) * 1000) / 1000);
+
     expect(state.destroys).toBe(1);
     expect(swept).toEqual(["lost-1"]);
     const kinds = (await readLog(out, "styne")).map((line) => line.kind);
@@ -598,8 +667,8 @@ describe("merge-only", () => {
     const styne = fakeBox({ id: "a" });
     const daytona = fakeBox({ id: "b" });
 
-    const open: OpenSession = async (setup) =>
-      session(setup.name === "styne" ? styne.box : daytona.box).open(setup, run);
+    const open: OpenSession = async (setup, attempt) =>
+      session(setup.name === "styne" ? styne.box : daytona.box).open(setup, attempt);
 
     await runSustained([providerSetup("styne"), providerSetup("daytona")], run, { ...quiet, open });
     const before = reportSchema.parse(JSON.parse(await readFile(paths(out).report, "utf8")));
@@ -660,5 +729,356 @@ describe("merge-only", () => {
         { ...quiet, open: session(box).open },
       ),
     ).rejects.toThrow(/belongs to run test-run/);
+  });
+});
+
+describe("cleanup", () => {
+  it("waits for every provider before returning when one crashes outside its own handling", async () => {
+    const out = await temporary();
+    // e2b's summary write will fail: its temporary file's path is a directory.
+    await mkdir(`${paths(out).provider("e2b")}.${process.pid}.tmp`, { recursive: true });
+    let release = () => {};
+    const gate = new Promise<void>((done) => (release = done));
+    // Hold Styne mid-burn until well after e2b has thrown.
+    setTimeout(() => release(), 200);
+    const styne = fakeBox({ id: "styne-box", beforeSegment: () => gate });
+
+    const open: OpenSession = async (setup, attempt) =>
+      setup.name === "e2b"
+        ? { kind: "skipped", note: "Missing credentials: E2B_API_KEY" }
+        : session(styne.box).open(setup, attempt);
+
+    const returned = await runSustained(
+      [providerSetup("e2b"), providerSetup("styne")],
+      { ...plan(out), concurrency: 2 },
+      { ...quiet, open },
+    ).then((outcome) => ({ outcome, destroysAtReturn: styne.state.destroys }));
+
+    expect(returned.destroysAtReturn).toBe(1);
+    expect(returned.outcome.failures).toEqual([
+      { provider: "e2b", error: expect.stringContaining("EISDIR") },
+    ]);
+    expect(returned.outcome.report.providers.map((p) => [p.provider, p.status])).toEqual([
+      ["e2b", "failed"],
+      ["styne", "completed"],
+    ]);
+  });
+
+  it("still sweeps when the destroy record cannot be written", async () => {
+    const out = await temporary();
+
+    const { box, state } = fakeBox({
+      // The log turns unwritable just as the sandbox is destroyed.
+      onDestroy: async () => {
+        await rm(paths(out).log("styne"));
+        await mkdir(paths(out).log("styne"));
+      },
+    });
+
+    const { open, swept } = session(box, ["lost-1"]);
+    const result = await runProvider(providerSetup("styne"), plan(out), { ...quiet, open });
+
+    expect(state.destroys).toBe(1);
+    expect(swept).toEqual(["lost-1"]);
+    expect(result.status).toBe("completed");
+  });
+
+  it("records a sweep that could not delete the sandbox the destroy left behind", async () => {
+    const out = await temporary();
+    const { box } = fakeBox({ id: "stuck", destroyFailures: 99 });
+
+    const open: OpenSession = async () => ({
+      kind: "ready",
+      session: {
+        create: async () => box,
+        leftovers: async () => ["stuck"],
+        destroyById: async () => {
+          throw new Error("delete refused");
+        },
+      },
+    });
+
+    const { cleanupProblems } = await runSustained(
+      [providerSetup("styne")],
+      { ...plan(out), concurrency: 1 },
+      { ...quiet, open },
+    );
+
+    const sweep = (await readLog(out, "styne")).find((line) => line.kind === "sweep");
+
+    expect(sweep).toMatchObject({
+      found: ["stuck"],
+      destroyed: [],
+      error: expect.stringContaining("delete refused"),
+    });
+    const summary = JSON.parse(await readFile(paths(out).provider("styne"), "utf8"));
+
+    expect(summary).toMatchObject({ sandboxId: "stuck", destroyed: false });
+    expect(cleanupProblems).toEqual([
+      { provider: "styne", error: expect.stringContaining("stuck") },
+    ]);
+  });
+
+  it("records a sweep that could not list after a failed destroy", async () => {
+    const out = await temporary();
+    const { box } = fakeBox({ id: "stuck", destroyFailures: 99 });
+
+    const open: OpenSession = async () => ({
+      kind: "ready",
+      session: {
+        create: async () => box,
+        leftovers: async () => {
+          throw new Error("list unavailable");
+        },
+        destroyById: async () => {},
+      },
+    });
+
+    await runProvider(providerSetup("styne"), plan(out), { ...quiet, open });
+    const sweep = (await readLog(out, "styne")).find((line) => line.kind === "sweep");
+
+    expect(sweep).toMatchObject({
+      error: expect.stringMatching(/list unavailable.*stuck|stuck.*list unavailable/),
+    });
+  });
+});
+
+/** One completed run of each provider into `out`. */
+async function completedRun(out: string, names: readonly string[] = ["styne"]) {
+  const open: OpenSession = async (setup, attempt) =>
+    session(fakeBox({ id: `${setup.name}-box` }).box).open(setup, attempt);
+
+  return runSustained(
+    names.map((name) => providerSetup(name)),
+    { ...plan(out), concurrency: names.length },
+    { ...quiet, open },
+  );
+}
+
+async function editSummary(
+  out: string,
+  provider: string,
+  edit: (file: ProviderFile) => ProviderFile,
+) {
+  const path = paths(out).provider(provider);
+  const file = providerFileSchema.parse(JSON.parse(await readFile(path, "utf8")));
+  await writeFile(path, `${JSON.stringify(edit(file))}\n`);
+}
+
+async function editRun(out: string, edit: (file: RunFile) => RunFile) {
+  const path = paths(out).run;
+  const file = runFileSchema.parse(JSON.parse(await readFile(path, "utf8")));
+  await writeFile(path, `${JSON.stringify(edit(file))}\n`);
+}
+
+async function editLog(path: string, edit: (lines: LogLine[]) => LogLine[]) {
+  const lines = parseLog(await readFile(path, "utf8"));
+  await writeFile(
+    path,
+    `${edit(lines)
+      .map((line) => JSON.stringify(line))
+      .join("\n")}\n`,
+  );
+}
+
+describe("merge validation", () => {
+  it("refuses a summary or a log from another run", async () => {
+    const out = await temporary();
+    await completedRun(out);
+
+    await editSummary(out, "styne", (file) => ({ ...file, runId: "other" }));
+    await expect(mergeResults(out)).rejects.toThrow(/from run other/);
+
+    await unlink(paths(out).provider("styne"));
+    await editLog(paths(out).log("styne"), (lines) =>
+      lines.map((line) => (line.kind === "start" ? { ...line, runId: "other" } : line)),
+    );
+    await expect(mergeResults(out)).rejects.toThrow(/from run other/);
+  });
+
+  it("refuses a summary filed under another provider's name", async () => {
+    const out = await temporary();
+    await completedRun(out);
+    await copyFile(paths(out).provider("styne"), paths(out).provider("daytona"));
+
+    await expect(mergeResults(out)).rejects.toThrow(/daytona.*styne/);
+  });
+
+  it("refuses duplicate segment numbers in a summary or a log", async () => {
+    const out = await temporary();
+    await completedRun(out);
+
+    await editSummary(out, "styne", (file) => ({
+      ...file,
+      result: {
+        ...file.result,
+        points: file.result.points.map((point) =>
+          point.segment === 2 ? { ...point, segment: 1 } : point,
+        ),
+      },
+    }));
+    await expect(mergeResults(out)).rejects.toThrow(/segment 1/);
+
+    await unlink(paths(out).provider("styne"));
+    await editLog(paths(out).log("styne"), (lines) => {
+      const segment = lines.find((line) => line.kind === "segment");
+
+      return segment ? [...lines.slice(0, 4), segment, ...lines.slice(4)] : lines;
+    });
+    await expect(mergeResults(out)).rejects.toThrow(/segment 1/);
+  });
+
+  it("refuses a retry or a provider with a different chunk size", async () => {
+    const out = await temporary();
+    await completedRun(out);
+    const { box } = fakeBox({});
+
+    await expect(
+      runSustained(
+        [providerSetup("styne")],
+        { ...plan(out), chunkSteps: 2000, concurrency: 1 },
+        { ...quiet, open: session(box).open },
+      ),
+    ).rejects.toThrow(/chunkSteps/);
+
+    // A run.json from before chunkSteps was recorded: providers must still agree.
+    await editRun(out, (file) => ({ ...file, chunkSteps: undefined }));
+    await expect(mergeResults(out)).resolves.toBeDefined();
+
+    await copyFile(paths(out).log("styne"), paths(out).log("daytona"));
+    await editLog(paths(out).log("daytona"), (lines) =>
+      lines.map((line) =>
+        line.kind === "start" ? { ...line, provider: "daytona", chunkSteps: 2000 } : line,
+      ),
+    );
+    await expect(mergeResults(out)).rejects.toThrow(/chunkSteps/);
+  });
+
+  it("prefers a newer interrupted retry's log over the summary of an earlier attempt", async () => {
+    for (const legacy of [false, true]) {
+      const out = await temporary();
+      await completedRun(out);
+      const earlier = await readFile(paths(out).provider("styne"), "utf8");
+
+      // The retry sets the earlier summary aside as it starts.
+      const { box } = fakeBox({ id: "retry" });
+      await runProvider(providerSetup("styne"), plan(out), { ...quiet, open: session(box).open });
+
+      const kept = (await readdir(paths(out).providers)).filter((name) =>
+        name.endsWith(".prev.json"),
+      );
+
+      expect(kept).toHaveLength(1);
+
+      // Then the host dies mid-retry, and the earlier summary is back in place (as before this
+      // runner set summaries aside, or a copy by hand).
+      await editLog(paths(out).log("styne"), (lines) =>
+        lines
+          .slice(0, 5)
+          .map((line) =>
+            legacy && line.kind === "start" ? { ...line, attemptId: undefined } : line,
+          ),
+      );
+      await writeFile(paths(out).provider("styne"), earlier);
+
+      if (legacy) await editSummary(out, "styne", (file) => ({ ...file, attemptId: undefined }));
+      const report = await mergeResults(out);
+
+      expect(report.providers).toHaveLength(1);
+      expect(report.providers[0]).toMatchObject({
+        status: "stopped-early",
+        segmentsCompleted: 2,
+        stopReason: expect.stringContaining("without a stop record"),
+      });
+    }
+  });
+
+  it("keeps a finished attempt's summary when its log matches", async () => {
+    const out = await temporary();
+    await completedRun(out);
+    const summary = JSON.parse(await readFile(paths(out).provider("styne"), "utf8"));
+    const start = (await readLog(out, "styne")).find((line) => line.kind === "start");
+
+    expect(summary.attemptId).toEqual(expect.any(String));
+    expect(start).toMatchObject({ attemptId: summary.attemptId, chunkSteps: 1000 });
+    expect((await mergeResults(out)).providers[0]?.status).toBe("completed");
+  });
+});
+
+/** A provider account shared by several attempts: sandboxes and their labels, listed by label. */
+function sharedAccount() {
+  const sandboxes = new Map<string, Labels>();
+  let next = 0;
+
+  const matches = (labels: Labels, wanted: Labels) =>
+    Object.entries(wanted).every(([key, value]) => labels[key] === value);
+
+  const add = (labels: Labels) => {
+    const id = `sbx-${++next}`;
+    sandboxes.set(id, labels);
+
+    return id;
+  };
+
+  const open: OpenSession = async (setup, attempt) => {
+    const labels = labelsFor(setup, attempt);
+    // A create whose response was lost: listed under this attempt's labels, never returned.
+    add(labels);
+
+    return {
+      kind: "ready",
+      session: {
+        create: async () => {
+          const id = add(labels);
+
+          return fakeBox({ id, onDestroy: async () => void sandboxes.delete(id) }).box;
+        },
+        leftovers: async () =>
+          [...sandboxes].flatMap(([id, value]) => (matches(value, labels) ? [id] : [])),
+        destroyById: async (id) => void sandboxes.delete(id),
+      },
+    };
+  };
+
+  return { sandboxes, add, open };
+}
+
+describe("sweep ownership", () => {
+  it("labels every attempt apart, Boat in its one label", () => {
+    const first = { runId: "sustained15m-20261123", attemptId: "aaaaaaaaaaaa" };
+    const second = { ...first, attemptId: "bbbbbbbbbbbb" };
+
+    for (const name of ["boat", "styne"]) {
+      const setup = providerSetup(name);
+
+      expect(labelsFor(setup, first)).not.toEqual(labelsFor(setup, second));
+    }
+
+    expect(labelsFor(providerSetup("boat"), first)).toEqual({
+      "sandbox-bench-run": "sustained15m-20261123.aaaaaaaaaaaa",
+    });
+    expect(labelsFor(providerSetup("styne"), first)).toEqual({
+      "sandbox-bench-run": "sustained15m-20261123",
+      "sc-provider": "styne",
+      "sc-attempt": "aaaaaaaaaaaa",
+    });
+  });
+
+  it("never sweeps another attempt's sandbox under the same run ID", async () => {
+    for (const name of ["boat", "styne"]) {
+      const account = sharedAccount();
+      const setup = providerSetup(name);
+      // Attempt A is mid-burn in another invocation with the same --run.
+      const other = labelsFor(setup, { runId: "test-run", attemptId: "aaaaaaaaaaaa" });
+      const running = account.add(other);
+
+      const result = await runProvider(setup, plan(await temporary()), {
+        ...quiet,
+        open: account.open,
+      });
+
+      expect(result.status).toBe("completed");
+      expect([...account.sandboxes.keys()]).toEqual([running]);
+    }
   });
 });
