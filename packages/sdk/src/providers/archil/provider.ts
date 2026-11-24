@@ -456,6 +456,9 @@ export function createArchilProvider(
           );
         }
       },
+      // A new connection to a process this runner started, when Archil closed the first one early.
+      attach: async (processId, attachOptions) =>
+        (await sandbox(id)).attach(processId, attachOptions),
     };
   }
 
@@ -717,7 +720,7 @@ export function createArchilProvider(
       close: () =>
         safe(id, async () => {
           try {
-            if (!(await terminate(process)))
+            if (!(await terminate(process, runner(id))))
               throw failure("Terminal could not be closed", "outcome_unknown", id);
           } finally {
             terminals.get(id)?.delete(process);
