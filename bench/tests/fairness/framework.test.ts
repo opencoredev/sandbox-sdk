@@ -87,6 +87,7 @@ const dependencies = (open: OpenSession) => ({
   signal: noSignal,
   progress: () => {},
   retryDelayMs: 0,
+  lateSweepDelayMs: 0,
 });
 
 async function outDir() {
@@ -326,6 +327,63 @@ describe("runCheck", () => {
     );
 
     expect(asideLogs).toHaveLength(1);
+  });
+});
+
+describe("cleanup and machine size", () => {
+  it("destroys a sandbox whose create returned after its deadline", async () => {
+    const out = await outDir();
+    const late = fakeBox("sb-late");
+
+    const { open } = fakeSession({
+      creates: [() => new Promise<Box>((done) => setTimeout(() => done(late.box), 80))],
+    });
+
+    const outcome = await runCheck(
+      check(),
+      [e2b],
+      { runId: "late", out, concurrency: 1 },
+      {
+        ...dependencies(open),
+        createTimeoutMs: 10,
+      },
+    );
+
+    const entry = outcome.report.providers[0];
+    expect(entry?.status).toBe("failed");
+    expect(entry?.reason).toMatch(/Created 0 of 1/);
+    expect(late.state.destroyed).toBe(true);
+    expect(entry?.destroyed).toBe(true);
+    const log = parseLog(await readFile(paths(out, "security-probe").log("e2b"), "utf8"));
+    expect(log.filter((l) => l.kind === "sweep")).toHaveLength(2);
+  });
+
+  it("records each provider's machine and flags one that is not 4 vCPU / 8 GiB", async () => {
+    const out = await outDir();
+
+    const { open } = fakeSession({
+      creates: [async () => fakeBox("a").box, async () => fakeBox("b").box],
+    });
+
+    const outcome = await runCheck(
+      check(),
+      [e2b, providerSetup("boxd")],
+      { runId: "m", out, concurrency: 1 },
+      dependencies(open),
+    );
+
+    const byName = new Map(outcome.report.providers.map((p) => [p.provider, p.machine]));
+    expect(byName.get("e2b")).toEqual({ cpu: 4, memoryGiB: 8, sameSize: true });
+    expect(byName.get("boxd")).toEqual({ cpu: 4, memoryGiB: 16, sameSize: false });
+  });
+
+  it("refuses a completed summary whose result no longer fits the check", async () => {
+    const out = await outDir();
+    const { open } = fakeSession({ creates: [async () => fakeBox("a").box] });
+    await runCheck(check(), [e2b], { runId: "s", out, concurrency: 1 }, dependencies(open));
+    await expect(
+      mergeResults(out, "security-probe", z.object({ other: z.string() })),
+    ).rejects.toThrow(/does not fit/);
   });
 });
 

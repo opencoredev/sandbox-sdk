@@ -22,13 +22,27 @@ export function parseFirst(stdout: string) {
   return { uptimeS: Number.isFinite(uptime) ? uptime : null, bootId: boot };
 }
 
+export const probeSections = [
+  "uname",
+  "version",
+  "cmdline",
+  "vulnerabilities",
+  "cpuinfo",
+  "user",
+  "status",
+  "dmi",
+  "dmesg",
+  "pid1",
+  "markers",
+] as const;
+
 /** Each section is `@@<name>` then its lines; the parser keeps them apart. */
 export const probeCommand = [
   `echo "@@uname"; uname -srm 2>/dev/null`,
   `echo "@@version"; cat /proc/version 2>/dev/null`,
   `echo "@@cmdline"; cat /proc/cmdline 2>/dev/null`,
   `echo "@@vulnerabilities"; for f in /sys/devices/system/cpu/vulnerabilities/*; do [ -r "$f" ] && echo "$(basename "$f")=$(cat "$f" 2>/dev/null)"; done`,
-  `echo "@@cpuinfo"; grep -m1 '^vendor_id' /proc/cpuinfo; grep -m1 '^cpu family' /proc/cpuinfo; grep -m1 '^model[[:space:]]*:' /proc/cpuinfo; grep -m1 '^model name' /proc/cpuinfo; grep -m1 '^stepping' /proc/cpuinfo; grep -m1 '^microcode' /proc/cpuinfo; grep -m1 '^cpu MHz' /proc/cpuinfo; echo "hypervisorFlag=$(grep -m1 '^flags' /proc/cpuinfo | grep -cw hypervisor)"`,
+  `echo "@@cpuinfo"; grep -m1 '^vendor_id' /proc/cpuinfo; grep -m1 '^cpu family' /proc/cpuinfo; grep -m1 '^model[[:space:]]*:' /proc/cpuinfo; grep -m1 '^model name' /proc/cpuinfo; grep -m1 '^stepping' /proc/cpuinfo; grep -m1 '^microcode' /proc/cpuinfo; grep -m1 '^cpu MHz' /proc/cpuinfo; f=$(grep -m1 '^flags' /proc/cpuinfo 2>/dev/null); if [ -n "$f" ]; then echo "hypervisorFlag=$(echo "$f" | grep -cw hypervisor)"; fi`,
   `echo "@@user"; echo "uid=$(id -u 2>/dev/null)"; echo "user=$(id -un 2>/dev/null)"; if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then echo "sudo=yes"; else echo "sudo=no"; fi`,
   `echo "@@status"; grep -E '^(CapEff|Seccomp|NoNewPrivs):' /proc/self/status 2>/dev/null`,
   `echo "@@dmi"; for k in sys_vendor product_name bios_vendor; do [ -r /sys/class/dmi/id/$k ] && echo "$k=$(cat /sys/class/dmi/id/$k 2>/dev/null)"; done; [ -r /sys/hypervisor/type ] && echo "hypervisor=$(cat /sys/hypervisor/type)"`,
@@ -102,15 +116,21 @@ export const mitigationFlags: readonly { readonly name: string; readonly value: 
 /** Performance-oriented parameters worth showing beside the mitigations. */
 export const notableFlags = ["cpuidle_haltpoll.force", "idle", "nosmt", "isolcpus", "nohz_full"];
 
+/** The kernel treats `-` and `_` in a parameter name alike. */
+const normalName = (name: string) => name.replaceAll("-", "_");
+
+/** Kernel parameters only: everything after a bare `--` goes to init, not the kernel. */
 export function cmdlineFlags(cmdline: string) {
-  const tokens = cmdline.split(/\s+/).filter(Boolean);
+  const all = cmdline.split(/\s+/).filter(Boolean);
+  const end = all.indexOf("--");
+  const tokens = end < 0 ? all : all.slice(0, end);
 
   const parsed = tokens.map((token) => {
     const at = token.indexOf("=");
 
     return at < 0
-      ? { name: token, value: null, token }
-      : { name: token.slice(0, at), value: token.slice(at + 1), token };
+      ? { name: normalName(token), value: null, token }
+      : { name: normalName(token.slice(0, at)), value: token.slice(at + 1), token };
   });
 
   const weakening = parsed
@@ -125,6 +145,7 @@ export function cmdlineFlags(cmdline: string) {
 export const isolationKinds = [
   "gvisor",
   "firecracker",
+  "microvm",
   "cloud-hypervisor",
   "qemu-kvm",
   "vm",
@@ -140,7 +161,8 @@ export type IsolationFacts = {
   readonly dmesg: string[];
   readonly sysVendor: string | null;
   readonly productName: string | null;
-  readonly hypervisorFlag: boolean;
+  /** Null when /proc/cpuinfo has no flags line to read. */
+  readonly hypervisorFlag: boolean | null;
   readonly markers: string[];
   readonly pid1: string | null;
   readonly pid1Cgroup: string[];
@@ -148,10 +170,14 @@ export type IsolationFacts = {
   readonly detectContainer: string | null;
 };
 
-/** The isolation layer and why: the first rule that matches wins, most specific first. */
+/**
+ * The isolation layer and why: the first rule that matches wins, most specific first. `insideVm`
+ * is for a container whose CPU also reports a hypervisor: a container inside a VM.
+ */
 export interface Isolation {
   readonly kind: IsolationKind;
   readonly evidence: string[];
+  readonly insideVm: boolean | null;
 }
 
 export function classifyIsolation(facts: IsolationFacts): Isolation {
@@ -162,7 +188,7 @@ export function classifyIsolation(facts: IsolationFacts): Isolation {
   if (/gVisor/i.test(dmesg) || facts.detectVirt === "gvisor") {
     evidence.push(/gVisor/i.test(dmesg) ? "dmesg names gVisor" : "systemd-detect-virt: gvisor");
 
-    return { kind: "gvisor", evidence };
+    return { kind: "gvisor", evidence, insideVm: null };
   }
 
   const containerMarkers = facts.markers.filter((m) => m === "dockerenv" || m === "containerenv");
@@ -183,35 +209,38 @@ export function classifyIsolation(facts: IsolationFacts): Isolation {
 
     if (detectedContainer) evidence.push(`systemd-detect-virt -c: ${facts.detectContainer}`);
 
-    return { kind: "container", evidence };
+    if (facts.hypervisorFlag)
+      evidence.push("the CPU also reports a hypervisor, so the container runs in a VM");
+
+    return { kind: "container", evidence, insideVm: facts.hypervisorFlag };
   }
 
   if (/cloud hypervisor/i.test(vendor)) {
     evidence.push(`DMI: ${vendor}`);
 
-    return { kind: "cloud-hypervisor", evidence };
+    return { kind: "cloud-hypervisor", evidence, insideVm: null };
   }
 
   if (/firecracker/i.test(vendor) || /firecracker/i.test(dmesg)) {
     evidence.push(/firecracker/i.test(vendor) ? `DMI: ${vendor}` : "dmesg names Firecracker");
 
-    return { kind: "firecracker", evidence };
+    return { kind: "firecracker", evidence, insideVm: null };
   }
 
   const cmdline = facts.cmdline ?? "";
 
   if (/virtio_mmio\.device=/.test(cmdline) && facts.sysVendor === null) {
     evidence.push(
-      "virtio-mmio devices on the kernel command line and no DMI table (Firecracker's layout)",
+      "virtio-mmio devices on the kernel command line and no DMI table: a microVM layout, as Firecracker's and QEMU's microvm machine use",
     );
 
-    return { kind: "firecracker", evidence };
+    return { kind: "microvm", evidence, insideVm: null };
   }
 
-  if (/qemu/i.test(vendor) || facts.detectVirt === "qemu" || facts.detectVirt === "kvm") {
+  if (/qemu/i.test(vendor) || facts.detectVirt === "qemu") {
     evidence.push(vendor ? `DMI: ${vendor}` : `systemd-detect-virt: ${facts.detectVirt}`);
 
-    return { kind: "qemu-kvm", evidence };
+    return { kind: "qemu-kvm", evidence, insideVm: null };
   }
 
   if (facts.hypervisorFlag || (facts.detectVirt !== null && facts.detectVirt !== "none")) {
@@ -221,27 +250,41 @@ export function classifyIsolation(facts: IsolationFacts): Isolation {
 
     if (facts.detectVirt) evidence.push(`systemd-detect-virt: ${facts.detectVirt}`);
 
-    return { kind: "vm", evidence };
+    return { kind: "vm", evidence, insideVm: null };
   }
 
-  evidence.push("no hypervisor flag, DMI table or container marker");
+  evidence.push(
+    facts.hypervisorFlag === null
+      ? "the CPU flags were not readable, and there was no DMI table or container marker"
+      : "no hypervisor flag, DMI table or container marker",
+  );
 
-  return { kind: "unknown", evidence };
+  return { kind: "unknown", evidence, insideVm: null };
 }
 
 export const securityResultSchema = z.object({
   createS: z.number(),
   uptimeAtFirstCommandS: z.number().nullable(),
-  /** Guest uptime minus host seconds since the create call began: positive means booted earlier. */
+  /**
+   * A lower bound on how long before the create call the guest booted: its uptime minus the host's
+   * seconds from the create call to the first command's reply (which is at least as long as from
+   * the create to when the command ran). Near 0 or negative: booted for this create.
+   */
   bootedBeforeCreateS: z.number().nullable(),
+  /** The kernel's boot ID: the same in two sandboxes means one kernel (a clone, or a shared host). */
   bootId: z.string().nullable(),
-  isolation: z.object({ kind: z.enum(isolationKinds), evidence: z.array(z.string()) }),
+  isolation: z.object({
+    kind: z.enum(isolationKinds),
+    evidence: z.array(z.string()),
+    insideVm: z.boolean().nullable(),
+  }),
   kernel: z.string().nullable(),
   cmdline: z.string().nullable(),
   weakeningFlags: z.array(z.string()),
   notableFlags: z.array(z.string()),
   vulnerabilities: z.array(z.object({ name: z.string(), status: z.string() })),
-  vulnerableCount: z.number().int().nonnegative(),
+  /** Null when the kernel lists no vulnerability files: unknown, not zero. */
+  vulnerableCount: z.number().int().nonnegative().nullable(),
   cpu: z.object({
     vendor: z.string().nullable(),
     family: z.number().int().nullable(),
@@ -250,7 +293,7 @@ export const securityResultSchema = z.object({
     modelName: z.string().nullable(),
     microcode: z.string().nullable(),
     mhz: z.number().nullable(),
-    hypervisorFlag: z.boolean(),
+    hypervisorFlag: z.boolean().nullable(),
   }),
   uid: z.number().int().nullable(),
   user: z.string().nullable(),
@@ -298,7 +341,7 @@ export function parseProbe(stdout: string) {
     dmesg: parts.get("dmesg") ?? [],
     sysVendor: textOrNull(dmi.get("sys_vendor")),
     productName: textOrNull(dmi.get("product_name")),
-    hypervisorFlag: cpu.get("hypervisorFlag") === "1",
+    hypervisorFlag: cpu.has("hypervisorFlag") ? cpu.get("hypervisorFlag") === "1" : null,
     markers: markers.filter((m) => !m.includes("=")),
     pid1: textOrNull(pid1Lines.find((l) => l.startsWith("comm="))?.slice(5)),
     pid1Cgroup: pid1Lines.filter((l) => l.startsWith("cgroup=")).map((l) => l.slice(7)),
@@ -316,7 +359,10 @@ export function parseProbe(stdout: string) {
     weakeningFlags: flags.weakening,
     notableFlags: flags.notable,
     vulnerabilities,
-    vulnerableCount: vulnerabilities.filter((v) => /^Vulnerable/i.test(v.status)).length,
+    vulnerableCount:
+      vulnerabilities.length === 0
+        ? null
+        : vulnerabilities.filter((v) => /^Vulnerable/i.test(v.status)).length,
     cpu: {
       vendor: textOrNull(cpu.get("vendor_id")),
       family: int(cpu.get("cpu family")),
@@ -366,8 +412,13 @@ export const securityProbe: Check<SecurityResult> = {
     await context.note("first", { ...first, sinceCreateS, execS: (returned - sent) / 1000 });
     const probe = await context.exec(created.box, probeCommand, 120_000);
 
-    if (!probe.ok && probe.stdout.trim() === "")
-      throw new CheckStop(`Probe exited ${probe.exitCode}: ${probe.stderr.slice(0, 300)}`);
+    // Every section must be there: a probe cut short would read as missing findings.
+    const missing = probeSections.filter((name) => !sections(probe.stdout).has(name));
+
+    if (probe.timedOut || missing.length > 0)
+      throw new CheckStop(
+        `Probe ${probe.timedOut ? "timed out" : `exited ${probe.exitCode}`} without ${missing.join(", ") || "finishing"}: ${probe.stderr.slice(0, 200)}`,
+      );
     const parsed = parseProbe(probe.stdout);
     await context.note("facts", parsed.facts);
     context.say(

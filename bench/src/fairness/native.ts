@@ -4,6 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { deadline } from "../timing.js";
 import { CheckStop, type Box, type CheckContext } from "./framework.js";
 import { nativeBase64, nativeSha256, nativeSize } from "./native-binary.js";
 
@@ -34,8 +35,14 @@ export function xorshift32(state: number): number {
   return x >>> 0;
 }
 
-const pageStamp = (seed: number, page: number) =>
-  fmix32((seed ^ Math.imul(page >>> 0, golden)) >>> 0);
+/** The C's REWRITE_MIX: a page rewritten by a random write carries a different stamp. */
+const rewriteMix = 0x5bd1e995;
+
+/** Most random operations the binary runs in a phase (MAX_RAND_OPS). */
+export const maxRandomOps = 1_000_000;
+
+const pageStamp = (seed: number, page: number, version: 1 | 2 = 1) =>
+  fmix32((seed ^ Math.imul(page >>> 0, golden) ^ (version === 2 ? rewriteMix : 0)) >>> 0);
 
 /** The disk test's sequential-read digest: the sum of every page's stamp word, mod 2^32. */
 export function diskStampDigest(seed: number, sizeMiB: number): number {
@@ -46,15 +53,36 @@ export function diskStampDigest(seed: number, sizeMiB: number): number {
   return digest;
 }
 
-/** The random-read digest over the first `ops` pages of the reader's sequence. */
-export function diskRandomReadDigest(seed: number, sizeMiB: number, ops: number): number {
+/**
+ * The random-read digest over the reader's first `readOps` pages, each carrying version 2's stamp
+ * when one of the writer's first `writeOps` pages rewrote it: so a synced random write that did not
+ * persist fails the check. Both counts must be at most `maxRandomOps` (checked by the caller).
+ */
+export function diskRandomReadDigest(input: {
+  readonly seed: number;
+  readonly sizeMiB: number;
+  readonly writeOps: number;
+  readonly readOps: number;
+}): number {
+  const { seed, sizeMiB } = input;
   const pages = sizeMiB * 256;
-  let state = (fmix32((seed ^ 0x5a5a5a5a) >>> 0) | 1) >>> 0;
+  const touched = new Uint8Array(Math.ceil(pages / 8));
+  let write = (fmix32((seed ^ 0xa5a5a5a5) >>> 0) | 1) >>> 0;
+
+  for (let op = 0; op < input.writeOps; op++) {
+    write = xorshift32(write);
+    const page = write % pages;
+    touched[page >>> 3] = (touched[page >>> 3] ?? 0) | (1 << (page & 7));
+  }
+
+  let read = (fmix32((seed ^ 0x5a5a5a5a) >>> 0) | 1) >>> 0;
   let digest = 0;
 
-  for (let op = 0; op < ops; op++) {
-    state = xorshift32(state);
-    digest = (digest + pageStamp(seed, state % pages)) >>> 0;
+  for (let op = 0; op < input.readOps; op++) {
+    read = xorshift32(read);
+    const page = read % pages;
+    const rewritten = ((touched[page >>> 3] ?? 0) >> (page & 7)) & 1;
+    digest = (digest + pageStamp(seed, page, rewritten ? 2 : 1)) >>> 0;
   }
 
   return digest;
@@ -111,13 +139,14 @@ export const diskOutputSchema = z.object({
     badPages: z.number().int().nonnegative(),
     stampDigest: z.number().int().nonnegative(),
   }),
-  randWrite: z.object({ direct: z.boolean(), wallS: seconds }),
+  randWrite: z.object({ direct: z.boolean(), wallS: seconds, capped: z.boolean() }),
   randWriteLatency: latencySchema,
   randRead: z.object({
     direct: z.boolean(),
     wallS: seconds,
     badPages: z.number().int().nonnegative(),
     digest: z.number().int().nonnegative(),
+    capped: z.boolean(),
   }),
   randReadLatency: latencySchema,
 });
@@ -281,7 +310,8 @@ export async function installNative(context: CheckContext, box: Box): Promise<In
   };
 
   try {
-    await box.write(staging, bytes);
+    // Bounded: a stalled upload must not keep the attempt from reaching cleanup.
+    await deadline(installTimeoutMs, () => box.write(staging, bytes));
     const installed = await place("files");
 
     if (installed) return installed;

@@ -6,13 +6,13 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { checks } from "../../src/fairness/cli.js";
-import { guaranteedOverlap, groupErrors } from "../../src/fairness/cpu-burst.js";
+import { guaranteedOverlap, groupErrors, notComparable } from "../../src/fairness/cpu-burst.js";
 import { parseCpuFingerprint, summarizeSustained } from "../../src/fairness/cpu-native.js";
 import {
   chooseDirectory,
   fsTypeName,
   parseCandidates,
-  sizeFor,
+  fits,
   summarizeDisk,
   verifyDisk,
 } from "../../src/fairness/disk-real.js";
@@ -110,7 +110,7 @@ describe("sbx-native binary", () => {
     expect(fmix32(1)).toBe(0x514e28b7);
     expect(xorshift32(1)).toBe(270369);
     expect(diskStampDigest(7, 0)).toBe(0);
-    expect(diskRandomReadDigest(7, 1, 0)).toBe(0);
+    expect(diskRandomReadDigest({ seed: 7, sizeMiB: 1, writeOps: 0, readOps: 0 })).toBe(0);
     expect(memoryDigest(9, 0)).toBe(0);
   });
 });
@@ -143,7 +143,7 @@ describe("parseNativeOutput", () => {
   });
 });
 
-const diskOutput = (seed: number, sizeMiB: number, ops: number) =>
+const diskOutput = (seed: number, sizeMiB: number, ops: number, writeOps = 100) =>
   diskOutputSchema.parse({
     mode: "disk",
     fsType: 0xef53,
@@ -151,13 +151,14 @@ const diskOutput = (seed: number, sizeMiB: number, ops: number) =>
     sizeMiB,
     seqWrite: { direct: true, writeS: 1, syncS: 0.1 },
     seqRead: { direct: true, readS: 0.5, badPages: 0, stampDigest: diskStampDigest(seed, sizeMiB) },
-    randWrite: { direct: true, wallS: 1 },
-    randWriteLatency: { ops: 100, p50Ns: 200_000, p99Ns: 900_000, maxNs: 2_000_000 },
+    randWrite: { direct: true, wallS: 1, capped: false },
+    randWriteLatency: { ops: writeOps, p50Ns: 200_000, p99Ns: 900_000, maxNs: 2_000_000 },
     randRead: {
       direct: true,
       wallS: 1,
       badPages: 0,
-      digest: diskRandomReadDigest(seed, sizeMiB, ops),
+      digest: diskRandomReadDigest({ seed, sizeMiB, writeOps, readOps: ops }),
+      capped: false,
     },
     randReadLatency: { ops, p50Ns: 80_000, p99Ns: 150_000, maxNs: 500_000 },
   });
@@ -165,19 +166,81 @@ const diskOutput = (seed: number, sizeMiB: number, ops: number) =>
 describe("disk-real", () => {
   it("accepts a consistent run and rejects tampered or impossible ones", () => {
     const output = diskOutput(11, 4, 50);
-    expect(verifyDisk({ output, seed: 11, sizeMiB: 4, hostS: 10 })).toEqual({ kind: "ok" });
-    expect(verifyDisk({ output, seed: 12, sizeMiB: 4, hostS: 10 }).kind).toBe("invalid");
-    expect(verifyDisk({ output, seed: 11, sizeMiB: 4, hostS: 2 })).toMatchObject({
+    expect(verifyDisk({ output, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 })).toEqual({
+      kind: "ok",
+    });
+    expect(verifyDisk({ output, seed: 12, sizeMiB: 4, randomSeconds: 1, hostS: 10 }).kind).toBe(
+      "invalid",
+    );
+    expect(verifyDisk({ output, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 2 })).toMatchObject({
       kind: "invalid",
       reason: expect.stringMatching(/inside a 2s exec/),
     });
 
     const bad = { ...output, seqRead: { ...output.seqRead, badPages: 3 } };
-    expect(verifyDisk({ output: bad, seed: 11, sizeMiB: 4, hostS: 10 }).kind).toBe("invalid");
+    expect(
+      verifyDisk({ output: bad, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 }).kind,
+    ).toBe("invalid");
 
     const fewer = { ...output, randReadLatency: { ...output.randReadLatency, ops: 49 } };
-    expect(verifyDisk({ output: fewer, seed: 11, sizeMiB: 4, hostS: 10 })).toMatchObject({
+    expect(
+      verifyDisk({ output: fewer, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 }),
+    ).toMatchObject({
       reason: expect.stringMatching(/Random read digest/),
+    });
+
+    // A rewrite that never reached the disk: the reads saw the first version everywhere.
+    const lost = {
+      ...output,
+      randRead: {
+        ...output.randRead,
+        digest: diskRandomReadDigest({ seed: 11, sizeMiB: 4, writeOps: 0, readOps: 50 }),
+      },
+    };
+
+    expect(
+      verifyDisk({ output: lost, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 }).kind,
+    ).toBe("invalid");
+
+    const huge = { ...output, randReadLatency: { ...output.randReadLatency, ops: 10_000_000 } };
+    expect(
+      verifyDisk({ output: huge, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 }),
+    ).toMatchObject({ reason: expect.stringMatching(/outside 1 to/) });
+
+    const instant = { ...output, seqRead: { ...output.seqRead, readS: 0 } };
+    expect(
+      verifyDisk({ output: instant, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 }),
+    ).toMatchObject({ reason: expect.stringMatching(/no time/) });
+
+    const short = { ...output, randWrite: { ...output.randWrite, wallS: 0.2 } };
+    expect(
+      verifyDisk({ output: short, seed: 11, sizeMiB: 4, randomSeconds: 10, hostS: 30 }),
+    ).toMatchObject({ reason: expect.stringMatching(/before its time/) });
+
+    const disordered = {
+      ...output,
+      randReadLatency: { ...output.randReadLatency, p50Ns: 999_999 },
+    };
+
+    expect(
+      verifyDisk({ output: disordered, seed: 11, sizeMiB: 4, randomSeconds: 1, hostS: 10 }).kind,
+    ).toBe("invalid");
+  });
+
+  it("marks memory-backed or buffered runs not comparable", () => {
+    const ext4 = summarizeDisk({ output: diskOutput(1, 4, 10), directory: "/root" });
+    expect(ext4).toMatchObject({ comparable: true, notComparableWhy: null });
+
+    const raw = diskOutput(1, 4, 10);
+
+    const buffered = summarizeDisk({
+      output: { ...raw, randRead: { ...raw.randRead, direct: false } },
+      directory: "/root",
+    });
+
+    expect(buffered).toMatchObject({
+      comparable: false,
+      notComparableWhy: expect.stringMatching(/random read/),
     });
   });
 
@@ -190,6 +253,8 @@ describe("disk-real", () => {
     expect(result).toMatchObject({
       fsType: "tmpfs",
       memoryBacked: true,
+      comparable: false,
+      notComparableWhy: expect.stringMatching(/lived in memory/),
       seqWriteMiBps: 3.6,
       seqReadMiBps: 8,
       randWriteIops: 100,
@@ -200,17 +265,28 @@ describe("disk-real", () => {
     expect(fsTypeName(0x1234)).toBe("0x1234");
   });
 
-  it("picks the roomiest writable directory and a size that fits", () => {
+  it("picks the roomiest writable directory that is not memory-backed", () => {
     const candidates = parseCandidates(
-      "dir=/home/user avail=2000000\ndir=/workspace avail=9000000\ndir=/tmp avail=9000000\ndir=/home/user avail=1\n",
+      "dir=/home/user avail=2000000 fs=ext2/ext3\ndir=/workspace avail=9000000 fs=overlayfs\ndir=/tmp avail=9000000 fs=ext2/ext3\ndir=/home/user avail=1 fs=ext2/ext3\n",
     );
 
     expect(candidates).toHaveLength(3);
-    expect(chooseDirectory(candidates)).toEqual({ dir: "/workspace", availKiB: 9_000_000 });
+    expect(chooseDirectory(candidates)).toEqual({
+      dir: "/workspace",
+      availKiB: 9_000_000,
+      fs: "overlayfs",
+    });
     expect(chooseDirectory([])).toBeNull();
-    expect(sizeFor(3 * 2 ** 20, [2048, 1024, 512])).toBe(2048);
-    expect(sizeFor(2 * 2 ** 20, [2048, 1024, 512])).toBe(1024);
-    expect(sizeFor(100_000, [2048, 1024, 512])).toBeNull();
+
+    // A bigger tmpfs loses to a real disk; tmpfs is used only when it is all there is.
+    const withTmpfs = parseCandidates(
+      "dir=/root avail=1000 fs=ext2/ext3\ndir=/tmp avail=99000000 fs=tmpfs\n",
+    );
+
+    expect(chooseDirectory(withTmpfs)?.dir).toBe("/root");
+    expect(chooseDirectory(parseCandidates("dir=/tmp avail=99 fs=tmpfs\n"))?.dir).toBe("/tmp");
+    expect(fits(3 * 2 ** 20, 2048)).toBe(true);
+    expect(fits(2 * 2 ** 20, 2048)).toBe(false);
   });
 });
 
@@ -242,6 +318,23 @@ describe("memory-honesty", () => {
       swapTotalGiB: 0,
     });
     expect(cpuView(limits)).toEqual({ visible: 48, usable: 4, overReported: true });
+  });
+
+  it("takes the tightest quota of the cgroup walk and the affinity mask", () => {
+    // The mount root says max; the shell's own cgroup holds the real 2-CPU limit.
+    const nested = parseLimits(
+      "nproc=8\nallowed=0-7\ncpuMax=200000 100000\ncpuMax=max 100000\nmemMax=4294967296\nmemMax=max\n",
+    );
+
+    expect(nested).toMatchObject({ quotaCpus: 2, memLimitGiB: 4 });
+    expect(cpuView(nested)).toEqual({ visible: 8, usable: 2, overReported: true });
+
+    // Two CPUs of affinity under a four-CPU quota: two usable.
+    const pinned = parseLimits("nproc=2\nallowed=0-1\ncpuMax=400000 100000\n");
+    expect(cpuView(pinned)).toEqual({ visible: 2, usable: 2, overReported: false });
+
+    // Nothing readable: unknown, not "honest".
+    expect(cpuView(parseLimits("")).overReported).toBeNull();
   });
 
   it("reads a VM without a quota, and cgroup v1", () => {
@@ -307,7 +400,11 @@ describe("security-probe", () => {
           cmdline: "console=ttyS0 reboot=k panic=1 pci=off virtio_mmio.device=4K@0xd0000000:5",
         }),
       ).kind,
-    ).toBe("firecracker");
+    ).toBe("microvm");
+    expect(classifyIsolation(facts({ dmesg: ["Firecracker microVM"] })).kind).toBe("firecracker");
+    expect(classifyIsolation(facts({ detectVirt: "kvm" })).kind).toBe("vm");
+    expect(classifyIsolation(facts({ markers: ["dockerenv"] })).insideVm).toBe(true);
+    expect(classifyIsolation(facts({ hypervisorFlag: null })).evidence[0]).toMatch(/not readable/);
     expect(classifyIsolation(facts({ sysVendor: "QEMU", productName: "Standard PC" })).kind).toBe(
       "qemu-kvm",
     );
@@ -325,6 +422,10 @@ describe("security-probe", () => {
       notable: ["cpuidle_haltpoll.force=1"],
     });
     expect(cmdlineFlags("")).toEqual({ weakening: [], notable: [] });
+    // Dashes count as underscores; anything after `--` is init's, not the kernel's.
+    expect(cmdlineFlags("init-on-alloc=0 -- mitigations=off").weakening).toEqual([
+      "init-on-alloc=0",
+    ]);
   });
 
   it("parses the probe's sections", () => {
@@ -366,7 +467,7 @@ describe("security-probe", () => {
     ].join("\n");
 
     const parsed = parseProbe(stdout);
-    expect(parsed.isolation.kind).toBe("firecracker");
+    expect(parsed.isolation.kind).toBe("microvm");
     expect(parsed.weakeningFlags).toEqual(["init_on_free=0"]);
     expect(parsed.vulnerableCount).toBe(1);
     expect(parsed.cpu).toEqual({
@@ -386,6 +487,12 @@ describe("security-probe", () => {
       seccomp: 0,
       rootFs: "ext2/ext3",
     });
+  });
+
+  it("keeps missing evidence unknown", () => {
+    const partial = parseProbe("@@uname\nLinux 6.1 x86_64\n");
+    expect(partial.vulnerableCount).toBeNull();
+    expect(partial.cpu.hypervisorFlag).toBeNull();
   });
 
   it("reads the first command's uptime and boot ID", () => {
@@ -414,6 +521,20 @@ describe("cpu checks", () => {
       ]),
     ).toBeLessThan(0);
     expect(guaranteedOverlap([])).toBeNull();
+    // A guest that claims more time than its host window cannot add overlap.
+    expect(guaranteedOverlap([{ startS: 0, endS: 100, guestS: 101 }])).toBe(100);
+    expect(
+      notComparable({
+        requested: 10,
+        created: 10,
+        verified: 10,
+        overlapS: 100,
+        cohortSeconds: 120,
+      }),
+    ).toBeNull();
+    expect(
+      notComparable({ requested: 10, created: 2, verified: 2, overlapS: 10, cohortSeconds: 120 }),
+    ).toBe("2 of 10 sandboxes created; burns provably overlapped 10 s of 120 s");
     expect(groupErrors(["a", "b", "a"])).toEqual([
       { error: "a", count: 2 },
       { error: "b", count: 1 },
