@@ -153,7 +153,7 @@
     "prepack": "bun run build",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src tests scripts",
-    "test": "timeout 120s vitest run --maxWorkers=4 && bun scripts/size.ts",
+    "test": "timeout 240s vitest run --maxWorkers=4 && bun scripts/size.ts",
     "check:size": "bun scripts/size.ts",
     "smoke:consumer": "timeout 900s bun scripts/consumer-smoke.ts",
     "smoke:consumer:nopeers": "timeout 900s bun scripts/consumer-smoke-nopeers.ts",

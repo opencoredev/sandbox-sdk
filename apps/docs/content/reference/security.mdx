@@ -51,6 +51,9 @@ Redaction has limits:
 - Code in the sandbox can read its own environment and send a secret anywhere the network allows. Pair secrets with a [network policy](/guides/machine-size-and-network).
 - Raw `box.files.read` is not redacted. The agent tools' `read_file` is.
 - A secret that a program transforms, for example base64-encoded, no longer matches and isn't redacted.
+- Streaming redaction holds up to 1 MiB of unresolved suffix across chunk boundaries so split secrets up to 1 MiB do not escape; if a single held suffix exceeds 1 MiB, the held prefix is replaced with `[REDACTED]` and `truncated: true` is set (later chunks are processed normally rather than buffered, so any trailing remainder of a secret longer than 1 MiB is not suppressed after the cap trips).
+
+To redact a background process's logs inside the sandbox, the SDK writes a `sed` program containing each secret to `redact.sed` in the process's mode `700` record directory, `/tmp/.sandbox-sdk/procs/<name>/` by default. When any secret line exceeds 512 bytes, it also writes a companion `redact.txt` used with `awk` for boundary carry and wrapped-line matching. Guest images without `awk` fall back to POSIX `sh`, holding incomplete lines whole up to 1 MiB (suppressing any single newline-less line past 1 MiB to `[REDACTED]` until the next newline or EOF) and scrubbing newline-wrapped secrets against `redact.txt`. Both files are mode `600` and are removed when the process exits or is stopped. A process killed with SIGKILL can leave them behind until the sandbox is destroyed, and a snapshot taken while a process runs includes them. The sandbox already holds the same secrets in its environment.
 
 Use `env` for values that are safe to show and `secrets` for everything else.
 

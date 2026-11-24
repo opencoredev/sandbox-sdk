@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { createSandbox, SandboxError } from "../src/index.js";
-import { Redactor, evidenceCause } from "../src/errors.js";
+import { Redactor, evidenceCause, scrubCredentials } from "../src/errors.js";
 import { memory } from "../src/memory.js";
 
 const causeText = (error: SandboxError) => String(error.cause);
@@ -201,3 +201,341 @@ describe("Redactor.error keeps adapter evidence valid, bounded JSON", () => {
 function isObjectWith(value: unknown): value is { providerMessage?: unknown } {
   return typeof value === "object" && value !== null;
 }
+
+describe("Redactor.text redacts to a fixed point", () => {
+  const redact = (secrets: string[], text: string) => {
+    const redactor = new Redactor();
+    redactor.add(secrets);
+
+    return redactor.text(text);
+  };
+
+  test("a secret inside the marker does not mangle an earlier replacement", () => {
+    expect(redact(["supersecret", "RED"], "token=supersecret")).toBe("token=[REDACTED]");
+  });
+
+  test("a one-letter secret that the marker contains is replaced only where it appears", () => {
+    expect(redact(["abc", "E"], "abc")).toBe("[REDACTED]");
+    expect(redact(["abc", "E"], "xEx abc")).toBe("x[REDACTED]x [REDACTED]");
+  });
+
+  test("the longest secret wins where secrets overlap, and regex characters are literal", () => {
+    expect(redact(["ab", "abcd"], "abcd ab")).toBe("[REDACTED] [REDACTED]");
+    expect(redact(["a.b(+)"], "a.b(+) axb(+)")).toBe("[REDACTED] axb(+)");
+  });
+
+  test("redaction is idempotent even across replacement-created marker boundaries", () => {
+    for (const [secrets, input, expected] of [
+      [["supersecret", "RED"], "supersecret RED", "[REDACTED] [REDACTED]"],
+      [["TED]XYZ"], "TED]XYZXYZ", "[REDACTED]"],
+      [["TED]XYZ"], `TED]XYZ${"XYZ".repeat(40)}`, "[REDACTED]"],
+      [["Q", "D]Z"], `Q${"Z".repeat(100)}`, "[REDACTED]"],
+      [["RED", "D]Z"], "REDZ", "[REDACTED]"],
+      [["T[", "E"], "TE[", "[REDACTED]["],
+      [["]C", "A"], "[REDACTED]C", "[REDACTED]"],
+      [["][", "R"], "R][", "[REDACTED]"],
+      [["D", "]["], "DD", "[REDACTED]"],
+      [["D", "R", "]["], "DD", "[REDACTED]"],
+    ] as const) {
+      const once = redact([...secrets], input);
+
+      expect(once).toBe(expected);
+
+      for (const secret of secrets)
+        if (!"[REDACTED]".includes(secret)) expect(once).not.toContain(secret);
+      expect(redact([...secrets], once)).toBe(once);
+    }
+  });
+
+  test("redacts JSON-escaped quoted Bearer tokens", () => {
+    const out = scrubCredentials('failed: Bearer \\"LEAK_123\\"');
+    const jsonOut = scrubCredentials('{"headers":{"Authorization":"Bearer \\"LEAK_123\\""}}');
+
+    expect(out).toBe("failed: Bearer [REDACTED]");
+    expect(jsonOut).not.toContain("LEAK_123");
+    expect(jsonOut).toContain("[REDACTED]");
+  });
+
+  test("streams stay linear on 1-byte stalled runs and set truncated when >1 MiB is dropped", async () => {
+    const provider = memory({
+      handlers: {
+        oneByteSame({ stdout }) {
+          for (let i = 0; i < 39_960; i += 1) stdout("T");
+
+          return 0;
+        },
+        oneByteAlt({ stdout, stderr }) {
+          for (let i = 0; i < 20_040; i += 1) {
+            stdout("T");
+            stderr("T");
+          }
+
+          return 0;
+        },
+        hugeStalled({ stdout, stderr }) {
+          stdout("A");
+
+          for (let i = 0; i < 1_100; i += 1) stderr("x".repeat(1_024));
+
+          return 0;
+        },
+      },
+    });
+
+    await using box = await createSandbox(provider, { secrets: { TOK: "T".repeat(120) } });
+
+    const t0 = Date.now();
+    const same = await box.run("oneByteSame");
+    const alt = await box.run("oneByteAlt");
+
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(same.output).toBe("[REDACTED]".repeat(333));
+    expect(alt.output).toBe("[REDACTED]".repeat(334));
+
+    await using stallBox = await createSandbox(provider, { secrets: { S: "AB" } });
+    const huge = await stallBox.run("hugeStalled", { maxOutputBytes: 2_000_000 });
+
+    expect(huge.truncated).toBe(true);
+    expect(huge.stdout).toBe("[REDACTED]");
+  });
+
+  test("handles huge secrets, linear escaped Bearer scrubbing, alternating T[REDACTED] stalls, and benign XY[REDACTED] streams", async () => {
+    const bigSecret = "a".repeat(100_000);
+    const bigRedactor = new Redactor();
+    bigRedactor.add([bigSecret]);
+
+    expect(bigRedactor.text(`pre ${bigSecret} post`)).toBe("pre [REDACTED] post");
+
+    const tBearer = Date.now();
+    const evilBearer = `Bearer \\"${"a".repeat(50_000)}`;
+
+    expect(scrubCredentials(evilBearer)).toBe("Bearer [REDACTED]");
+    expect(Date.now() - tBearer).toBeLessThan(1_000);
+    expect(scrubCredentials('Bearer \\"LEAK_123')).toBe("Bearer [REDACTED]");
+
+    const provider = memory({
+      handlers: {
+        altFlush({ stdout, stderr }) {
+          for (let i = 0; i < 4_000; i++) {
+            stdout("T");
+            stderr("T");
+          }
+
+          return 0;
+        },
+        altUnblock({ stdout, stderr }) {
+          for (let i = 0; i < 4_000; i++) {
+            stdout("T");
+            stderr("T");
+          }
+
+          stdout("Z");
+          stderr("Z");
+
+          return 0;
+        },
+        benignX({ stdout }) {
+          for (let i = 0; i < 1_100; i++) {
+            stdout("X".repeat(1_024));
+          }
+
+          return 0;
+        },
+      },
+    });
+
+    await using tBox = await createSandbox(provider, { secrets: { S: "T[REDACTED]" } });
+    const t0 = Date.now();
+    const flushed = await tBox.run("altFlush");
+    const unblocked = await tBox.run("altUnblock");
+
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(flushed.stdout).toBe("T".repeat(4_000));
+    expect(flushed.stderr).toBe("T".repeat(4_000));
+    expect(unblocked.stdout).toBe(`${"T".repeat(4_000)}Z`);
+    expect(unblocked.stderr).toBe(`${"T".repeat(4_000)}Z`);
+
+    await using xyBox = await createSandbox(provider, { secrets: { S: "XY[REDACTED]" } });
+    const benign = await xyBox.run("benignX", { maxOutputBytes: 2_000_000 });
+
+    expect(benign.truncated).toBe(false);
+    expect(benign.stdout.length).toBe(1_100 * 1_024);
+  });
+
+  test("preserves interleaved output characters, batch/stream marker parity, and fail-closed overflow boundaries", async () => {
+    const redactor = new Redactor();
+    redactor.add(["ab"]);
+
+    expect(redactor.text("abab")).toBe("[REDACTED][REDACTED]");
+
+    const provider = memory({
+      handlers: {
+        interleavedDrop({ stdout, stderr }) {
+          stdout("a");
+          stderr("ba");
+
+          return 0;
+        },
+        adjacentParity({ stdout }) {
+          stdout("ab");
+          stdout("ab");
+
+          return 0;
+        },
+        failClosedBoundary({ stdout, stderr }) {
+          stdout("A");
+
+          for (let i = 0; i < 1_100; i += 1) stderr("x".repeat(1_024));
+          stdout("X");
+
+          return 0;
+        },
+        redactedAltUnblock({ stdout, stderr }) {
+          for (let i = 0; i < 4_000; i += 1) {
+            stdout("T");
+            stderr("T");
+          }
+
+          stdout("Z");
+          stderr("Z");
+
+          return 0;
+        },
+      },
+    });
+
+    await using interBox = await createSandbox(provider, { secrets: { A: "aa", B: "ab" } });
+    const inter = await interBox.run("interleavedDrop");
+
+    expect(inter.output).toBe("[REDACTED]a");
+
+    await using parityBox = await createSandbox(provider, { secrets: { A: "ab" } });
+    const parity = await parityBox.run("adjacentParity");
+
+    expect(parity.stdout).toBe("[REDACTED][REDACTED]");
+    expect(parity.output).toBe("[REDACTED][REDACTED]");
+
+    await using boundaryBox = await createSandbox(provider, {
+      secrets: { A: "AB", B: "[REDACTED]X" },
+    });
+
+    const boundary = await boundaryBox.run("failClosedBoundary", { maxOutputBytes: 2_000_000 });
+
+    expect(boundary.truncated).toBe(true);
+    expect(boundary.stdout).not.toContain("[REDACTED]X");
+
+    await using unblockBox = await createSandbox(provider, {
+      secrets: { S: "T[REDACTED]", R: "TZ" },
+    });
+
+    const t0 = Date.now();
+    const unblocked = await unblockBox.run("redactedAltUnblock");
+
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(unblocked.stdout).toBe("[REDACTED]");
+    expect(unblocked.stderr).toBe("[REDACTED]");
+
+    const r15Provider: typeof provider = {
+      ...provider,
+      async exec(_id, input) {
+        if (input.command === "markerSuffixOverflow") {
+          input.onChunk?.({ stream: "stdout", text: "A" });
+          const pad = "b".repeat(1024);
+
+          for (let i = 0; i < 1100; i++) input.onChunk?.({ stream: "stderr", text: pad });
+
+          input.onChunk?.({ stream: "stdout", text: "X1" });
+          input.onChunk?.({ stream: "stdout", text: "X2" });
+
+          return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+        }
+
+        if (input.command === "pingPongUnblock") {
+          for (let i = 0; i < 4000; i++) {
+            input.onChunk?.({ stream: "stdout", text: "T" });
+            input.onChunk?.({ stream: "stderr", text: "T" });
+          }
+
+          input.onChunk?.({ stream: "stdout", text: " QZ" });
+          input.onChunk?.({ stream: "stderr", text: " QZ" });
+
+          return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+        }
+
+        return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+      },
+    };
+
+    await using suffixBox = await createSandbox(r15Provider, {
+      secrets: { A: "AB", B: "ED]X1X2", C: "]X1X2" },
+    });
+
+    const suffixOut = await suffixBox.run("markerSuffixOverflow", { maxOutputBytes: 2_000_000 });
+
+    expect(suffixOut.stdout).not.toContain("X1X2");
+
+    await using pingPongBox = await createSandbox(r15Provider, {
+      secrets: { A: "T[", B: "QZ" },
+    });
+
+    const t1 = Date.now();
+    const pingPongOut = await pingPongBox.run("pingPongUnblock");
+
+    expect(Date.now() - t1).toBeLessThan(2_000);
+    expect(pingPongOut.stdout).toBe(`${"T".repeat(4000)} [REDACTED]`);
+    expect(pingPongOut.stderr).toBe(`${"T".repeat(4000)} [REDACTED]`);
+  });
+
+  test("preserves single-chunk parity across all splits and 1-char chunks for chained around-marker secrets", async () => {
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly secrets: Record<string, string>;
+      readonly payload: string;
+    }> = [
+      {
+        name: "Y-around-Y chained with marker-prefix bab",
+        secrets: { A: "[REDACTED]bab", B: "Y[REDACTED]Y" },
+        payload: "Y[REDACTED]Y[REDACTED]babY",
+      },
+      {
+        name: "X-around-Y chained with Y-around-Z and tok",
+        secrets: { A: "X[REDACTED]Y", B: "Y[REDACTED]Z", C: "tok" },
+        payload: "XtokYtokZ",
+      },
+    ];
+
+    for (const item of cases) {
+      let currentChunks: string[] = [];
+      const base = memory();
+
+      const splitProvider: typeof base = {
+        ...base,
+        async exec(_id, input) {
+          for (const chunk of currentChunks) {
+            input.onChunk?.({ stream: "stdout", text: chunk });
+          }
+
+          return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+        },
+      };
+
+      await using box = await createSandbox(splitProvider, { secrets: item.secrets });
+
+      currentChunks = [item.payload];
+      const whole = await box.run("whole");
+      expect(whole.stdout).toBe("[REDACTED]");
+
+      // Every 2-way split including cut right before the final trailing character
+      for (let cut = 1; cut < item.payload.length; cut += 1) {
+        currentChunks = [item.payload.slice(0, cut), item.payload.slice(cut)];
+        const res = await box.run(`split-${cut}`);
+        expect(res.stdout, `${item.name} cut@${cut}`).toBe(whole.stdout);
+      }
+
+      // One-character chunks
+      currentChunks = [...item.payload];
+      const oneChar = await box.run("one-char");
+      expect(oneChar.stdout, `${item.name} 1-char`).toBe(whole.stdout);
+    }
+  });
+});

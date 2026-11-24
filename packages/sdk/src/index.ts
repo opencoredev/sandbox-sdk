@@ -21,6 +21,8 @@ import { forgetKey, forgetSandbox, knownKey, rememberKey, withKeyLock } from "./
 
 export { SandboxError } from "./errors.js";
 
+export { withRetry, type RetryOptions } from "./retry.js";
+
 export type { ErrorCode, ErrorOptions } from "./errors.js";
 
 export type {
@@ -61,7 +63,13 @@ export type { NativeApi, NativeRequestOptions, HttpMethod } from "./native.js";
 
 export type { Files, FileDiff, FileEvent } from "./files.js";
 
-export type { ProcessHandle, ProcessInfo, StartOptions, Readiness } from "./processes.js";
+export type {
+  ProcessHandle,
+  ProcessInfo,
+  StartOptions,
+  Readiness,
+  WaitOptions,
+} from "./processes.js";
 
 export type { Git } from "./git.js";
 
@@ -78,20 +86,37 @@ export function hasCapability<B extends SandboxBase<unknown>, K extends Capabili
 
 const sdkLabel = { "sandbox-sdk": "1" };
 
+/** The optional provider methods each capability stands for. */
+const capabilityMethods = [
+  ["pause", ["pause", "resume"]],
+  ["snapshot", ["snapshot"]],
+  ["terminal", ["terminal"]],
+  ["snapshot-delete", ["deleteSnapshot"]],
+  ["templates", ["buildTemplate"]],
+] as const satisfies readonly (readonly [Capability, readonly (keyof Provider)[]])[];
+
+function isCallable<T>(value: T): value is NonNullable<T> {
+  return typeof value === "function";
+}
+
 function validate(provider: Provider, options: CreateOptions) {
   for (const name of Object.keys({ ...options.env, ...options.secrets }))
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) invalid("Invalid environment variable name");
 
-  for (const cap of provider.capabilities) {
-    if (
-      (cap === "pause" && (!provider.pause || !provider.resume)) ||
-      (cap === "snapshot" && !provider.snapshot) ||
-      (cap === "terminal" && !provider.terminal) ||
-      (cap === "snapshot-delete" && !provider.deleteSnapshot) ||
-      (cap === "templates" && !provider.buildTemplate)
-    )
+  // Both directions: a declared capability needs its methods, and a method needs its capability,
+  // because the handle only exposes a method whose capability is declared.
+  for (const [capability, methods] of capabilityMethods) {
+    const present = methods.filter((method) => isCallable(provider[method]));
+
+    if (provider.capabilities.has(capability) && present.length !== methods.length)
       throw new SandboxError(
-        "Invalid adapter capabilities. A declared method is missing. Fix the adapter contract.",
+        `Invalid adapter capabilities. ${provider.name} declares "${capability}" but does not implement ${methods.join(" and ")}. Fix the adapter contract.`,
+        { code: "provider" },
+      );
+
+    if (!provider.capabilities.has(capability) && present.length > 0)
+      throw new SandboxError(
+        `Invalid adapter capabilities. ${provider.name} implements ${present.join(" and ")} but does not declare "${capability}". Fix the adapter contract.`,
         { code: "provider" },
       );
   }
@@ -130,6 +155,31 @@ function validate(provider: Provider, options: CreateOptions) {
   for (const value of [options.timeoutMs, options.idleTimeoutMs])
     if (value !== undefined && (!Number.isFinite(value) || value <= 0))
       invalid("Timeouts must be positive milliseconds");
+}
+
+/** Waits for a lookup, or rejects `aborted` as soon as `signal` fires. Only for calls that change nothing. */
+async function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  let abort = () => {};
+
+  const cancellation = new Promise<never>((_, reject) => {
+    abort = () =>
+      reject(
+        new SandboxError(
+          "Creation aborted. The signal was cancelled during the key lookup. Retry with a fresh signal.",
+          { code: "aborted" },
+        ),
+      );
+    signal.addEventListener("abort", abort, { once: true });
+
+    if (signal.aborted) abort();
+  });
+
+  try {
+    return await Promise.race([work, cancellation]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
 }
 
 export function createSandbox<P extends Provider>(
@@ -183,7 +233,10 @@ export async function createSandbox(
           forgetKey(provider, options.key);
         }
 
-        info ??= await provider.find(options.key);
+        info ??= await untilAborted(
+          provider.find(options.key, { signal: options.signal }),
+          options.signal,
+        );
       }
 
       let created = !info;
@@ -210,9 +263,11 @@ export async function createSandbox(
           // A native unique-name conflict can race the initial lookup on another client.
           if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) {
             // The create's own error (often outcome_unknown) says more than a failed follow-up lookup.
-            const existing = await provider.find(options.key).catch(() => {
-              throw error;
-            });
+            const existing = await provider
+              .find(options.key, { signal: options.signal })
+              .catch(() => {
+                throw error;
+              });
 
             if (existing) {
               created = false;
@@ -426,13 +481,14 @@ function hook<T>(
       { code: "unsupported", provider: provider.name },
     );
 
-  if (found === undefined)
+  if (!isCallable(found))
     throw new SandboxError(
       "Invalid adapter capabilities. A declared method is missing. Fix the adapter contract.",
       { code: "provider", provider: provider.name },
     );
 
-  return found;
+  // SAFETY: `isCallable` guarantees `found` is a callable function, so it cannot be undefined.
+  return found as T;
 }
 
 /**

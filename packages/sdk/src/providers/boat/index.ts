@@ -27,11 +27,11 @@ export interface BoatOptions extends BoatCreateOptions {
   apiKey?: string;
   /** Defaults to BOAT_API_BASE, then https://boat.dev/api/v1. */
   baseUrl?: string;
-  /** @deprecated Use baseUrl. Removed in 1.0.0. */
+  /** @deprecated Use baseUrl. Deprecated; will be removed in 2.0.0. */
   apiUrl?: string;
   /** Native machine size; default: Boat default (4 CPU/8 GB). Per-create size wins. */
   machine?: BoatMachine;
-  /** @deprecated Use machine. Removed in 1.0.0. */
+  /** @deprecated Use machine. Deprecated; will be removed in 2.0.0. */
   type?: BoatMachine;
   /** Deadline for each control-plane request. Default: 90 seconds. */
   requestTimeoutMs?: number;

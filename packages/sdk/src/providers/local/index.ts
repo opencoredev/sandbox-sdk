@@ -30,6 +30,8 @@ export interface LocalOptions {
   image?: string;
   /** Defaults to DOCKER_HOST, then unix:///var/run/docker.sock; absolute unix:// sockets only. */
   dockerHost?: string;
+  /** Idle timeout for one Docker Engine API request, such as a slow image pull. Default: 600000 (10 minutes). */
+  apiTimeoutMs?: number;
   /** Image platform for pull and create, such as linux/amd64. Default: the daemon's platform. */
   platform?: string;
   /** User commands and file operations run as: name, uid or uid:gid. Default: the image user. /workspace is given to this user. */
@@ -215,7 +217,7 @@ export type LocalProvider = Provider<LocalNative, LocalCapability>;
 
 /** Local Docker Engine transport. No Docker CLI or daemon inside the container. */
 export function local(options: LocalOptions = {}): LocalProvider {
-  const client = new Docker(options.dockerHost);
+  const client = new Docker(options.dockerHost, { apiTimeoutMs: options.apiTimeoutMs });
   const image = options.image ?? "node:22-bookworm";
   const host = hostOptions(options);
   const platform = options.platform ? `&platform=${encode(options.platform)}` : "";
