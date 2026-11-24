@@ -1449,8 +1449,11 @@ describe("sweep ownership", () => {
 
     // Truly truncated JSON without a trailing newline at EOF is safely dropped.
     expect(parseLog(`${JSON.stringify(start)}\n{"kind":"segment","at":`)).toHaveLength(1);
-    // Invalid JSON with a trailing newline is a complete corrupt line and fails.
+    // Invalid JSON with a trailing newline (even followed by whitespace) is a complete corrupt line and fails.
     expect(() => parseLog(`${JSON.stringify(start)}\n{"kind":"segment","at":\n`)).toThrow(
+      /Log line 2/,
+    );
+    expect(() => parseLog(`${JSON.stringify(start)}\n{"kind":"segment","at":\n  `)).toThrow(
       /Log line 2/,
     );
   });
