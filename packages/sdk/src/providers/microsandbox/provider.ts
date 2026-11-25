@@ -35,6 +35,7 @@ import type { CreateInput, ExecInput, Labels, Provider, SandboxInfo } from "../.
 import { files as guestFiles, type Guest } from "../../shared/guest.js";
 import type { JsonObject, JsonValue } from "../../shared/json.js";
 import { isString } from "../../shared/narrow.js";
+import { bootRepairScript } from "../../shell/process-records.js";
 import {
   allocLabel,
   capturedFrom,
@@ -348,14 +349,6 @@ function seconds(ms: number, option: string, min: number) {
 /** Run once in a new sandbox, also one restored from a snapshot: the SDK works in /workspace. */
 const setupCommand = "mkdir -p /workspace";
 
-/**
- * A stop ends every guest process but leaves its record on the disk, which a restart or a restore
- * keeps. Only what is proven to be from before the guest's boot is touched: a record without an exit,
- * or a run marker, last written in an earlier second than the kernel's boot time (`btime`). A record
- * written since the boot is never marked killed, so any client can run this at any time.
- */
-const repair = `boot=$(sed -n 's/^btime //p' /proc/stat); [ -n "$boot" ] || exit 1; for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && [ "$(stat -c %Y "$d/spec.json")" -lt "$boot" ] && printf 137 > "$d/exit"; done; for m in /tmp/.sandbox-sdk/runs/*; do [ -e "$m" ] && [ "$(stat -c %Y "$m")" -lt "$boot" ] && rm -rf "$m"; done; true`;
-
 /** @internal The adapter behind `microsandbox()`. `load` imports `microsandbox`; tests pass a fixture. */
 export function createMicrosandboxProvider(
   options: MicrosandboxOptions,
@@ -506,7 +499,7 @@ export function createMicrosandboxProvider(
   /**
    * The guest agent handle of sandbox `id`, through this adapter's own `RemoteContext`. The lookup has
    * its own `requestTimeoutMs` deadline, and a failed one is dropped so the next call connects again.
-   * Each handle runs {@link repair} before its first use, so this client never trusts the record of a
+   * Each handle runs {@link bootRepairScript} before its first use, so this client never trusts the record of a
    * process a stop ended, whoever restarted or restored the sandbox.
    */
   function handle(id: string): Promise<PeerSandbox> {
@@ -534,7 +527,7 @@ export function createMicrosandboxProvider(
           sandbox: Promise.resolve(sandbox),
           sandboxId: id,
           redact,
-          exec: { command: repair, cwd: "/", env: {}, timeoutMs: 60_000, onChunk() {} },
+          exec: { command: bootRepairScript(), cwd: "/", env: {}, timeoutMs: 60_000, onChunk() {} },
         });
 
         if (repaired.timedOut || repaired.exitCode !== 0)
@@ -715,7 +708,7 @@ export function createMicrosandboxProvider(
   }
 
   /**
-   * Starts a sandbox a stop ended and connects to it, which runs {@link repair}, before it is handed
+   * Starts a sandbox a stop ended and connects to it, which runs {@link bootRepairScript}, before it is handed
    * out. An abort after the start leaves the repair to the next connection.
    */
   async function revive(id: string, deadline: Deadline, signal?: AbortSignal) {
@@ -810,7 +803,7 @@ export function createMicrosandboxProvider(
     const unpersistedIdentity: string[] = [];
     const unproven: string[] = [];
 
-    /** Visits each Service over every page of `GET /services`; false when the list failed. */
+    /** Visits each Service over every page of `GET /services`; false when the list failed or ran past its page cap. */
     const listServices = async (
       sandbox: string | undefined,
       visit: (service: MicrosandboxService) => void,
@@ -828,10 +821,10 @@ export function createMicrosandboxProvider(
           answer.data.forEach(visit);
           cursor = answer.nextCursor;
 
-          if (cursor === undefined) break;
+          if (cursor === undefined) return true;
         }
 
-        return true;
+        return false;
       } catch {
         return false;
       }

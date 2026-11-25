@@ -301,6 +301,40 @@ test("PR88-2 a failed listing is remembered even when the sandbox DELETE's answe
   await expect(fresh.destroy(sandbox)).rejects.toThrow(slug);
 });
 
+test("PR88-2 a Service scan that runs past its page cap leaves the unproven Services remembered", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+  const { url } = await p.previewUrl(sandbox, 3000);
+  const slug = new URL(url).pathname.split("/").at(-1) ?? "";
+  let listing: "fails" | "endless" | "real" = "fails";
+
+  const fresh = adapter({
+    fetch: async (input, init) => {
+      const target = new URL(input);
+
+      if (target.pathname !== "/v1/services" || init.method !== "GET" || listing === "real")
+        return realFetch(input, init);
+
+      if (listing === "fails")
+        return Response.json({ error: { code: "internal_error" } }, { status: 500 });
+
+      return target.searchParams.has("sandbox")
+        ? realFetch(input, init)
+        : Response.json({ data: [], next_cursor: "more" });
+    },
+  });
+
+  await expect(fresh.destroy(sandbox)).rejects.toThrow(/could not be listed/);
+
+  // A list that still has a cursor after the cap is not a complete scan, so it clears nothing.
+  listing = "endless";
+  await expect(fresh.destroy(sandbox)).rejects.toThrow(/could not be listed/);
+
+  listing = "real";
+  await expect(fresh.destroy(sandbox)).rejects.toThrow(slug);
+  expect(fake.services.get(slug)?.status).toBe("detached");
+});
+
 test("PR88-2 an unreadable sandbox name fails the destroy instead of reporting its Services removed", async () => {
   const p = adapter();
   const { id: sandbox } = await p.create({ labels: labels() });
@@ -375,6 +409,28 @@ test("PR88-4 a restore marks the processes its source's stop ended as exited", a
     ).stdout,
   ).toBe("none run");
 });
+
+test("PR88-4 a repair waits for the record's lock, so a setup reusing the name is never marked killed", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+  expect((await exec(p, sandbox, staleRecord)).exitCode).toBe(0);
+
+  // A setup holds the lock, rewrites the old record for a new run, then lets go.
+  const setup = exec(
+    p,
+    sandbox,
+    "d=/tmp/.sandbox-sdk/procs/p1; mkdir $d/lock && : > $d/lock/$$ && sleep 1 && echo '{}' > $d/spec.json && rm $d/lock/$$ && rmdir $d/lock",
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  const [next] = await Promise.all([
+    exec(adapter(), sandbox, "cat /tmp/.sandbox-sdk/procs/p1/exit 2>/dev/null || printf none"),
+    setup,
+  ]);
+
+  expect(next.stdout).toBe("none");
+}, 10_000);
 
 test("PR88-5 a guest agent lookup that never answers still ends at the command's timeout or abort", async () => {
   const { id: sandbox } = await adapter().create({ labels: labels() });

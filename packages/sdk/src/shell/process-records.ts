@@ -102,6 +102,33 @@ export function logPageScript(input: {
   ].join("; ");
 }
 
+/** After a stop and a start, mark as killed (137) each record that has no exit and was last
+ * written in an earlier second than the guest's boot (`btime`), and remove run markers older than
+ * the boot. Each check and write holds the record's lock, so a setup that reuses the name since
+ * the boot is never marked killed, and any client can run this at any time. */
+export function bootRepairScript(): string {
+  const lock = `"$d/lock"`;
+
+  const mark = [
+    ...lockLines(lock),
+    `trap ${quote(unlockCommand(lock))} EXIT`,
+    `[ ! -f "$d/spec.json" ] || [ -f "$d/exit" ] || [ "$(stat -c %Y "$d/spec.json")" -ge "$boot" ] || printf 137 > "$d/exit"`,
+  ];
+
+  return [
+    `boot=$(sed -n 's/^btime //p' /proc/stat)`,
+    `[ -n "$boot" ] || exit 1`,
+    `for d in /tmp/.sandbox-sdk/procs/*`,
+    `do [ -f "$d/spec.json" ] || continue`,
+    `(${mark.join("; ")}) || exit 1`,
+    `done`,
+    `for m in /tmp/.sandbox-sdk/runs/*`,
+    `do [ -e "$m" ] && [ "$(stat -c %Y "$m")" -lt "$boot" ] && rm -rf "$m"`,
+    `done`,
+    `true`,
+  ].join("; ");
+}
+
 /** Prepare a process directory in one exec. stdin carries spec.json and restart.json as two
  * base64 lines, which keeps exact UTF-8 bytes through transports that normalize input.
  * A missing working directory becomes the process's own failed exit and log. */

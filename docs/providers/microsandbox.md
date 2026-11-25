@@ -121,8 +121,11 @@ A stop ends every guest process but leaves its record on the disk, which a
 restart or restore keeps. Every guest handle, before its first use, marks as
 killed (137) each record without an exit whose `spec.json` was last written in
 an earlier second than the kernel's boot time (`btime` in `/proc/stat`), and
-removes run markers older than that. Nothing written since the boot is touched,
-so the repair is safe for any client at any time. `find()` and the restart
+removes run markers older than that. Each record's check and write hold that
+record's lock (`bootRepairScript` in `shell/process-records.ts`), so a setup
+reusing the name cannot be marked between them. Nothing written since the boot
+is touched, and a record written in the boot's own second is left alone, so the
+repair is safe for any client at any time. `find()` and the restart
 after a snapshot connect right after their start, so the sandbox they hand out
 is already repaired. A client whose handle predates another client's restart
 can still read the old records until it reconnects; it never loses current
