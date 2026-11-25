@@ -493,7 +493,10 @@ export function createBoxdProvider<C extends BoxdClient>(
           createdAt,
         });
 
+        // A v2 name makes the machine findable at admission, so an allow-list keeps its metadata in
+        // the guest file, written only once the list is confirmed.
         const nativeOwnership =
+          allow === undefined &&
           input.key === undefined &&
           Object.keys(input.labels).every(
             (key) => key === "sandbox-sdk" && input.labels[key] === "1",
