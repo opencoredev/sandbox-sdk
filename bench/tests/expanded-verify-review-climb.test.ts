@@ -1,12 +1,16 @@
-import type { Labels, SandboxInfo } from "@opencoredev/sandbox-sdk";
+import { createSandbox, type Labels, type SandboxInfo } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { describe, expect, it } from "vitest";
 import {
   cleanupFailure,
   runAll,
   runInSandbox,
   runLabel,
+  scenarioOutcome,
   type RunOutcome,
 } from "../scripts/climb-check-expanded.js";
+import { filesystemScenarios } from "../src/expanded/filesystem.js";
+import { exportExpandedSiteData } from "../src/expanded/registry.js";
 
 const runId = "run-1";
 
@@ -153,5 +157,32 @@ describe("climb check runs", () => {
       ok: false,
       reason: "a broke",
     });
+  });
+});
+
+describe("climb check samples", () => {
+  it("carry the scenario's metric version, so a versioned scenario's pass is exported", async () => {
+    const transfer = filesystemScenarios.find((s) => s.id === "fs-sdk-transfer-batch");
+
+    if (!transfer) throw new Error("fs-sdk-transfer-batch is not registered");
+
+    const scenario = {
+      ...transfer,
+      run: async () => ({ value: 12.5, proof: "fs-sdk-xfer:proof" }),
+    };
+
+    const box = await createSandbox(memory());
+
+    try {
+      const outcome = await scenarioOutcome(scenario, box, 7);
+
+      if (!outcome.ok) throw new Error(outcome.reason);
+      expect(outcome.sample.metricVersion).toBe(2);
+      expect(exportExpandedSiteData([outcome.sample], [scenario]).metrics[0]?.values).toMatchObject(
+        [{ provider: "local", n: 1, median: 12.5 }],
+      );
+    } finally {
+      await box.destroy();
+    }
   });
 });
