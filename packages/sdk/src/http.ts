@@ -1056,7 +1056,7 @@ export function createHttpClient<Plane extends string>(
 
         if (plane.redirects === false && response.status >= 300 && response.status < 400) {
           await response.body?.cancel().catch(() => {});
-          const write = method !== "GET" && method !== "HEAD";
+          const write = method !== "GET" && method !== "HEAD" && !request.readOnly;
 
           throw failure(
             write ? "outcome_unknown" : "provider",
