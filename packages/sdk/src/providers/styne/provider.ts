@@ -8,7 +8,6 @@ import { randomUUID } from "node:crypto";
 import { SandboxError, type ErrorCode } from "../../errors.js";
 import {
   createHttpClient,
-  httpStatus,
   neverSent,
   type Fetch,
   type HttpClient,
@@ -52,7 +51,17 @@ import {
   type StyneSandbox,
   type StyneSnapshot,
 } from "./api.js";
-import { codeOf, ended, fail, mapError, provider as name } from "./errors.js";
+import {
+  causeOf,
+  codeOf,
+  fail,
+  isGoneAnswer,
+  mapError,
+  provider as name,
+  StyneFailure,
+  type StyneAnswer,
+  type StyneTarget,
+} from "./errors.js";
 
 /** Styne has one API surface, `https://api.styne.ai`. */
 export type StynePlane = "api";
@@ -252,34 +261,16 @@ function readJson(response: HttpResponse): JsonValue | undefined {
   }
 }
 
-/**
- * Whether Styne itself said a delete's target is gone: `404 not_found`, or for a sandbox a 410 with an
- * ended code. The shared status mapping reads every 404 and 410 as `not_found`, a route's own included.
- */
-function isGone(error: SandboxError, target: "sandbox" | "snapshot"): boolean {
-  const answer = httpStatus(error);
-
-  if (answer === undefined) return false;
-
-  if (answer.status === 404) return answer.code === "not_found";
-
-  return (
-    target === "sandbox" &&
-    answer.status === 410 &&
-    answer.code !== undefined &&
-    ended.has(answer.code)
-  );
+/** Styne's own answer behind a failed request, which the client keeps as the error's cause. */
+function answerBehind(error: SandboxError): StyneAnswer | undefined {
+  return error.cause instanceof StyneFailure ? error.cause.answer : undefined;
 }
 
-/** A delete's failure, where a 404 or 410 Styne's code does not explain is `provider`: never read as gone. */
-function unexplained(error: SandboxError, sandboxId?: string): SandboxError {
-  if (error.code !== "not_found") return error;
+/** Whether a delete's failure is Styne saying `target` is gone ({@link isGoneAnswer}). */
+function isGone(error: SandboxError, target: StyneTarget): boolean {
+  const answer = answerBehind(error);
 
-  return fail(
-    "the delete was answered with a 404 or 410 that Styne's error code does not explain; it may still exist",
-    "provider",
-    { sandboxId, cause: error.message },
-  );
+  return answer !== undefined && isGoneAnswer(answer, target);
 }
 
 export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
@@ -326,6 +317,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     idempotencyHeader: "Idempotency-Key",
     authHint: "Set STYNE_API_KEY to a valid Styne API key.",
     mapError,
+    cause: causeOf,
   });
 
   const binding: NativeSdkBinding = {
@@ -385,7 +377,12 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
   const idempotent = () => ({ idempotencyKey: randomUUID() });
 
   async function getSandbox(id: string): Promise<StyneSandbox> {
-    return parseSandbox(remember(await http.json({ method: "GET", ...sandboxPath(id) })));
+    const sandbox = parseSandbox(remember(await http.json({ method: "GET", ...sandboxPath(id) })));
+
+    if (sandbox.id !== id)
+      throw fail("the API answered for another sandbox", "provider", { sandboxId: id });
+
+    return sandbox;
   }
 
   async function listSandboxes(labels: Labels): Promise<StyneSandbox[]> {
@@ -420,17 +417,17 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     if (known) return known;
 
     // A connect resumes a paused sandbox and keeps it alive at least 5 more minutes; a preview needs it
-    // running. Being a write, a connect whose answer is lost, unreadable or incomplete is
-    // outcome_unknown: it may have done either.
+    // running. Being a write, a connect whose answer is lost, unreadable, incomplete or about another
+    // sandbox is outcome_unknown: it may have done either.
     const answer = parseSandboxAnswer(
       remember(
         readJson(await http.request({ method: "POST", ...sandboxPath(id, "/connect"), body: {} })),
       ),
     );
 
-    if (answer.kind !== "connection")
+    if (answer.kind !== "connection" || answer.connection.id !== id)
       throw fail(
-        "the connect was answered but its answer could not be read; the sandbox may have been resumed and its lifetime extended",
+        "the connect was answered but its answer could not be read or named another sandbox; the sandbox may have been resumed and its lifetime extended",
         "outcome_unknown",
         { sandboxId: id },
       );
@@ -447,8 +444,8 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
       if (!(error instanceof SandboxError)) throw error;
 
       // A second delete answers `404 not_found`, an ended sandbox a 410 with an ended code: either way
-      // it is gone. A route-level or undecodable 404 or 410 says nothing about the sandbox.
-      if (!isGone(error, "sandbox")) throw unexplained(error, id);
+      // it is gone. A route-level, undecodable or foreign 404 or 410 says nothing about this sandbox.
+      if (!isGone(error, { sandboxId: id })) throw error;
     } finally {
       connections.delete(id);
       natives.delete(id);
@@ -1071,27 +1068,34 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
           ...idempotent(),
         });
       } catch (error) {
-        if (httpStatus(error)?.code !== "already_paused") throw error;
+        if (!(error instanceof SandboxError && answerBehind(error)?.errorCode === "already_paused"))
+          throw error;
       }
     },
 
     async resume(id) {
       try {
-        connections.set(
-          id,
-          parseConnection(
-            remember(
-              await http.json({
-                method: "POST",
-                ...sandboxPath(id, "/resume"),
-                body: {},
-                ...idempotent(),
-              }),
-            ),
+        const resumed = parseConnection(
+          remember(
+            await http.json({
+              method: "POST",
+              ...sandboxPath(id, "/resume"),
+              body: {},
+              ...idempotent(),
+            }),
           ),
         );
+
+        if (resumed.id !== id)
+          throw fail("the resume was answered for another sandbox", "outcome_unknown", {
+            sandboxId: id,
+          });
+        connections.set(id, resumed);
       } catch (error) {
-        if (httpStatus(error)?.code !== "already_running") throw error;
+        if (
+          !(error instanceof SandboxError && answerBehind(error)?.errorCode === "already_running")
+        )
+          throw error;
       }
     },
 
@@ -1103,6 +1107,11 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
       const snapshotName = `sbx-${randomUUID()}`;
 
       // The name was chosen before the request, so a lost or unreadable answer can be looked up.
+      // Ours: this name, of this sandbox whenever the answer names its source.
+      const isOurs = (snapshot: StyneSnapshot) =>
+        snapshot.name === snapshotName &&
+        (snapshot.sandboxId === undefined || snapshot.sandboxId === id);
+
       const lookUp = async (unknown: SandboxError) => {
         const found: StyneSnapshot = await http
           .cleanup({ method: "GET", path: "/snapshots/{name}", params: { name: snapshotName } })
@@ -1111,7 +1120,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
             throw unknown;
           });
 
-        if (found.name !== snapshotName) throw unknown;
+        if (!isOurs(found)) throw unknown;
 
         return { id: found.name };
       };
@@ -1132,17 +1141,18 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
         return lookUp(error);
       }
 
-      let answered: string | undefined;
+      let answered: StyneSnapshot | undefined;
 
       try {
-        answered = parseSnapshot(readJson(response)).name;
+        answered = parseSnapshot(readJson(response));
       } catch {
         answered = undefined;
       }
 
-      if (answered === snapshotName) return { id: snapshotName };
+      if (answered !== undefined && isOurs(answered)) return { id: snapshotName };
 
-      // An answer naming another snapshot says nothing about ours: look ours up, never hand that one over.
+      // An answer naming another snapshot or source says nothing about ours: look ours up, never hand that
+      // one over.
       return lookUp(
         fail(
           `the snapshot was answered but its answer did not name it; it may exist as ${snapshotName}`,
@@ -1164,9 +1174,10 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
       } catch (error) {
         if (!(error instanceof SandboxError)) throw error;
 
-        // Only Styne's `404 not_found`; a route-level or undecodable 404 is not a missing snapshot.
-        if (isGone(error, "snapshot")) return false;
-        throw unexplained(error);
+        // Only Styne's `404 not_found` for this snapshot; a route-level, undecodable or foreign 404 is not
+        // a missing snapshot.
+        if (isGone(error, { snapshot: snapshotId })) return false;
+        throw error;
       }
     },
   };

@@ -9,8 +9,9 @@ import {
   lookupError,
   nativeModules,
   styneEnded,
-  styneErrorBody,
+  styneErrorCode,
   type NativeModules,
+  type StyneTarget,
 } from "./existence.js";
 import { connectionOf, endpoint, modalClientParams } from "./connections.js";
 import { deadline } from "./timing.js";
@@ -104,15 +105,12 @@ function styneFetch(provider: Provider, path: string, init: RequestInit = {}) {
   return fetch(`${baseUrl}${path}`, { ...init, headers, redirect: "error" });
 }
 
-async function readStyneErrorCode(response: Response): Promise<string | undefined> {
-  const parsed = styneErrorBody.safeParse(await response.json().catch(() => null));
-
-  return parsed.success ? parsed.data.error_code : undefined;
-}
-
-/** True only when Styne itself answered `404 not_found`; a route-level or undecodable 404 is not absence. */
-async function isStyneNotFound(response: Response): Promise<boolean> {
-  return response.status === 404 && (await readStyneErrorCode(response)) === "not_found";
+/**
+ * True only when Styne itself answered `404 not_found` about `target`; a route-level, undecodable or
+ * foreign 404 is not absence.
+ */
+async function isStyneNotFound(response: Response, target: StyneTarget): Promise<boolean> {
+  return response.status === 404 && (await styneErrorCode(response, target)) === "not_found";
 }
 
 function httpError(message: string, status: number) {
@@ -441,7 +439,7 @@ export async function snapshotCleaner(
       }
 
       if (response.status === 404) {
-        if (await isStyneNotFound(response)) return;
+        if (await isStyneNotFound(response, { sandboxId, snapshot: id })) return;
       } else {
         await response.body?.cancel();
       }
@@ -551,10 +549,13 @@ export async function createNamedDaytonaSnapshot(
   return { id: name };
 }
 
+const styneSnapshot = z.object({ name: z.string(), sandboxID: z.string().nullish() });
+
 /**
  * A Styne snapshot under a name and an idempotency key the run journaled before the request, so a lost
  * answer still names the snapshot, and {@link settleStyneSave} can replay the save to decide it. The name
- * is the snapshot's portable ID.
+ * is the snapshot's portable ID. Only an answer naming this snapshot of this source confirms the save;
+ * anything else throws, and the save is then unsettled until {@link settleStyneSave} decides it.
  */
 export async function createNamedStyneSnapshot(
   provider: Provider,
@@ -577,14 +578,13 @@ export async function createNamedStyneSnapshot(
     throw httpError("Styne snapshot failed", response.status);
   }
 
-  const saved = z.object({ name: z.string() }).parse(await response.json());
+  const saved = styneSnapshot.parse(await response.json());
 
-  if (saved.name !== name) throw new Error("Styne snapshot name mismatch");
+  if (saved.name !== name || saved.sandboxID !== sandboxId)
+    throw new Error("Styne snapshot answer names another snapshot or source");
 
   return { id: name };
 }
-
-const styneSnapshot = z.object({ name: z.string(), sandboxID: z.string().nullish() });
 
 /** One read of a Styne snapshot: absent only on `404 not_found`, else its source, which must be this run's. */
 async function readStyneSnapshot(
@@ -596,7 +596,7 @@ async function readStyneSnapshot(
   const response = await styneFetch(provider, `/snapshots/${encodeURIComponent(name)}`, { signal });
 
   if (response.status === 404) {
-    if (await isStyneNotFound(response)) return "absent" as const;
+    if (await isStyneNotFound(response, { sandboxId, snapshot: name })) return "absent" as const;
     throw httpError("Styne snapshot read failed", response.status);
   }
 
@@ -618,8 +618,9 @@ async function readStyneSnapshot(
 
 /**
  * Whether a replayed Styne save refused it outright, so nothing was saved: an invalid request (400, 422),
- * `404 not_found` for the source, or a 410 naming an ended sandbox. A route-level 404 or 410, auth failure
- * (401, 403), conflict, rate limit or any 5xx says nothing about the first save.
+ * `404 not_found` for the source, or a 410 with an ended code, each from a body that names no other
+ * sandbox or snapshot ({@link styneErrorCode}). A route-level or foreign 404 or 410, auth failure (401,
+ * 403), conflict, rate limit or any 5xx says nothing about the first save.
  */
 function isStyneSaveRefusal(status: number, code: string | undefined): boolean {
   if (status === 400 || status === 422) return true;
@@ -652,7 +653,10 @@ function settleStyneSave(input: JournaledSave): Promise<"exists" | "absent"> {
       );
 
       if (response.status === 404 || response.status === 410)
-        return isStyneSaveRefusal(response.status, await readStyneErrorCode(response));
+        return isStyneSaveRefusal(
+          response.status,
+          await styneErrorCode(response, { sandboxId: input.sandboxId, snapshot: input.name }),
+        );
 
       await response.body?.cancel();
 
@@ -830,7 +834,8 @@ export async function inspectSnapshot(
 
         // Only Styne's own `404 not_found` is absence; a route-level or undecodable 404 is unavailable.
         if (response.status === 404) {
-          if (await isStyneNotFound(response)) return { exists: false };
+          if (await isStyneNotFound(response, { sandboxId: sourceId, snapshot: id }))
+            return { exists: false };
           throw httpError("Snapshot metadata unavailable", response.status);
         }
 

@@ -5,7 +5,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { deadline } from "../timing.js";
-import { CheckStop, type Box, type CheckContext } from "./framework.js";
+import { sanitize } from "../v2-runner.js";
+import { CheckStop, errorText, type Box, type CheckContext } from "./framework.js";
 import { nativeBinaries } from "./native-binary.js";
 
 const golden = 0x9e3779b9;
@@ -253,7 +254,7 @@ export function parseNativeOutput<T>(stdout: string, schema: z.ZodType<T>): Pars
   try {
     value = JSON.parse(line);
   } catch {
-    return { kind: "invalid", reason: `Output is not JSON: ${line.slice(0, 200)}` };
+    return { kind: "invalid", reason: `Output is not JSON: ${sanitize(line).slice(0, 200)}` };
   }
 
   const error = errorOutputSchema.safeParse(value);
@@ -365,7 +366,7 @@ export async function installNative(context: CheckContext, box: Box): Promise<In
 
     if (found === null) {
       errors.push(
-        `${via}: no directory could run it (exit ${placed.exitCode}) ${placed.stderr.slice(0, 200)}`,
+        `${via}: no directory could run it (exit ${placed.exitCode}) ${sanitize(placed.stderr).slice(0, 200)}`,
       );
 
       return null;
@@ -385,7 +386,7 @@ export async function installNative(context: CheckContext, box: Box): Promise<In
     if (installed) return installed;
   } catch (cause) {
     if (cause instanceof CheckStop) throw cause;
-    errors.push(`files: ${cause instanceof Error ? cause.message.slice(0, 200) : String(cause)}`);
+    errors.push(`files: ${errorText(cause).slice(0, 200)}`);
   }
 
   const encoded = Buffer.from(bytes)
@@ -402,7 +403,7 @@ export async function installNative(context: CheckContext, box: Box): Promise<In
     const installed = await place("base64");
 
     if (installed) return installed;
-  } else errors.push(`base64: exit ${written.exitCode} ${written.stderr.slice(0, 200)}`);
+  } else errors.push(`base64: exit ${written.exitCode} ${sanitize(written.stderr).slice(0, 200)}`);
 
   throw new CheckStop(`Could not install sbx-native: ${errors.join("; ")}`);
 }

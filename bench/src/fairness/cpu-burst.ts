@@ -20,7 +20,13 @@
  */
 import { z } from "zod";
 import { median } from "../sustained-cpu.js";
-import { CheckStop, type Check, type CheckContext, type CreatedBox } from "./framework.js";
+import {
+  CheckStop,
+  errorText,
+  type Check,
+  type CheckContext,
+  type CreatedBox,
+} from "./framework.js";
 import { burn, workers, type Burned } from "./cpu-native.js";
 import { installNative, type Installed } from "./native.js";
 import { firstCommand, parseFirst } from "./security-probe.js";
@@ -133,8 +139,7 @@ interface Prepared {
   readonly error: string | null;
 }
 
-const message = (cause: unknown) =>
-  cause instanceof Error ? cause.message.slice(0, 300) : String(cause);
+const message = (cause: unknown) => errorText(cause).slice(0, 300);
 
 async function prepare(context: CheckContext, created: CreatedBox): Promise<Prepared> {
   try {

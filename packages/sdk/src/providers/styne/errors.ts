@@ -1,5 +1,7 @@
 import { SandboxError, type ErrorCode } from "../../errors.js";
 import type { FailedRequest, HttpFailure } from "../../http.js";
+import { isJsonObject, type JsonValue } from "../../shared/json.js";
+import { isString } from "../../shared/narrow.js";
 
 export const provider = "styne";
 
@@ -52,6 +54,101 @@ const writes = new Set(["POST", "PATCH"]);
 
 const unsupported = new Set(["not_implemented", "not_supported", "class_not_served"]);
 
+const safeCode = /^[a-z][a-z0-9_]{0,63}$/;
+const plainId = /^[\w.-]{1,128}$/;
+
+/** The fields by which a Styne error body names the resource it answers for. */
+const nameKeys = ["sandboxID", "name", "snapshotID", "id"] as const;
+
+type NameKey = (typeof nameKeys)[number];
+
+/**
+ * A failed answer as Styne's own error body says it: the exact `error_code`, never the shared parser's
+ * `code` guess, and each resource the body names (`null` for a name that is not a plain ID).
+ */
+export interface StyneAnswer {
+  status: number;
+  errorCode: string | undefined;
+  names: Partial<Record<NameKey, string | null>>;
+}
+
+export function answerOf(status: number, json: JsonValue | undefined): StyneAnswer {
+  const body = isJsonObject(json) ? json : {};
+  const code = body.error_code;
+  const names: StyneAnswer["names"] = {};
+
+  for (const key of nameKeys) {
+    const value = body[key];
+
+    if (value !== undefined) names[key] = isString(value) && plainId.test(value) ? value : null;
+  }
+
+  return { status, errorCode: isString(code) && safeCode.test(code) ? code : undefined, names };
+}
+
+/** What a request was about: its sandbox, and for a snapshot call the snapshot's name, its ID. */
+export interface StyneTarget {
+  sandboxId?: string;
+  snapshot?: string;
+}
+
+/**
+ * Whether Styne said `target` is gone: `404 not_found`, or for a sandbox (never a snapshot or a request
+ * about no sandbox) a 410 with an ended code, from a body that names no other resource. A route-level,
+ * undecodable or foreign 404 or 410 says nothing.
+ */
+export function isGoneAnswer(answer: StyneAnswer, target: StyneTarget): boolean {
+  const expected: Record<NameKey, string | undefined> = {
+    sandboxID: target.sandboxId,
+    name: target.snapshot,
+    snapshotID: target.snapshot,
+    id: target.snapshot ?? target.sandboxId,
+  };
+
+  if (
+    !nameKeys.every((key) => answer.names[key] === undefined || answer.names[key] === expected[key])
+  )
+    return false;
+
+  if (answer.status === 404) return answer.errorCode === "not_found";
+
+  return (
+    answer.status === 410 &&
+    target.sandboxId !== undefined &&
+    target.snapshot === undefined &&
+    answer.errorCode !== undefined &&
+    ended.has(answer.errorCode)
+  );
+}
+
+const requestId = /^[\w.:-]{1,128}$/;
+
+/**
+ * A failed request's cause: the status and Styne's own answer, so a caller can tell its target is gone
+ * ({@link isGoneAnswer}), and the request ID. Holds only validated tokens, never body text.
+ */
+export class StyneFailure extends Error {
+  constructor(
+    readonly answer: StyneAnswer,
+    request: string | undefined,
+  ) {
+    const code = answer.errorCode === undefined ? "" : ` ${answer.errorCode}`;
+    super(`HTTP ${answer.status}${code}${request === undefined ? "" : ` (request ${request})`}`);
+    this.name = "StyneFailure";
+  }
+}
+
+/** The HTTP client's cause hook: every failed answer keeps Styne's own reading of it. */
+export function causeOf(failure: HttpFailure): Error | undefined {
+  if (failure.kind !== "status") return undefined;
+  const id = failure.headers.get("x-request-id") ?? undefined;
+
+  return new StyneFailure(
+    answerOf(failure.status, failure.body.json),
+    id !== undefined && requestId.test(id) ? id : undefined,
+  );
+}
+
 /** The SDK's code for one of Styne's `error_code` values, or undefined to keep the status mapping. */
 export function codeOf(errorCode: string | undefined): ErrorCode | undefined {
   if (errorCode === undefined) return undefined;
@@ -74,14 +171,17 @@ export function codeOf(errorCode: string | undefined): ErrorCode | undefined {
 }
 
 /**
- * The HTTP client's error hook. A file route's 404 is a missing path; the adapter checks the sandbox
- * itself before it reports one. A `501` (`not_implemented`, or no code) is a route Styne does not serve,
- * so nothing ran. A write answered with any other 5xx Styne does not document as a refusal may have taken
- * effect, so it is `outcome_unknown`.
+ * The HTTP client's error hook, from Styne's own `error_code` only. A file route's 404 is a missing path;
+ * the adapter checks the sandbox itself before it reports one. Any other 404 or 410 is `not_found` only
+ * when Styne said so of this request's sandbox ({@link isGoneAnswer}); otherwise it is `provider`, never
+ * absence. A `501` (`not_implemented`, or no code) is a route Styne does not serve, so nothing ran. A write
+ * answered with any other 5xx Styne does not document as a refusal may have taken effect, so it is
+ * `outcome_unknown`.
  */
 export function mapError(failure: HttpFailure, request: FailedRequest): ErrorCode | undefined {
   if (failure.kind !== "status") return undefined;
-  const code = failure.body.code;
+  const answer = answerOf(failure.status, failure.body.json);
+  const code = answer.errorCode;
 
   if (failure.status === 501 && (code === undefined || unsupported.has(code))) return "unsupported";
 
@@ -94,6 +194,13 @@ export function mapError(failure: HttpFailure, request: FailedRequest): ErrorCod
 
   if (failure.status === 404 && /\/files(?:\/list)?$/.test(request.operation))
     return "file_not_found";
+
+  if (failure.status === 404 || failure.status === 410) {
+    if (isGoneAnswer(answer, { sandboxId: request.sandboxId })) return "not_found";
+    const mapped = codeOf(code);
+
+    return mapped === undefined || mapped === "not_found" ? "provider" : mapped;
+  }
 
   return codeOf(code);
 }

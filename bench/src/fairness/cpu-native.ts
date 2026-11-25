@@ -20,6 +20,7 @@ import {
   windowSegments,
   workerSeed,
 } from "../sustained-cpu.js";
+import { sanitize } from "../v2-runner.js";
 import { CheckStop, type Box, type Check, type CheckContext } from "./framework.js";
 import { clockToleranceS, installNative, type Installed } from "./native.js";
 
@@ -101,7 +102,9 @@ export async function burn(input: {
   if (result.timedOut) throw new CheckStop(`${input.label} timed out`);
 
   if (!result.ok)
-    throw new CheckStop(`${input.label} exited ${result.exitCode}: ${result.stderr.slice(-300)}`);
+    throw new CheckStop(
+      `${input.label} exited ${result.exitCode}: ${sanitize(result.stderr).slice(-300)}`,
+    );
 
   const check = verifySegment({
     stdout: result.stdout,
@@ -340,7 +343,7 @@ export function verifyCheckpoints(input: {
     try {
       value = JSON.parse(line);
     } catch {
-      return { kind: "invalid", reason: `Checkpoint is not JSON: ${line.slice(0, 120)}` };
+      return { kind: "invalid", reason: `Checkpoint is not JSON: ${sanitize(line).slice(0, 120)}` };
     }
 
     if (streamDoneSchema.safeParse(value).success) {
@@ -351,7 +354,7 @@ export function verifyCheckpoints(input: {
     const parsed = checkpointSchema.safeParse(value);
 
     if (!parsed.success)
-      return { kind: "invalid", reason: `Checkpoint shape: ${line.slice(0, 120)}` };
+      return { kind: "invalid", reason: `Checkpoint shape: ${sanitize(line).slice(0, 120)}` };
     const point = parsed.data;
     const k = segments.length + 1;
 
@@ -455,7 +458,7 @@ async function streamPhase(input: {
 
     if (!started.ok || !/^\d+$/m.test(started.stdout))
       throw new CheckStop(
-        `The continuous burn did not start: exit ${started.exitCode} ${started.stderr.slice(0, 200)}`,
+        `The continuous burn did not start: exit ${started.exitCode} ${sanitize(started.stderr).slice(0, 200)}`,
       );
 
     for (;;) {
@@ -524,7 +527,7 @@ async function streamPhase(input: {
 
     if (stopped === null || !/^stopped=1$/m.test(stopped.stdout))
       await context.note("burn-stop-unconfirmed", {
-        stdout: stopped?.stdout.slice(0, 200) ?? null,
+        stdout: stopped ? sanitize(stopped.stdout).slice(0, 200) : null,
       });
   }
 }

@@ -15,6 +15,7 @@
  */
 import { randomInt } from "node:crypto";
 import { z } from "zod";
+import { sanitize } from "../v2-runner.js";
 import { CheckStop, type Box, type Check, type CheckContext } from "./framework.js";
 import {
   clockToleranceS,
@@ -285,7 +286,8 @@ export async function diskTarget(context: CheckContext, box: Box) {
   const listed = await context.exec(box, candidatesCommand, 60_000);
   const chosen = chooseDirectory(parseCandidates(listed.stdout));
 
-  if (chosen === null) throw new CheckStop(`No writable directory: ${listed.stderr.slice(0, 200)}`);
+  if (chosen === null)
+    throw new CheckStop(`No writable directory: ${sanitize(listed.stderr).slice(0, 200)}`);
 
   return chosen;
 }
@@ -333,7 +335,7 @@ export const diskRealCheck = (options: DiskOptions = defaultDiskOptions): Check<
 
     if (parsed.kind === "invalid" || !run.ok)
       throw new CheckStop(
-        `sbx-native disk exited ${run.exitCode}: ${parsed.kind === "invalid" ? parsed.reason : "non-zero exit"} ${run.stderr.slice(-200)}`,
+        `sbx-native disk exited ${run.exitCode}: ${parsed.kind === "invalid" ? parsed.reason : "non-zero exit"} ${sanitize(run.stderr).slice(-200)}`,
       );
 
     const verdict = verifyDisk({

@@ -20,6 +20,7 @@
 import { randomInt } from "node:crypto";
 import { z } from "zod";
 import { isAbsent } from "../existence.js";
+import { sanitize } from "../v2-runner.js";
 import { CheckStop, errorText, type Box, type Check } from "./framework.js";
 import { diskTarget } from "./disk-real.js";
 import { installNative, memOutputSchema, memoryDigest, parseNativeOutput } from "./native.js";
@@ -437,7 +438,7 @@ export function judgeMemory(input: {
     );
 
   throw new CheckStop(
-    `sbx-native mem exited ${run.exitCode} with no kill evidence: ${parsed.kind === "invalid" ? parsed.reason : parsed.kind} ${run.stderr.slice(-200)}`,
+    `sbx-native mem exited ${run.exitCode} with no kill evidence: ${parsed.kind === "invalid" ? parsed.reason : parsed.kind} ${sanitize(run.stderr).slice(-200)}`,
   );
 }
 
