@@ -1437,3 +1437,76 @@ test("PR88 merge review: an aborted key lookup stops waiting for a capture and l
     stored: [...fake.snapshots.values()].some((s) => s.id === taken?.id),
   }).toEqual({ lookup: "aborted", stored: true });
 });
+
+test("PR88 merge review: a key lookup that meets a capture saving the source waits for the capture, not for a stop", async () => {
+  let release = () => {};
+
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  let capturing = () => {};
+
+  const posted = new Promise<void>((resolve) => {
+    capturing = resolve;
+  });
+
+  let savingId = "";
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const url = new URL(input);
+
+      if (url.pathname === "/v1/snapshots" && init.method === "POST") {
+        capturing();
+        await gate;
+      }
+
+      const response = await realFetch(input, init);
+
+      if (savingId === "" || init.method !== "GET" || !url.pathname.startsWith("/v1/sandboxes"))
+        return response;
+
+      // The source reads as saving its state while savingId names it.
+      const text = await response.text();
+
+      return new Response(
+        text.includes(savingId)
+          ? text.replaceAll('"status":"stopped"', '"status":"saving_state"')
+          : text,
+        { status: response.status, headers: response.headers },
+      );
+    },
+  });
+
+  const { id } = await p.create({ labels: labels(), key: "project:saving" });
+  const snapshot = p.snapshot?.(id);
+
+  await posted;
+  savingId = id;
+
+  const controller = new AbortController();
+  const found = p.find("project:saving", { signal: controller.signal });
+
+  // The lookup reads the source as saving before the capture finishes and restarts it.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  savingId = "";
+  release();
+
+  const taken = await snapshot;
+
+  const lookup = await Promise.race([
+    found.then(
+      (sandbox) => sandbox?.id,
+      (error: SandboxError) => error.code,
+    ),
+    new Promise((resolve) => setTimeout(() => resolve("still waiting"), 5000)),
+  ]);
+
+  controller.abort();
+
+  expect({
+    lookup,
+    stored: [...fake.snapshots.values()].some((s) => s.id === taken?.id),
+  }).toEqual({ lookup: id, stored: true });
+});

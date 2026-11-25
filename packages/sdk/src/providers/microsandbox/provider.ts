@@ -2060,14 +2060,22 @@ export function createMicrosandboxProvider(
       const deadline = createDeadline(readyMs);
 
       try {
-        if (!capturing.has(match.id) && toInfo(match).state === "running")
+        let current = match;
+
+        // A capture of this client stops the source on purpose and restarts it itself, so the state
+        // to wait out is the one it leaves.
+        if (capturing.has(match.id)) {
+          await capturesDone(match.id, deadline, signal);
+          current = await readSandbox(match.id, { deadline, signal });
+        }
+
+        if (toInfo(current).state === "running")
           return toInfo(await untilRunning(match.id, deadline, signal));
 
-        if (match.status === "stopping" || match.status === "saving_state")
+        if (current.status === "stopping" || current.status === "saving_state")
           await untilStopped(match.id, deadline, signal);
 
-        // A capture of this client stops the source on purpose and restarts it itself, and one can
-        // start during any wait above: never revive while one holds it.
+        // A capture can start during the waits above: never revive while one holds the source.
         while (capturing.has(match.id)) {
           await capturesDone(match.id, deadline, signal);
 
