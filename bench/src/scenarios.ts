@@ -149,6 +149,8 @@ const defaultAccountCaps = new Map([
   ["archil", 20],
   // Maritime's Growth plan: 25 machines awake at once.
   ["maritime", 25],
+  // Buddy's Pro plan has no published sandbox cap; the bench keeps bursts modest.
+  ["buddy", 10],
 ]);
 
 /** The most sandboxes one cohort may hold on a provider's account; boxd never above 50. */

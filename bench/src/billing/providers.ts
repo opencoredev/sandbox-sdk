@@ -235,6 +235,15 @@ const sources = new Map<string, BillingSource>(
         "The dashboard's Usage page shows workspace totals; no per-sandbox billing API found. No fabricated cost.",
       ],
     },
+    buddy: {
+      source: "No verified public billing endpoint",
+      granularity: "not available",
+      delay: "unknown",
+      key: "BUDDY_TOKEN",
+      notes: [
+        "Workspace Settings > Usage > Sandboxes shows workspace CPU-minute, memory GB-minute and storage GB-minute totals; no public per-sandbox billing REST endpoint. No fabricated cost.",
+      ],
+    },
     archil: {
       source: archilUsageSource,
       granularity: "sandbox lifetime: vCPU-hours, memory GiB-hours and cost, sampled each minute",

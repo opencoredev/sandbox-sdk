@@ -76,6 +76,7 @@ const credentials = new Map([
   ["instabox", ["INSTABOX_API_KEY"]],
   ["maritime", ["MARITIME_API_KEY"]],
   ["styne", ["STYNE_API_KEY"]],
+  ["buddy", ["BUDDY_TOKEN", "BUDDY_WORKSPACE"]],
   ["e2b", ["E2B_API_KEY"]],
   ["railway", ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"]],
   ["vercel", ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID"]],
@@ -147,6 +148,8 @@ const regionKeys = new Map([
   ["modal", "MODAL_SANDBOX_REGION"],
   // Archil keys are region-scoped; the adapter reads ARCHIL_REGION itself (default aws-us-east-1).
   ["archil", "ARCHIL_REGION"],
+  // Buddy's API region (US, EU or AS); the adapter reads BUDDY_REGION itself (default US).
+  ["buddy", "BUDDY_REGION"],
 ]);
 
 // Providers whose region places the sandbox and sets its price, so the label and the placement

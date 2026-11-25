@@ -143,7 +143,8 @@ function regionFor(
  * Providers in the held-open idle diagnostic. Maritime is not: its usage intervals leave out a paused
  * sandbox's disk ($0.08/GB-month), so an idle that pauses would read cheaper than it bills. Neither
  * Microsandbox tier is: its usage rows meter running intervals only and settle with no
- * finalization signal, so its idle cost is provisional.
+ * finalization signal, so its idle cost is provisional. Buddy is not either: it has no usage API,
+ * so an idle costs only what the list-price estimate says, which the diagnostic exists to check.
  */
 export const heldOpenProviders = [
   "e2b",
@@ -986,7 +987,7 @@ async function billing(args: string[]) {
   const raw: object[] = [];
 
   for (const [adapter, items] of byAdapter) {
-    if (["tenki", "freestyle", "baseten", "beam", "styne"].includes(adapter)) continue;
+    if (["tenki", "freestyle", "baseten", "beam", "styne", "buddy"].includes(adapter)) continue;
 
     const rows: OwnedSandbox[] = items.flatMap(({ record, sandboxIds }) =>
       sandboxIds.map((id) => ({
@@ -1027,7 +1028,7 @@ async function billing(args: string[]) {
     // The recorded provider name already says which product ran (upstash-ephemeral).
     const base = { attemptId: record.attemptId, product: null, allocation, usage: null };
 
-    if (["tenki", "freestyle", "baseten", "beam", "styne"].includes(setup.adapter))
+    if (["tenki", "freestyle", "baseten", "beam", "styne", "buddy"].includes(setup.adapter))
       return {
         ...base,
         charge: { kind: "estimate", source: "billing rules at list price (no billing data)" },

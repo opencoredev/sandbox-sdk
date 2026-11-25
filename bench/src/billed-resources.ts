@@ -22,7 +22,8 @@ export function pricedResources(
   const price = pricing[provider];
   const billed = requestBilledCompute(provider, size);
 
-  // Disk is not billed separately by request-billed providers.
+  // Disk is not billed separately by request-billed providers (Modal; Buddy bills used disk as
+  // storage, outside the estimate).
   if (billed) return { resources: { ...billed.compute, diskGiB: 0 }, bound: billed.bound };
 
   if (fp) return { resources: resources(fp), bound: "observed" };

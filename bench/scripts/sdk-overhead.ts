@@ -26,6 +26,7 @@ import {
   type RawPeer,
 } from "../src/microsandbox-raw.js";
 import { adapterSpec } from "../src/providers.js";
+import { buddyRun, buddyWrite, createRawBuddy } from "../src/buddy-raw.js";
 
 type Sdk = typeof Core;
 
@@ -93,6 +94,8 @@ const nativePackages = {
   microsandbox: "microsandbox",
   "microsandbox-shared": "microsandbox",
   styne: null,
+  // Direct HTTP too: the floor is fetch against Buddy's API, commands on its synchronous route.
+  buddy: null,
 } as const;
 
 /** A provider this script can measure. */
@@ -486,6 +489,24 @@ const providers = {
             )
           ).body?.cancel();
         },
+      }),
+    };
+  },
+
+  async buddy() {
+    const m: typeof import("@opencoredev/sandbox-sdk/buddy") = await import(
+      moduleUrl("providers/buddy/index.js")
+    );
+
+    const provider = m.buddy();
+
+    // The adapter calls the REST API itself; the floor is the same API with plain fetch, each command
+    // on Buddy's one-request synchronous route.
+    return {
+      provider,
+      floor: (id) => ({
+        exec: (command = "true") => buddyRun(id, command),
+        write: (path, data) => buddyWrite(id, path, data),
       }),
     };
   },
@@ -1087,6 +1108,10 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     // Same template and lifetime as the adapter's defaults: base, one hour. Admitted for use and cleanup
     // only once a read of the sandbox carries this create's own owner marker.
     return createRawStyne({ template: templates.get(name) ?? "base", labels: label, admit });
+
+  if (name === "buddy")
+    // Admitted for use and cleanup only once its answer carries this create's own owner marker.
+    return createRawBuddy({ labels: label, admit });
 
   throw new Error(`Unknown provider ${name}`);
 }

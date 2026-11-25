@@ -13,6 +13,7 @@ import { makeRun, chunkRedactor, defaults, pathOf, secretRecoveryCommand } from 
 import { quote } from "./shared/shell.js";
 import { isString } from "./shared/narrow.js";
 import { makeFiles, removeIfPresent } from "./files.js";
+import { guardNativeApi } from "./native.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";
 import {
@@ -493,6 +494,70 @@ export async function makeHandle<N>(
     });
   }
 
+  async function recoverWithin(signal?: AbortSignal, remainingMs?: number): Promise<void> {
+    if (signal?.aborted || (remainingMs !== undefined && remainingMs <= 0)) return;
+
+    const pending = ready().catch(() => {});
+
+    if (!signal && remainingMs === undefined) {
+      await pending;
+
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        resolve();
+      };
+
+      const timer =
+        remainingMs !== undefined ? setTimeout(finish, Math.max(0, remainingMs)) : undefined;
+
+      signal?.addEventListener("abort", finish, { once: true });
+      void pending.finally(finish);
+    });
+  }
+
+  async function guardNative<R>(
+    call: () => Promise<R>,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<R> {
+    check();
+
+    const deadlineAt =
+      options?.timeoutMs !== undefined ? Date.now() + Math.max(0, options.timeoutMs) : undefined;
+
+    try {
+      return await call();
+    } catch (error) {
+      const timedOutOrAborted =
+        options?.signal?.aborted === true ||
+        (error instanceof SandboxError && (error.code === "aborted" || error.code === "timeout"));
+
+      if (!recovered && !timedOutOrAborted) {
+        const remainingMs = deadlineAt !== undefined ? deadlineAt - Date.now() : undefined;
+
+        await recoverWithin(options?.signal, remainingMs);
+      }
+
+      if (recovered) throw redactor.error(error, provider.name, info.id);
+
+      if (options?.signal?.aborted)
+        throw withheld("native", new SandboxError("Aborted", { code: "aborted" }));
+
+      throw withheld("native", error instanceof SandboxError ? error : undefined);
+    }
+  }
+
+  let cachedNative: { raw: N; wrapped: N } | undefined;
+
   const box: SandboxBase<N> = {
     id: info.id,
     key: info.key,
@@ -504,11 +569,23 @@ export async function makeHandle<N>(
     get native() {
       check();
 
+      let raw: N;
+
       try {
-        return provider.native(info.id);
+        raw = provider.native(info.id);
       } catch (error) {
-        throw redactor.error(error, provider.name, info.id);
+        throw recovered
+          ? redactor.error(error, provider.name, info.id)
+          : withheld("native", error instanceof SandboxError ? error : undefined);
       }
+
+      if (cachedNative?.raw === raw) return cachedNative.wrapped;
+
+      const wrapped = guardNativeApi(raw, guardNative);
+
+      cachedNative = { raw, wrapped };
+
+      return wrapped;
     },
     run(command, options) {
       check();

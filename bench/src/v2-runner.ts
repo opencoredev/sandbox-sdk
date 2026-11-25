@@ -113,7 +113,11 @@ import {
   createNamedDaytonaSnapshot,
   createNamedStyneSnapshot,
   createNamedMaritimeSnapshot,
+  createNamedBuddySnapshot,
+  journaledSnapshotName,
   maritimeSnapshotName,
+  type JournaledSnapshotEntry,
+  type PendingSave,
   settleJournaledSnapshot,
   snapshotsFromSource,
   deleteProvenSnapshot,
@@ -159,6 +163,7 @@ const restoreNeedsSize: ReadonlySet<string> = new Set([
   "modal",
   "microsandbox",
   "microsandbox-shared",
+  "buddy",
 ]);
 
 /**
@@ -279,18 +284,26 @@ function burstOutcome(burst: {
   return { kind: "failure", note, stage: `burst-${k}/all-ready`, elapsedMs: burst.durationMs };
 }
 
-/** The snapshot IDs the ownership journal holds for one source sandbox of one provider. */
+/**
+ * The snapshot entries the ownership journal holds for one source sandbox of one provider: each ID, and
+ * for Buddy the name it was saved under or its pending save.
+ */
 export function journaledSnapshots(
-  entries: Iterable<{ provider: string; id: string; kind: string; parent: string | null }>,
+  entries: Iterable<
+    JournaledSnapshotEntry & { provider: string; kind: string; parent: string | null }
+  >,
   provider: string,
   sourceId: string,
-): ReadonlySet<string> {
-  return new Set(
-    Array.from(entries)
-      .filter((e) => e.provider === provider && e.kind === "snapshot" && e.parent === sourceId)
-      .map((e) => e.id),
+): JournaledSnapshotEntry[] {
+  return Array.from(entries).flatMap((e) =>
+    e.provider === provider && e.kind === "snapshot" && e.parent === sourceId
+      ? [{ id: e.id, name: e.name, pendingSave: e.pendingSave }]
+      : [],
   );
 }
+
+/** A save refused outright: nothing was saved (createNamedBuddySnapshot's 4xx answer). */
+const refusal = z.object({ refused: z.literal(true) });
 
 const errorNote = (cause: unknown) =>
   sanitize(cause instanceof Error ? cause.message : "Unknown failure");
@@ -304,6 +317,9 @@ const leakPatterns: [RegExp, string][] = [
   [/(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
   [/msb_(?:pat_)?[A-Za-z0-9_-]+/g, "[REDACTED]"],
   [/([?&;]token=)[^&#\s"'<>]+/gi, "$1[REDACTED]"],
+  // Buddy's encrypted variable values and the Basic credentials of its private previews.
+  [/!encrypted [^\s"'<>]+/g, "[REDACTED]"],
+  [/\bBasic [A-Za-z0-9+/]{8,}={0,2}/g, "Basic [REDACTED]"],
 ];
 
 export function sanitize(text: string) {
@@ -714,6 +730,12 @@ export async function runV2(
     serviceSuperseded?: boolean;
     /** A Microsandbox capture's name; equal to `id` while the capture is unconfirmed. */
     snapshotName?: string;
+    /** A Buddy save journaled before its request, under its name, until its snapshot ID is known. */
+    pendingSave?: PendingSave;
+    /** The snapshot's name, which a Buddy delete checks along with its ID. */
+    name?: string;
+    /** Set and persisted only after live metadata verified this exact snapshot before issuing DELETE. */
+    deleteVerified?: boolean;
   }
 
   const owned = new Map<string, OwnedEntry>();
@@ -737,9 +759,9 @@ export async function runV2(
   // fingerprints a reap needs for label recovery: reap refuses a connection the journal lacks.
   if (loaded.some((p) => p.kind === "ready")) await persist();
 
-  function serializeJournal(override?: { key: string; value: OwnedEntry }) {
-    const resources = [...owned.entries()].map(([k, v]) =>
-      override && k === override.key ? override.value : v,
+  function serializeJournal(override?: { key: string; value: OwnedEntry; replaces?: string }) {
+    const resources = [...owned.entries()].flatMap(([k, v]) =>
+      override && k === override.key ? [override.value] : override?.replaces === k ? [] : [v],
     );
 
     if (override && !owned.has(override.key)) resources.push(override.value);
@@ -770,10 +792,16 @@ export async function runV2(
    * `idempotencyKey` entry intact so neither cleanup nor recovery can skip persisting or send DELETE
    * while `ownership.json` on disk still carries the save key.
    */
-  function persistConfirmedSnapshot(key: string, value: OwnedEntry) {
+  function persistConfirmedSnapshot(key: string, value: OwnedEntry, replaces?: string) {
     const next = journal.then(async () => {
-      await writeOwnership(join(runDir, "ownership.json"), serializeJournal({ key, value }));
+      await writeOwnership(
+        join(runDir, "ownership.json"),
+        serializeJournal({ key, value, replaces }),
+      );
       owned.set(key, value);
+
+      // A pending Buddy save, journaled under its name, gives way to its snapshot's ID in one write.
+      if (replaces !== undefined && replaces !== key) owned.delete(replaces);
     });
 
     journal = next.catch(() => {});
@@ -2415,6 +2443,11 @@ export async function runV2(
           let snapshotReady = false;
           // A Maritime or Styne save's idempotency key, journaled with its name before the request.
           let saveKey: string | undefined;
+          // A Buddy save's name, journaled before the request; the ID it answers with; and whether it
+          // was refused outright (a 4xx answer, so nothing was saved).
+          let buddySave: PendingSave | undefined;
+          let buddyId: string | undefined;
+          let buddyRefused = false;
           let pendingKeylessWrite: Promise<void> | undefined;
           let clean: ((id: string) => Promise<void>) | undefined;
           let snapshotProof: SnapshotProvenance | undefined;
@@ -2453,6 +2486,9 @@ export async function runV2(
                 if (restores.blocksSnapshot(p.name, id))
                   throw new Error("Restore cleanup unresolved; snapshot and source retained");
 
+                const entryKey = `${p.name}/snapshot/${id}`;
+                const entry = owned.get(entryKey);
+
                 return deleteProvenSnapshot(
                   p.name,
                   p.provider,
@@ -2462,11 +2498,29 @@ export async function runV2(
                   config.run,
                   timeout,
                   nativeCleaner,
+                  entry?.name,
+                  undefined,
+                  {
+                    deleteVerified: entry?.deleteVerified,
+                    onDeleteVerified: async () => {
+                      const current = owned.get(entryKey);
+
+                      if (!current || current.deleteVerified) return;
+                      owned.set(entryKey, { ...current, deleteVerified: true });
+
+                      try {
+                        await persist();
+                      } catch (error) {
+                        owned.set(entryKey, current);
+                        throw error;
+                      }
+                    },
+                  },
                 );
               };
 
               if (
-                ["daytona", "superserve", "maritime", "styne"].includes(p.name) ||
+                ["daytona", "superserve", "maritime", "styne", "buddy"].includes(p.name) ||
                 microsandboxTier(p.name) !== undefined
               ) {
                 owned.set(`${p.name}/snapshot-source/${active.id}`, {
@@ -2507,6 +2561,22 @@ export async function runV2(
                   });
                 }
 
+                // Buddy: the name and the source, before the request. The ID comes only with the
+                // answer, so a save whose answer is lost is settled by its exact name, never dropped
+                // on a first miss.
+                if (p.name === "buddy") {
+                  snapshotId = journaledSnapshotName(config.run);
+                  buddySave = { name: snapshotId, journaledAt: new Date().toISOString() };
+                  owned.set(`${p.name}/snapshot/${snapshotId}`, {
+                    provider: p.name,
+                    id: snapshotId,
+                    kind: "snapshot",
+                    parent: active.id,
+                    snapshotProof,
+                    pendingSave: buddySave,
+                  });
+                }
+
                 await persist();
               }
 
@@ -2540,19 +2610,53 @@ export async function runV2(
               snapshotClock.begin();
               let snap: { id: string };
 
+              /**
+               * A Buddy save under its journaled name. Its ID is journaled the moment Buddy answers, in
+               * place of the pending name and in one write, before the wait for `CREATED`.
+               */
+              const saveBuddy = async (name: string) => {
+                try {
+                  return await createNamedBuddySnapshot(p.provider, active.id, name, async (id) => {
+                    buddyId = id;
+
+                    const write = persistConfirmedSnapshot(
+                      `${p.name}/snapshot/${id}`,
+                      {
+                        provider: p.name,
+                        id,
+                        kind: "snapshot",
+                        parent: active.id,
+                        snapshotProof,
+                        name,
+                      },
+                      `${p.name}/snapshot/${name}`,
+                    );
+
+                    pendingKeylessWrite = write;
+                    await write;
+                  });
+                } catch (error) {
+                  if (buddyId === undefined && refusal.safeParse(error).success)
+                    buddyRefused = true;
+                  throw error;
+                }
+              };
+
               try {
                 snap = !snapshotId
                   ? await p.provider.snapshot(active.id)
-                  : p.name === "styne" && saveKey
-                    ? await createNamedStyneSnapshot(p.provider, active.id, snapshotId, saveKey)
-                    : p.name === "maritime" && saveKey
-                      ? await createNamedMaritimeSnapshot(
-                          p.provider,
-                          active.id,
-                          snapshotId,
-                          saveKey,
-                        )
-                      : await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId);
+                  : p.name === "buddy" && buddySave
+                    ? await saveBuddy(buddySave.name)
+                    : p.name === "styne" && saveKey
+                      ? await createNamedStyneSnapshot(p.provider, active.id, snapshotId, saveKey)
+                      : p.name === "maritime" && saveKey
+                        ? await createNamedMaritimeSnapshot(
+                            p.provider,
+                            active.id,
+                            snapshotId,
+                            saveKey,
+                          )
+                        : await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId);
               } catch (error) {
                 // Microsandbox: a capture refused before any operation started made nothing, so its
                 // journaled name goes; any other failure keeps it for settlement.
@@ -2584,6 +2688,8 @@ export async function runV2(
                 parent: active.id,
                 snapshotProof,
               };
+
+              if (buddySave) confirmed.name = buddySave.name;
 
               // Microsandbox: the confirmed managed ID replaces the capture's journaled name.
               const captured = captureNames.get(active.id);
@@ -2814,6 +2920,52 @@ export async function runV2(
                   saveKey = undefined;
                 }
 
+                // A Buddy snapshot whose ID was journaled is deleted by that ID, even when its wait
+                // for `CREATED` failed and the step still names the snapshot by its journaled name.
+                let cleanupId = buddyId ?? id;
+
+                // A Buddy save with no ID: a refused one made nothing; any other is settled by its exact
+                // name first. An unsettled one throws and stays journaled for recovery.
+                if (p.name === "buddy" && buddySave && buddyId === undefined) {
+                  const pendingKey = `${p.name}/snapshot/${buddySave.name}`;
+
+                  if (buddyRefused) {
+                    owned.delete(pendingKey);
+                    await persist();
+
+                    return;
+                  }
+
+                  const settled = await settleJournaledSnapshot(
+                    p.name,
+                    p.provider,
+                    { id: buddySave.name, parent: active.id, pendingSave: buddySave },
+                    timeout,
+                  );
+
+                  if (settled.kind === "absent") {
+                    owned.delete(pendingKey);
+                    await persist();
+
+                    return;
+                  }
+
+                  await persistConfirmedSnapshot(
+                    `${p.name}/snapshot/${settled.id}`,
+                    {
+                      provider: p.name,
+                      id: settled.id,
+                      kind: "snapshot",
+                      parent: active.id,
+                      snapshotProof,
+                      name: buddySave.name,
+                    },
+                    pendingKey,
+                  );
+                  cleanupId = settled.id;
+                  snapshotReady = true;
+                }
+
                 // A Maritime or Styne save that never confirmed may still land: settle it first. Only a
                 // refused save, or a source gone with no snapshot, drops the journal entry without a delete;
                 // an unsettled one throws and stays journaled for recovery.
@@ -2845,10 +2997,16 @@ export async function runV2(
                   saveKey = undefined;
                 }
 
-                await clean?.(id);
+                await clean?.(cleanupId);
                 report.cleanupReview = report.cleanupReview?.filter(
-                  (r) => !(r.provider === p.name && r.id === id && r.kind === "snapshot"),
+                  (r) =>
+                    !(
+                      r.provider === p.name &&
+                      (r.id === id || r.id === cleanupId) &&
+                      r.kind === "snapshot"
+                    ),
                 );
+                owned.delete(`${p.name}/snapshot/${cleanupId}`);
                 owned.delete(`${p.name}/snapshot/${id}`);
                 await persist();
               });
@@ -3148,9 +3306,15 @@ export async function runV2(
 
             const sourceCleaner = await snapshotCleaner(p.name, p.provider, source.id);
             const journaled = journaledSnapshots(owned.values(), p.name, source.id);
+            const recoveryEnd = Date.now() + timeout;
             await deadline(timeout, async (signal) => {
+              const checkExpired = () => {
+                if (signal.aborted || Date.now() >= recoveryEnd)
+                  throw new Error("Snapshot source recovery deadline expired");
+              };
+
               for (;;) {
-                if (signal.aborted) throw new Error("Snapshot source recovery deadline expired");
+                checkExpired();
 
                 const snapshots = await snapshotsFromSource(
                   p.name,
@@ -3160,19 +3324,52 @@ export async function runV2(
                   signal,
                 );
 
+                checkExpired();
+
                 if (!snapshots.length) break;
 
                 for (const snapshot of snapshots) {
-                  const entry = {
+                  checkExpired();
+
+                  const key = `${p.name}/snapshot/${snapshot.id}`;
+                  const existing = owned.get(key);
+
+                  const entry: OwnedEntry = {
                     provider: p.name,
                     id: snapshot.id,
-                    kind: "snapshot" as const,
+                    kind: "snapshot",
                     parent: source.id,
                     snapshotProof: proof,
                   };
 
-                  owned.set(`${p.name}/snapshot/${snapshot.id}`, entry);
-                  await persist();
+                  if (p.name === "buddy") {
+                    if (snapshot.name) entry.name = snapshot.name;
+
+                    if (
+                      existing &&
+                      existing.provider === p.name &&
+                      existing.id === snapshot.id &&
+                      existing.parent === source.id &&
+                      existing.name === snapshot.name &&
+                      existing.deleteVerified === true
+                    )
+                      entry.deleteVerified = true;
+
+                    // The snapshot under its ID replaces a pending entry under its name in one write.
+                    await persistConfirmedSnapshot(
+                      key,
+                      entry,
+                      snapshot.name ? `${p.name}/snapshot/${snapshot.name}` : undefined,
+                    );
+                  } else {
+                    owned.set(key, entry);
+                    await persist();
+                  }
+
+                  checkExpired();
+                  const remaining = recoveryEnd - Date.now();
+
+                  if (remaining <= 0) throw new Error("Snapshot source recovery deadline expired");
                   await deleteProvenSnapshot(
                     p.name,
                     p.provider,
@@ -3180,8 +3377,26 @@ export async function runV2(
                     source.id,
                     proof,
                     config.run,
-                    timeout,
+                    remaining,
                     sourceCleaner,
+                    entry.name,
+                    signal,
+                    {
+                      deleteVerified: entry.deleteVerified,
+                      onDeleteVerified: async () => {
+                        const current = owned.get(key);
+
+                        if (!current || current.deleteVerified) return;
+                        owned.set(key, { ...current, deleteVerified: true });
+
+                        try {
+                          await persist();
+                        } catch (error) {
+                          owned.set(key, current);
+                          throw error;
+                        }
+                      },
+                    },
                   );
                   owned.delete(`${p.name}/snapshot/${snapshot.id}`);
 
@@ -3860,12 +4075,27 @@ export async function runV2(
             await persistConfirmedSnapshot(`${p.name}/snapshot/${item.id}`, confirmed);
           }
 
+          if (item.pendingSave !== undefined) {
+            // Written BEFORE the delete, without the pending name and under the snapshot's ID, so a
+            // dropped delete answer never re-settles the save.
+            const { pendingSave, ...withoutPending } = confirmed;
+
+            confirmed = { ...withoutPending, id: settled.id, name: pendingSave?.name };
+            await persistConfirmedSnapshot(
+              `${p.name}/snapshot/${confirmed.id}`,
+              confirmed,
+              `${p.name}/snapshot/${item.id}`,
+            );
+          }
+
           // A Microsandbox capture journaled by name: the managed ID settlement found joins the
           // journal before the delete, so a by-name 404 never drops a live snapshot.
-          if (settled.id !== item.id) {
+          if (settled.id !== confirmed.id) {
             confirmed = { ...confirmed, id: settled.id };
             await persistConfirmedSnapshot(`${p.name}/snapshot/${settled.id}`, confirmed);
           }
+
+          const confirmedKey = `${p.name}/snapshot/${confirmed.id}`;
 
           await deleteProvenSnapshot(
             p.name,
@@ -3876,13 +4106,33 @@ export async function runV2(
             config.run,
             config["timeout-ms"],
             await snapshotCleaner(p.name, p.provider, confirmed.parent ?? ""),
+            confirmed.name,
+            undefined,
+            {
+              deleteVerified: confirmed.deleteVerified,
+              onDeleteVerified: async () => {
+                const current = owned.get(confirmedKey);
+
+                if (!current || current.deleteVerified) return;
+                owned.set(confirmedKey, { ...current, deleteVerified: true });
+
+                try {
+                  await persist();
+                } catch (error) {
+                  owned.set(confirmedKey, current);
+                  throw error;
+                }
+              },
+            },
           );
           owned.delete(`${p.name}/snapshot/${confirmed.id}`);
         }
 
         owned.delete(`${p.name}/snapshot/${item.id}`);
+        // A re-keyed pending save may be under review by its pending name or by its snapshot's ID.
+        const reviewed = new Set([item.id, settled.kind === "exists" ? settled.id : item.id]);
         report.cleanupReview = report.cleanupReview?.filter(
-          (r) => !(r.provider === p.name && r.id === item.id && r.kind === "snapshot"),
+          (r) => !(r.provider === p.name && reviewed.has(r.id) && r.kind === "snapshot"),
         );
         await persist();
       } catch (e) {
@@ -3907,13 +4157,37 @@ export async function runV2(
         for (const snapshot of await deadline(config["timeout-ms"], (signal) =>
           snapshotsFromSource(p.name, p.provider, item.id, journaled, signal),
         )) {
-          await persistConfirmedSnapshot(`${p.name}/snapshot/${snapshot.id}`, {
+          const foundKey = `${p.name}/snapshot/${snapshot.id}`;
+          const existing = owned.get(foundKey);
+
+          const found: OwnedEntry = {
             provider: p.name,
             id: snapshot.id,
             kind: "snapshot",
             parent: item.id,
             snapshotProof: proof,
-          });
+          };
+
+          if (p.name === "buddy") {
+            if (snapshot.name) found.name = snapshot.name;
+
+            if (
+              existing &&
+              existing.provider === p.name &&
+              existing.id === snapshot.id &&
+              existing.parent === item.id &&
+              existing.name === snapshot.name &&
+              existing.deleteVerified === true
+            )
+              found.deleteVerified = true;
+          }
+
+          // A Buddy snapshot under its ID replaces a pending entry under its name in one write.
+          await persistConfirmedSnapshot(
+            foundKey,
+            found,
+            p.name === "buddy" && snapshot.name ? `${p.name}/snapshot/${snapshot.name}` : undefined,
+          );
 
           await deleteProvenSnapshot(
             p.name,
@@ -3924,6 +4198,24 @@ export async function runV2(
             config.run,
             config["timeout-ms"],
             sourceCleaner,
+            found.name,
+            undefined,
+            {
+              deleteVerified: found.deleteVerified,
+              onDeleteVerified: async () => {
+                const current = owned.get(foundKey);
+
+                if (!current || current.deleteVerified) return;
+                owned.set(foundKey, { ...current, deleteVerified: true });
+
+                try {
+                  await persist();
+                } catch (error) {
+                  owned.set(foundKey, current);
+                  throw error;
+                }
+              },
+            },
           );
           owned.delete(`${p.name}/snapshot/${snapshot.id}`);
 

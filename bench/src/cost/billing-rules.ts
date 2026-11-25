@@ -115,6 +115,8 @@ const docs = {
   archilUsage:
     "GET /api/sandboxes/{id}/usage on Archil's control plane (docs.archil.com/administration/billing.md)",
   maritime: "https://maritime.sh/docs/billing",
+  buddy: "https://buddy.works/pricing",
+  buddyUsage: "Buddy Workspace Settings > Usage > Sandboxes (no API)",
   maritimeUsage: "https://api.maritime.sh/v1/usage?sandbox={id} and /v1/sandboxes/{id}/info",
   microsandbox: "https://microsandbox.dev/pricing",
   microsandboxUsage:
@@ -489,6 +491,45 @@ export const billingRules: readonly BillingRule[] = [
   },
   microsandboxRule("microsandbox", "Standard (dedicated CPU)"),
   microsandboxRule("microsandbox-shared", "Shared (shared CPU, dedicated memory and disk)"),
+  {
+    provider: "buddy",
+    product: null,
+    pricingKey: "buddy",
+    tariff: known({ kind: "per-unit", charges: "allocation" }, docs.buddy),
+    billingStarts: unknown(
+      "Billed while the sandbox runs; the event that starts the meter is not named",
+    ),
+    billingStops: unknown(
+      "Compute stops when the sandbox stops or is deleted; used disk and snapshots keep billing as storage until deleted",
+    ),
+    incrementSeconds: known(
+      60,
+      `${docs.buddy} (per minute; a 25-second probe billed one minute, 2026-11-24)`,
+    ),
+    minimumSeconds: known(60, `${docs.buddy} (a 25-second probe billed one full minute)`),
+    perStartFeeUSD: unknown("No creation fee listed; absence is not confirmation"),
+    keepsCharging: known(
+      ["disk"],
+      `${docs.buddy} (a stopped sandbox bills no compute; used disk and snapshots bill $0.00011/GB-hour as storage)`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known(
+      "excluded",
+      `${docs.buddy} (storage is $0.00011/GB-hour of used disk and snapshots, not the 50 GB allocation: a one-minute 2x4 probe billed 6 storage GB-minutes)`,
+    ),
+    settledChargeSource: unknown(
+      "Buddy shows per-workspace usage in its web UI only; no API returns usage or charges",
+    ),
+    reportedKind: "estimate",
+    attribution: "none",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "$0.0144/vCPU-hour and $0.0144/GB-hour of the native tier (2x4 bills 2 vCPU and 4 GB), per started minute.",
+      "Buddy's GB are decimal: the guest sees about 6.9% less memory than the tier's name in GiB; estimates price the tier, the guest gap is an allocation caveat.",
+      "Storage, the $29/month Pro plan and tax excluded.",
+    ],
+  },
   {
     provider: "baseten",
     product: null,

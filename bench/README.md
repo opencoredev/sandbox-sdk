@@ -410,6 +410,12 @@ Every allocation is journaled before the adapter sends it, through the adapter's
 
 Billing reads `GET /v1/billing/usage/sandbox` and `GET /v1/billing/usage` once for the run window, prices each per-sandbox daily row at its own `compute_type`'s rates and cross-checks `costs.workloads`. When `/v1/billing/usage` cannot be read, the rows are still rated and the note says the cross-check did not happen. A sandbox with neither is unavailable, never $0. Every cost is provisional (`complete: false`, low confidence): the rows meter running time only, so a stopped sandbox's disk is missing, and deletion is asynchronous. Neither tier is in the held-open idle diagnostic.
 
+### Buddy
+
+Buddy has no usage or billing API, so every Buddy cost is an estimate: the native tier the sandbox ran at (2 vCPU and 4 GB for the default `2x4`, verified on Buddy's Usage page) at $0.00024 per CPU-minute and per GB-minute, per started minute with a one-minute minimum. Buddy's GB are decimal, so the guest reports about 6.9% less memory than the tier name in GiB; the estimate prices the tier and the allocation check lists the gap as a caveat, and a Buddy `4x8` is never equal-spec with 8 GiB providers. Storage of used disk and snapshots ($0.00011/GB-hour) and the $29/month Pro plan are left out. Buddy has no hard lifetime, so realistic runs use no `timeoutMs`.
+
+Snapshots are named by the run (`bench-<run>-<8 hex>`) and journaled with their source before `POST /sandboxes/{id}/snapshots`, under that name, since the ID comes only with the answer. The answer's ID replaces the pending name in the journal in one write, before the wait for `CREATED` and before any delete. A save whose answer was lost is settled by its exact name in the source's and the workspace's snapshot lists; a miss never drops it while the source exists and the save could still land (ten minutes), so an unsettled save keeps the entry, and its source, for `bench reap`. A delete checks the exact ID, the journaled name and the source in the snapshot's URL.
+
 ## Measure SDK overhead
 
 `scripts/sdk-overhead.ts` measures what Sandbox SDK adds over the adapter and the provider's official SDK. It is separate from the published benchmark.

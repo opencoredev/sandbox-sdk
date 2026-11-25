@@ -81,6 +81,12 @@ export interface HttpPlane {
   /** Headers for every request to this plane that are not credentials (`Accept`, API version pins). */
   headers?: Record<string, string>;
   /**
+   * `false`: every HTTP redirect on this plane (read or write, same-origin or cross-origin) is
+   * refused before anything is sent to the `Location` target. Writes fail with `outcome_unknown`
+   * and reads fail with `provider`. For APIs that never redirect any request.
+   */
+  redirects?: false;
+  /**
    * `false`: a POST or PATCH that may not be sent twice follows no redirect, not even a 303 to a GET, and
    * is `outcome_unknown`. For APIs that never redirect a write. Default: only a resend is refused.
    */
@@ -231,6 +237,8 @@ interface SerializedBody {
 export interface HttpClient<Plane extends string = string> {
   readonly provider: string;
   readonly label: string;
+  /** Default per-request timeout in milliseconds. */
+  readonly timeoutMs: number;
   /** Redacts credentials seen so far, `secrets()` and credential-shaped text. */
   readonly redact: (text: string) => string;
   /** Send a request and buffer the response body (bounded by `maxBytes`). Non-2xx rejects. */
@@ -1048,6 +1056,19 @@ export function createHttpClient<Plane extends string>(
           break;
         }
 
+        if (plane.redirects === false && response.status >= 300 && response.status < 400) {
+          await response.body?.cancel().catch(() => {});
+          const write = method !== "GET" && method !== "HEAD" && !request.readOnly;
+
+          throw failure(
+            write ? "outcome_unknown" : "provider",
+            request,
+            ` (HTTP ${response.status}): the server redirected a request on a plane that refuses redirects.`,
+            `HTTP ${response.status}`,
+            false,
+          );
+        }
+
         const location = response.headers.get("location");
 
         if (!redirectStatuses.has(response.status) || location === null) break;
@@ -1405,6 +1426,7 @@ export function createHttpClient<Plane extends string>(
   return {
     provider,
     label,
+    timeoutMs,
     redact,
     request,
     async json(input) {

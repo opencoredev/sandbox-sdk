@@ -393,6 +393,39 @@ describe("credentials stay on their origin", () => {
     expect(server.calls("GET /v1/plain-2")).toHaveLength(1);
   });
 
+  test("on a redirects:false plane, 3xx returns provider for read-only requests and outcome_unknown for writes", async () => {
+    server
+      .on("POST /v1/read", { status: 307, headers: { location: "/v1/other" } })
+      .on("DELETE /v1/del", { status: 307 })
+      .on("GET /v1/get", { status: 302, headers: { location: "/v1/other" } });
+
+    const strict = createHttpClient({
+      provider: "fake",
+      label: "Fake",
+      defaultPlane: "api",
+      backoffMs: 1,
+      planes: {
+        api: {
+          baseUrl: `${server.url}/v1`,
+          auth: () => ({ Authorization: `Bearer ${key}` }),
+          redirects: false,
+        },
+      },
+    });
+
+    await expect(
+      strict.request({ method: "POST", path: "/read", body: "q", readOnly: true }),
+    ).rejects.toMatchObject({ code: "provider", retryable: false });
+    await expect(strict.request({ method: "GET", path: "/get" })).rejects.toMatchObject({
+      code: "provider",
+      retryable: false,
+    });
+    await expect(strict.request({ method: "DELETE", path: "/del" })).rejects.toMatchObject({
+      code: "outcome_unknown",
+      retryable: false,
+    });
+  });
+
   test("a 401 refreshes credentials once, shared by concurrent requests", async () => {
     let token = "old";
     let refreshes = 0;
