@@ -334,28 +334,27 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
   /** Values to redact that the adapter made or read: preview passwords and their headers. */
   const tokens = new Set<string>();
 
-  function token() {
-    const value = (options.token ?? process.env.BUDDY_TOKEN)?.trim();
+  const configuredToken = (options.token ?? process.env.BUDDY_TOKEN)?.trim();
+  const configuredWorkspace = (options.workspace ?? process.env.BUDDY_WORKSPACE)?.trim();
 
-    if (!value)
+  function token() {
+    if (!configuredToken)
       throw fail(
         "the token is missing. Authentication is required. Set BUDDY_TOKEN or pass token",
         "auth",
       );
 
-    return value;
+    return configuredToken;
   }
 
   function workspace() {
-    const value = (options.workspace ?? process.env.BUDDY_WORKSPACE)?.trim();
-
-    if (!value)
+    if (!configuredWorkspace)
       throw fail(
         "the workspace is missing. Set BUDDY_WORKSPACE or pass workspace (the domain in app.buddy.works/<workspace>)",
         "invalid_argument",
       );
 
-    return value;
+    return configuredWorkspace;
   }
 
   const bearer = () => ({ Authorization: `Bearer ${token()}` });
@@ -364,13 +363,14 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     provider: name,
     label: "Buddy",
     planes: {
-      // Buddy never redirects a write, so none is followed: it is never sent twice.
+      // Buddy's API never redirects; refuse every redirect so no read, write or delete is sent elsewhere.
       workspace: {
         baseUrl: () => `${root}/workspaces/${encodeURIComponent(workspace())}`,
         auth: bearer,
+        redirects: false,
         redirectWrites: false,
       },
-      api: { baseUrl: root, auth: bearer, redirectWrites: false },
+      api: { baseUrl: root, auth: bearer, redirects: false, redirectWrites: false },
     },
     defaultPlane: "workspace",
     fetch: options.fetch,
@@ -512,6 +512,8 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
           return;
         } catch (error) {
           if (isGone(error)) return;
+
+          if (error instanceof SandboxError && !error.retryable) throw error;
 
           if ((httpStatus(error)?.status ?? 500) < 500) throw error;
           last = error;

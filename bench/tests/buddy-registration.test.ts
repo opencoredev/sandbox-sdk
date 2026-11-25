@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buddy } from "@opencoredev/sandbox-sdk/buddy";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { allocationEvidence, requestBilledCompute, requestedSize } from "../src/allocation.js";
 import { cloudProviders } from "../src/attempts.js";
@@ -262,6 +263,57 @@ describe("Buddy reads through the adapter instance's own connection", () => {
     vi.stubEnv("BUDDY_REGION", "MARS");
     expect((await lookupSandbox(buddyProvider(), "live", 5000)).result).toBe("unavailable");
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps bound credentials after env changes and refuses same-origin 307 on sandbox DELETE", async () => {
+    vi.stubEnv("BUDDY_TOKEN", "orig-token");
+    vi.stubEnv("BUDDY_WORKSPACE", "orig-ws");
+    vi.stubEnv("BUDDY_API_URL", "https://buddy.invalid");
+
+    const provider = bound(buddy(), {});
+
+    vi.stubEnv("BUDDY_TOKEN", "other-token");
+    vi.stubEnv("BUDDY_WORKSPACE", "other-ws");
+
+    const seen: { method: string; url: string; auth: string | null }[] = [];
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      seen.push({ method, url, auth: new Headers(init?.headers).get("Authorization") });
+
+      if (method === "GET" && url.endsWith("/sandboxes")) {
+        return Response.json({ sandboxes: [] });
+      }
+
+      if (method === "DELETE" && url.endsWith("/workspaces/orig-ws/sandboxes/sbx-1")) {
+        return new Response(null, {
+          status: 307,
+          headers: { location: "/workspaces/other-ws/sandboxes/victim" },
+        });
+      }
+
+      return new Response(null, { status: 204 });
+    });
+
+    expect(await provider.list({})).toEqual([]);
+    await expect(provider.destroy("sbx-1")).rejects.toMatchObject({
+      code: "outcome_unknown",
+      retryable: false,
+    });
+
+    expect(seen).toEqual([
+      {
+        method: "GET",
+        url: "https://buddy.invalid/workspaces/orig-ws/sandboxes",
+        auth: "Bearer orig-token",
+      },
+      {
+        method: "DELETE",
+        url: "https://buddy.invalid/workspaces/orig-ws/sandboxes/sbx-1",
+        auth: "Bearer orig-token",
+      },
+    ]);
   });
 });
 

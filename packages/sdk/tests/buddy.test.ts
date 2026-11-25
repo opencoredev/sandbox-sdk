@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { connectSandbox, createSandbox, deleteSnapshot, SandboxError } from "../src/index.js";
 import { keyedIdentifier, parseNote, preservedEndpoint } from "../src/providers/buddy/api.js";
 import { FrameReader, stageCommands } from "../src/providers/buddy/exec.js";
@@ -762,5 +762,89 @@ describe("Buddy lifecycle", () => {
       code: "auth",
     });
     expect(existsSync("/tmp/.sandbox-sdk/exec/never")).toBe(false);
+  });
+
+  test("freezes BUDDY_TOKEN and BUDDY_WORKSPACE at construction time", async () => {
+    const prevToken = process.env.BUDDY_TOKEN;
+    const prevWorkspace = process.env.BUDDY_WORKSPACE;
+
+    try {
+      process.env.BUDDY_TOKEN = fake.options.token;
+      process.env.BUDDY_WORKSPACE = fake.options.workspace;
+      const p = buddy({ baseUrl: fake.options.baseUrl });
+
+      process.env.BUDDY_TOKEN = "mutated-token-should-not-be-used";
+      process.env.BUDDY_WORKSPACE = "mutated-workspace";
+
+      const seen: { url: string; auth: string | null }[] = [];
+      const origFetch = globalThis.fetch;
+
+      const spy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+        seen.push({
+          url: String(input),
+          auth: new Headers(init?.headers).get("Authorization"),
+        });
+
+        return origFetch(input, init);
+      });
+
+      try {
+        await p.list({});
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(seen.length).toBeGreaterThan(0);
+
+      for (const call of seen) {
+        expect(call.url).toContain(`/workspaces/${fake.options.workspace}/`);
+        expect(call.url).not.toContain("mutated-workspace");
+        expect(call.auth).toBe(`Bearer ${fake.options.token}`);
+      }
+    } finally {
+      if (prevToken === undefined) delete process.env.BUDDY_TOKEN;
+      else process.env.BUDDY_TOKEN = prevToken;
+
+      if (prevWorkspace === undefined) delete process.env.BUDDY_WORKSPACE;
+      else process.env.BUDDY_WORKSPACE = prevWorkspace;
+    }
+  });
+
+  test("refuses a same-origin 307 redirect on sandbox DELETE without following it", async () => {
+    const seen: { method: string; url: string }[] = [];
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      seen.push({ method, url });
+
+      if (method === "DELETE" && url.endsWith("/workspaces/ws-a/sandboxes/sbx-1")) {
+        return new Response(null, {
+          status: 307,
+          headers: { location: "/workspaces/ws-b/sandboxes/victim" },
+        });
+      }
+
+      return new Response(null, { status: 204 });
+    });
+
+    try {
+      const p = buddy({
+        baseUrl: "https://api.buddy.invalid",
+        token: "tok-a",
+        workspace: "ws-a",
+      });
+
+      await expect(p.destroy("sbx-1")).rejects.toMatchObject({
+        code: "outcome_unknown",
+        retryable: false,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(seen).toEqual([
+      { method: "DELETE", url: "https://api.buddy.invalid/workspaces/ws-a/sandboxes/sbx-1" },
+    ]);
   });
 });

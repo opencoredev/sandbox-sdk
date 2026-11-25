@@ -81,6 +81,12 @@ export interface HttpPlane {
   /** Headers for every request to this plane that are not credentials (`Accept`, API version pins). */
   headers?: Record<string, string>;
   /**
+   * `false`: every HTTP redirect on this plane (read or write, same-origin or cross-origin) is
+   * refused before anything is sent to the `Location` target. Writes fail with `outcome_unknown`
+   * and reads fail with `provider`. For APIs that never redirect any request.
+   */
+  redirects?: false;
+  /**
    * `false`: a POST or PATCH that may not be sent twice follows no redirect, not even a 303 to a GET, and
    * is `outcome_unknown`. For APIs that never redirect a write. Default: only a resend is refused.
    */
@@ -1052,6 +1058,18 @@ export function createHttpClient<Plane extends string>(
 
         if (!redirectStatuses.has(response.status) || location === null) break;
         await response.body?.cancel().catch(() => {});
+
+        if (plane.redirects === false) {
+          const write = method !== "GET" && method !== "HEAD";
+
+          throw failure(
+            write ? "outcome_unknown" : "provider",
+            request,
+            ` (HTTP ${response.status}): the server redirected a request on a plane that refuses redirects.`,
+            `HTTP ${response.status}`,
+            false,
+          );
+        }
 
         // Whether following would send this write again: 307 and 308 keep the method and body, and so do
         // 301 and 302 for anything but a POST.
