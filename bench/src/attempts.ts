@@ -22,6 +22,7 @@ export const cloudProviders = [
   "archil",
   "microsandbox",
   "microsandbox-shared",
+  "styne",
 ];
 
 export const mainTests = [

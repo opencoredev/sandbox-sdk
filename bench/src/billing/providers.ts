@@ -216,6 +216,15 @@ const sources = new Map<string, BillingSource>(
     },
     microsandbox: microsandboxBilling("Standard"),
     "microsandbox-shared": microsandboxBilling("Shared"),
+    styne: {
+      source: "No per-sandbox billing endpoint (GET /v1/run/usage is daily account totals)",
+      granularity: "not available per sandbox",
+      delay: "unknown",
+      key: "STYNE_API_KEY",
+      notes: [
+        "GET /v1/run/usage reports the account's running seconds and cost per day and product, not per sandbox, so no sandbox gets a cost from it. Estimates use the published per-size rates. No fabricated cost.",
+      ],
+    },
     beam: {
       source: "No verified public billing endpoint",
       granularity: "not available",

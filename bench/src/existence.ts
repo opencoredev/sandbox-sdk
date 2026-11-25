@@ -44,10 +44,10 @@ export const lookupSchema = z.object({
 
 export type LookupEvidence = z.infer<typeof lookupSchema>;
 
-// Maritime keeps an ended sandbox readable for 7 days with `state: "ended"`. Microsandbox has no such
-// state: a `failed` or `stopped` sandbox is still allocated (and its disk billed) until it is deleted
-// and reads 404, so both stay present.
-const terminal = new Set(["deleted", "destroyed", "terminated", "ended"]);
+// Styne answers an ended sandbox with 410 until it forgets it; Maritime keeps one readable for
+// 7 days with `state: "ended"`. Microsandbox has no such state: a `failed` or `stopped` sandbox is
+// still allocated (and its disk billed) until it is deleted and reads 404, so both stay present.
+const terminal = new Set(["deleted", "destroyed", "terminated", "killed", "ended"]);
 
 function redact(value: string) {
   for (const [key, secret] of Object.entries(process.env))
@@ -397,6 +397,61 @@ const microsandboxInfo = z.object({
  * (environment, then ~/.modal.toml), as they do for the adapter and its fingerprint.
  */
 
+/** The fields of Styne's `GET /sandboxes/{id}` the lookup reads. */
+const styneSandbox = z.object({ sandboxID: z.string(), state: z.string() });
+
+/**
+ * Styne's error body: `{ error_code }`, such as `not_found` (https://docs.styne.ai/errors), and the
+ * resource it answers for when it names one: a sandbox's `sandboxID`, a snapshot's `name` or
+ * `snapshotID`, or an `id`.
+ */
+const styneErrorBody = z.object({
+  error_code: z.string(),
+  sandboxID: z.string().optional(),
+  name: z.string().optional(),
+  snapshotID: z.string().optional(),
+  id: z.string().optional(),
+});
+
+/** What a Styne request is about: its sandbox, and for a snapshot call the snapshot's name, its ID. */
+export interface StyneTarget {
+  sandboxId: string;
+  snapshot?: string;
+}
+
+/**
+ * Styne's own `error_code` in a failed answer about `target`, or undefined when the body does not decode
+ * or names any other resource: such an answer decides nothing.
+ */
+export async function styneErrorCode(
+  response: Response,
+  target: StyneTarget,
+): Promise<string | undefined> {
+  const parsed = styneErrorBody.safeParse(await response.json().catch(() => null));
+
+  if (!parsed.success) return undefined;
+  const { error_code, sandboxID, name, snapshotID, id } = parsed.data;
+
+  const named: [string | undefined, string | undefined][] = [
+    [sandboxID, target.sandboxId],
+    [name, target.snapshot],
+    [snapshotID, target.snapshot],
+    [id, target.snapshot ?? target.sandboxId],
+  ];
+
+  return named.every(([value, expected]) => value === undefined || value === expected)
+    ? error_code
+    : undefined;
+}
+
+/** Styne's codes for a sandbox that ended: killed, timed out, its node lost, or its guest agent gone. */
+export const styneEnded: ReadonlySet<string> = new Set([
+  "sandbox_ended",
+  "sandbox_timeout",
+  "node_loss",
+  "agent_exit",
+]);
+
 /** Beam's gateway container listing, as the existence check reads it. */
 const beamContainers = z.object({
   containers: z.array(z.object({ containerId: z.string(), status: z.string() })),
@@ -560,6 +615,39 @@ export async function lookupSandbox(
           const response = await new BoatApi(config).get({ sandboxId: id });
 
           return nativeInfo.parse(response.sandbox);
+        }
+
+        case "styne": {
+          // GET only: Styne's POST /connect would wake a paused sandbox and move its deadline.
+          const { apiKey, baseUrl } = connectionOf(provider, "styne");
+
+          // No redirect is followed: another resource's answer would decide this sandbox.
+          const response = await fetch(`${baseUrl}/sandboxes/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            signal,
+            redirect: "error",
+          });
+
+          // Only Styne's own codes about this sandbox decide ({@link styneErrorCode}): a 410 with an ended
+          // code (answered until Styne forgets it) is an ended sandbox, and `404 not_found` a forgotten
+          // one. A route-level, undecodable or foreign 404 or 410 is unavailable.
+          if (response.status === 404 || response.status === 410) {
+            const code = await styneErrorCode(response, { sandboxId: id });
+
+            if (response.status === 410 && code !== undefined && styneEnded.has(code))
+              return { sandboxId: id, state: "killed" };
+
+            if (response.status === 404 && code === "not_found")
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+
+            throw new Error("Styne lookup answered a route or unknown error");
+          }
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+          const body = styneSandbox.parse(await response.json());
+
+          return { sandboxId: body.sandboxID, state: body.state };
         }
 
         case "maritime": {

@@ -38,6 +38,7 @@ const noPeerProviders: string[] = [
   "freestyle",
   "maritime",
   "sandboxer",
+  "styne",
   "superserve",
 ];
 

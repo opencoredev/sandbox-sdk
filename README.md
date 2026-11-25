@@ -112,6 +112,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 | [Baseten](https://sandbox-sdk.app/docs/providers/baseten)              | `@opencoredev/sandbox-sdk/baseten`      | `@basetenlabs/sandbox`        |
 | [Instabox](https://sandbox-sdk.app/docs/providers/instabox)            | `@opencoredev/sandbox-sdk/instabox`     | nothing                       |
 | [Maritime](https://sandbox-sdk.app/docs/providers/maritime)            | `@opencoredev/sandbox-sdk/maritime`     | nothing                       |
+| [Styne](https://sandbox-sdk.app/docs/providers/styne)                  | `@opencoredev/sandbox-sdk/styne`        | nothing                       |
 | [Microsandbox](https://sandbox-sdk.app/docs/providers/microsandbox)    | `@opencoredev/sandbox-sdk/microsandbox` | `microsandbox`                |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)          | `@opencoredev/sandbox-sdk/upstash`      | `@upstash/box`                |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)              | `@opencoredev/sandbox-sdk/railway`      | `railway`                     |

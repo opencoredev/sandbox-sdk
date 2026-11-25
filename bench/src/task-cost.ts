@@ -25,7 +25,7 @@ const cost = z.discriminatedUnion("kind", [
 function unsizedDiskGiB(provider: string) {
   if (provider === "tenki") return 5;
 
-  return ["baseten", "beam", "archil"].includes(provider) ? 0 : 32;
+  return ["baseten", "beam", "archil", "styne"].includes(provider) ? 0 : 32;
 }
 
 export const costBillingSchema = z.object({
@@ -73,7 +73,7 @@ const median = (values: number[]) => {
 export function costPerTask(report: PublicationReport, provider: string): TaskCost {
   const rows = report.samples.filter((s) => s.provider === provider && s.suite === "cost");
   const lifetimes = rows.filter((s) => s.scenario === "sandbox-lifetime");
-  const estimate = ["tenki", "freestyle", "baseten", "beam"].includes(provider);
+  const estimate = ["tenki", "freestyle", "baseten", "beam", "styne"].includes(provider);
 
   const empty: TaskCost = {
     usd: null,

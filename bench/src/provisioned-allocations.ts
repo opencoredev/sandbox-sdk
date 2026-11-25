@@ -30,6 +30,14 @@ const templates: TemplateAllocations = {
     python: { cpu: 2, memoryGiB: 4, diskGiB: 12 },
     "code-interpreter": { cpu: 2, memoryGiB: 4, diskGiB: 12 },
   },
+  // GET /templates on 2026-11-23; df on /workspace read 51G for base.
+  styne: {
+    base: { cpu: 4, memoryGiB: 8, diskGiB: 51 },
+    default: { cpu: 4, memoryGiB: 8, diskGiB: 51 },
+    small: { cpu: 2, memoryGiB: 4, diskGiB: 51 },
+    large: { cpu: 8, memoryGiB: 16, diskGiB: 111 },
+    xlarge: { cpu: 16, memoryGiB: 32, diskGiB: 251 },
+  },
   superserve: {
     "sandbox-bench-node22-py311-1x1": { cpu: 1, memoryGiB: 1, diskGiB: 4 },
     "sandbox-bench-node22-py311-1x1-pinned": { cpu: 1, memoryGiB: 1, diskGiB: 4 },
@@ -67,6 +75,8 @@ const defaults: DefaultAllocations = {
   baseten: { cpu: 2, memoryGiB: 4, diskGiB: 0 },
   // agent-browser default: 4 vCPU / 8 GiB, 20 GiB /data (where /workspace lives) plus a 16 GiB system disk.
   instabox: { cpu: 4, memoryGiB: 8, diskGiB: 20 },
+  // The base template: 4 vCPU / 8 GiB with a 51 GiB root disk (df on /workspace, 2026-11-23).
+  styne: { cpu: 4, memoryGiB: 8, diskGiB: 51 },
   // Beam's TypeScript SDK default, 1 CPU and 128 MiB; sandbox disk is not billed.
   beam: { cpu: 1, memoryGiB: 0.125, diskGiB: 0 },
   // Archil's default, 1 vCPU and 2048 MiB. The root disk (about 1 TB, not configurable) bills

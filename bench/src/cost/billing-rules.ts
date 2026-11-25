@@ -119,6 +119,8 @@ const docs = {
   microsandbox: "https://microsandbox.dev/pricing",
   microsandboxUsage:
     "https://api.microsandbox.dev/v1/billing/usage/sandbox (per-sandbox daily rows) and /v1/billing/usage (costs.workloads)",
+  styne: "https://docs.styne.ai/billing",
+  styneTiers: "https://docs.styne.ai/pause-tiers",
   modal: "https://modal.com/pricing",
   modalResources: "https://modal.com/docs/guide/sandbox-resources",
   modalRegions: "https://modal.com/docs/guide/region-selection",
@@ -570,6 +572,39 @@ export const billingRules: readonly BillingRule[] = [
       "$0.055/vCPU-hour and $0.020/GiB-hour while running; the usage endpoint's cost is before included allowances and prepaid credit.",
       "Lifetime expiry and the idle timeout pause a sandbox rather than delete it, so a leaked sandbox stops accruing compute but keeps its storage.",
       "Egress ($0.07/GB) and plan minimums (Developer $10/month, Team $500/month) excluded.",
+    ],
+  },
+  {
+    provider: "styne",
+    product: null,
+    pricingKey: "styne",
+    tariff: known(
+      { kind: "bundle", charges: "allocation" },
+      `${docs.styne} (one hourly rate per size)`,
+    ),
+    billingStarts: unknown(
+      "Metered per second while running; the event that starts it is not named",
+    ),
+    billingStops: unknown("Stops when the sandbox is killed, reaches its timeout or is paused"),
+    incrementSeconds: known(1, `${docs.styne} (metered per second while it runs)`),
+    minimumSeconds: unknown("No minimum stated"),
+    perStartFeeUSD: unknown("No creation fee listed; absence is not confirmation"),
+    keepsCharging: known(
+      [],
+      `${docs.styne} (a paused or sleeping VM costs $0; saved snapshots and volumes are billed at a stored-GiB rate that is $0 today) and ${docs.styneTiers}`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known("included", `${docs.styne} (the disk comes with each size)`),
+    settledChargeSource: unknown(
+      "No per-sandbox billing data; GET /v1/run/usage has daily account totals only",
+    ),
+    reportedKind: "estimate",
+    attribution: "none",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "Published per-size rates from 2026-11-20, after the plan's included VM hours; plan fees excluded.",
+      "Styne sleeps a running sandbox when nothing started in it runs, and stops metering it then; estimates price the whole running time, an upper bound.",
     ],
   },
   {

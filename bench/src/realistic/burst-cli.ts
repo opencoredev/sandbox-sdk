@@ -87,6 +87,7 @@ const allProviders = [
   "archil",
   "microsandbox",
   "microsandbox-shared",
+  "styne",
 ];
 
 const listingSchema = z.object({

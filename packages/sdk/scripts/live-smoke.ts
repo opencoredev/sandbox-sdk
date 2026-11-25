@@ -87,6 +87,10 @@ const registry = {
     env: [["MSB_API_KEY"]],
     load: async () => (await import("../src/providers/microsandbox/index.js")).microsandbox(),
   },
+  styne: {
+    env: [["STYNE_API_KEY"]],
+    load: async () => (await import("../src/providers/styne/index.js")).styne(),
+  },
   boxd: {
     env: [["BOXD_API_KEY"]],
     load: async () => (await import("../src/providers/boxd/index.js")).boxd(),

@@ -156,6 +156,7 @@ export const heldOpenProviders = [
   "vercel",
   "instabox",
   "archil",
+  "styne",
 ];
 
 /** Idle lengths of the held-open diagnostic, provider defaults, with the matched zero-wait twin. */
@@ -305,10 +306,11 @@ export async function loadSlotProvider(
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
-  // Modal's, Maritime's and Microsandbox's factory lifetime for creates without one; each attempt also passes its own below.
+  // Modal's, Maritime's, Styne's and Microsandbox's factory lifetime for creates without one; each attempt also passes its own below.
   const lifetime: Record<string, number> = [
     "modal",
     "maritime",
+    "styne",
     "microsandbox",
     "microsandbox-shared",
   ].includes(setup.adapter)
@@ -984,7 +986,7 @@ async function billing(args: string[]) {
   const raw: object[] = [];
 
   for (const [adapter, items] of byAdapter) {
-    if (["tenki", "freestyle", "baseten", "beam"].includes(adapter)) continue;
+    if (["tenki", "freestyle", "baseten", "beam", "styne"].includes(adapter)) continue;
 
     const rows: OwnedSandbox[] = items.flatMap(({ record, sandboxIds }) =>
       sandboxIds.map((id) => ({
@@ -1025,7 +1027,7 @@ async function billing(args: string[]) {
     // The recorded provider name already says which product ran (upstash-ephemeral).
     const base = { attemptId: record.attemptId, product: null, allocation, usage: null };
 
-    if (["tenki", "freestyle", "baseten", "beam"].includes(setup.adapter))
+    if (["tenki", "freestyle", "baseten", "beam", "styne"].includes(setup.adapter))
       return {
         ...base,
         charge: { kind: "estimate", source: "billing rules at list price (no billing data)" },

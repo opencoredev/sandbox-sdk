@@ -28,6 +28,7 @@ export const externalPackages: readonly string[] = [
   "microsandbox",
   "@microsandbox/core",
   "railway",
+  "styne-sdk",
   // Agent frameworks and test runners behind their own subpaths.
   "@mastra/core",
   "@openai/agents",
