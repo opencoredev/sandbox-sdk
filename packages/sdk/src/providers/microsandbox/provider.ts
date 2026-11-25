@@ -368,7 +368,15 @@ export function createMicrosandboxProvider(
   /** Service slugs this adapter made or was about to make, per sandbox ID, with target name and creation timestamp. */
   const ownedServices = new Map<
     string,
-    Map<string, { target: string; createdAt?: string | undefined; confirmed?: boolean | undefined }>
+    Map<
+      string,
+      {
+        target: string;
+        createdAt?: string | undefined;
+        confirmed?: boolean | undefined;
+        confirmedAt?: string | undefined;
+      }
+    >
   >();
 
   /** Public Service URLs per sandbox ID and port. */
@@ -643,14 +651,22 @@ export function createMicrosandboxProvider(
       ownedServices.get(id) ??
       new Map<
         string,
-        { target: string; createdAt?: string | undefined; confirmed?: boolean | undefined }
+        {
+          target: string;
+          createdAt?: string | undefined;
+          confirmed?: boolean | undefined;
+          confirmedAt?: string | undefined;
+        }
       >();
 
     const existing = owned.get(slug);
+    const nextCreatedAt = createdAt ?? existing?.createdAt;
+    const nextConfirmed = confirmed ?? existing?.confirmed;
     owned.set(slug, {
       target: sandboxName,
-      createdAt: createdAt ?? existing?.createdAt,
-      confirmed: confirmed ?? existing?.confirmed,
+      createdAt: nextCreatedAt,
+      confirmed: nextConfirmed,
+      confirmedAt: confirmed === true ? nextCreatedAt : (existing?.confirmedAt ?? undefined),
     });
     ownedServices.set(id, owned);
 
@@ -659,7 +675,7 @@ export function createMicrosandboxProvider(
 
   /**
    * Notifies `serviceSettled` during cleanup with a tight bound so a stalled hook never holds up
-   * sandbox deletion.
+   * sandbox deletion. Returns true only when the hook settled without error before the bound.
    */
   async function notifyServiceCleanup(
     outcome: {
@@ -669,23 +685,25 @@ export function createMicrosandboxProvider(
       createdAt?: string | undefined;
     },
     deadline: Deadline,
-  ) {
+  ): Promise<boolean> {
     const callback = hooks.serviceSettled;
 
-    if (callback === undefined) return;
+    if (callback === undefined) return true;
     const waitMs = Math.min(200, Math.max(1, deadline.remaining()));
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      await Promise.race([
-        Promise.resolve().then(() => callback(outcome)),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, waitMs);
+      return await Promise.race([
+        Promise.resolve()
+          .then(() => callback(outcome))
+          .then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), waitMs);
           timer.unref?.();
         }),
       ]);
     } catch {
-      // Cleanup never fails or delays sandbox deletion because a settlement hook rejected.
+      return false;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -700,6 +718,7 @@ export function createMicrosandboxProvider(
    */
   async function removeServices(id: string, sandboxName: string | undefined, deadline: Deadline) {
     const failed: string[] = [];
+    const unpersistedIdentity: string[] = [];
 
     if (sandboxName !== undefined)
       try {
@@ -727,7 +746,12 @@ export function createMicrosandboxProvider(
     for (const [slug, entry] of ownedServices.get(id) ??
       new Map<
         string,
-        { target: string; createdAt?: string | undefined; confirmed?: boolean | undefined }
+        {
+          target: string;
+          createdAt?: string | undefined;
+          confirmed?: boolean | undefined;
+          confirmedAt?: string | undefined;
+        }
       >()) {
       if (!isOwnedSlug(slug, id)) continue;
 
@@ -764,12 +788,24 @@ export function createMicrosandboxProvider(
           if (entry.createdAt === undefined && service.createdAt !== undefined)
             entry.createdAt = service.createdAt;
 
-          if (!entry.confirmed) {
-            entry.confirmed = true;
-            await notifyServiceCleanup(
+          const needsIdentitySync =
+            !entry.confirmed ||
+            (entry.createdAt !== undefined && entry.confirmedAt !== entry.createdAt);
+
+          if (needsIdentitySync) {
+            const persisted = await notifyServiceCleanup(
               { sandboxId: id, slug, outcome: "created", createdAt: entry.createdAt },
               deadline,
             );
+
+            if (!persisted) {
+              failed.push(slug);
+              unpersistedIdentity.push(slug);
+              continue;
+            }
+
+            entry.confirmed = true;
+            entry.confirmedAt = entry.createdAt;
           }
         } else if (
           entry.createdAt !== undefined &&
@@ -804,7 +840,7 @@ export function createMicrosandboxProvider(
 
     if (ownedServices.get(id)?.size === 0) ownedServices.delete(id);
 
-    return failed;
+    return { failed, unpersistedIdentity };
   }
 
   /**
@@ -825,12 +861,22 @@ export function createMicrosandboxProvider(
       }
 
     let failedServices: string[] = [];
+    let unpersistedIdentity: string[] = [];
 
     try {
-      failedServices = await removeServices(id, sandboxName, createDeadline(budgetMs));
+      const outcome = await removeServices(id, sandboxName, createDeadline(budgetMs));
+      failedServices = outcome.failed;
+      unpersistedIdentity = outcome.unpersistedIdentity;
     } catch {
       failedServices = [...(ownedServices.get(id)?.keys() ?? [])];
     }
+
+    if (unpersistedIdentity.length > 0)
+      throw fail(
+        `verified Service identity could not be persisted (${unpersistedIdentity.join(", ")}); sandbox retained so attached ownership proof is not lost`,
+        "provider",
+        { sandboxId: id },
+      );
 
     try {
       await http.request({
@@ -1241,7 +1287,7 @@ export function createMicrosandboxProvider(
     }
 
     if (created.target?.sandbox === sandboxName) {
-      ownService(id, slug, sandboxName, created.createdAt, true);
+      ownService(id, slug, sandboxName, created.createdAt, created.createdAt !== undefined);
       await hooks.serviceSettled?.({
         sandboxId: id,
         slug,

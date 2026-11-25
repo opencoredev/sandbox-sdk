@@ -2044,4 +2044,211 @@ describe("independent review reproductions", () => {
         .resources,
     }).toEqual({ retryFailed: false, serviceStatus: undefined, reviewedIds: [], journal: [] });
   });
+
+  test("R9-1 fresh reap recovers pending Service after a failed promotion rename before DELETE", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const sandbox = fake.sandboxes.get(source.id);
+
+    if (!sandbox) throw new Error("Fixture sandbox missing");
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    await journal([
+      { provider: "microsandbox", id: source.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: slug,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "pending",
+      },
+    ]);
+    await writeFile(join(out, "results.json"), JSON.stringify({ runId: run }));
+    await p.previewUrl(source.id, 3000);
+    const createdAt = fake.services.get(slug)?.createdAt;
+    expect(createdAt).toBeDefined();
+
+    const ownershipPath = join(out, "ownership.json");
+    const realRename = journalFiles.rename;
+    let renameFailures = 0;
+
+    const rename = vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (to === ownershipPath && renameFailures === 0) {
+        const parsed = z
+          .object({
+            resources: z.array(
+              z.object({
+                id: z.string(),
+                serviceState: z.string().optional(),
+                serviceCreatedAt: z.string().optional(),
+              }),
+            ),
+          })
+          .parse(JSON.parse(await readFile(from, "utf8")));
+
+        const promotion = parsed.resources.find((entry) => entry.id === slug);
+
+        if (promotion?.serviceState === "created" && promotion.serviceCreatedAt === createdAt) {
+          renameFailures++;
+          throw new Error("simulated one-shot promotion rename failure");
+        }
+      }
+
+      await realRename(from, to);
+    });
+
+    const unprovenDeletes: unknown[] = [];
+    let deleteFailures = 0;
+
+    const wire = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (
+        init?.method === "DELETE" &&
+        new URL(String(input)).pathname === `/v1/services/${slug}` &&
+        deleteFailures === 0
+      ) {
+        const parsed = z
+          .object({
+            resources: z.array(
+              z.object({
+                id: z.string(),
+                serviceState: z.string().optional(),
+                serviceCreatedAt: z.string().optional(),
+              }),
+            ),
+          })
+          .parse(JSON.parse(await journalText()));
+
+        for (const entry of parsed.resources.filter((r) => r.id === slug))
+          if (entry.serviceState !== "created" || entry.serviceCreatedAt !== createdAt)
+            unprovenDeletes.push(entry);
+        deleteFailures++;
+
+        return Response.json(
+          { error: "simulated one-shot Service DELETE failure" },
+          { status: 500 },
+        );
+      }
+
+      return realFetch(input, init);
+    });
+
+    await reap();
+    expect(renameFailures).toBe(1);
+    wire.mockRestore();
+    rename.mockRestore();
+
+    const failed = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
+
+    expect({
+      failed,
+      serviceStatus: fake.services.get(slug)?.status,
+      reviewedIds: results.cleanupReview.map((item) => item.id),
+      journal: z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
+        .resources,
+      unprovenDeletes,
+    }).toEqual({
+      failed: false,
+      serviceStatus: undefined,
+      reviewedIds: [],
+      journal: [],
+      unprovenDeletes: [],
+    });
+  });
+
+  test("R9-2 runV2 persists newly learned attached timestamp before DELETE when POST omitted created_at", async () => {
+    const p = adapter();
+    const create = p.create.bind(p);
+    let slug = "";
+    let timestamp: string | undefined;
+    p.create = async (input) => {
+      const source = await create(input);
+      slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+      await p.previewUrl(source.id, 3000);
+      timestamp = fake.services.get(slug)?.createdAt;
+
+      return source;
+    };
+
+    const proofs: { id: string; serviceState?: string; serviceCreatedAt?: string }[] = [];
+
+    const wire = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const { pathname } = new URL(String(input));
+
+      if (pathname === "/v1/services" && init?.method === "POST") {
+        const response = await realFetch(input, init);
+
+        const { created_at: _, ...body } = z
+          .looseObject({ created_at: z.string() })
+          .parse(await response.json());
+
+        return Response.json(body, { status: response.status });
+      }
+
+      if (slug && pathname === `/v1/services/${slug}` && init?.method === "DELETE") {
+        const parsed = z
+          .object({
+            resources: z.array(
+              z.object({
+                id: z.string(),
+                serviceState: z.string().optional(),
+                serviceCreatedAt: z.string().optional(),
+              }),
+            ),
+          })
+          .parse(JSON.parse(await journalText()));
+
+        proofs.push(...parsed.resources.filter((entry) => entry.id === slug));
+
+        return Response.json({ error: "Service DELETE temporarily unavailable" }, { status: 500 });
+      }
+
+      return realFetch(input, init);
+    });
+
+    await runV2(
+      loaded(p),
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--run",
+        run,
+        "--out",
+        out,
+        "--runs",
+        "1",
+        "--max-sandboxes",
+        "4",
+        "--bursts",
+        "",
+        "--ownership-visibility-ms",
+        "100",
+        "--timeout-ms",
+        "5000",
+        "--scenarios",
+        "cold",
+      ]),
+      async () => {},
+    );
+    expect(timestamp).toBeDefined();
+    expect(proofs[0]).toEqual({
+      id: slug,
+      serviceState: "created",
+      serviceCreatedAt: timestamp,
+    });
+    wire.mockRestore();
+    await writeFile(join(out, "results.json"), JSON.stringify({ runId: run }));
+
+    const failed = await reap();
+
+    expect({
+      failed,
+      serviceStatus: fake.services.get(slug)?.status,
+      journal: z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
+        .resources,
+    }).toEqual({ failed: false, serviceStatus: undefined, journal: [] });
+  });
 });
