@@ -1,4 +1,4 @@
-import type { ProcessRunResult } from "@tenkicloud/sandbox";
+import type { ProcessRunResult } from "@luxorai/sandbox";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { cleanupTenki, MockSession, MockTenki, tenki, tenkiState } from "./tenki-mock.js";
 import { createSandbox, connectSandbox } from "../src/index.js";
@@ -323,6 +323,26 @@ describe("Luxor mappings", () => {
       code: "unsupported",
     });
     expect(tenkiState.boxes.size).toBe(0);
+
+    const widened: Partial<MockSession["egress"]>[] = [
+      { interceptHttps: true },
+      { allowedPorts: [8443] },
+      { httpRules: [{ domains: ["registry.npmjs.org"] }] },
+      { policyNames: ["workspace-default"] },
+    ];
+
+    for (const widen of widened) {
+      vi.spyOn(MockTenki.prototype, "create").mockImplementationOnce(async (params) => {
+        const value = await MockSession.create(params ?? {});
+        value.egress = { ...value.egress, ...widen };
+
+        return value;
+      });
+      await expect(
+        createSandbox(factory(), { network: { allow: ["registry.npmjs.org"] } }),
+      ).rejects.toMatchObject({ code: "unsupported" });
+      expect(tenkiState.boxes.size).toBe(0);
+    }
   });
   test("huge output uses bounded native capture while streaming all bytes", async () => {
     const box = await createSandbox(factory());

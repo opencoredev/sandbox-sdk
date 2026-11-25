@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
-import { TenkiSandbox } from "@tenkicloud/sandbox";
+import { TenkiSandbox } from "@luxorai/sandbox";
 import { expect, test, vi } from "vitest";
 import { waitReady, workspaceSetup } from "../src/providers/tenki/ready.js";
 
 // Exercise the installed SDK and its own protocol dependency, without adding
 // production dependencies just for this in-memory transport.
-const nativeRequire = createRequire(createRequire(import.meta.url).resolve("@tenkicloud/sandbox"));
+const nativeRequire = createRequire(createRequire(import.meta.url).resolve("@luxorai/sandbox"));
 const { fromJson } = await import(nativeRequire.resolve("@bufbuild/protobuf"));
 
 type Transport = NonNullable<

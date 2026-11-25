@@ -14,7 +14,7 @@ import type {
   ProcessRunResult,
   Session,
   TenkiSandbox,
-} from "@tenkicloud/sandbox";
+} from "@luxorai/sandbox";
 import { isObject, isString } from "../src/shared/narrow.js";
 import {
   createTenkiProvider,
@@ -95,7 +95,14 @@ export class MockSession {
     this.memoryMb = params.memoryMb ?? 4096;
     this.diskSizeGb = params.diskSizeGb ?? 5;
     this.outboundEnabled = params.allowOutbound ?? true;
-    this.egress = { allowDomains: params.allowDomains ?? [], allowCidrs: [] };
+    this.egress = {
+      allowDomains: params.allowDomains ?? [],
+      allowCidrs: [],
+      interceptHttps: false,
+      allowedPorts: [],
+      httpRules: [],
+      policyNames: [],
+    };
   }
   static async create(params: CreateOptions) {
     const server = createServer();

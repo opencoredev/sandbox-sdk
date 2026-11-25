@@ -1,9 +1,9 @@
-/** Official API sources (checked against @tenkicloud/sandbox 1.4.1 types):
+/** Official API sources (checked against @luxorai/sandbox 1.6.0 types):
  * https://luxor.ai/docs/sandbox/sdk.md
  * https://luxor.ai/docs/sandbox/sessions.md
  * https://luxor.ai/docs/sandbox/snapshots.md
  * https://luxor.ai/docs/sandbox/base-image.md
- * https://www.npmjs.com/package/@tenkicloud/sandbox
+ * https://www.npmjs.com/package/@luxorai/sandbox
  */
 import type {
   ClientOptions,
@@ -13,7 +13,7 @@ import type {
   Session as NativeSession,
   SessionFs,
   Snapshot,
-} from "@tenkicloud/sandbox";
+} from "@luxorai/sandbox";
 import type { ErrorCode } from "../../errors.js";
 import { loadPeer } from "../../peer.js";
 import { isObject, isString } from "../../shared/narrow.js";
@@ -35,7 +35,7 @@ export interface TenkiOptions {
   apiKey?: string;
   /** @deprecated Use apiKey. Will be removed in 2.0.0. */
   authToken?: string;
-  /** Defaults to TENKI_API_ENDPOINT, then TENKI_API_URL, then https://api.tenki.cloud. */
+  /** Defaults to LUXOR_API_ENDPOINT, then LUXOR_API_URL, TENKI_API_ENDPOINT, TENKI_API_URL, then https://api.luxor.ai. */
   baseUrl?: string;
   /** Base image; default: the Luxor service default image. */
   image?: string;
@@ -63,7 +63,7 @@ export type TenkiConnection = Pick<TenkiOptions, "apiKey" | "authToken" | "baseU
 /** What a Tenki adapter builds its client with, in the shape `new TenkiSandbox(config)` takes. */
 export interface TenkiConfig {
   readonly authToken: string;
-  /** `undefined` leaves the endpoint to `@tenkicloud/sandbox`: TENKI_API_ENDPOINT, then TENKI_API_URL. */
+  /** `undefined` leaves the endpoint to `@luxorai/sandbox`: LUXOR_API_ENDPOINT, then LUXOR_API_URL, TENKI_API_ENDPOINT and TENKI_API_URL. */
   readonly baseUrl: string | undefined;
 }
 
@@ -194,7 +194,7 @@ export interface TenkiClient<S extends TenkiSession> {
   ): Promise<Pick<Snapshot, "id">>;
 }
 
-/** The parts of the Luxor SDK the adapter uses: the real `@tenkicloud/sandbox` module, or a test fixture. */
+/** The parts of the Luxor SDK the adapter uses: the real `@luxorai/sandbox` module, or a test fixture. */
 export interface TenkiModule<S extends TenkiSession> {
   TenkiSandbox: new (options: ClientOptions) => TenkiClient<S>;
 }
@@ -351,7 +351,7 @@ export function createTenkiProvider<S extends TenkiSession>(
         throw failure("waitTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
 
       const config = resolveConfig(options);
-      const { TenkiSandbox } = await loadPeer("@tenkicloud/sandbox", "tenki", load);
+      const { TenkiSandbox } = await loadPeer("@luxorai/sandbox", "tenki", load);
 
       return new TenkiSandbox(config);
     })());
@@ -453,7 +453,7 @@ export function createTenkiProvider<S extends TenkiSession>(
 
         // Admit without waiting so every subsequent failure has an ID to clean up.
         const client = await api();
-        // create() has no AbortSignal in `@tenkicloud/sandbox` 1.4.1. Keep observing its result
+        // create() has no AbortSignal in `@luxorai/sandbox` 1.6.0. Keep observing its result
         // after the caller's deadline so a late allocation can still be closed.
         const pending = client.create(params);
         let value: S;
@@ -489,7 +489,11 @@ export function createTenkiProvider<S extends TenkiSession>(
             (domains?.length &&
               (domains.some((domain) => !value.egress.allowDomains.includes(domain)) ||
                 value.egress.allowDomains.some((domain) => !domains.includes(domain)) ||
-                value.egress.allowCidrs.length))
+                value.egress.allowCidrs.length ||
+                value.egress.interceptHttps ||
+                value.egress.allowedPorts.length ||
+                value.egress.httpRules.length ||
+                value.egress.policyNames.length))
           )
             throw failure("Luxor did not confirm the requested network policy", "unsupported");
 

@@ -11,5 +11,5 @@ export type {
 } from "./provider.js";
 
 export function tenki(options: TenkiOptions = {}): TenkiProvider {
-  return createTenkiProvider(options, () => import("@tenkicloud/sandbox"));
+  return createTenkiProvider(options, () => import("@luxorai/sandbox"));
 }

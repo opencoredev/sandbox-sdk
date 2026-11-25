@@ -8,7 +8,7 @@ import { SandboxError } from "@opencoredev/sandbox-sdk";
 import type { LocalNative } from "@opencoredev/sandbox-sdk/local";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Snapshot } from "@superserve/sdk";
-import type { TenkiSandbox } from "@tenkicloud/sandbox";
+import type { TenkiSandbox } from "@luxorai/sandbox";
 import type { Box } from "@upstash/box";
 import type { Sandbox, SnapshotListOpts, SnapshotPaginator } from "e2b";
 import type { Freestyle } from "freestyle";
@@ -138,7 +138,7 @@ export interface NativeModules {
       };
     };
   };
-  "@tenkicloud/sandbox": {
+  "@luxorai/sandbox": {
     TenkiSandbox: new (
       ...args: ConstructorParameters<typeof TenkiSandbox>
     ) => Pick<TenkiSandbox, "get" | "getSnapshot" | "deleteSnapshot">;
@@ -261,7 +261,7 @@ interface InstalledModules {
   "@boatdev/sdk": typeof import("@boatdev/sdk");
   "@boxd-sh/sdk": typeof import("@boxd-sh/sdk");
   freestyle: typeof import("freestyle");
-  "@tenkicloud/sandbox": typeof import("@tenkicloud/sandbox");
+  "@luxorai/sandbox": typeof import("@luxorai/sandbox");
   "@superserve/sdk": typeof import("@superserve/sdk");
   "@basetenlabs/sandbox": typeof import("@basetenlabs/sandbox");
   // `modal` is an SDK dependency the bench cannot resolve types for; the slice above is hand-typed
@@ -496,7 +496,7 @@ export async function lookupSandbox(
 
       switch (name) {
         case "tenki": {
-          const { TenkiSandbox } = await nativeModules.load("@tenkicloud/sandbox");
+          const { TenkiSandbox } = await nativeModules.load("@luxorai/sandbox");
           const tenki = new TenkiSandbox(connectionOf(provider, "tenki"));
 
           return nativeInfo.parse(await tenki.get(id));

@@ -54,6 +54,8 @@ const providerEnv = [
   "MODAL_CONFIG_PATH",
   "SUPERSERVE_API_KEY",
   "SUPERSERVE_BASE_URL",
+  "LUXOR_API_ENDPOINT",
+  "LUXOR_API_URL",
   "TENKI_API_KEY",
   "TENKI_AUTH_TOKEN",
   "TENKI_API_ENDPOINT",
@@ -379,7 +381,7 @@ describe("lookups use the explicit options the adapter was built with, not the e
       };
     });
 
-    fakeNativeModules({ "@tenkicloud/sandbox": { TenkiSandbox } });
+    fakeNativeModules({ "@luxorai/sandbox": { TenkiSandbox } });
 
     const adapter = await load("tenki", { apiKey: "live-token", baseUrl: "https://live.invalid" });
 

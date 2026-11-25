@@ -317,7 +317,7 @@ try {
   // Minifiers rename every class, and esbuild renames colliding ones (the Luxor SDK's FileNotFoundError)
   // even without --minify. The mappers must still recognize the real native errors.
   const mapping = `
-const { FileNotFoundError: TenkiFileNotFoundError } = require("@tenkicloud/sandbox");
+const { FileNotFoundError: TenkiFileNotFoundError } = require("@luxorai/sandbox");
 const railway = require("railway");
 const { tenkiError } = require("./src/providers/tenki/errors.ts");
 const { railwayError, rememberRailwayErrors } = require("./src/providers/railway/errors.ts");
