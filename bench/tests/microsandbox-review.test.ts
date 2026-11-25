@@ -373,7 +373,7 @@ describe("allocation attempts: settled by name, by marker and tier", () => {
 });
 
 describe("Services: cleaned independently of their sandbox, never another's", () => {
-  it("deletes a detached Service of a deleted sandbox and leaves one that targets another sandbox", async () => {
+  it("keeps a proven detached Service of a deleted sandbox for manual cleanup and leaves one that targets another sandbox", async () => {
     const provider = adapter();
     const run = "msb-reap-services";
     const out = await directory("bench-msb-services-");
@@ -427,9 +427,11 @@ describe("Services: cleaned independently of their sandbox, never another's", ()
       (s) => s,
     );
 
-    expect(fake.services.has(slug)).toBe(false);
+    // Microsandbox deletes only by reusable slug, so even a proven Service is left for manual cleanup.
+    expect(fake.services.has(slug)).toBe(true);
     expect(fake.services.has("foreign-slug")).toBe(true);
-    expect((await readJournal(out)).resources).toEqual([]);
+    expect((await readJournal(out)).resources.map((r) => r.id)).toEqual([slug]);
+    fake.services.delete(slug);
     fake.services.delete("foreign-slug");
   }, 60_000);
 
@@ -1808,7 +1810,7 @@ describe("independent review reproductions", () => {
     expect(fake.services.get(slug)).toBe(replacement);
   });
 
-  test("R5-2 failed Service listing during reap still cleans confirmed Service via exact sweep", async () => {
+  test("R5-2 failed Service listing during reap still reaches a confirmed Service via exact sweep, kept for manual cleanup", async () => {
     const p = adapter();
     const source = await p.create({ labels: labels() });
     const sandbox = fake.sandboxes.get(source.id);
@@ -1841,9 +1843,15 @@ describe("independent review reproductions", () => {
 
       return realFetch(input, init);
     });
-    expect(await reap()).toBe(false);
+    expect(await reap()).toBe(true);
     expect(fake.sandboxes.has(source.id)).toBe(false);
-    expect(fake.services.has(slug)).toBe(false);
+    expect(fake.services.has(slug)).toBe(true);
+    expect(
+      z
+        .object({ cleanupReview: z.array(z.object({ id: z.string(), reason: z.string() })) })
+        .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")))
+        .cleanupReview.find((item) => item.id === slug)?.reason,
+    ).toMatch(/manual cleanup/);
   });
 
   test("R5-3 timed-out cleanup hook cannot overwrite a newer ownership journal", async () => {
@@ -1877,6 +1885,9 @@ describe("independent review reproductions", () => {
         serviceCreatedAt: fake.services.get(slug2)?.createdAt,
       },
     ]);
+    // Deleted by hand, as cleanup asks: the reap only settles the journal.
+    fake.services.delete(slug1);
+    fake.services.delete(slug2);
     const ownershipPath = join(out, "ownership.json");
     const realRename = journalFiles.rename;
     let releaseFirst: (() => void) | undefined;
@@ -1940,6 +1951,8 @@ describe("independent review reproductions", () => {
         serviceCreatedAt: fake.services.get(slug)?.createdAt,
       },
     ]);
+    // Deleted by hand, as cleanup asks: the reap only settles the journal.
+    fake.services.delete(slug);
     await writeFile(
       join(out, "results.json"),
       JSON.stringify({
@@ -2036,6 +2049,9 @@ describe("independent review reproductions", () => {
         serviceCreatedAt: fake.services.get(second)?.createdAt,
       },
     ]);
+    // Deleted by hand, as cleanup asks: the reap only settles the journal.
+    fake.services.delete(first);
+    fake.services.delete(second);
 
     const del = await realFetch(`${fake.url}/v1/sandboxes/${source.id}`, {
       method: "DELETE",
@@ -2828,9 +2844,11 @@ describe("independent review reproductions", () => {
           serviceState: "created",
           serviceCreatedAt: timestamp,
         },
-        failed: false,
-        serviceAfterReap: undefined,
-        stillJournaled: undefined,
+        // The SDK's delete failed once; the bench never deletes by slug, so the Service waits for
+        // manual cleanup, still journaled with its proof.
+        failed: true,
+        serviceAfterReap: "detached",
+        stillJournaled: "created",
       });
     },
   );
@@ -3121,6 +3139,8 @@ describe("independent review reproductions", () => {
     const retry = initialEntries.find((entry) => entry.id.startsWith(`${slug}-`));
 
     if (!retry) throw new Error("expected retry slug");
+    // Deleted by hand, as cleanup asks: the reap only settles the journal.
+    fake.services.delete(retry.id);
 
     const removedByOwner = await realFetch(`${fake.url}${servicePath}`, {
       method: "DELETE",
@@ -3639,6 +3659,8 @@ describe("PR88 merge review: recovery reads through the run adapter's connection
       }),
     );
 
+    // Deleted by hand, as cleanup asks: only a read through the bound connection sees it gone.
+    fake.services.delete(slug);
     // The adapter was bound with the fake's endpoint and key; the environment now names another.
     vi.stubEnv("MSB_API_URL", "http://127.0.0.1:9");
     vi.stubEnv("MSB_API_KEY", "msb_other_key_0123456789");
@@ -3719,6 +3741,47 @@ describe("PR88 security review", () => {
       redirector.close();
     }
   });
+
+  test.each([
+    ["attached", { sandbox: "ours", port: 3000 }, "enabled"],
+    ["detached", null, "detached"],
+  ] as const)(
+    "backfill #88: cleanService keeps a proven %s Service for manual cleanup and sends no DELETE",
+    async (_, target, status) => {
+      const createdAt = "2026-11-25T09:00:00.000Z";
+      const methods: string[] = [];
+
+      const send = globalThis.fetch.bind(globalThis);
+
+      fake.services.set("proven-slug", { slug: "proven-slug", target, status, createdAt });
+
+      const wire = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+        methods.push(init?.method ?? "GET");
+
+        return send(input, init);
+      });
+
+      const outcome = await cleanService(
+        { apiKey: key, baseUrl: fake.url },
+        {
+          id: "proven-slug",
+          parent: null,
+          sandboxName: "ours",
+          state: "created",
+          createdAt,
+          superseded: false,
+        },
+      );
+
+      expect({ outcome, kept: fake.services.has("proven-slug"), methods }).toEqual({
+        outcome: { kind: "pending", reason: expect.stringMatching(/manual cleanup/) },
+        kept: true,
+        methods: ["GET"],
+      });
+      wire.mockRestore();
+      fake.services.delete("proven-slug");
+    },
+  );
 
   test("PR88-S2 cleanService never deletes an attached Service made again at its slug", async () => {
     fake.services.set("re-made-slug", {

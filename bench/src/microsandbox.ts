@@ -324,8 +324,13 @@ export async function probePendingService(
 }
 
 /**
- * Deletes a journaled Service when ownership is proven: it targets the journaled sandbox name, or it
- * is detached after a confirmed create (`state === "created"`) and nothing says the slug was taken.
+ * Settles a journaled Service without ever deleting it. Microsandbox deletes a Service only by its slug,
+ * with no immutable ID or precondition, and a journal entry can be hours old, so a slug re-made since the
+ * ownership check would be deleted in its place. A Service whose ownership is proven (it targets the
+ * journaled sandbox name, or it is detached after a confirmed create, `state === "created"`, and nothing
+ * says the slug was taken) is therefore kept `pending` for manual cleanup. The SDK's own `destroy()` still
+ * deletes the Services its client made, after the same timestamp check and within one call: a race remains
+ * there, but only with a Service re-made at the same slug in that short window, on the same account.
  * A detached Service whose create is still `pending` cannot be distinguished from a pre-existing
  * detached Service whose 409 settlement failed to persist, so it stays `pending` for review. One
  * targeting anything else, or a detached or missing one at a superseded slug, is never touched.
@@ -406,21 +411,11 @@ export async function cleanService(
     return { kind: "foreign" };
   }
 
-  const removed = await microsandboxFetch(connection, path, { method: "DELETE" });
-  await removed.body?.cancel();
-
-  if (!removed.ok && removed.status !== 404)
-    throw new MicrosandboxHttpError("Microsandbox Service delete failed", removed.status);
-  const check = await microsandboxFetch(connection, path);
-  await check.body?.cancel();
-
-  if (check.status !== 404)
-    throw new MicrosandboxHttpError(
-      "Microsandbox Service still readable after delete",
-      check.status,
-    );
-
-  return { kind: "gone" };
+  return {
+    kind: "pending",
+    reason:
+      "Service ownership proven, but Microsandbox deletes a Service only by its reusable slug, so it is kept for manual cleanup; delete it yourself",
+  };
 }
 
 /** A snapshot by managed ID (a UUID) or by name; undefined on a 404. */
