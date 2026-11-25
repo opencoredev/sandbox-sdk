@@ -204,6 +204,25 @@ export interface WindowInput {
   track: <T>(work: Promise<T>) => Promise<T>;
 }
 
+/**
+ * How long a sandbox created without a timeout lives before the provider stops it: Vercel's
+ * default session is 5 minutes (https://vercel.com/docs/sandbox/concepts).
+ */
+const defaultSessionMs: ReadonlyMap<string, number> = new Map([["vercel", 300_000]]);
+
+/**
+ * Why `provider` cannot run a survival window: its default session would end before the create,
+ * the fingerprint (each bounded by `timeoutMs`) and the window do, so the window would measure the
+ * session ending on schedule. Null when the window fits. The run never extends the session.
+ */
+export function sessionRefusal(provider: string, plan: SurvivalPlan, timeoutMs: number) {
+  const sessionMs = defaultSessionMs.get(provider);
+
+  if (sessionMs === undefined || plan.windowMs + 2 * timeoutMs < sessionMs) return null;
+
+  return `${provider}'s default session ends after ${sessionMs / 1000} s, before the ${plan.windowMs / 1000} s window and up to ${(2 * timeoutMs) / 1000} s of setup; pass a shorter --survival-window-ms`;
+}
+
 /** A heartbeat that had no answer within its deadline: no error code or status, by design. */
 function timeoutFailure(callMs: number): FailureOutcome {
   return { kind: "failure", note: `Heartbeat had no reply within ${Math.round(callMs)} ms` };
@@ -268,17 +287,20 @@ export async function heartbeatWindow(input: WindowInput) {
     }
 
     // The timer may wake late: check again, so nothing is sent past the deadline or off its slot.
-    if (performance.now() + callMs > endBy) {
+    // One timestamp admits the heartbeat and times its reply, so no reply lands past `endBy`.
+    const sentAt = performance.now();
+
+    if (sentAt + callMs > endBy) {
       heartbeats.push({ kind: "skipped", atMs: offset, reason: "deadline" });
       continue;
     }
 
-    if (performance.now() > due + grace) {
+    if (sentAt > due + grace) {
       heartbeats.push({ kind: "skipped", atMs: offset, reason: "late" });
       continue;
     }
 
-    const atMs = performance.now() - start;
+    const atMs = sentAt - start;
     let heartbeat: SentHeartbeat;
 
     try {
