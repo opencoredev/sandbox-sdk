@@ -392,6 +392,9 @@ const nativeInfo = z.object({
 
 const memoryNotFound = z.object({ code: z.literal("not_found") });
 
+/** Maritime's error body: `{ code }`, such as `sandbox_not_found`. */
+const maritimeErrorBody = z.object({ code: z.string() });
+
 /** The fields the bench reads from Docker's container inspect. */
 const dockerContainer = z.object({
   Id: z.string(),
@@ -544,6 +547,20 @@ export async function lookupSandbox(
             headers: { Authorization: `Bearer ${apiKey}` },
             signal,
           });
+
+          // Only Maritime's own codes decide: `404 sandbox_not_found` is absence and
+          // `410 sandbox_ended` an ended sandbox. A route-level 404 or any other answer is unavailable.
+          if (response.status === 404 || response.status === 410) {
+            const answer = maritimeErrorBody.safeParse(await response.json().catch(() => null));
+            const code = answer.success ? answer.data.code : undefined;
+
+            if (response.status === 404 && code === "sandbox_not_found")
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+
+            if (response.status === 410 && code === "sandbox_ended") return { id, state: "ended" };
+
+            throw new Error("Maritime lookup answered a route or unknown error");
+          }
 
           if (!response.ok)
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });

@@ -80,7 +80,11 @@ function maritimeFetch(provider: Provider, path: string, init: RequestInit = {})
 
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
 
-  return fetch(`${baseUrl}/v1${path}`, { ...init, headers });
+  // As the adapter: a write never follows a redirect, which would replay it as another request.
+  const method = init.method ?? "GET";
+  const redirect = method === "GET" ? init.redirect : "error";
+
+  return fetch(`${baseUrl}/v1${path}`, { ...init, headers, redirect });
 }
 
 function httpError(message: string, status: number) {
