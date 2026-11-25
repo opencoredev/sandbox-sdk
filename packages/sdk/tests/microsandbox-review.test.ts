@@ -1118,7 +1118,7 @@ test("PR88 merge review: a refused retry keeps an earlier lost Service create tr
   );
 
   expect({ posts, first, sandbox: fake.sandboxes.has(id) }).toEqual({
-    posts: 2,
+    posts: 1,
     first: "unavailable",
     sandbox: true,
   });
@@ -1176,4 +1176,26 @@ test("PR88 merge review: a preview refused during a destroy keeps an earlier los
     first: "unavailable",
     sandbox: true,
   });
+});
+
+test("PR88 merge review: no second Service create is sent while a lost one may still land", async () => {
+  let posts = 0;
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      if (new URL(input).pathname === "/v1/services" && init.method === "POST") {
+        posts++;
+
+        if (posts === 1) throw new TypeError("fetch failed");
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+  await expect(p.previewUrl(id, 3000)).rejects.toBeDefined();
+  const retry = await p.previewUrl(id, 3000).catch((error: SandboxError) => error.code);
+
+  expect({ posts, retry }).toEqual({ posts: 1, retry: "unavailable" });
 });

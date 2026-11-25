@@ -1500,6 +1500,19 @@ export function createMicrosandboxProvider(
     // A destroy that started first may already be past this slug, so nothing is sent or journaled.
     if (destroying.has(id)) throw refuseDuringDestroy();
 
+    // A create of this slug that lost its answer may still land, so a second one is never sent while
+    // it can: a retry's Service, deleted by a destroy, could otherwise be remade by the first.
+    const lostAt = ownedServices.get(id)?.get(slug)?.lostAt;
+
+    if (lostAt !== undefined && Date.now() - lostAt < missingGraceMs)
+      throw fail(
+        "an earlier Service create for this port may still land; try again shortly",
+        "unavailable",
+        {
+          sandboxId: id,
+        },
+      );
+
     // Journaled before the request: a lost answer may still have made it.
     await hooks.service?.({ sandboxId: id, sandboxName, slug, port });
 
