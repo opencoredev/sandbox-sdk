@@ -189,13 +189,15 @@ export type ServiceOutcome =
 
 export type ServiceProbeOutcome =
   | { kind: "attached"; createdAt: string | undefined }
+  | { kind: "not-found" }
   | { kind: "other" };
 
 /**
  * Read-only exact check for an unresolved Service before deleting its parent sandbox. Returns
  * `attached` with the server `created_at` when the live Service still targets `sandboxName`,
- * `other` on 404, detached, or foreign target, and throws on HTTP/network errors so the parent
- * sandbox is kept until attachment can be checked.
+ * `not-found` on 404 (so a pending create keeps its parent sandbox until settled), `other` when
+ * detached or targeting another sandbox, and throws on HTTP/network errors so the parent sandbox
+ * is kept until attachment can be checked.
  */
 export async function probePendingService(
   slug: string,
@@ -206,7 +208,7 @@ export async function probePendingService(
   if (read.status === 404) {
     await read.body?.cancel();
 
-    return { kind: "other" };
+    return { kind: "not-found" };
   }
 
   if (!read.ok) {

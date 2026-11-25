@@ -2682,4 +2682,60 @@ describe("independent review reproductions", () => {
       stillJournaled: undefined,
     });
   });
+
+  test("R13 fresh reap holds parent sandbox while a pending Service create returns 404 so a late POST remains recoverable", async () => {
+    const creator = adapter();
+    const source = await creator.create({ labels: labels() });
+    const ownership = join(out, "ownership.json");
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+
+    creator.setAttemptHooks({
+      service: async ({ sandboxId, sandboxName, slug: attemptSlug }) => {
+        await journal([
+          { provider: "microsandbox", id: sandboxId, kind: "sandbox", parent: null },
+          {
+            provider: "microsandbox",
+            id: attemptSlug,
+            kind: "service",
+            parent: sandboxId,
+            sandboxName,
+            serviceState: "pending",
+          },
+        ]);
+      },
+    });
+
+    let finalizePost: (() => Promise<void>) | undefined;
+
+    const wire = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+
+      if ((init?.method ?? "GET") === "POST" && url.pathname === "/v1/services") {
+        finalizePost = async () => {
+          const accepted = await realFetch(input, { ...init, signal: null });
+          await accepted.body?.cancel();
+          expect(accepted.status).toBe(201);
+        };
+
+        throw new TypeError("connection lost while Service POST was in flight");
+      }
+
+      return realFetch(input, init);
+    });
+
+    await expect(creator.previewUrl(source.id, 3000)).rejects.toThrow();
+    expect(finalizePost).toBeDefined();
+    expect(await reap()).toBe(true);
+    expect(fake.sandboxes.has(source.id)).toBe(true);
+    wire.mockRestore();
+    await finalizePost?.();
+    expect(await reap()).toBe(false);
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    expect(fake.services.has(slug)).toBe(false);
+    expect(
+      z
+        .object({ resources: z.array(z.unknown()) })
+        .parse(JSON.parse(await readFile(ownership, "utf8"))).resources,
+    ).toEqual([]);
+  });
 });

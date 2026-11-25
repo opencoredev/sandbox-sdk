@@ -517,19 +517,29 @@ export async function reapRun(
         }
 
         if (tier !== undefined) {
-          const unprovenServices = (journal?.resources ?? []).filter(
+          const allServices = (journal?.resources ?? []).filter(
+            (r) => r.provider === p.name && r.kind === "service",
+          );
+
+          const unprovenServices = allServices.filter(
             (r) =>
-              r.provider === p.name &&
-              r.kind === "service" &&
               r.parent === id &&
               r.sandboxName !== undefined &&
-              (r.serviceState !== "created" || r.serviceCreatedAt === undefined),
+              (r.serviceState !== "created" || r.serviceCreatedAt === undefined) &&
+              !allServices.some(
+                (other) => other.parent === r.parent && isRetrySlug(other.id, r.id),
+              ),
           );
 
           for (const svc of unprovenServices) {
             const probed = await deadline(config["timeout-ms"], () =>
               probePendingService(svc.id, svc.sandboxName!),
             );
+
+            if (probed.kind === "not-found" && svc.serviceState !== "created")
+              throw new Error(
+                `Pending Service ${svc.id} is still unresolved (404); retaining sandbox ${id} so a late create cannot detach without proof`,
+              );
 
             if (probed.kind === "attached") {
               if (probed.createdAt === undefined)
