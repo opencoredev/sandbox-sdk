@@ -1,7 +1,6 @@
 // The Microsandbox adapter's own invariants, against the local fake (tests/microsandbox-fake.ts) and,
 // for the exec stream, a scripted peer handle. Each block names the plan invariant it covers.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
-import { SandboxError } from "../src/errors.js";
 import { tokenPattern } from "../src/providers/microsandbox/api.js";
 import { peerError } from "../src/providers/microsandbox/errors.js";
 import type {
@@ -198,6 +197,17 @@ describe("peer gate (fail before allocate)", () => {
     expect(error).toMatchObject({ code: "unavailable" });
     expect(String(error.message)).toContain("Keep microsandbox external");
     expect(JSON.stringify([String(error), error.cause])).not.toContain("msb_secret_in_path_123456");
+    expect(fake.requests).toEqual([]);
+  });
+
+  test("a peer that throws while loading is unavailable naming the fix, and sends nothing", async () => {
+    const p = createMicrosandboxProvider({ apiKey, baseUrl: fake.url }, async () => {
+      throw new TypeError("The argument 'filename' must be a file URL object");
+    });
+
+    const error = await rejection(p.create({ labels: {} }));
+    expect(error).toMatchObject({ code: "unavailable" });
+    expect(error.message).toContain("Keep microsandbox external");
     expect(fake.requests).toEqual([]);
   });
 

@@ -83,6 +83,10 @@ const registry = {
     env: [["MARITIME_API_KEY"]],
     load: async () => (await import("../src/providers/maritime/index.js")).maritime(),
   },
+  microsandbox: {
+    env: [["MSB_API_KEY"]],
+    load: async () => (await import("../src/providers/microsandbox/index.js")).microsandbox(),
+  },
   boxd: {
     env: [["BOXD_API_KEY"]],
     load: async () => (await import("../src/providers/boxd/index.js")).boxd(),

@@ -259,6 +259,13 @@ try {
   assert.ok((await api.sdk(async () => ({ FakeClient }))) instanceof FakeClient);
   await assert.rejects(native.sdk(async () => ({ Other: FakeClient })), error => error instanceof SandboxError && error.code === "invalid_argument");
 
+  // Microsandbox runs commands through its peer: without it, create refuses before sending anything.
+  const { microsandbox } = await import("${pkg.name}/microsandbox");
+  const sent = seen.length;
+  await assert.rejects(createSandbox(microsandbox({ apiKey: "msb_smoke_key_0123456789", baseUrl: base })), error => error instanceof SandboxError && error.code === "unavailable" && error.message.includes("Install microsandbox") && !JSON.stringify([error.message, error.hint, String(error.cause)]).includes("msb_smoke_key_0123456789"));
+  assert.equal(seen.length, sent, "microsandbox sends nothing without its peer");
+  console.log("microsandbox refuses without its peer");
+
   console.log("native api ok on " + (globalThis.Bun ? "bun " + Bun.version : "node " + process.version));
 } finally {
   server.close();
@@ -326,6 +333,8 @@ await build({
   splitting: true,
   outdir: bundleDir,
   logLevel: "error",
+  // Peers stay external, as a consumer that installs one keeps it; none is installed here.
+  external: ["microsandbox"],
   banner: {
     js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
   },
@@ -388,7 +397,11 @@ const modes = [
   { name: "bundler", module: "esnext", moduleResolution: "bundler" },
 ];
 
-const providerFiles = noPeerProviders.map((subpath) => {
+// Subpaths whose types must compile with no peer installed: the no-peer providers, and adapters whose
+// public types never name their peer's.
+const typedWithoutPeers = [...noPeerProviders, "microsandbox"];
+
+const providerFiles = typedWithoutPeers.map((subpath) => {
   const file = `provider-${subpath}.ts`;
   writeFileSync(join(consumerDir, file), `export * from "${pkg.name}/${subpath}";\n`);
 

@@ -389,7 +389,20 @@ export function createMicrosandboxProvider(
   async function context(): Promise<PeerContext> {
     peerContext ??= (async () => {
       const settings = peerSettings();
-      const module = await loadPeer(sdkPackage, name, load);
+      let module: MicrosandboxModule;
+
+      try {
+        module = await loadPeer(sdkPackage, name, load);
+      } catch (error) {
+        // A missing package or a bundle without require is already named; anything else is the peer
+        // failing to load where it was put (a CommonJS bundle that inlined it has no import.meta.url).
+        if (error instanceof SandboxError) throw error;
+
+        throw fail(`microsandbox could not load. ${nativeHint}`, "unavailable", {
+          hint: nativeHint,
+          cause: error instanceof Error ? redact(error.message) : undefined,
+        });
+      }
 
       try {
         return new module.RemoteContext(settings);
