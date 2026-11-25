@@ -1059,51 +1059,6 @@ test("a keyed machine with an allow-list is not findable until the list is confi
   }
 });
 
-test("a keyless machine with an allow-list is not listed until the list is confirmed", async () => {
-  const provider = factory();
-  const other = factory();
-  let confirm = () => {};
-
-  const gate = new Promise<void>((resolve) => {
-    confirm = resolve;
-  });
-
-  mocks.setEgressAllow.mockClear();
-
-  mocks.setEgressAllow.mockImplementationOnce(async (_id, entries) => {
-    await gate;
-
-    return entries;
-  });
-
-  const creating = provider.create({
-    labels: { "sandbox-sdk": "1" },
-    network: { allow: ["example.com"] },
-  });
-
-  let pendingId: string | undefined;
-
-  try {
-    await vi.waitFor(() => expect(mocks.setEgressAllow).toHaveBeenCalledTimes(1));
-    pendingId = mocks.setEgressAllow.mock.calls[0]?.[0];
-    expect(pendingId).toBeDefined();
-    const listed = await other.list({ "sandbox-sdk": "1" });
-    expect(listed.map((info) => info.id)).not.toContain(pendingId);
-  } finally {
-    confirm();
-  }
-
-  const created = await creating;
-
-  try {
-    expect(created.id).toBe(pendingId);
-    const listed = await other.list({ "sandbox-sdk": "1" });
-    expect(listed.map((info) => info.id)).toContain(created.id);
-  } finally {
-    await provider.destroy(created.id);
-  }
-});
-
 test("a create whose allow-list fails drops the machine locally even when its delete fails", async () => {
   const provider = factory();
   const kept = await createSandbox(provider);

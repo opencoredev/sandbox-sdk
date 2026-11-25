@@ -177,7 +177,7 @@ await using box = await createSandbox(boxd(), {
 });
 ```
 
-- `network: { allow }` sets the machine's egress allow list before create returns, and the adapter checks the list boxd reports back. A machine created without `from` can be found or listed by another client only after that check passes. Entries are hostnames, `*.example.com` wildcards, or public IPv4 addresses and CIDRs. HTTP and HTTPS are matched by hostname, everything else by address.
+- `network: { allow }` sets the machine's egress allow list before create returns, and the adapter checks the list boxd reports back. Entries are hostnames, `*.example.com` wildcards, or public IPv4 addresses and CIDRs. HTTP and HTTPS are matched by hostname, everything else by address.
 - `network: "none"` and an empty allow list fail with `unsupported`, because an empty boxd allow list means unrestricted.
 - `timeoutMs` sets boxd's delete timer. The platform deletes the machine that long after creation, in any state, even suspended.
 - `idleTimeoutMs` sets boxd's auto-suspend. boxd measures idleness by network traffic, so a background process that makes no traffic doesn't keep the machine awake. A suspended machine reports `paused`.
@@ -213,7 +213,7 @@ await box.run("echo kept > /data/state");
 - Keys are best-effort. Pass a [`locator`](/concepts/sandboxes-and-keys#exact-and-best-effort-keys) for exact get-or-create.
 - No `network: "none"` and no terminals.
 - One preview route per machine.
-- Listing doesn't wake a suspended or hibernated machine. A keyless machine without custom labels or `network: { allow }` carries its metadata in its name and is listed in any state without a guest read. A sleeping machine created with a key, custom labels, an allow list or `from` is left out, because its labels are only in its guest; `listSleeping()` returns those machines without reading them, and `connect(id)` reads one, which wakes it. A keyed or labelled machine that falls asleep between boxd's listing and the read is still woken. `find(key)` reaches a sleeping keyed machine, reading sleeping machines only when no running machine has the key. `reapSandboxes({ idleOnly: true })` runs an activity check in every listed sandbox, which wakes a sleeping one.
+- Listing doesn't wake a suspended or hibernated machine. A keyless machine without custom labels carries its metadata in its name and is listed in any state without a guest read. A sleeping machine created with a key, custom labels or `from` is left out, because its labels are only in its guest; `listSleeping()` returns those machines without reading them, and `connect(id)` reads one, which wakes it. A keyed or labelled machine that falls asleep between boxd's listing and the read is still woken. `find(key)` reaches a sleeping keyed machine, reading sleeping machines only when no running machine has the key. `reapSandboxes({ idleOnly: true })` runs an activity check in every listed sandbox, which wakes a sleeping one.
 
 ## How it works
 
