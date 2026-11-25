@@ -168,6 +168,64 @@ export async function reapRun(
     return next;
   };
 
+  /**
+   * Durably promotes Service entries in `ownership.json` before publishing the promoted fields to
+   * in-memory `journal.resources`, so a concurrent fallback sweep never observes an unpersisted
+   * promotion while the rename is still in flight or after it rejects.
+   */
+  const persistServicePromotion = (
+    targets: z.infer<typeof resource>[],
+    createdAt: string | undefined,
+  ) => {
+    // Because in-memory promotion is only published after writeOwnership succeeds, entries that
+    // already carry this state and timestamp are already durable on disk and need not wait behind
+    // an unrelated in-flight write.
+    const needsWrite = targets.some((entry) => {
+      if (!journal || !journal.resources.includes(entry)) return false;
+      const nextCreatedAt = createdAt ?? entry.serviceCreatedAt;
+
+      return entry.serviceState !== "created" || entry.serviceCreatedAt !== nextCreatedAt;
+    });
+
+    if (!needsWrite) return Promise.resolve();
+
+    const next = journalWriteChain.then(async () => {
+      if (!journal) return;
+      const updates = new Map<z.infer<typeof resource>, z.infer<typeof resource>>();
+
+      for (const entry of targets) {
+        if (!journal.resources.includes(entry)) continue;
+        const nextCreatedAt = createdAt ?? entry.serviceCreatedAt;
+
+        if (entry.serviceState === "created" && entry.serviceCreatedAt === nextCreatedAt) continue;
+        const promoted: z.infer<typeof resource> = { ...entry, serviceState: "created" };
+
+        if (nextCreatedAt !== undefined) promoted.serviceCreatedAt = nextCreatedAt;
+        updates.set(entry, promoted);
+      }
+
+      if (updates.size === 0) return;
+
+      const candidate = {
+        ...journal,
+        resources: journal.resources.map((r) => updates.get(r) ?? r),
+      };
+
+      await writeOwnership(path, JSON.stringify(candidate, null, 2) + "\n");
+
+      for (const [entry, promoted] of updates) {
+        entry.serviceState = "created";
+
+        if (promoted.serviceCreatedAt !== undefined)
+          entry.serviceCreatedAt = promoted.serviceCreatedAt;
+      }
+    });
+
+    journalWriteChain = next.catch(() => {});
+
+    return next;
+  };
+
   for (const p of providers) {
     if (p.kind === "skipped") {
       process.stderr.write(`SKIP ${p.name}: ${p.note}\n`);
@@ -238,42 +296,7 @@ export async function reapRun(
           );
 
           if (outcome === "created") {
-            const mutated: {
-              entry: z.infer<typeof resource>;
-              prevState: "pending" | "created" | undefined;
-              prevCreatedAt: string | undefined;
-            }[] = [];
-
-            for (const entry of matching) {
-              const nextCreatedAt = createdAt ?? entry.serviceCreatedAt;
-
-              if (entry.serviceState !== "created" || entry.serviceCreatedAt !== nextCreatedAt) {
-                mutated.push({
-                  entry,
-                  prevState: entry.serviceState,
-                  prevCreatedAt: entry.serviceCreatedAt,
-                });
-                entry.serviceState = "created";
-
-                if (nextCreatedAt !== undefined) entry.serviceCreatedAt = nextCreatedAt;
-              }
-            }
-
-            if (mutated.length === 0) return;
-
-            try {
-              await persistJournal();
-            } catch (error) {
-              for (const item of mutated) {
-                if (item.prevState === undefined) delete item.entry.serviceState;
-                else item.entry.serviceState = item.prevState;
-
-                if (item.prevCreatedAt === undefined) delete item.entry.serviceCreatedAt;
-                else item.entry.serviceCreatedAt = item.prevCreatedAt;
-              }
-
-              throw error;
-            }
+            await persistServicePromotion(matching, createdAt);
 
             return;
           }
@@ -559,6 +582,10 @@ export async function reapRun(
             reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")),
       );
 
+    // Drain any in-flight promotion/settlement writes from destroy() before the fallback Service
+    // sweep inspects journaled Service entries.
+    await journalWriteChain;
+
     // Microsandbox Services journaled before they were made, deleted whether or not their sandbox is
     // gone, and only while they target that sandbox or nothing; others are never touched.
     const services = (journal?.resources ?? []).filter(
@@ -583,27 +610,7 @@ export async function reapRun(
               (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
             ),
             onVerified: async (verifiedCreatedAt) => {
-              if (!journal) return;
-              const prevState = entry.serviceState;
-              const prevCreatedAt = entry.serviceCreatedAt;
-              const nextCreatedAt = verifiedCreatedAt ?? entry.serviceCreatedAt;
-
-              if (entry.serviceState === "created" && entry.serviceCreatedAt === nextCreatedAt)
-                return;
-              entry.serviceState = "created";
-
-              if (nextCreatedAt !== undefined) entry.serviceCreatedAt = nextCreatedAt;
-
-              try {
-                await persistJournal();
-              } catch (error) {
-                if (prevState === undefined) delete entry.serviceState;
-                else entry.serviceState = prevState;
-
-                if (prevCreatedAt === undefined) delete entry.serviceCreatedAt;
-                else entry.serviceCreatedAt = prevCreatedAt;
-                throw error;
-              }
+              await persistServicePromotion([entry], verifiedCreatedAt);
             },
           }),
         );

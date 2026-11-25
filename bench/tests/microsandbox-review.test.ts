@@ -2251,4 +2251,188 @@ describe("independent review reproductions", () => {
         .resources,
     }).toEqual({ failed: false, serviceStatus: undefined, journal: [] });
   });
+
+  test("R10-1 runV2 proves Service on disk before DELETE after a preview settlement rename failure", async () => {
+    const ownership = join(out, "ownership.json");
+    const p = adapter();
+    const destroy = p.destroy.bind(p);
+    let sourceId = "";
+    let slug = "";
+    let timestamp: string | undefined;
+    let renameFailures = 0;
+    p.destroy = async (sandboxId) => {
+      if (sourceId === "") {
+        sourceId = sandboxId;
+        slug = `sbx-${sandboxId.replaceAll("-", "").slice(0, 16)}-p3000`;
+        await expect(p.previewUrl(sandboxId, 3000)).rejects.toThrow(
+          "one-shot preview settlement rename failure",
+        );
+        timestamp = fake.services.get(slug)?.createdAt;
+      }
+
+      return destroy(sandboxId);
+    };
+
+    const readProof = async (file: Parameters<typeof readFile>[0]) =>
+      z
+        .object({
+          resources: z.array(
+            z.object({
+              kind: z.string(),
+              id: z.string(),
+              serviceState: z.enum(["pending", "created"]).optional(),
+              serviceCreatedAt: z.string().optional(),
+            }),
+          ),
+        })
+        .parse(JSON.parse(await readFile(file, "utf8")))
+        .resources.find((r) => r.id === slug);
+
+    const rename = journalFiles.rename;
+    vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (to === ownership && slug && renameFailures === 0) {
+        const entry = await readProof(from);
+
+        if (entry?.serviceState === "created" && entry.serviceCreatedAt) {
+          renameFailures++;
+          throw new Error("one-shot preview settlement rename failure");
+        }
+      }
+
+      await rename(from, to);
+    });
+
+    const deletes: { kind: "service" | "sandbox"; proof: unknown }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (slug && init?.method === "DELETE") {
+        const path = new URL(String(input)).pathname;
+
+        if (path === `/v1/services/${slug}` && !deletes.some((d) => d.kind === "service")) {
+          deletes.push({ kind: "service", proof: await readProof(ownership) });
+
+          return Response.json({ error: "one-shot Service DELETE failure" }, { status: 500 });
+        }
+
+        if (path === `/v1/sandboxes/${sourceId}` && !deletes.some((d) => d.kind === "sandbox"))
+          deletes.push({ kind: "sandbox", proof: await readProof(ownership) });
+      }
+
+      return realFetch(input, init);
+    });
+
+    await runV2(
+      loaded(p),
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--run",
+        run,
+        "--out",
+        out,
+        "--runs",
+        "1",
+        "--max-sandboxes",
+        "4",
+        "--bursts",
+        "",
+        "--ownership-visibility-ms",
+        "100",
+        "--timeout-ms",
+        "5000",
+        "--scenarios",
+        "cold",
+      ]),
+      async () => {},
+    );
+    expect(renameFailures).toBe(1);
+
+    const expected = {
+      id: slug,
+      kind: "service",
+      serviceState: "created",
+      serviceCreatedAt: timestamp,
+    };
+
+    expect(deletes).toEqual([
+      { kind: "service", proof: expected },
+      { kind: "sandbox", proof: expected },
+    ]);
+  });
+
+  test("R10-2 reap waits for stalled promotion write before fallback Service sweep DELETE", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const sandbox = fake.sandboxes.get(source.id);
+
+    if (sandbox === undefined) throw new Error("Fixture sandbox missing");
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    const ownership = join(out, "ownership.json");
+    await p.previewUrl(source.id, 3000);
+    const timestamp = fake.services.get(slug)?.createdAt;
+
+    if (timestamp === undefined) throw new Error("Fixture Service missing");
+    await journal([
+      { provider: "microsandbox", id: source.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: slug,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "pending",
+      },
+    ]);
+    await writeFile(join(out, "results.json"), JSON.stringify({ runId: run }));
+
+    const readProof = async (file: Parameters<typeof readFile>[0]) =>
+      z
+        .object({
+          resources: z.array(
+            z.object({
+              kind: z.string(),
+              id: z.string(),
+              serviceState: z.enum(["pending", "created"]).optional(),
+              serviceCreatedAt: z.string().optional(),
+            }),
+          ),
+        })
+        .parse(JSON.parse(await readFile(file, "utf8")))
+        .resources.find((r) => r.id === slug);
+
+    const rename = journalFiles.rename;
+    let renameFailures = 0;
+    let promotionInFlight = false;
+    vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (to === ownership && renameFailures === 0) {
+        const entry = await readProof(from);
+
+        if (entry?.serviceState === "created" && entry.serviceCreatedAt === timestamp) {
+          renameFailures++;
+          promotionInFlight = true;
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          promotionInFlight = false;
+          throw new Error("stalled promotion rename eventually failed");
+        }
+      }
+
+      await rename(from, to);
+    });
+
+    const deletes: { proof: unknown; promotionInFlight: boolean }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (init?.method === "DELETE" && new URL(String(input)).pathname === `/v1/services/${slug}`)
+        deletes.push({ proof: await readProof(ownership), promotionInFlight });
+
+      return realFetch(input, init);
+    });
+
+    await reap();
+    expect(renameFailures).toBe(1);
+    expect(deletes).toEqual([
+      {
+        proof: { id: slug, kind: "service", serviceState: "created", serviceCreatedAt: timestamp },
+        promotionInFlight: false,
+      },
+    ]);
+  });
 });

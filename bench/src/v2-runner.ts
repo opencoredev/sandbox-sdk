@@ -559,11 +559,18 @@ export async function runV2(
         if (entry === undefined) return;
 
         if (outcome === "created") {
+          const nextCreatedAt = createdAt ?? entry.serviceCreatedAt;
+
+          if (entry.serviceState === "created" && entry.serviceCreatedAt === nextCreatedAt) return;
           const updated = { ...entry, serviceState: "created" as const };
 
-          if (createdAt !== undefined) updated.serviceCreatedAt = createdAt;
-          owned.set(key, updated);
-        } else owned.delete(key);
+          if (nextCreatedAt !== undefined) updated.serviceCreatedAt = nextCreatedAt;
+          await persistConfirmedSnapshot(key, updated);
+
+          return;
+        }
+
+        owned.delete(key);
         await persist();
       },
       snapshot: async (attempt) => {
@@ -2836,6 +2843,9 @@ export async function runV2(
       }
     }
 
+    // Drain any in-flight Service promotion/settlement writes from destroy() before sweeping.
+    await journal;
+
     // Microsandbox Services journaled before they were made, whether or not their sandbox is gone.
     const services = [...owned.values()].filter(
       (v) => v.provider === p.name && v.kind === "service",
@@ -2864,8 +2874,7 @@ export async function runV2(
             const updated = { ...current, serviceState: "created" as const };
 
             if (nextCreatedAt !== undefined) updated.serviceCreatedAt = nextCreatedAt;
-            owned.set(key, updated);
-            await persist();
+            await persistConfirmedSnapshot(key, updated);
           },
         });
 

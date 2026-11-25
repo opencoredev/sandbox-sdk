@@ -1287,13 +1287,16 @@ export function createMicrosandboxProvider(
     }
 
     if (created.target?.sandbox === sandboxName) {
-      ownService(id, slug, sandboxName, created.createdAt, created.createdAt !== undefined);
+      ownService(id, slug, sandboxName, created.createdAt, false);
       await hooks.serviceSettled?.({
         sandboxId: id,
         slug,
         outcome: "created",
         createdAt: created.createdAt,
       });
+
+      if (created.createdAt !== undefined)
+        ownService(id, slug, sandboxName, created.createdAt, true);
     }
 
     return created;
