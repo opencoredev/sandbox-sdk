@@ -1,6 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import type { MicrosandboxHooks } from "@opencoredev/sandbox-sdk/microsandbox";
 import type { ConfigV2 } from "./v2-config.js";
 import type { LoadedProvider } from "./providers.js";
 import { sleepingUnchecked } from "./sleeping.js";
@@ -57,13 +59,27 @@ const resource = z.object({
   sandboxName: z.string().optional(),
   /** A Microsandbox Service's create: `created` once confirmed; absent (older journals) is `pending`. */
   serviceState: z.enum(["pending", "created"]).optional(),
+  /** Server `created_at` from a confirmed Microsandbox Service create. */
+  serviceCreatedAt: z.string().optional(),
   /** A Microsandbox capture's name; equal to `id` while unconfirmed. */
   snapshotName: z.string().optional(),
+});
+
+const settledSnapshotSchema = z.object({
+  provider: z.string(),
+  name: z.string(),
+  id: z.string(),
 });
 
 const reviewSchema = resource
   .pick({ provider: true, id: true, kind: true })
   .extend({ reason: z.string(), status: z.enum(["checking", "unresolved"]).optional() });
+
+function takesAttemptHooks(
+  provider: Provider,
+): provider is Provider & { setAttemptHooks(hooks: MicrosandboxHooks): void } {
+  return "setAttemptHooks" in provider && typeof provider.setAttemptHooks === "function";
+}
 
 /** Recovery never treats a journal ID as permission to delete. */
 export async function reapRun(
@@ -77,6 +93,7 @@ export async function reapRun(
     runId: string;
     resources: z.infer<typeof resource>[];
     apps: JournalApp[];
+    settledSnapshots: z.infer<typeof settledSnapshotSchema>[];
   } | null = null;
 
   try {
@@ -86,6 +103,8 @@ export async function reapRun(
         resources: z.array(resource),
         // Older journals have no Apps: every sandbox is in the adapter's default App.
         apps: z.array(journalAppSchema).default([]),
+        // Settled Microsandbox capture-name -> managed UUID aliases kept until results.json clears.
+        settledSnapshots: z.array(settledSnapshotSchema).default([]),
       })
       .parse(JSON.parse(await readFile(path, "utf8")));
   } catch (error) {
@@ -181,6 +200,24 @@ export async function reapRun(
     // the bench's tier label must match too, in every listing and in each exact ownership check.
     const tier = microsandboxTier(p.name);
 
+    // Retire Service entries as soon as the adapter confirms deletion or foreign conflict during
+    // destroy(), before the sandbox itself is deleted and before the Service sweep runs.
+    if (tier !== undefined && takesAttemptHooks(p.provider)) {
+      p.provider.setAttemptHooks({
+        serviceSettled: async ({ slug, outcome }) => {
+          if (outcome !== "deleted" && outcome !== "conflict") return;
+
+          if (!journal) return;
+
+          const matching = journal.resources.filter(
+            (r) => r.provider === p.name && r.kind === "service" && r.id === slug,
+          );
+
+          for (const entry of matching) await forget(entry);
+        },
+      });
+    }
+
     const owned = async (id: string) =>
       pendingOwned.has(id) ||
       verifyRunOwnership(
@@ -250,7 +287,7 @@ export async function reapRun(
         pendingOwned.add(item.id);
         candidates.add(item.id);
         reconciled = reconcileDiscovered(journaled, p.name, item) || reconciled;
-        journal ??= { runId: config.run, resources: [], apps: [] };
+        journal ??= { runId: config.run, resources: [], apps: [], settledSnapshots: [] };
 
         if (
           !journal.resources.some(
@@ -335,7 +372,7 @@ export async function reapRun(
 
       try {
         if (reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
-          journal ??= { runId: config.run, resources: [], apps: [] };
+          journal ??= { runId: config.run, resources: [], apps: [], settledSnapshots: [] };
 
           if (
             !journal.resources.some(
@@ -371,9 +408,16 @@ export async function reapRun(
           sandboxId: id,
         }).catch(() => {});
 
-        for (const entry of journal?.resources ?? [])
-          if (entry.provider === p.name && entry.kind === "sandbox" && entry.id === id)
-            await forget(entry);
+        const retired = (journal?.resources ?? []).filter(
+          (entry) =>
+            entry.provider === p.name &&
+            ((entry.kind === "sandbox" && entry.id === id) ||
+              (entry.kind === "service" &&
+                entry.parent === id &&
+                entry.serviceState === "created")),
+        );
+
+        for (const entry of retired) await forget(entry);
       } catch (error) {
         if (error instanceof DeadlineError && (await resolveAbsent(id))) return;
         review(
@@ -426,6 +470,7 @@ export async function reapRun(
             parent: entry.parent,
             sandboxName: entry.sandboxName,
             state: entry.serviceState ?? "pending",
+            createdAt: entry.serviceCreatedAt,
             superseded: services.some(
               (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
             ),
@@ -537,19 +582,37 @@ export async function reapRun(
         if (settled.kind === "exists") {
           // A Maritime save's key goes once it settles; a Microsandbox capture's name gives way to the
           // managed ID settlement confirmed, journaled before the delete so a by-name 404 can never
-          // drop the snapshot it found.
-          if (entry.idempotencyKey !== undefined || settled.id !== entry.id) {
+          // drop the snapshot it found. Also keep the name->UUID alias until results.json clears.
+          const aliasMissing =
+            tier !== undefined &&
+            entry.snapshotName !== undefined &&
+            !(journal?.settledSnapshots ?? []).some(
+              (s) => s.provider === p.name && s.name === entry.snapshotName && s.id === settled.id,
+            );
+
+          if (entry.idempotencyKey !== undefined || settled.id !== entry.id || aliasMissing) {
             const { idempotencyKey: _, ...withoutKey } = entry;
             const confirmed = { ...withoutKey, id: settled.id };
 
             if (journal) {
               const previousResources = [...journal.resources];
+              const previousSettled = [...journal.settledSnapshots];
               journal.resources = journal.resources.map((r) => (r === entry ? confirmed : r));
+
+              if (tier !== undefined && entry.snapshotName !== undefined) {
+                journal.settledSnapshots = [
+                  ...journal.settledSnapshots.filter(
+                    (s) => !(s.provider === p.name && s.name === entry.snapshotName),
+                  ),
+                  { provider: p.name, name: entry.snapshotName, id: settled.id },
+                ];
+              }
 
               try {
                 await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
               } catch (error) {
                 journal.resources = previousResources;
+                journal.settledSnapshots = previousSettled;
                 throw error;
               }
             }
@@ -636,14 +699,21 @@ export async function reapRun(
         if (stillJournaled) continue;
 
         try {
-          const absent = uuidPattern.test(item.id)
-            ? (await deadline(config["timeout-ms"], () => readMicrosandboxSnapshot(item.id))) ===
-              undefined
-            : (
-                await deadline(config["timeout-ms"], () =>
-                  settleMicrosandboxCapture(item.id, config["timeout-ms"]),
-                )
-              ).kind === "absent";
+          const settledAlias = journal?.settledSnapshots.find(
+            (s) => s.provider === p.name && s.name === item.id,
+          );
+
+          const exactId = settledAlias?.id ?? (uuidPattern.test(item.id) ? item.id : undefined);
+
+          const absent =
+            exactId !== undefined
+              ? (await deadline(config["timeout-ms"], () => readMicrosandboxSnapshot(exactId))) ===
+                undefined
+              : (
+                  await deadline(config["timeout-ms"], () =>
+                    settleMicrosandboxCapture(item.id, config["timeout-ms"]),
+                  )
+                ).kind === "absent";
 
           if (absent) {
             const index = reviews.indexOf(item);
@@ -763,6 +833,23 @@ export async function reapRun(
     };
 
     await writeOwnership(join(config.out, "results.json"), JSON.stringify(record, null, 2) + "\n");
+  }
+
+  // Once results.json is durably written, drop settled capture-name aliases whose reviews cleared.
+  if (journal && journal.settledSnapshots.length > 0) {
+    const retained = journal.settledSnapshots.filter((alias) =>
+      reviews.some(
+        (r) =>
+          r.provider === alias.provider &&
+          r.kind === "snapshot" &&
+          (r.id === alias.name || r.id === alias.id),
+      ),
+    );
+
+    if (retained.length !== journal.settledSnapshots.length) {
+      journal.settledSnapshots = retained;
+      await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+    }
   }
 
   const mdPath = join(config.out, "results.md");

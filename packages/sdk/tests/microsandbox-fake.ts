@@ -43,6 +43,7 @@ export interface FakeService {
   slug: string;
   target: { sandbox: string; port: number } | null;
   status: "enabled" | "disabled" | "detached";
+  createdAt?: string;
 }
 
 export interface FakeSnapshot {
@@ -436,14 +437,23 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
   }
 
   const pendingLabels = new Map<string, Record<string, string>>();
+  let lastServiceTimeMs = 0;
+
+  function nextServiceCreatedAt(): string {
+    lastServiceTimeMs = Math.max(Date.now(), lastServiceTimeMs + 1);
+
+    return new Date(lastServiceTimeMs).toISOString();
+  }
 
   function servicesView(service: FakeService): JsonValue {
+    service.createdAt ??= nextServiceCreatedAt();
+
     return {
       slug: service.slug,
       url: `${origin}/svc/${service.slug}`,
       status: service.status,
       target: service.target,
-      created_at: new Date().toISOString(),
+      created_at: service.createdAt,
       updated_at: new Date().toISOString(),
     };
   }
@@ -641,6 +651,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
           slug: parsed.slug,
           target: parsed.target,
           status: "enabled",
+          createdAt: nextServiceCreatedAt(),
         };
 
         services.set(parsed.slug, service);

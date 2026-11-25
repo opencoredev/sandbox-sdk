@@ -457,6 +457,8 @@ export async function runV2(
     sandboxName?: string;
     /** A Microsandbox Service's create: `pending` until the adapter confirms it made the Service. */
     serviceState?: ServiceState;
+    /** The server `created_at` of a confirmed Microsandbox Service create. */
+    serviceCreatedAt?: string;
     /** A Microsandbox capture's name; equal to `id` while the capture is unconfirmed. */
     snapshotName?: string;
   }
@@ -550,14 +552,18 @@ export async function runV2(
       },
       // A confirmed create marks the slug the run's; a 409 or other refusal drops it before any other
       // slug is tried, so a slug that was someone else's never stays journaled as the run's.
-      serviceSettled: async ({ slug, outcome }) => {
+      serviceSettled: async ({ slug, outcome, createdAt }) => {
         const key = `${name}/service/${slug}`;
         const entry = owned.get(key);
 
         if (entry === undefined) return;
 
-        if (outcome === "created") owned.set(key, { ...entry, serviceState: "created" });
-        else owned.delete(key);
+        if (outcome === "created") {
+          const updated = { ...entry, serviceState: "created" as const };
+
+          if (createdAt !== undefined) updated.serviceCreatedAt = createdAt;
+          owned.set(key, updated);
+        } else owned.delete(key);
         await persist();
       },
       snapshot: async (attempt) => {
@@ -2853,6 +2859,7 @@ export async function runV2(
           parent: entry.parent,
           sandboxName: entry.sandboxName,
           state: entry.serviceState ?? "pending",
+          createdAt: entry.serviceCreatedAt,
           superseded: services.some(
             (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
           ),

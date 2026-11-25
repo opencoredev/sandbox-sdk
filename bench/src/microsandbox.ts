@@ -67,6 +67,7 @@ const serviceSchema = z.object({
   slug: z.string(),
   status: z.string(),
   target: z.object({ sandbox: z.string(), port: z.number() }).nullish(),
+  created_at: z.string().optional(),
 });
 
 export const microsandboxSnapshotSchema = z.object({
@@ -162,6 +163,8 @@ export interface ServiceEntry {
   parent: string | null;
   sandboxName: string | undefined;
   state: ServiceState;
+  /** The server `created_at` from the confirmed create, used to reject a reused slug after deletion. */
+  createdAt?: string | undefined;
   /**
    * The journal also holds a later slug the adapter tried for the same sandbox and port
    * (`<slug>-<4 hex>`). The adapter tries one only after this slug was taken, so a detached Service
@@ -224,6 +227,15 @@ export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome>
         reason:
           "Detached Service has an unsettled create; ownership cannot be proven, so it is kept for review",
       };
+
+    if (entry.createdAt === undefined || service.created_at === undefined)
+      return {
+        kind: "pending",
+        reason:
+          "Detached Service lacks creation timestamp proof; kept for review so a reused slug is never deleted",
+      };
+
+    if (service.created_at !== entry.createdAt) return { kind: "foreign" };
   } else {
     return { kind: "foreign" };
   }

@@ -119,6 +119,7 @@ export interface MicrosandboxHooks {
     sandboxId: string;
     slug: string;
     outcome: "created" | "refused" | "conflict" | "deleted";
+    createdAt?: string | undefined;
   }): void | Promise<void>;
 }
 
@@ -635,6 +636,39 @@ export function createMicrosandboxProvider(
   }
 
   /**
+   * Notifies `serviceSettled` during cleanup with a tight bound so a stalled hook never holds up
+   * sandbox deletion.
+   */
+  async function notifyServiceCleanup(
+    outcome: {
+      sandboxId: string;
+      slug: string;
+      outcome: "conflict" | "deleted";
+    },
+    deadline: Deadline,
+  ) {
+    const callback = hooks.serviceSettled;
+
+    if (callback === undefined) return;
+    const waitMs = Math.min(200, Math.max(1, deadline.remaining()));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => callback(outcome)),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, waitMs);
+          timer.unref?.();
+        }),
+      ]);
+    } catch {
+      // Cleanup never fails or delays sandbox deletion because a settlement hook rejected.
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /**
    * Deletes the Services this adapter made for sandbox `id`. Candidates come from memory (which survives
    * a detached sandbox) and from the cloud's list filtered by the sandbox's name; each must match the
    * adapter's own slug shape for this ID and still target this sandbox (or nothing) before it is deleted.
@@ -694,9 +728,7 @@ export function createMicrosandboxProvider(
         // Never a Service that now targets another sandbox.
         if (service.target !== null && service.target.sandbox !== target) {
           ownedServices.get(id)?.delete(slug);
-          await Promise.resolve(
-            hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "conflict" }),
-          ).catch(() => {});
+          await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
           continue;
         }
 
@@ -712,9 +744,7 @@ export function createMicrosandboxProvider(
         }
 
         ownedServices.get(id)?.delete(slug);
-        await Promise.resolve(
-          hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "deleted" }),
-        ).catch(() => {});
+        await notifyServiceCleanup({ sandboxId: id, slug, outcome: "deleted" }, deadline);
       } catch {
         failed.push(slug);
       }
@@ -1159,7 +1189,12 @@ export function createMicrosandboxProvider(
     }
 
     if (created.target?.sandbox === sandboxName)
-      await hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "created" });
+      await hooks.serviceSettled?.({
+        sandboxId: id,
+        slug,
+        outcome: "created",
+        createdAt: created.createdAt,
+      });
 
     return created;
   }

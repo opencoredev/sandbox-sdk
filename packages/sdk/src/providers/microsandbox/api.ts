@@ -161,6 +161,8 @@ export interface MicrosandboxService {
   status: ServiceStatus;
   /** The sandbox (by name) and port that receive requests, or null when detached. */
   target: { sandbox: string; port: number } | null;
+  /** Server creation timestamp (`created_at`), used to distinguish a reused slug after deletion. */
+  createdAt: string | undefined;
 }
 
 export function parseService(raw: JsonValue | undefined): MicrosandboxService {
@@ -168,6 +170,7 @@ export function parseService(raw: JsonValue | undefined): MicrosandboxService {
   const url = field(raw, "url");
   const status = field(raw, "status");
   const target = field(raw, "target");
+  const createdAt = field(raw, "created_at");
 
   if (!isString(slug) || !slug || !isString(url))
     throw fail("unexpected Service object from the API");
@@ -181,6 +184,7 @@ export function parseService(raw: JsonValue | undefined): MicrosandboxService {
       status === "enabled" || status === "disabled" || status === "detached" ? status : "unknown",
     target:
       isString(sandbox) && isNumber(port) && Number.isInteger(port) ? { sandbox, port } : null,
+    createdAt: isString(createdAt) && createdAt ? createdAt : undefined,
   };
 }
 

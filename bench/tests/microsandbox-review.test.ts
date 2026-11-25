@@ -33,6 +33,7 @@ import { snapshotProvenanceSchema } from "../src/ownership.js";
 import { siteData } from "../src/site-data.js";
 import { reapRun } from "../src/recovery.js";
 import { deleteProvenSnapshot, inspectSnapshot } from "../src/snapshots.js";
+import { DeadlineError, deadline } from "../src/timing.js";
 import { parseV2 } from "../src/v2-config.js";
 import { runV2 } from "../src/v2-runner.js";
 
@@ -359,6 +360,7 @@ describe("Services: cleaned independently of their sandbox, never another's", ()
             parent: box.id,
             sandboxName: name,
             serviceState: "created",
+            serviceCreatedAt: fake.services.get(slug)?.createdAt,
           },
           {
             provider: "microsandbox",
@@ -1255,5 +1257,253 @@ describe("independent review reproductions", () => {
       reviewedIds: [],
     });
     expect(await readFile(join(out, "results.md"), "utf8")).not.toContain(name);
+  });
+
+  test("R4-1 reap leaves a replacement Service alone after slug reuse during destroy or interrupted settlement write", async () => {
+    const p = adapter();
+    const other = await p.create({ labels: {} });
+    const create = p.create.bind(p);
+    let sandboxId = "";
+    let slug = "";
+    p.create = async (input) => {
+      const result = await create(input);
+      sandboxId = result.id;
+      slug = `sbx-${result.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+      await p.previewUrl(result.id, 3000);
+
+      return result;
+    };
+
+    const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+    let released = false;
+    let crashJournal = "";
+    let failedWrites = 0;
+    const realRename = journalFiles.rename;
+    vi.spyOn(journalFiles, "rename").mockImplementation((from, to) => {
+      if (released && crashJournal === "" && to === join(out, "ownership.json")) {
+        failedWrites++;
+
+        return Promise.reject(new Error("simulated Service settlement write failure"));
+      }
+
+      return realRename(from, to);
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+
+      if (
+        init?.method === "DELETE" &&
+        path === `/v1/sandboxes/${sandboxId}` &&
+        crashJournal === ""
+      ) {
+        expect(failedWrites).toBe(1);
+        crashJournal = await readFile(join(out, "ownership.json"), "utf8");
+        const target = fake.sandboxes.get(other.id);
+
+        if (!target) throw new Error("Replacement target is missing");
+
+        const replacement = await realFetch(`${fake.url}/v1/services`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ slug, target: { sandbox: target.name, port: 3000 } }),
+        });
+
+        expect(replacement.status).toBe(201);
+        await replacement.body?.cancel();
+
+        const removed = await realFetch(`${fake.url}/v1/sandboxes/${other.id}`, {
+          method: "DELETE",
+          headers,
+        });
+
+        expect(removed.ok).toBe(true);
+        await removed.body?.cancel();
+      }
+
+      const response = await realFetch(input, init);
+
+      if (init?.method === "DELETE" && path === `/v1/services/${slug}` && response.ok)
+        released = true;
+
+      return response;
+    });
+
+    await runV2(
+      loaded(p),
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--run",
+        run,
+        "--out",
+        out,
+        "--runs",
+        "1",
+        "--max-sandboxes",
+        "4",
+        "--bursts",
+        "",
+        "--ownership-visibility-ms",
+        "100",
+        "--timeout-ms",
+        "3000",
+        "--scenarios",
+        "cold",
+      ]),
+      async () => {},
+    );
+    await writeFile(join(out, "ownership.json"), crashJournal);
+    await reap();
+
+    const deletes = fake.requests.filter(
+      (r) => r.method === "DELETE" && r.path === `/v1/services/${slug}`,
+    );
+
+    expect({ replacementPresent: fake.services.has(slug), serviceDeletes: deletes.length }).toEqual(
+      { replacementPresent: true, serviceDeletes: 1 },
+    );
+  });
+
+  test("R4-2 clears a deleted capture review after results write failure even past the operation search limit", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    let name = "";
+    p.setAttemptHooks({
+      snapshot: (attempt) => {
+        name = attempt.name;
+      },
+    });
+    const { id: snapshotId } = await capture(p, source.id);
+    await p.destroy(source.id);
+
+    const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+    const operations = await realFetch(`${fake.url}/v1/snapshot-operations`, { headers });
+
+    const original = z
+      .object({ data: z.array(z.looseObject({ snapshot_name: z.string() })) })
+      .parse(await operations.json())
+      .data.find((op) => op.snapshot_name === name);
+
+    if (original === undefined) throw new Error("Capture operation fixture missing");
+
+    let nameVisible = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+
+      if (!nameVisible && url.pathname === `/v1/snapshots/by-name/${name}`)
+        return Response.json({ error: { code: "snapshot_not_found" } }, { status: 404 });
+
+      if (url.pathname === "/v1/snapshot-operations") {
+        const page = Number(url.searchParams.get("cursor") ?? "0");
+
+        if (page === 10) return Response.json({ data: [original], next_cursor: null });
+
+        return Response.json({
+          data: Array.from({ length: 100 }, (_, index) => {
+            const sequence = String(100 * page + index).padStart(12, "0");
+
+            return {
+              ...original,
+              id: `00000000-0000-4000-8000-${sequence}`,
+              snapshot_name: `other-${sequence}`,
+              status: "failed",
+              error: { code: "capture_failed", message: "unrelated failure" },
+              result: null,
+            };
+          }),
+          next_cursor: String(page + 1),
+        });
+      }
+
+      return realFetch(input, init);
+    });
+
+    await journal([
+      {
+        provider: "microsandbox",
+        id: name,
+        kind: "snapshot",
+        parent: source.id,
+        snapshotName: name,
+        snapshotProof: proof(source.id),
+      },
+    ]);
+    expect(await reap()).toBe(true);
+
+    nameVisible = true;
+    const realRename = journalFiles.rename;
+
+    const rename = vi.spyOn(journalFiles, "rename").mockImplementation((from, to) => {
+      if (to === join(out, "results.json"))
+        return Promise.reject(new Error("simulated results write failure"));
+
+      return realRename(from, to);
+    });
+
+    await expect(reap()).rejects.toThrow("simulated results write failure");
+    expect(fake.snapshots.has(snapshotId)).toBe(false);
+    rename.mockRestore();
+
+    const failed = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
+
+    expect({ failed, reviewedIds: results.cleanupReview.map((item) => item.id) }).toEqual({
+      failed: false,
+      reviewedIds: [],
+    });
+  });
+
+  test("R4-3 dispatches sandbox DELETE within caller deadline while Service settlement hook is stalled", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    await p.previewUrl(source.id, 3000);
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    let resolveHook: (() => void) | undefined;
+    let resolveUnblock: (() => void) | undefined;
+
+    const hookEntered = new Promise<void>((resolve) => {
+      resolveHook = resolve;
+    });
+
+    const unblock = new Promise<void>((resolve) => {
+      resolveUnblock = resolve;
+    });
+
+    p.setAttemptHooks({
+      serviceSettled: ({ outcome }) => {
+        if (outcome === "deleted") {
+          resolveHook?.();
+
+          return unblock;
+        }
+      },
+    });
+
+    const destroying = p.destroy(source.id);
+
+    const waitForDelete = async () => {
+      try {
+        return await deadline(500, async () => {
+          await destroying;
+
+          return !fake.sandboxes.has(source.id);
+        });
+      } catch (error) {
+        if (error instanceof DeadlineError) return !fake.sandboxes.has(source.id);
+        throw error;
+      }
+    };
+
+    try {
+      await deadline(2000, () => Promise.race([hookEntered, destroying]));
+      expect(fake.services.has(slug)).toBe(false);
+      expect(await waitForDelete()).toBe(true);
+    } finally {
+      resolveUnblock?.();
+      await destroying;
+    }
   });
 });
