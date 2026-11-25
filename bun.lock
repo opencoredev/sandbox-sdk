@@ -113,6 +113,11 @@
         "microsandbox": "0.8.1",
         "vitest": "^4.1.12",
       },
+      "optionalDependencies": {
+        "@superradcompany/microsandbox-darwin-arm64": "0.8.1",
+        "@superradcompany/microsandbox-linux-arm64-gnu": "0.8.1",
+        "@superradcompany/microsandbox-linux-x64-gnu": "0.8.1",
+      },
     },
     "examples/ai-app-builder": {
       "name": "@sandbox-sdk/example-ai-app-builder",
@@ -1188,6 +1193,12 @@
     "@standard-community/standard-openapi": ["@standard-community/standard-openapi@0.2.11", "", { "peerDependencies": { "@standard-community/standard-json": "^0.3.5", "@standard-schema/spec": "^1.0.0", "arktype": "^2.1.20", "effect": "^3.20.0", "openapi-types": "^12.1.3", "sury": "^10.0.0", "typebox": "^1.0.0", "valibot": "^1.4.2", "zod": "^3.25.0 || ^4.0.0", "zod-openapi": "^4" }, "optionalPeers": ["arktype", "effect", "sury", "typebox", "valibot", "zod", "zod-openapi"] }, "sha512-Fz+2K6JMJZwf4QoyZrq1smK+YeEwDGXqz2j8Y77rOHgmrk9StcEyTKkMf3n/4xOmEup5WZ2eOp0xiC7Slxx9gg=="],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
+
+    "@superradcompany/microsandbox-darwin-arm64": ["@superradcompany/microsandbox-darwin-arm64@0.8.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-iQoQeJTIpm8it36qg0x2lrldovji03b3ybnhfNoTebeZNhAMgWuDIF4Oy7gwr0aULufWLrQNmefAuqefIzCFWA=="],
+
+    "@superradcompany/microsandbox-linux-arm64-gnu": ["@superradcompany/microsandbox-linux-arm64-gnu@0.8.1", "", { "os": "linux", "cpu": "arm64", "libc": "glibc" }, "sha512-wSHssqJ8lRtT8Min6GXVsHJ3rwWPvp7xsvDwtZ1O1+TqzxjWVFNxLnks5Dn9sfBcQm3+lIsbwdYI1kpVFbnS1w=="],
+
+    "@superradcompany/microsandbox-linux-x64-gnu": ["@superradcompany/microsandbox-linux-x64-gnu@0.8.1", "", { "os": "linux", "cpu": "x64", "libc": "glibc" }, "sha512-lTLzcXo4Ft3i//OtYz9His/9Q52irYwk7cgzPfAaZU84TTLnZkEJadds3OtBJIOuaNIR1+5cnKa8QV2/3XYotA=="],
 
     "@superserve/sdk": ["@superserve/sdk@0.11.4", "", {}, "sha512-vFjtm3+Z+32tAxMIhUVCT+nYi3PpgyG48Au9F/Rh4qoFtjT3dzJJn+94zaTcPPfHeRFh0fex/Lh93ac5JWjr2w=="],
 

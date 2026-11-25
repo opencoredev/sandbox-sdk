@@ -28,5 +28,10 @@
     "freestyle": "0.2.20",
     "microsandbox": "0.8.1",
     "vitest": "^4.1.12"
+  },
+  "optionalDependencies": {
+    "@superradcompany/microsandbox-darwin-arm64": "0.8.1",
+    "@superradcompany/microsandbox-linux-arm64-gnu": "0.8.1",
+    "@superradcompany/microsandbox-linux-x64-gnu": "0.8.1"
   }
 }
