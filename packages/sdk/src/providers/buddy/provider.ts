@@ -273,21 +273,29 @@ const previewDir = "/tmp/.sandbox-sdk/previews";
 const lockDir = "/tmp/.sandbox-sdk/locks/endpoints.lock";
 
 /**
- * Takes the guest lock on the sandbox's endpoints: an atomic `mkdir`, with `owner` inside. A lock older
- * than `leaseMinutes` is a crashed client's lease and is broken. Exits 75 when the lock stays taken for
- * about 20 seconds.
+ * Takes the guest lock on the sandbox's endpoints: an atomic `mkdir`, with `owner` and its absolute
+ * expiry epoch (`expires`) inside. Another client breaks the lock only once the holder's own expiry
+ * passes (or after two minutes if the holder crashed before writing `expires`). Exits 75 when the lock
+ * stays taken for about 20 seconds.
  */
-const lockCommand = (owner: string, leaseMinutes: number) =>
+const lockCommand = (owner: string, leaseSeconds: number) =>
   [
     "umask 077",
     "mkdir -p /tmp/.sandbox-sdk/locks || exit 1",
     `l=${lockDir}`,
     "i=0",
     `while ! mkdir "$l" 2>/dev/null; do`,
-    `  if [ -n "$(find "$l" -maxdepth 0 -mmin +${leaseMinutes} 2>/dev/null)" ]; then rm -rf "$l"; continue; fi`,
+    `  now=$(date +%s)`,
+    `  exp=$(cat "$l/expires" 2>/dev/null)`,
+    `  if [ -n "$exp" ]; then`,
+    `    if [ "$now" -gt "$exp" ]; then rm -rf "$l"; continue; fi`,
+    `  elif [ -n "$(find "$l" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then`,
+    `    rm -rf "$l"; continue`,
+    `  fi`,
     "  i=$((i + 1)); [ $i -lt 200 ] || exit 75; sleep 0.1",
     "done",
-    `printf %s ${quote(owner)} > "$l/owner"`,
+    `printf %s "$(( $(date +%s) + ${leaseSeconds} ))" > "$l/expires.tmp" && mv -f "$l/expires.tmp" "$l/expires"`,
+    `printf %s ${quote(owner)} > "$l/owner.tmp" && mv -f "$l/owner.tmp" "$l/owner"`,
   ].join("\n");
 
 /** Writes `credentials` to their private file only while `owner` still holds the endpoint lock. Exits 75 if lost. */
@@ -298,6 +306,14 @@ const writeCredentialsCommand = (owner: string, credentials: PreviewCredentials)
     `[ "$(cat "$l/owner" 2>/dev/null)" = ${quote(owner)} ] || exit 75`,
     `mkdir -p ${previewDir} || exit 1`,
     `printf %s ${quote(Buffer.from(JSON.stringify(credentials)).toString("base64"))} | base64 -d > ${previewDir}/${credentials.port}.part && mv -f ${previewDir}/${credentials.port}.part ${previewDir}/${credentials.port} || exit 1`,
+  ].join("\n");
+
+/** Removes a preview's credential file only while `owner` still holds the endpoint lock. */
+const removeCredentialsCommand = (owner: string, port: number) =>
+  [
+    `l=${lockDir}`,
+    `[ "$(cat "$l/owner" 2>/dev/null)" = ${quote(owner)} ] && rm -f ${previewDir}/${port}`,
+    "exit 0",
   ].join("\n");
 
 /** Releases the endpoint lock if `owner` still holds it. */
@@ -1730,8 +1746,8 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     const endpointName = `sbx-p${port}`;
     const auth = options.public ? "NONE" : "BASIC";
     const owner = randomUUID();
-    const lockLeaseMinutes = Math.max(2, Math.ceil((requestTimeoutMs * 2 + 60_000) / 60_000));
-    const locked = await run(id, lockCommand(owner, lockLeaseMinutes), { timeoutMs: 40_000 });
+    const lockLeaseSeconds = Math.max(120, Math.ceil((requestTimeoutMs * 2 + 60_000) / 1000));
+    const locked = await run(id, lockCommand(owner, lockLeaseSeconds), { timeoutMs: 40_000 });
 
     if (locked.exitCode === 75)
       throw fail("another client is changing this sandbox's endpoints; retry", "unavailable", {
@@ -1744,7 +1760,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
         sandboxId: id,
       });
 
-    const lockDeadline = createDeadline((lockLeaseMinutes * 60 - 30) * 1000);
+    const lockDeadline = createDeadline((lockLeaseSeconds - 30) * 1000);
     let released = false;
 
     try {
@@ -1784,8 +1800,10 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
 
       // Reuse any saved password on disk (e.g. after switching private -> public -> private) or persist
       // the new credentials under the lock BEFORE patching Buddy, so Buddy never holds a BASIC password
-      // that disagrees with the guest's preview credential file.
+      // that disagrees with the guest's preview credential file. If the PATCH fails without confirming
+      // our update took, roll back any newly written file so retries do not trust mismatched credentials.
       let made: PreviewCredentials | undefined;
+      let wroteNewCredentials = false;
 
       if (auth === "BASIC") {
         const saved = await readCredentials(id, port);
@@ -1821,6 +1839,8 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
                 sandboxId: id,
               },
             );
+
+          wroteNewCredentials = true;
         }
       }
 
@@ -1836,6 +1856,13 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
       const existed = sandbox.endpoints.some((e) => e.name === endpointName);
       let after: BuddySandbox;
 
+      const rollbackNewCredentials = async () => {
+        if (wroteNewCredentials)
+          await shell(id, removeCredentialsCommand(owner, port), { timeoutMs: 30_000 }).catch(
+            () => {},
+          );
+      };
+
       try {
         after = parseSandbox(
           await http.json({
@@ -1846,18 +1873,29 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
           }),
         );
       } catch (error) {
-        if (!isUnknown(error)) throw error;
+        if (!isUnknown(error)) {
+          await rollbackNewCredentials();
+          throw error;
+        }
 
         // Under the lock no other client changed the endpoints: a new endpoint of ours with the asked
         // port and auth means the change took. A changed one cannot be told apart, so that stays unknown.
-        const check = await readSandbox(id, { deadline: lockDeadline }).catch(() => {
+        let check: BuddySandbox;
+
+        try {
+          check = await readSandbox(id, { deadline: lockDeadline });
+        } catch {
+          await rollbackNewCredentials();
           throw error;
-        });
+        }
 
         const applied = check.endpoints.find((e) => e.name === endpointName);
 
-        if (existed || !applied || applied.endpoint !== String(port) || authOf(applied) !== auth)
+        if (existed || !applied || applied.endpoint !== String(port) || authOf(applied) !== auth) {
+          await rollbackNewCredentials();
           throw error;
+        }
+
         after = check;
       }
 

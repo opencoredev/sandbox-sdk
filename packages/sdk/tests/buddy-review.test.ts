@@ -1,5 +1,5 @@
 // Regressions for the review of 76f32af: each test pins one of the reproduced findings.
-import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -1464,8 +1464,20 @@ test("refused destroy keeps redaction active and reconnect re-arms persisted sec
     const reopened = await connectSandbox(p, box.id);
 
     try {
-      // Recover persisted secrets and reattach preview credentials on the reopened handle.
-      await reopened.run("true");
+      // Very first native call after reconnect (before run/files) must still redact persisted secrets.
+      failNative = true;
+
+      const firstNative = await failure(
+        reopened.native.request<void>("GET", "/sandboxes/{sandbox_id}/execs"),
+      );
+
+      const firstNativeDetail = `${firstNative?.message ?? ""} ${String(firstNative?.cause ?? "")}`;
+
+      expect(firstNative).toBeInstanceOf(SandboxError);
+      expect(firstNativeDetail).not.toContain(secretValue);
+
+      // Reattach preview credentials on the reopened handle and verify both stay redacted.
+      failNative = false;
       await reopened.preview(3000);
       failNative = true;
 
@@ -1568,6 +1580,41 @@ test("files.readRange reads only the requested bytes without buffering the full 
 
     expect(slice).toBeDefined();
     expect(Buffer.from(slice ?? new Uint8Array()).toString()).toBe("456789");
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("refused preview PATCH rolls back newly written credentials so retry does not return mismatched auth", async () => {
+  const p = provider();
+  const box = await createSandbox(p);
+
+  try {
+    const first = await box.preview(3000);
+
+    expect(first.headers?.Authorization).toMatch(/^Basic /);
+
+    // Simulate guest /tmp credential loss while Buddy still holds the old BASIC endpoint.
+    await rm(join(sandboxOf(box.id).root, "tmp/.sandbox-sdk/previews/3000"));
+
+    let patchAttempts = 0;
+
+    const refusing = () =>
+      provider({
+        fetch: async (input, init) => {
+          if (init?.method === "PATCH") {
+            patchAttempts++;
+
+            return Response.json({ errors: [{ message: "Forbidden" }] }, { status: 403 });
+          }
+
+          return fetch(input, init);
+        },
+      });
+
+    await expect(refusing().previewUrl(box.id, 3000)).rejects.toBeInstanceOf(SandboxError);
+    await expect(refusing().previewUrl(box.id, 3000)).rejects.toBeInstanceOf(SandboxError);
+    expect(patchAttempts).toBe(2);
   } finally {
     await box.destroy();
   }

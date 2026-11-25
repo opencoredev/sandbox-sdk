@@ -13,6 +13,7 @@ import { makeRun, chunkRedactor, defaults, pathOf, secretRecoveryCommand } from 
 import { quote } from "./shared/shell.js";
 import { isString } from "./shared/narrow.js";
 import { makeFiles, removeIfPresent } from "./files.js";
+import { guardNativeApi } from "./native.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";
 import {
@@ -493,6 +494,22 @@ export async function makeHandle<N>(
     });
   }
 
+  async function guardNative<R>(call: () => Promise<R>): Promise<R> {
+    check();
+
+    try {
+      return await call();
+    } catch (error) {
+      if (!recovered) await ready().catch(() => {});
+
+      throw recovered
+        ? redactor.error(error, provider.name, info.id)
+        : withheld("native", error instanceof SandboxError ? error : undefined);
+    }
+  }
+
+  let cachedNative: { raw: N; wrapped: N } | undefined;
+
   const box: SandboxBase<N> = {
     id: info.id,
     key: info.key,
@@ -504,11 +521,23 @@ export async function makeHandle<N>(
     get native() {
       check();
 
+      let raw: N;
+
       try {
-        return provider.native(info.id);
+        raw = provider.native(info.id);
       } catch (error) {
-        throw redactor.error(error, provider.name, info.id);
+        throw recovered
+          ? redactor.error(error, provider.name, info.id)
+          : withheld("native", error instanceof SandboxError ? error : undefined);
       }
+
+      if (cachedNative?.raw === raw) return cachedNative.wrapped;
+
+      const wrapped = guardNativeApi(raw, guardNative);
+
+      cachedNative = { raw, wrapped };
+
+      return wrapped;
     },
     run(command, options) {
       check();

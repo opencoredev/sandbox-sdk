@@ -143,6 +143,36 @@ export interface NativeApiOptions<Plane extends string> {
   sdk?: NativeSdkBinding;
 }
 
+const nativeApis = new WeakMap<object, NativeApi<string, AnyNativeSdk>>();
+
+/**
+ * Wraps the async methods of a {@link NativeApi} built by {@link createNativeApi} so handle-level
+ * checks and secret redaction apply to `box.native` calls without altering non-NativeApi clients.
+ */
+export function guardNativeApi<N>(raw: N, guardCall: <R>(call: () => Promise<R>) => Promise<R>): N {
+  if (!isObject(raw)) return raw;
+  const api = nativeApis.get(raw);
+
+  if (!api) return raw;
+
+  const request: NativeApi["request"] = <T = unknown>(
+    method: HttpMethod,
+    path: string,
+    options?: NativeRequestOptions<string>,
+  ) => guardCall(() => api.request<T>(method, path, options));
+
+  const fetch: NativeApi["fetch"] = (method, path, options) =>
+    guardCall(() => api.fetch(method, path, options));
+
+  const sdk: AnyNativeSdk = (load) => guardCall(() => api.sdk(load));
+
+  return Object.assign(Object.create(Object.getPrototypeOf(raw)), raw, {
+    request,
+    fetch,
+    sdk,
+  });
+}
+
 const methods: ReadonlySet<string> = new Set<HttpMethod>([
   "GET",
   "HEAD",
@@ -258,7 +288,7 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
   // object the signature derives from the caller's module type.
   const sdk = loader as Sdk;
 
-  return {
+  const api: NativeApi<Plane, Sdk> = {
     sandboxId,
     async request<T = unknown>(
       method: HttpMethod,
@@ -276,6 +306,15 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
     },
     sdk,
   };
+
+  nativeApis.set(api, {
+    sandboxId,
+    request: api.request,
+    fetch: api.fetch,
+    sdk: connect,
+  });
+
+  return api;
 }
 
 /**

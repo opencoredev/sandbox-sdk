@@ -214,7 +214,11 @@ async function recoverByIdentifier(
 
 /** Deferred cleanup handle for an unresolved raw identifier whose immediate recovery failed. */
 function deferredRawBox(identifier: string, owner: string, listPath: string): RawBuddyBox {
+  let knownId: string | undefined;
+
   async function findOwnedId(): Promise<string | undefined> {
+    if (knownId !== undefined) return knownId;
+
     const list = z
       .object({ sandboxes: z.array(buddyRecord).optional() })
       .parse(await (await buddyCall(listPath)).json());
@@ -227,7 +231,10 @@ function deferredRawBox(identifier: string, owner: string, listPath: string): Ra
       await (await buddyCall(`/sandboxes/${encodeURIComponent(holder.id)}`)).json(),
     );
 
-    return record.id === holder.id && ownerOf(record.note) === owner ? record.id : undefined;
+    if (record.id !== holder.id || ownerOf(record.note) !== owner) return undefined;
+    knownId = record.id;
+
+    return knownId;
   }
 
   return {
@@ -248,7 +255,20 @@ function deferredRawBox(identifier: string, owner: string, listPath: string): Ra
         if (!z.object({ status: z.literal(404) }).safeParse(error).success) throw error;
       }
     },
-    exists: async () => (await findOwnedId()) !== undefined,
+    exists: async () => {
+      if (knownId !== undefined) {
+        try {
+          await (await buddyCall(`/sandboxes/${encodeURIComponent(knownId)}`)).body?.cancel();
+
+          return true;
+        } catch (error) {
+          if (z.object({ status: z.literal(404) }).safeParse(error).success) return false;
+          throw error;
+        }
+      }
+
+      return (await findOwnedId()) !== undefined;
+    },
   };
 }
 
