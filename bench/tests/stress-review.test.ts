@@ -176,7 +176,10 @@ describe("finding 7: CPU burst overlap and segment consistency", () => {
 
       const run = async () => {
         const startedAt = Date.now() / 1000;
-        await sleep(40);
+        const until = performance.now() + 40;
+
+        // A timer may fire a fraction of a millisecond early: the fake works its full 40 ms.
+        while (performance.now() < until) await sleep(until - performance.now());
         const endedAt = Date.now() / 1000;
         const seconds = endedAt - startedAt;
 
@@ -681,7 +684,10 @@ describe("PR 75 review: the diagnostic clock read never discards a verified CPU 
 
       const phase = async () => {
         const startedAt = Date.now() / 1000;
-        await sleep(40);
+        const until = performance.now() + 40;
+
+        // A timer may fire a fraction of a millisecond early: the fake works its full 40 ms.
+        while (performance.now() < until) await sleep(until - performance.now());
         const endedAt = Date.now() / 1000;
         const seconds = endedAt - startedAt;
 

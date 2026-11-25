@@ -68,6 +68,7 @@ import {
   heartbeatDetails,
   heartbeatWindow,
   parseBootId,
+  sessionRefusal,
   survivalFailure,
   type SurvivalVerdict,
 } from "./survival.js";
@@ -3088,6 +3089,24 @@ export async function runV2(
       const info = report.providers.find((v) => v.name === p.name);
 
       if (info) info.note += `; ${scenario} documented not-run: ${excluded.reason}`;
+
+      return;
+    }
+
+    const refusal =
+      kind === "survival" ? sessionRefusal(p.name, survivalPlan, config["timeout-ms"]) : null;
+
+    if (refusal) {
+      report.admissionStopped?.push({
+        provider: p.name,
+        scenario,
+        iteration: cohortIndex,
+        track: config.track,
+        reason: `Survival not run: ${refusal}`,
+      });
+      const info = report.providers.find((v) => v.name === p.name);
+
+      if (info) info.note += `; ${scenario} not run: ${refusal}`;
 
       return;
     }
