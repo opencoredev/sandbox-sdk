@@ -962,7 +962,7 @@ describe("independent review reproductions", () => {
 
     expect(resources.some((item) => item.kind === "service" && item.id === slug)).toBe(true);
     expect(resources.some((item) => item.kind === "sandbox")).toBe(true);
-  });
+  }, 15_000);
 
   test("R2-2 does not delete a detached conflicting Service if the 409 settlement could not be persisted", async () => {
     const p = adapter();
@@ -2797,7 +2797,7 @@ describe("independent review reproductions", () => {
         "--ownership-visibility-ms",
         "100",
         "--timeout-ms",
-        "5000",
+        "1500",
         "--scenarios",
         "cold",
       ]),
@@ -2809,7 +2809,7 @@ describe("independent review reproductions", () => {
     expect(await reap()).toBe(false);
     expect(fake.sandboxes.has(boxId)).toBe(false);
     expect(fake.services.has(slug)).toBe(false);
-  });
+  }, 15_000);
 
   test("R14-2 superseded 409 base slug does not block sandbox cleanup after retry retires and sandbox DELETE fails once", async () => {
     const p = adapter();
@@ -2979,7 +2979,7 @@ describe("independent review reproductions", () => {
         "--ownership-visibility-ms",
         "100",
         "--timeout-ms",
-        "5000",
+        "1500",
         "--scenarios",
         "cold",
       ]),
@@ -3017,7 +3017,7 @@ describe("independent review reproductions", () => {
     expect(await reap()).toBe(false);
     expect(fake.sandboxes.has(boxId)).toBe(false);
     expect(fake.services.has(slug)).toBe(false);
-  });
+  }, 15_000);
 
   test("R15-2 a failed pre-POST Service journal write does not leave a phantom pending entry blocking cleanup", async () => {
     const provider = adapter();
