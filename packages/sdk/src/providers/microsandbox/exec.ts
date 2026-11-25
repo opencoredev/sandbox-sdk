@@ -4,7 +4,7 @@
  * structurally, so its published types never import `microsandbox`.
  */
 import type { ExecInput, ExecResult } from "../../provider.js";
-import { fail, peerCode, peerError } from "./errors.js";
+import { fail, peerCause, peerCode, peerError } from "./errors.js";
 
 /** `ExecOptionsBuilder` (microsandbox 0.8.1), as far as the adapter configures it. */
 export interface PeerExecOptions {
@@ -140,7 +140,7 @@ export async function execute(input: {
   const unknown = (message: string, cause?: unknown) =>
     fail(message, "outcome_unknown", {
       sandboxId,
-      cause: cause instanceof Error ? redact(cause.message) : undefined,
+      cause: peerCause(cause, redact),
     });
 
   try {
@@ -195,8 +195,8 @@ export async function execute(input: {
     // One decoder per stream, so a multi-byte character split across chunks of one stream never mixes
     // with bytes of the other.
     const decoders = {
-      stdout: new TextDecoder("utf-8", { fatal: false }),
-      stderr: new TextDecoder("utf-8", { fatal: false }),
+      stdout: new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }),
+      stderr: new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }),
     };
 
     const flush = () => {

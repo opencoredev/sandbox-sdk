@@ -11,7 +11,7 @@
  * its own key and URL, never the peer's process-wide defaults.
  */
 import { randomUUID } from "node:crypto";
-import { SandboxError } from "../../errors.js";
+import { redacting, SandboxError } from "../../errors.js";
 import {
   createDeadline,
   createHttpClient,
@@ -212,6 +212,25 @@ const missingGraceMs = 15_000;
 
 /** How long a snapshot capture may take, from the request to a terminal operation. */
 const captureMs = 600_000;
+
+/**
+ * Names `sh -c` sets or resets on start in dash, bash or BusyBox, so the `env` a reconnect reads back
+ * no longer holds the value a secret under one of them had.
+ */
+const shellOwnedEnv: ReadonlySet<string> = new Set([
+  "PWD",
+  "OLDPWD",
+  "SHLVL",
+  "_",
+  "IFS",
+  "PPID",
+  "OPTIND",
+  "LINENO",
+  "PS1",
+  "PS2",
+  "SHELLOPTS",
+  "BASHOPTS",
+]);
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -432,6 +451,13 @@ export function createMicrosandboxProvider(
 
   const redact = (text: string) => http.redact(text);
 
+  /** {@link redact} without its scrub, for peer text the core redacts again before scrubbing. */
+  const peerRedact = (text: string) =>
+    leakPatterns.reduce(
+      (redacted, pattern) => redacted.replace(pattern, "[REDACTED]"),
+      redacting(secrets())(text),
+    );
+
   // ---------------------------------------------------------------- the peer
 
   /** The `RemoteContext` options: this adapter's key, URL, timeout and tier, never the process's defaults. */
@@ -517,7 +543,10 @@ export function createMicrosandboxProvider(
             createDeadline(requestTimeoutMs).signal,
           );
         } catch (error) {
-          throw peerError(error, "connecting to the sandbox", { sandboxId: id, redact });
+          throw peerError(error, "connecting to the sandbox", {
+            sandboxId: id,
+            redact: peerRedact,
+          });
         }
 
         if (sandbox === "stop")
@@ -526,7 +555,7 @@ export function createMicrosandboxProvider(
         const repaired = await execute({
           sandbox: Promise.resolve(sandbox),
           sandboxId: id,
-          redact,
+          redact: peerRedact,
           exec: { command: bootRepairScript(), cwd: "/", env: {}, timeoutMs: 60_000, onChunk() {} },
         });
 
@@ -1056,7 +1085,7 @@ export function createMicrosandboxProvider(
       await destroy(id);
     } catch {
       throw fail(
-        `sandbox ${id} was created but did not finish setting up, and it could not be confirmed deleted. Delete it before retrying`,
+        `sandbox ${redact(id)} was created but did not finish setting up, and it could not be confirmed deleted. Delete it before retrying`,
         "outcome_unknown",
         { sandboxId: id },
       );
@@ -1125,12 +1154,12 @@ export function createMicrosandboxProvider(
         }),
       );
     } catch (error) {
-      if (isGone(error)) throw fail(`snapshot ${from} was not found`, "not_found");
+      if (isGone(error)) throw fail(`snapshot ${redact(from)} was not found`, "not_found");
       throw error;
     }
 
     if (snapshot.location.type !== "managed")
-      throw fail(`snapshot ${from} is not in managed storage`, "unsupported");
+      throw fail(`snapshot ${redact(from)} is not in managed storage`, "unsupported");
 
     return snapshot.location.id;
   }
@@ -1199,6 +1228,14 @@ export function createMicrosandboxProvider(
     networkOf(input.network);
     resourcesOf(input.size, input.from !== undefined);
 
+    const unkept = input.secretNames?.find((secret) => shellOwnedEnv.has(secret));
+
+    if (unkept !== undefined)
+      throw fail(
+        `secret ${unkept} uses a name the guest shell sets itself, so a reconnect could not recover it. Rename the secret`,
+        "invalid_argument",
+      );
+
     // The peer gate: no billable sandbox is made for a client that could never run a command in it.
     await context();
 
@@ -1256,7 +1293,7 @@ export function createMicrosandboxProvider(
         answer.sandbox.name === sandboxName
       )
         throw fail(
-          `the create answered with sandbox ${answer.sandbox.id}, which carries another allocation marker; it was left alone`,
+          `the create answered with sandbox ${redact(answer.sandbox.id)}, which carries another allocation marker; it was left alone`,
           "outcome_unknown",
           { sandboxId: answer.sandbox.id },
         );
@@ -1312,7 +1349,7 @@ export function createMicrosandboxProvider(
   async function exec(id: string, input: ExecInput) {
     if (input.signal?.aborted) return { exitCode: null, timedOut: true };
 
-    return execute({ sandbox: handle(id), exec: input, sandboxId: id, redact });
+    return execute({ sandbox: handle(id), exec: input, sandboxId: id, redact: peerRedact });
   }
 
   /** A short command for the adapter itself: its stdout, or a failure on a non-zero exit. */
@@ -1322,7 +1359,7 @@ export function createMicrosandboxProvider(
     const result = await execute({
       sandbox: known === undefined ? handle(id) : Promise.resolve(known),
       sandboxId: id,
-      redact,
+      redact: peerRedact,
       exec: {
         command,
         cwd: "/",
@@ -1351,7 +1388,11 @@ export function createMicrosandboxProvider(
       try {
         await sandbox.fs().write(path, bytes);
       } catch (error) {
-        throw peerError(error, "writing a file", { sandboxId: id, redact, files: true });
+        throw peerError(error, "writing a file", {
+          sandboxId: id,
+          redact: peerRedact,
+          files: true,
+        });
       }
     },
     read: async (path, range) => {
@@ -1361,7 +1402,11 @@ export function createMicrosandboxProvider(
       try {
         bytes = await sandbox.fs().read(path);
       } catch (error) {
-        throw peerError(error, "reading a file", { sandboxId: id, redact, files: true });
+        throw peerError(error, "reading a file", {
+          sandboxId: id,
+          redact: peerRedact,
+          files: true,
+        });
       }
 
       return range ? bytes.subarray(range.offset, range.offset + range.length) : bytes;
@@ -1706,7 +1751,7 @@ export function createMicrosandboxProvider(
     // The snapshot exists whatever happens next; a failed restart names it so it is never lost.
     if (wasRunning && !(await restart(id)))
       throw fail(
-        `snapshot ${confirmedId} (${snapshotName}) was taken, but the sandbox could not be restarted`,
+        `snapshot ${redact(confirmedId)} (${snapshotName}) was taken, but the sandbox could not be restarted`,
         "provider",
         { sandboxId: id },
       );

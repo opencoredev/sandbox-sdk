@@ -1,4 +1,4 @@
-import { SandboxError, scrub, type ErrorCode } from "../../errors.js";
+import { evidenceCause, SandboxError, scrub, type ErrorCode } from "../../errors.js";
 import type { FailedRequest, HttpFailure } from "../../http.js";
 import { isObject, isString } from "../../shared/narrow.js";
 
@@ -88,11 +88,16 @@ const peerCodes: ReadonlyMap<string, ErrorCode> = new Map<string, ErrorCode>([
 
 const missingFile = /no such file|not found|enoent|does not exist/i;
 
-/** The message of a peer error, redacted and bounded, for `cause`. Never put in the message itself. */
-function detail(cause: unknown, redact: (text: string) => string): string | undefined {
+/**
+ * The message of a peer error for `cause`, never the message itself. `redact` removes what the adapter
+ * knows without scrubbing; the copy shown is scrubbed and bounded, and the whole text is kept for the
+ * core, which redacts the sandbox's secrets in it first, since a fold or the bound can split one.
+ */
+export function peerCause(cause: unknown, redact: (text: string) => string) {
   if (!(cause instanceof Error)) return undefined;
+  const whole = redact(cause.message);
 
-  return scrub(redact(cause.message), 300);
+  return evidenceCause({ providerMessage: scrub(whole, 300) }, { providerMessage: whole });
 }
 
 /**
@@ -184,16 +189,20 @@ export function peerError(
 ): SandboxError {
   if (cause instanceof SandboxError) return cause;
   const code = peerCode(cause);
-  const text = detail(cause, options.redact);
+  const detail = peerCause(cause, options.redact);
   let mapped: ErrorCode = code === undefined ? "provider" : (peerCodes.get(code) ?? "provider");
 
-  if (options.files && (code === "sandboxFsOps" || code === "io") && missingFile.test(text ?? ""))
+  if (
+    options.files &&
+    (code === "sandboxFsOps" || code === "io") &&
+    missingFile.test(detail?.providerMessage ?? "")
+  )
     mapped = "file_not_found";
 
   return fail(`${operation} failed${code ? ` (${code})` : ""}`, mapped, {
     sandboxId: options.sandboxId,
     retryable: mapped === "unavailable",
-    cause: text,
+    cause: detail,
   });
 }
 

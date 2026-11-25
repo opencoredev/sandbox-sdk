@@ -6,6 +6,7 @@ import { readdir, rename, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createSandbox, reapSandboxes } from "../src/index.js";
+import { Redactor } from "../src/errors.js";
 import { peerError } from "../src/providers/microsandbox/errors.js";
 import {
   execute,
@@ -703,4 +704,66 @@ test("PR88-9 idle-only reaping skips a sandbox still saving its state and reaps 
     busy: true,
     stopped: false,
   });
+});
+
+test("PR88 merge review: a peer error's cause keeps the whole text, so the core redacts a folded or long secret", async () => {
+  const secret = "line-one-of-a-secret\nline-two-of-a-secret";
+  const long = "x".repeat(295) + "long-secret-value-past-the-cap";
+  const redactor = new Redactor();
+  redactor.add([secret, "long-secret-value-past-the-cap"]);
+
+  const fromPeer = peerError(new Error(`write failed: ${secret}`), "writing a file", {
+    redact: (text) => text,
+  });
+
+  const fromExec = await execute({
+    sandbox: Promise.resolve({
+      execStreamWith: () => Promise.reject(new Error(long)),
+    } as unknown as PeerSandbox),
+    sandboxId: "s",
+    redact: (text) => text,
+    exec: { command: "true", cwd: "/", env: {}, timeoutMs: 5000, onChunk() {} },
+  }).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+
+  for (const cause of [
+    redactor.error(fromPeer, "microsandbox").cause,
+    redactor.error(fromExec, "microsandbox").cause,
+  ]) {
+    const text = String(cause);
+    expect(text).not.toContain("line-one");
+    expect(text).not.toContain("line-two");
+    expect(text).not.toContain("long-secret");
+  }
+});
+
+test("PR88 merge review: output keeps a leading byte order mark, so a secret starting with one is redacted", async () => {
+  const box = await createSandbox(adapter(), {
+    labels: labels(),
+    secrets: { MARKED: "\uFEFFmarked-secret-value" },
+  });
+
+  try {
+    const result = await box.run("printf '\\357\\273\\277marked-secret-value'");
+    expect(result.stdout).not.toContain("marked-secret-value");
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("PR88 merge review: a snapshot reference shown in an error goes through the credential filter", async () => {
+  await expect(adapter().create({ labels: labels(), from: key })).rejects.toSatisfy(
+    (error: unknown) => error instanceof Error && !error.message.includes(key),
+  );
+});
+
+test("PR88 merge review: a secret under a name the guest shell sets is refused before any sandbox is made", async () => {
+  const before = fake.sandboxes.size;
+
+  await expect(
+    createSandbox(adapter(), { labels: labels(), secrets: { PWD: "pwd-secret-value" } }),
+  ).rejects.toMatchObject({ code: "invalid_argument" });
+  expect(fake.sandboxes.size).toBe(before);
 });

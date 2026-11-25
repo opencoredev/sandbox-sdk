@@ -155,6 +155,7 @@ Standard compute bills $0.048 per vCPU-hour, $0.003 per GiB-hour of memory and $
 - No pause or resume: stopping and starting a Microsandbox sandbox is a cold restart, not a memory pause.
 - A snapshot stops the sandbox while it is captured.
 - Keys are best-effort: two clients creating with one key at once can make two sandboxes.
+- A secret can't use a name the guest shell sets itself (`PWD`, `OLDPWD`, `SHLVL`, `_`, `IFS`, `PPID`, `OPTIND`, `LINENO`, `PS1`, `PS2`, `SHELLOPTS`, `BASHOPTS`): a reconnect couldn't read it back, so the create is refused.
 - No terminal or template builds.
 - The `microsandbox` package needs its native platform package and cannot be inlined into a bundle.
 
