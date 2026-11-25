@@ -1494,17 +1494,34 @@ export function createMicrosandboxProvider(
   }
 
   async function postService(id: string, sandboxName: string, slug: string, port: number) {
+    const refuseDuringDestroy = () =>
+      fail("the sandbox is being destroyed", "invalid_argument", { sandboxId: id });
+
+    // A destroy that started first may already be past this slug, so nothing is sent or journaled.
+    if (destroying.has(id)) throw refuseDuringDestroy();
+
     // Journaled before the request: a lost answer may still have made it.
     await hooks.service?.({ sandboxId: id, sandboxName, slug, port });
+
+    // An earlier create of this slug that lost its answer stays tracked, in memory and in the journal,
+    // whatever becomes of this one: it may still land.
+    const earlierLost = ownedServices.get(id)?.get(slug)?.lostAt !== undefined;
     const owned = ownService(id, slug, sandboxName);
     const sending = owned.get(slug);
 
     if (sending !== undefined) sending.inFlight = true;
 
-    // A destroy that started first may already be past this slug, so nothing is sent.
-    if (destroying.has(id)) {
+    /** Forgets this attempt and tells the journal, unless an earlier lost create still holds the slug. */
+    const release = async (outcome: "refused" | "conflict") => {
+      if (earlierLost) return;
       owned.delete(slug);
-      throw fail("the sandbox is being destroyed", "invalid_argument", { sandboxId: id });
+      await hooks.serviceSettled?.({ sandboxId: id, slug, outcome });
+    };
+
+    // A destroy may have started while the journal was written.
+    if (destroying.has(id)) {
+      await release("refused").catch(() => {});
+      throw refuseDuringDestroy();
     }
 
     let created: MicrosandboxService;
@@ -1519,15 +1536,9 @@ export function createMicrosandboxProvider(
       );
     } catch (error) {
       if (neverSent(error) || (refused(error) && statusOf(error) !== 409)) {
-        owned.delete(slug);
-
         // The refusal is what the caller sees; a journal that could not record it keeps the entry
         // pending, which recovery settles.
-        try {
-          await hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "refused" });
-        } catch {
-          // Reported through `error` below.
-        }
+        await release("refused").catch(() => {});
 
         throw error;
       }
@@ -1535,8 +1546,7 @@ export function createMicrosandboxProvider(
       // A 409: the slug belongs to someone else, never touched, and the journal is told before any
       // other slug is tried. Anything else: read what was made.
       if (statusOf(error) === 409) {
-        owned.delete(slug);
-        await hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "conflict" });
+        await release("conflict");
 
         return "taken" as const;
       }

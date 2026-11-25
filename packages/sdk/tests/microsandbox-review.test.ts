@@ -1090,3 +1090,90 @@ test("PR88 merge review: a preview asked for during a destroy sends no Service",
     detached: 0,
   });
 });
+
+test("PR88 merge review: a refused retry keeps an earlier lost Service create tracked", async () => {
+  let posts = 0;
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      if (new URL(input).pathname === "/v1/services" && init.method === "POST") {
+        posts++;
+
+        if (posts === 1) throw new TypeError("fetch failed");
+
+        return Response.json({ error: { code: "invalid_request" } }, { status: 400 });
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+  await expect(p.previewUrl(id, 3000)).rejects.toBeDefined();
+  await expect(p.previewUrl(id, 3000)).rejects.toBeDefined();
+
+  const first = await p.destroy(id).then(
+    () => "deleted",
+    (error: SandboxError) => error.code,
+  );
+
+  expect({ posts, first, sandbox: fake.sandboxes.has(id) }).toEqual({
+    posts: 2,
+    first: "unavailable",
+    sandbox: true,
+  });
+});
+
+test("PR88 merge review: a preview refused during a destroy keeps an earlier lost create tracked", async () => {
+  let lost = false;
+  let holding = false;
+  let release = () => {};
+
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  let listing = () => {};
+
+  const listed = new Promise<void>((resolve) => {
+    listing = resolve;
+  });
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const url = new URL(input);
+
+      if (url.pathname === "/v1/services" && init.method === "POST" && !lost) {
+        lost = true;
+        throw new TypeError("fetch failed");
+      }
+
+      if (holding && url.pathname === "/v1/services" && init.method === "GET") {
+        holding = false;
+        listing();
+        await gate;
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+  await expect(p.previewUrl(id, 3000)).rejects.toBeDefined();
+  holding = true;
+
+  const destroyed = p.destroy(id).then(
+    () => "deleted",
+    (error: SandboxError) => error.code,
+  );
+
+  await listed;
+  const preview = await p.previewUrl(id, 3000).catch((error: SandboxError) => error.code);
+  release();
+
+  expect({ preview, first: await destroyed, sandbox: fake.sandboxes.has(id) }).toEqual({
+    preview: "invalid_argument",
+    first: "unavailable",
+    sandbox: true,
+  });
+});
