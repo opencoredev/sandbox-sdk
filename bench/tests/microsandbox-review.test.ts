@@ -1531,9 +1531,14 @@ describe("independent review reproductions", () => {
     });
     const { id: snapshotId } = await capture(p, source.id);
 
+    let listing = false;
+
     // The name is not indexed and its operation is past the search limit: only the source can find it.
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = new URL(String(input));
+
+      if (!listing && url.pathname === "/v1/snapshots")
+        return Response.json({ error: { code: "internal_error" } }, { status: 500 });
 
       if (url.pathname === `/v1/snapshots/by-name/${name}`)
         return Response.json({ error: { code: "snapshot_not_found" } }, { status: 404 });
@@ -1565,13 +1570,21 @@ describe("independent review reproductions", () => {
       },
     ]);
 
+    // A first sweep that cannot list leaves a review keyed by the capture's name.
+    expect(await reap()).toBe(true);
+
+    listing = true;
     const failed = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
 
     expect({
       failed,
       snapshot: fake.snapshots.has(snapshotId),
-      journaled: (await journalText()).includes(name),
-    }).toEqual({ failed: false, snapshot: false, journaled: false });
+      reviewedIds: results.cleanupReview.map((item) => item.id),
+    }).toEqual({ failed: false, snapshot: false, reviewedIds: [] });
   });
 
   test("R4-3 dispatches sandbox DELETE within caller deadline while Service settlement hook is stalled", async () => {

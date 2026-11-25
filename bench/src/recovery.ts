@@ -740,14 +740,6 @@ export async function reapRun(
         for (const snapshot of await deadline(config["timeout-ms"], () =>
           snapshotsFromSource(p.name, entry.id, journaled),
         )) {
-          const item = {
-            provider: p.name,
-            id: snapshot.id,
-            kind: "snapshot" as const,
-            parent: entry.id,
-            snapshotProof: proof,
-          };
-
           // Entries already journaled for this snapshot, such as a Maritime save still pending with its
           // idempotency key, or a capture of this source journaled by its name. Replace them with the
           // confirmed snapshot entry BEFORE deleting: if the delete succeeds on the server and drops its
@@ -760,17 +752,45 @@ export async function reapRun(
                 (snapshot.name !== undefined && r.parent === entry.id && r.id === snapshot.name)),
           );
 
+          // A capture journaled by name keeps that name on its ID entry, and as a name->ID alias, so
+          // reviews keyed by the name settle with the ID once it is deleted.
+          const alias =
+            snapshot.name !== undefined && earlier.some((r) => r.id === snapshot.name)
+              ? snapshot.name
+              : undefined;
+
+          const item: z.infer<typeof resource> = {
+            provider: p.name,
+            id: snapshot.id,
+            kind: "snapshot",
+            parent: entry.id,
+            snapshotProof: proof,
+          };
+
+          if (alias !== undefined) item.snapshotName = alias;
+
           const previousResources = journal ? [...journal.resources] : null;
+          const previousSettled = journal ? [...journal.settledSnapshots] : null;
 
           if (journal) {
             journal.resources = journal.resources.filter((r) => !earlier.includes(r));
             journal.resources.push(item);
+
+            if (tier !== undefined && alias !== undefined)
+              journal.settledSnapshots = [
+                ...journal.settledSnapshots.filter(
+                  (s) => !(s.provider === p.name && s.name === alias),
+                ),
+                { provider: p.name, name: alias, id: snapshot.id },
+              ];
           }
 
           try {
             if (journal) await persistJournal();
           } catch (error) {
             if (journal && previousResources) journal.resources = previousResources;
+
+            if (journal && previousSettled) journal.settledSnapshots = previousSettled;
             throw error;
           }
 

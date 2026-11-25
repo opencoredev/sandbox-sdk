@@ -398,6 +398,7 @@ export function createMicrosandboxProvider(
         confirmedAt?: string | undefined;
         /** When a create of this slug lost its answer; a 404 proves nothing until missingGraceMs later. */
         lostAt?: number | undefined;
+        inFlight?: boolean | undefined;
       }
     >
   >();
@@ -765,6 +766,7 @@ export function createMicrosandboxProvider(
           confirmed?: boolean | undefined;
           confirmedAt?: string | undefined;
           lostAt?: number | undefined;
+          inFlight?: boolean | undefined;
         }
       >();
 
@@ -777,6 +779,7 @@ export function createMicrosandboxProvider(
       confirmed: nextConfirmed,
       confirmedAt: confirmed === true ? nextCreatedAt : (existing?.confirmedAt ?? undefined),
       lostAt: nextCreatedAt === undefined ? existing?.lostAt : undefined,
+      inFlight: existing?.inFlight,
     });
     ownedServices.set(id, owned);
 
@@ -892,9 +895,15 @@ export function createMicrosandboxProvider(
           confirmed?: boolean | undefined;
           confirmedAt?: string | undefined;
           lostAt?: number | undefined;
+          inFlight?: boolean | undefined;
         }
       >()) {
       if (!isOwnedSlug(slug, id)) continue;
+
+      if (entry.inFlight) {
+        unsettled.push(slug);
+        continue;
+      }
 
       const syncIdentity = async () => {
         const needsSync =
@@ -939,13 +948,14 @@ export function createMicrosandboxProvider(
             }),
           );
         } catch (error) {
-          if (isGone(error)) {
-            // A create whose answer was lost may still land; until the grace ends, keep it and the sandbox.
-            if (entry.lostAt !== undefined && Date.now() - entry.lostAt < missingGraceMs) {
-              unsettled.push(slug);
-              continue;
-            }
+          // A create whose answer was lost may still land: until its grace ends, neither a 404 nor a failed
+          // read proves it won't, so it and its sandbox are kept.
+          if (entry.lostAt !== undefined && Date.now() - entry.lostAt < missingGraceMs) {
+            unsettled.push(slug);
+            continue;
+          }
 
+          if (isGone(error)) {
             ownedServices.get(id)?.delete(slug);
             continue;
           }
@@ -1052,7 +1062,7 @@ export function createMicrosandboxProvider(
 
     if (unsettled.length > 0)
       throw fail(
-        `a Service create whose answer was lost may still finish (${unsettled.join(", ")}); the sandbox was kept so that Service cannot be left detached. Destroy again in a few seconds`,
+        `a Service create still in flight, or whose answer was lost, may still finish (${unsettled.join(", ")}); the sandbox was kept so that Service cannot be left detached. Destroy again in a few seconds`,
         "unavailable",
         { sandboxId: id, retryable: true },
       );
@@ -1456,10 +1466,24 @@ export function createMicrosandboxProvider(
     service.target.port === port &&
     service.status === "enabled";
 
+  /** {@link postService}, marked in flight meanwhile, so a destroy keeps the sandbox until it settles. */
   async function createService(id: string, sandboxName: string, slug: string, port: number) {
+    try {
+      return await postService(id, sandboxName, slug, port);
+    } finally {
+      const entry = ownedServices.get(id)?.get(slug);
+
+      if (entry !== undefined) entry.inFlight = false;
+    }
+  }
+
+  async function postService(id: string, sandboxName: string, slug: string, port: number) {
     // Journaled before the request: a lost answer may still have made it.
     await hooks.service?.({ sandboxId: id, sandboxName, slug, port });
     const owned = ownService(id, slug, sandboxName);
+    const sending = owned.get(slug);
+
+    if (sending !== undefined) sending.inFlight = true;
     let created: MicrosandboxService;
 
     try {
@@ -1915,6 +1939,9 @@ export function createMicrosandboxProvider(
     async isStopped(id) {
       if (capturing.has(id)) return false;
       const { status } = await readSandbox(id);
+
+      // A capture may have started while the read was out.
+      if (capturing.has(id)) return false;
 
       return status === "stopped" || status === "failed";
     },

@@ -902,3 +902,128 @@ test("PR88 merge review: a Service create whose answer was lost keeps its sandbo
     detached: [...fake.services.values()].filter((service) => service.target === null).length,
   }).toEqual({ first: "unavailable", detached: 0 });
 });
+
+test("PR88 merge review: destroy keeps the sandbox while a Service create is still in flight", async () => {
+  let release = () => {};
+
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  let sent = () => {};
+
+  const posted = new Promise<void>((resolve) => {
+    sent = resolve;
+  });
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      if (new URL(input).pathname === "/v1/services" && init.method === "POST") {
+        sent();
+        await gate;
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+  const preview = p.previewUrl(id, 3000).catch((error: Error) => error);
+  await posted;
+
+  const first = await p.destroy(id).then(
+    () => "deleted",
+    (error: SandboxError) => error.code,
+  );
+
+  release();
+  await preview;
+  await p.destroy(id);
+
+  expect({
+    first,
+    sandbox: fake.sandboxes.has(id),
+    detached: [...fake.services.values()].filter((service) => service.target === null).length,
+  }).toEqual({ first: "unavailable", sandbox: false, detached: 0 });
+});
+
+test("PR88 merge review: a failed read of a lost Service create keeps its sandbox too", async () => {
+  let failReads = false;
+  let lost = false;
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const path = new URL(input).pathname;
+
+      if (path === "/v1/services" && init.method === "POST" && !lost) {
+        lost = true;
+        throw new TypeError("fetch failed");
+      }
+
+      if (failReads && path.startsWith("/v1/services/") && init.method === "GET")
+        return Response.json({ error: { code: "internal_error" } }, { status: 500 });
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+  await expect(p.previewUrl(id, 3000)).rejects.toBeDefined();
+  failReads = true;
+
+  const first = await p.destroy(id).then(
+    () => "deleted",
+    (error: SandboxError) => error.code,
+  );
+
+  failReads = false;
+
+  expect({ first, sandbox: fake.sandboxes.has(id) }).toEqual({
+    first: "unavailable",
+    sandbox: true,
+  });
+});
+
+test("PR88 merge review: a capture that starts while isStopped reads the sandbox keeps it busy", async () => {
+  let holdNext = false;
+  let release = () => {};
+
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  let reading = () => {};
+
+  const read = new Promise<void>((resolve) => {
+    reading = resolve;
+  });
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      if (
+        holdNext &&
+        init.method === "GET" &&
+        /^\/v1\/sandboxes\/[^/]+$/.test(new URL(input).pathname)
+      ) {
+        holdNext = false;
+        reading();
+        await gate;
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+  expire(id);
+
+  if (!p.isStopped || !p.snapshot) throw new Error("the adapter reports stops and takes snapshots");
+  holdNext = true;
+  const stopped = p.isStopped(id);
+  await read;
+  const snapshot = p.snapshot(id);
+  release();
+
+  expect(await stopped).toBe(false);
+  await snapshot;
+});
