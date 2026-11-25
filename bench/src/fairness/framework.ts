@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { createSandbox, type CreateOptions } from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
+import { lookupSandbox, type LookupEvidence } from "../existence.js";
 import { isMissingFile } from "../files.js";
 import { loadProvider } from "../providers.js";
 import { collectMetadata } from "../publication.js";
@@ -83,6 +84,8 @@ export interface Box {
   readonly id: string;
   run(command: string, options: RunOptions): Promise<CommandResult>;
   write(path: string, data: Uint8Array): Promise<void>;
+  /** The provider's exact, read-only lookup of this sandbox; never runs anything in it. */
+  lookup(timeoutMs: number): Promise<LookupEvidence>;
   destroy(): Promise<void>;
 }
 
@@ -148,6 +151,7 @@ export const openLiveSession: OpenSession = async (setup, plan) => {
             };
           },
           write: (path, data) => sandbox.files.write(path, data, { mode: 0o755 }),
+          lookup: (timeoutMs) => lookupSandbox(provider, sandbox.id, timeoutMs),
           destroy: () => sandbox.destroy(),
         };
       },
@@ -806,7 +810,7 @@ async function attempt<R>(input: {
     result = check.resultSchema.parse(raw);
     status = "completed";
   } catch (cause) {
-    reason = cause instanceof CheckStop ? cause.message : errorText(cause);
+    reason = errorText(cause);
 
     if (status !== "skipped") status = "failed";
     say(`stopped: ${reason}`);

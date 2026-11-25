@@ -14,12 +14,13 @@
  * Outcomes are only what the evidence shows: `completed` needs exit 0, the file written in full
  * and a digest that checks out; `killed` needs exit 137 (SIGKILL) or a new OOM kill in the cgroup;
  * `refused` is the binary's own allocation error; `sandbox-lost` is an exec that failed and a
- * sandbox that no longer answers. A timeout, or an exec error on a sandbox that still answers,
- * fails the check rather than becoming a finding.
+ * sandbox the provider's exact lookup confirms is gone. A timeout, an exec error on a sandbox that
+ * still exists, or one whose state cannot be read fails the check rather than becoming a finding.
  */
 import { randomInt } from "node:crypto";
 import { z } from "zod";
-import { CheckStop, type Check } from "./framework.js";
+import { isAbsent } from "../existence.js";
+import { CheckStop, errorText, type Box, type Check } from "./framework.js";
 import { diskTarget } from "./disk-real.js";
 import { installNative, memOutputSchema, memoryDigest, parseNativeOutput } from "./native.js";
 
@@ -323,8 +324,34 @@ export type MemRun =
   | { readonly kind: "threw"; readonly detail: string };
 
 /**
+ * The sandbox after the mem run: `present` when it answered a command or the provider still has
+ * it, `absent` only when the provider's exact lookup confirms it is gone, `unavailable` when
+ * neither could be read.
+ */
+export type Liveness =
+  | { readonly kind: "present" }
+  | { readonly kind: "absent"; readonly detail: string }
+  | { readonly kind: "unavailable"; readonly detail: string };
+
+/** Asks the provider, once the sandbox no longer answers, whether it still has it. */
+export async function lookUpLiveness(box: Box, probe: string): Promise<Liveness> {
+  try {
+    const evidence = await box.lookup(30_000);
+
+    if (isAbsent(evidence))
+      return { kind: "absent", detail: `${evidence.method}: ${evidence.result}` };
+
+    if (evidence.result === "present") return { kind: "present" };
+
+    return { kind: "unavailable", detail: `${probe}; ${evidence.method}: ${evidence.result}` };
+  } catch (cause) {
+    return { kind: "unavailable", detail: `${probe}; lookup: ${errorText(cause)}` };
+  }
+}
+
+/**
  * Judges the mem run. `oomDelta` is the cgroup's new OOM kills (null when unreadable);
- * `alive` whether the sandbox answered a command afterwards.
+ * `liveness` what the host knows of the sandbox afterwards.
  */
 export function judgeMemory(input: {
   readonly run: MemRun;
@@ -332,15 +359,23 @@ export function judgeMemory(input: {
   readonly memoryMiB: number;
   readonly fileMiB: number;
   readonly oomDelta: number | null;
-  readonly alive: boolean;
+  readonly liveness: Liveness;
 }): Outcome {
-  const { run, seed, memoryMiB, fileMiB, oomDelta, alive } = input;
+  const { run, seed, memoryMiB, fileMiB, oomDelta, liveness } = input;
 
   if (run.kind === "threw") {
-    if (alive)
-      throw new CheckStop(`The mem exec failed but the sandbox still answers: ${run.detail}`);
+    if (liveness.kind === "absent")
+      return {
+        kind: "sandbox-lost",
+        lastPhase: null,
+        detail: `${run.detail} (${liveness.detail})`,
+      };
 
-    return { kind: "sandbox-lost", lastPhase: null, detail: run.detail };
+    throw new CheckStop(
+      liveness.kind === "present"
+        ? `The mem exec failed but the sandbox is still there: ${run.detail}`
+        : `The mem exec failed and the sandbox's state is unknown: ${run.detail}; ${liveness.detail}`,
+    );
   }
 
   if (run.timedOut) throw new CheckStop("sbx-native mem timed out");
@@ -389,7 +424,17 @@ export function judgeMemory(input: {
   if (run.exitCode === 137 || (oomDelta !== null && oomDelta > 0))
     return { kind: "killed", exitCode: run.exitCode, lastPhase: phase, oomKills: oomDelta };
 
-  if (!alive) return { kind: "sandbox-lost", lastPhase: phase, detail: `exit ${run.exitCode}` };
+  if (liveness.kind === "absent")
+    return {
+      kind: "sandbox-lost",
+      lastPhase: phase,
+      detail: `exit ${run.exitCode} (${liveness.detail})`,
+    };
+
+  if (liveness.kind === "unavailable")
+    throw new CheckStop(
+      `sbx-native mem exited ${run.exitCode} and the sandbox's state is unknown: ${liveness.detail}`,
+    );
 
   throw new CheckStop(
     `sbx-native mem exited ${run.exitCode} with no kill evidence: ${parsed.kind === "invalid" ? parsed.reason : parsed.kind} ${run.stderr.slice(-200)}`,
@@ -435,24 +480,25 @@ export const memoryHonestyCheck = (
 
       run = { kind: "returned", ...result };
     } catch (cause) {
-      run = {
-        kind: "threw",
-        detail: cause instanceof Error ? cause.message.slice(0, 300) : String(cause),
-      };
+      run = { kind: "threw", detail: errorText(cause).slice(0, 300) };
     }
 
     // Whether the sandbox still answers, the OOM counter after, and the file gone either way.
-    let alive = false;
+    let liveness: Liveness;
     let after: number | null = null;
     let afterFile: string | null = null;
 
     try {
       const followUp = await context.exec(box, `${oomCommand}\nrm -f '${file}'`, 60_000);
-      alive = followUp.exitCode !== null;
       after = parseOomKills(followUp.stdout);
       afterFile = oomFileOf(followUp.stdout);
-    } catch {
-      alive = false;
+
+      liveness =
+        followUp.exitCode === null
+          ? await lookUpLiveness(box, "the follow-up probe timed out")
+          : { kind: "present" };
+    } catch (cause) {
+      liveness = await lookUpLiveness(box, `the follow-up probe failed: ${errorText(cause)}`);
     }
 
     const sameCgroup = afterFile !== null && afterFile === oomFileOf(beforeRun);
@@ -460,7 +506,7 @@ export const memoryHonestyCheck = (
     const oomDelta =
       before !== null && after !== null && sameCgroup ? Math.max(0, after - before) : null;
 
-    const outcome = judgeMemory({ run, seed, memoryMiB, fileMiB, oomDelta, alive });
+    const outcome = judgeMemory({ run, seed, memoryMiB, fileMiB, oomDelta, liveness });
     context.say(`memory: ${outcome.kind}`);
 
     return {

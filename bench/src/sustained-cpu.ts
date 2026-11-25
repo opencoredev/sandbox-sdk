@@ -61,6 +61,7 @@ const scriptPath = "/tmp/sustained_lcg.py";
 const createTimeoutMs = 10 * 60_000;
 const setupTimeoutMs = 60_000;
 const destroyTimeoutMs = 120_000;
+const lateCreateMs = 60_000;
 const destroyAttempts = 3;
 const destroyRetryDelayMs = 5_000;
 
@@ -384,7 +385,7 @@ export function verifySegment(input: {
   const parsed = parseJsonLine(line);
 
   if (parsed === null)
-    return { kind: "invalid", reason: `Output is not JSON: ${line.slice(0, 200)}` };
+    return { kind: "invalid", reason: `Output is not JSON: ${sanitize(line).slice(0, 200)}` };
 
   if (!parsed.success)
     return {
@@ -1315,6 +1316,7 @@ async function burnAttempt(
   let stopReason: string | null = null;
   let box: BurnBox | null = null;
   let session: BurnSession | null = null;
+  let creating: Promise<BurnBox> | null = null;
   let cleanup: Cleanup = { kind: "clean" };
   const delay = dependencies.retryDelayMs ?? destroyRetryDelayMs;
 
@@ -1339,16 +1341,20 @@ async function burnAttempt(
     const ready = session;
     say("creating sandbox");
 
-    box = await deadline(createTimeoutMs, (signal) =>
-      ready.create(AbortSignal.any([signal, dependencies.signal])),
-    );
+    box = await deadline(createTimeoutMs, (signal) => {
+      creating = ready.create(AbortSignal.any([signal, dependencies.signal]));
+
+      return creating;
+    });
     await log({ kind: "sandbox", id: box.id, at: now() });
     say(`sandbox ${box.id}`);
 
     const probe = await exec(fingerprintCommand, setupTimeoutMs);
 
     if (!probe.ok)
-      throw new StopError(`Fingerprint exited ${probe.exitCode}: ${probe.stderr.slice(0, 300)}`);
+      throw new StopError(
+        `Fingerprint exited ${probe.exitCode}: ${sanitize(probe.stderr).slice(0, 300)}`,
+      );
     fingerprint = parseFingerprint(probe.stdout);
     workers = workerCount(fingerprint);
     await log({ kind: "fingerprint", at: now(), fingerprint, workers });
@@ -1361,7 +1367,9 @@ async function burnAttempt(
     const written = await exec(writeScriptCommand, setupTimeoutMs);
 
     if (!written.ok)
-      throw new StopError(`Writing the script exited ${written.exitCode}: ${written.stderr}`);
+      throw new StopError(
+        `Writing the script exited ${written.exitCode}: ${sanitize(written.stderr)}`,
+      );
     const burnStart = performance.now();
 
     for (let segment = 1; segment <= plan.segmentsTarget; segment++) {
@@ -1387,7 +1395,7 @@ async function burnAttempt(
 
       if (!result.ok)
         throw new StopError(
-          `Segment ${segment} exited ${result.exitCode}: ${result.stderr.slice(-300)}`,
+          `Segment ${segment} exited ${result.exitCode}: ${sanitize(result.stderr).slice(-300)}`,
         );
 
       const check = verifySegment({
@@ -1427,10 +1435,10 @@ async function burnAttempt(
       );
     }
   } catch (cause) {
-    stopReason = cause instanceof StopError ? cause.message : errorText(cause);
+    stopReason = errorText(cause);
     say(`stopped: ${stopReason}`);
   } finally {
-    cleanup = await cleanUp({ box, session, log: logQuietly, say, delay });
+    cleanup = await cleanUp({ box, creating, session, log: logQuietly, say, delay });
     input.onCleanup(cleanup);
   }
 
@@ -1470,41 +1478,72 @@ async function burnAttempt(
 type QuietLog = (line: LogLine) => Promise<void>;
 
 /**
- * Destroys the attempt's sandbox, then sweeps its labels for any left (a lost create, or the
- * sandbox the destroy failed on). Never throws.
+ * Destroys the attempt's sandbox, including one its create returns after the deadline gave up on
+ * it, then sweeps its labels for any left (a lost create, or the sandbox the destroy failed on).
+ * Never throws.
  */
 async function cleanUp(input: {
   readonly box: BurnBox | null;
+  /** The adapter's create, which racing its deadline did not cancel. */
+  readonly creating: Promise<BurnBox> | null;
   readonly session: BurnSession | null;
   readonly log: QuietLog;
   readonly say: (text: string) => void;
   readonly delay: number;
 }): Promise<Cleanup> {
-  const { box, session, log, say, delay } = input;
+  const { session, log, say, delay } = input;
+  let box = input.box;
+  let pending: string | null = null;
+
+  if (box === null && input.creating !== null) {
+    const late = await settleLate(input.creating);
+
+    if (late.kind === "created") box = late.box;
+
+    if (late.kind === "pending") {
+      pending = `A create still unanswered after ${lateCreateMs / 1000}s may leave a sandbox running`;
+      say(`CREATE PENDING: ${pending}`);
+    }
+  }
+
   let failed: string | null = null;
 
   if (box) {
-    const outcome = await destroyWithRetry(() => box.destroy(), delay);
-    await log({ kind: "destroy", at: now(), sandboxId: box.id, ...outcome });
-    say(outcome.ok ? `destroyed ${box.id}` : `DESTROY FAILED ${box.id}: ${outcome.error}`);
+    const target = box;
+    const outcome = await destroyWithRetry(() => target.destroy(), delay);
+    await log({ kind: "destroy", at: now(), sandboxId: target.id, ...outcome });
+    say(outcome.ok ? `destroyed ${target.id}` : `DESTROY FAILED ${target.id}: ${outcome.error}`);
 
-    if (!outcome.ok) failed = box.id;
+    if (!outcome.ok) failed = target.id;
   }
 
-  if (session === null)
-    return failed === null
-      ? { kind: "clean" }
-      : { kind: "unconfirmed", error: `${failed} did not destroy` };
-  const error = await sweep({ session, failed, log, say, delay });
+  const swept =
+    session === null
+      ? { error: null, destroyed: [] }
+      : await sweep({ session, failed, log, say, delay });
 
-  // The sweep's error is null only when its listing worked and it destroyed everything listed, so
-  // a sandbox the destroy left behind was swept or is no longer listed: gone, by the provider.
-  return error === null ? { kind: "clean" } : { kind: "unconfirmed", error };
+  // An empty listing does not prove a failed destroy worked: only the sweep destroying it does.
+  const unswept =
+    failed !== null && !swept.destroyed.includes(failed) ? `${failed} did not destroy` : null;
+
+  const error = [pending, swept.error, unswept].filter((text) => text !== null).join("; ");
+
+  return error === "" ? { kind: "clean" } : { kind: "unconfirmed", error };
+}
+
+/** Waits a bounded time for a create the deadline gave up on. Never throws. */
+async function settleLate(creating: Promise<BurnBox>) {
+  return deadline(lateCreateMs, () =>
+    creating.then(
+      (box) => ({ kind: "created", box }) as const,
+      () => ({ kind: "failed" }) as const,
+    ),
+  ).catch(() => ({ kind: "pending" }) as const);
 }
 
 /**
- * Lists this attempt's sandboxes and destroys any still there. Returns its record's `error`: null
- * only when the listing worked and everything it found was destroyed.
+ * Lists this attempt's sandboxes and destroys any still there. Returns its record's `error`, null
+ * only when the listing worked and everything it found was destroyed, and what it destroyed.
  */
 async function sweep(input: {
   readonly session: BurnSession;
@@ -1513,7 +1552,7 @@ async function sweep(input: {
   readonly log: QuietLog;
   readonly say: (text: string) => void;
   readonly delay: number;
-}): Promise<string | null> {
+}): Promise<{ readonly error: string | null; readonly destroyed: readonly string[] }> {
   const { session, failed, log, say, delay } = input;
   let found: string[];
 
@@ -1528,7 +1567,7 @@ async function sweep(input: {
     await log({ kind: "sweep", at: now(), found: [], destroyed: [], error });
     say(`SWEEP FAILED: ${error}`);
 
-    return error;
+    return { error, destroyed: [] };
   }
 
   const destroyed: string[] = [];
@@ -1547,7 +1586,7 @@ async function sweep(input: {
   if (error !== null) say(`SWEEP FAILED: ${error}`);
   else if (found.length > 0) say(`sweep found ${found.join(", ")}; destroyed ${destroyed.length}`);
 
-  return error;
+  return { error, destroyed };
 }
 
 async function checkExistingRun(plan: RunPlan, raw: string): Promise<RunFile> {

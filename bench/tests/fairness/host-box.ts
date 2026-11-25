@@ -60,6 +60,11 @@ export function hostBox(
       await chmod(temporary, 0o755);
       await rename(temporary, path);
     },
+    lookup: async () => ({
+      result: "present",
+      checkedAt: new Date().toISOString(),
+      method: "host:this-machine",
+    }),
     destroy: async () => {
       destroyed = true;
     },

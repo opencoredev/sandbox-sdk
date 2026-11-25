@@ -52,7 +52,7 @@ import {
   type StyneSandbox,
   type StyneSnapshot,
 } from "./api.js";
-import { codeOf, fail, mapError, provider as name } from "./errors.js";
+import { codeOf, ended, fail, mapError, provider as name } from "./errors.js";
 
 /** Styne has one API surface, `https://api.styne.ai`. */
 export type StynePlane = "api";
@@ -252,6 +252,36 @@ function readJson(response: HttpResponse): JsonValue | undefined {
   }
 }
 
+/**
+ * Whether Styne itself said a delete's target is gone: `404 not_found`, or for a sandbox a 410 with an
+ * ended code. The shared status mapping reads every 404 and 410 as `not_found`, a route's own included.
+ */
+function isGone(error: SandboxError, target: "sandbox" | "snapshot"): boolean {
+  const answer = httpStatus(error);
+
+  if (answer === undefined) return false;
+
+  if (answer.status === 404) return answer.code === "not_found";
+
+  return (
+    target === "sandbox" &&
+    answer.status === 410 &&
+    answer.code !== undefined &&
+    ended.has(answer.code)
+  );
+}
+
+/** A delete's failure, where a 404 or 410 Styne's code does not explain is `provider`: never read as gone. */
+function unexplained(error: SandboxError, sandboxId?: string): SandboxError {
+  if (error.code !== "not_found") return error;
+
+  return fail(
+    "the delete was answered with a 404 or 410 that Styne's error code does not explain; it may still exist",
+    "provider",
+    { sandboxId, cause: error.message },
+  );
+}
+
 export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
   const baseUrl = (options.baseUrl ?? process.env.STYNE_API_URL ?? "https://api.styne.ai").replace(
     /\/+$/,
@@ -414,8 +444,11 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     try {
       await http.request({ method: "DELETE", ...sandboxPath(id) });
     } catch (error) {
-      // A second delete answers 404, an ended sandbox 410: either way it is gone.
-      if (!(error instanceof SandboxError && error.code === "not_found")) throw error;
+      if (!(error instanceof SandboxError)) throw error;
+
+      // A second delete answers `404 not_found`, an ended sandbox a 410 with an ended code: either way
+      // it is gone. A route-level or undecodable 404 or 410 says nothing about the sandbox.
+      if (!isGone(error, "sandbox")) throw unexplained(error, id);
     } finally {
       connections.delete(id);
       natives.delete(id);
@@ -1129,8 +1162,11 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
 
         return true;
       } catch (error) {
-        if (error instanceof SandboxError && error.code === "not_found") return false;
-        throw error;
+        if (!(error instanceof SandboxError)) throw error;
+
+        // Only Styne's `404 not_found`; a route-level or undecodable 404 is not a missing snapshot.
+        if (isGone(error, "snapshot")) return false;
+        throw unexplained(error);
       }
     },
   };

@@ -11,7 +11,7 @@
  * Every segment uses a fresh seed; the host checks every worker's final value with `lcgChecksum`
  * and bounds the guest's clock by its own (`verifySegment`).
  */
-import { randomInt } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { z } from "zod";
 import {
   lcgChecksum,
@@ -241,39 +241,66 @@ const streamDoneSchema = z.object({
   wallS: z.number().positive(),
 });
 
-/** Starts the burn detached, so the exec returns at once and the workers keep running. */
-export const streamStartCommand = (input: {
+/**
+ * One continuous burn. `tag` is fresh for every attempt and names its output and pid files, so
+ * concurrent attempts on one machine never read, stop or delete each other's.
+ */
+export interface StreamAttempt {
   readonly path: string;
   readonly seed: number;
   readonly phase: Phase;
-}) => {
-  const run = `'${input.path}' cpu-stream ${input.seed} ${input.phase.workers} ${Math.round(input.phase.seconds * 1000)} ${input.phase.segments} ${nativeChunkSteps}`;
+  readonly tag: string;
+}
+
+/**
+ * The attempt's files, and `mine <proc dir>`: true only for a process whose stdout is this
+ * attempt's output file and whose /proc/<pid>/comm is `.sbx-native` (so never the shell running
+ * this).
+ * Workers inherit the parent's stdout, so it matches the whole burn with or without setsid, and
+ * never another attempt's burn or a reused PID.
+ */
+const streamPrelude = (tag: string) => [
+  `out=/tmp/.sbx-cpu-stream-${tag}.out; pid=/tmp/.sbx-cpu-stream-${tag}.pid`,
+  'mine() { [ "$1/fd/1" -ef "$out" ] && [ "$(cat "$1/comm" 2>/dev/null)" = .sbx-native ]; }',
+];
+
+/** Starts the burn detached, so the exec returns at once and the workers keep running. */
+export const streamStartCommand = (attempt: StreamAttempt) => {
+  const { phase } = attempt;
+  const run = `'${attempt.path}' cpu-stream ${attempt.seed} ${phase.workers} ${Math.round(phase.seconds * 1000)} ${phase.segments} ${nativeChunkSteps}`;
 
   return [
-    "rm -f /tmp/.sbx-cpu-stream.out /tmp/.sbx-cpu-stream.pid",
+    ...streamPrelude(attempt.tag),
+    'rm -f "$out" "$pid"',
     `if command -v setsid >/dev/null 2>&1; then L=setsid; else L=; fi`,
-    `$L nohup ${run} > /tmp/.sbx-cpu-stream.out 2>/dev/null < /dev/null &`,
-    "echo $! > /tmp/.sbx-cpu-stream.pid",
-    "sleep 0.2; cat /tmp/.sbx-cpu-stream.pid",
+    `$L nohup ${run} > "$out" 2>/dev/null < /dev/null &`,
+    'echo $! > "$pid"',
+    'sleep 0.2; cat "$pid"',
   ].join("\n");
 };
 
-/** Prints the output so far, then `alive=1` while the burn runs. */
-export const streamPollCommand =
-  'cat /tmp/.sbx-cpu-stream.out 2>/dev/null; if kill -0 "$(cat /tmp/.sbx-cpu-stream.pid 2>/dev/null)" 2>/dev/null; then echo "alive=1"; else echo "alive=0"; fi';
+/** Prints the output so far, then `alive=1` while the attempt's recorded PID is still its burn. */
+export const streamPollCommand = (tag: string) =>
+  [
+    ...streamPrelude(tag),
+    'cat "$out" 2>/dev/null',
+    'p=$(cat "$pid" 2>/dev/null)',
+    'if [ -n "$p" ] && mine "/proc/$p"; then echo "alive=1"; else echo "alive=0"; fi',
+  ].join("\n");
 
 /**
- * Stops every process whose name is the binary's (`.sbx-native`, read from /proc/<pid>/comm, so it
- * never matches the shell running this), then confirms none is left. Workers also exit by
- * themselves once their parent is gone. Prints `stopped=1` only when no `.sbx-native` remains.
+ * Kills every process of this attempt's burn (`mine`), then confirms none is left. Workers also
+ * exit by themselves once their parent is gone. Prints `stopped=1`, and deletes the attempt's
+ * files, only when none of its processes remain.
  */
-export const streamStopCommand = [
-  'for d in /proc/[0-9]*; do [ "$(cat "$d/comm" 2>/dev/null)" = .sbx-native ] && kill -9 "${d#/proc/}" 2>/dev/null; done',
-  "sleep 0.5",
-  "rm -f /tmp/.sbx-cpu-stream.out /tmp/.sbx-cpu-stream.pid",
-  'left=0; for d in /proc/[0-9]*; do [ "$(cat "$d/comm" 2>/dev/null)" = .sbx-native ] && left=1; done',
-  "if [ $left = 0 ]; then echo stopped=1; else echo stopped=0; fi",
-].join("\n");
+export const streamStopCommand = (tag: string) =>
+  [
+    ...streamPrelude(tag),
+    'for d in /proc/[0-9]*; do mine "$d" && kill -9 "${d#/proc/}" 2>/dev/null; done',
+    "sleep 0.5",
+    'left=0; for d in /proc/[0-9]*; do mine "$d" && left=1; done',
+    'if [ $left = 0 ]; then rm -f "$out" "$pid"; echo stopped=1; else echo stopped=0; fi',
+  ].join("\n");
 
 /** The binary's MAX_SCAN_NS: a checkpoint's workers were all read within this many seconds. */
 export const maxScanS = 0.002;
@@ -410,6 +437,7 @@ async function streamPhase(input: {
 }): Promise<Segment[]> {
   const { context, box, installed, phase } = input;
   const seed = randomInt(0, 0x1_0000_0000);
+  const tag = randomBytes(8).toString("hex");
   const firstSeenS = new Map<number, number>();
   const startMs = performance.now();
 
@@ -421,7 +449,7 @@ async function streamPhase(input: {
   try {
     const started = await context.exec(
       box,
-      streamStartCommand({ path: installed.path, seed, phase }),
+      streamStartCommand({ path: installed.path, seed, phase, tag }),
       60_000,
     );
 
@@ -433,7 +461,7 @@ async function streamPhase(input: {
     for (;;) {
       if (context.signal.aborted) throw new CheckStop("Interrupted");
       await sleep(input.pollMs);
-      const polled = await context.exec(box, streamPollCommand, 60_000);
+      const polled = await context.exec(box, streamPollCommand(tag), 60_000);
       const nowS = (performance.now() - startMs) / 1000;
       const output = polled.stdout.replace(/^alive=\d\n?/m, "");
 
@@ -460,7 +488,7 @@ async function streamPhase(input: {
       if (/^alive=0$/m.test(polled.stdout) && !check.done) {
         // The burn may have printed its last line and exited between the read and the liveness
         // test: read once more before calling it stopped.
-        const last = await context.exec(box, streamPollCommand, 60_000);
+        const last = await context.exec(box, streamPollCommand(tag), 60_000);
         const finalOut = last.stdout.replace(/^alive=\d\n?/m, "");
 
         const finalCount = finalOut
@@ -490,7 +518,9 @@ async function streamPhase(input: {
         );
     }
   } finally {
-    const stopped = await context.execCleanup(box, streamStopCommand, 60_000).catch(() => null);
+    const stopped = await context
+      .execCleanup(box, streamStopCommand(tag), 60_000)
+      .catch(() => null);
 
     if (stopped === null || !/^stopped=1$/m.test(stopped.stdout))
       await context.note("burn-stop-unconfirmed", {

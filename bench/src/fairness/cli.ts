@@ -21,6 +21,7 @@ import {
   runFileSchema,
   type Check,
   type CheckId,
+  type Outcome,
   type Report,
 } from "./framework.js";
 import { memoryHonesty } from "./memory-honesty.js";
@@ -105,6 +106,19 @@ export function table(report: Report) {
     .join("");
 }
 
+/**
+ * 1 when a provider this invocation ran failed (a failed measurement is a report row, not an
+ * exception), a run threw, or a sandbox was not confirmed destroyed; rows of providers it did not
+ * run never count.
+ */
+export function exitCodeOf(outcome: Outcome, providers: readonly string[]) {
+  const failed = outcome.report.providers.some(
+    (p) => p.status === "failed" && providers.includes(p.provider),
+  );
+
+  return failed || outcome.failures.length > 0 || outcome.cleanupProblems.length > 0 ? 1 : 0;
+}
+
 export async function fairnessCommand(args: readonly string[]) {
   if (args.includes("--help") || args.length === 0) {
     process.stdout.write(usage);
@@ -146,7 +160,7 @@ export async function fairnessCommand(args: readonly string[]) {
     const setups = cli.providers.flatMap((name) => providerSetups.filter((s) => s.name === name));
     process.stdout.write(`${cli.check} run ${runId}: ${setups.length} providers, out ${out}\n`);
 
-    const { report, failures, cleanupProblems } = await runCheck(
+    const outcome = await runCheck(
       check,
       setups,
       { runId, out, concurrency: cli.concurrency },
@@ -157,15 +171,15 @@ export async function fairnessCommand(args: readonly string[]) {
       },
     );
 
-    process.stdout.write(`${table(report)}Report: ${paths(out, cli.check).report}\n`);
+    process.stdout.write(`${table(outcome.report)}Report: ${paths(out, cli.check).report}\n`);
 
-    for (const failure of failures)
+    for (const failure of outcome.failures)
       process.stderr.write(`RUN FAILED ${failure.provider}: ${failure.error}\n`);
 
-    for (const problem of cleanupProblems)
+    for (const problem of outcome.cleanupProblems)
       process.stderr.write(`CLEANUP ${problem.provider}: ${problem.error}\n`);
 
-    if (failures.length > 0 || cleanupProblems.length > 0) process.exitCode = 1;
+    process.exitCode = exitCodeOf(outcome, cli.providers);
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
