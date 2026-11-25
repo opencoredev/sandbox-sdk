@@ -177,7 +177,8 @@ function boxdEvidence(
   if (requestId !== undefined && token.test(requestId) && !denied(requestId))
     evidence.requestId = requestId;
 
-  // The core bounds each field after redacting the sandbox's own secrets, so no cut here leaves part of one.
+  // The core bounds each field after redacting the sandbox's own secrets, so no cut here leaves part of
+  // one, and it redacts the unscrubbed text boxdError keeps aside, so scrubbing can't hide one either.
   if (context.call !== undefined && native.message)
     evidence.providerMessage = scrub(redacting(keys)(native.message), Number.POSITIVE_INFINITY);
 
@@ -219,7 +220,16 @@ export function boxdError(
       redact: redacting(keys),
     });
 
-  const evidence = (detail?: string) => evidenceCause(boxdEvidence(native, context, detail, keys));
+  const evidence = (detail?: string) => {
+    const fields = boxdEvidence(native, context, detail, keys);
+
+    return evidenceCause(
+      fields,
+      fields.providerMessage === undefined
+        ? undefined
+        : { providerMessage: redacting(keys)(native.message) },
+    );
+  };
 
   // 0.2.17's local machines.exec deadline is a plain BoxdError, without
   // grpcCode. Match its published message narrowly; never expose that message.
