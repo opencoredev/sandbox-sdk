@@ -183,6 +183,33 @@ describe("heartbeatWindow", () => {
     expect(lookups).toBe(1);
   });
 
+  it("ignores a lookup answer that arrives after its budget, however late its timer fires", async () => {
+    let calls = 0;
+
+    const result = await heartbeatWindow({
+      ...base,
+      heartbeat: async () => {
+        if (++calls === 2) await new Promise((resolve) => setTimeout(resolve, 200));
+
+        return "boot-a";
+      },
+      // Blocks the event loop past the 40 ms budget, so the deadline's timer cannot fire first.
+      lookup: async () => {
+        const until = performance.now() + 60;
+
+        while (performance.now() < until);
+
+        return lookup("not-found");
+      },
+      stop: new AbortController().signal,
+    });
+
+    expect(result.verdict).toMatchObject({ kind: "unresponsive" });
+    const miss = result.heartbeats[1];
+
+    expect(miss?.kind === "missed" && miss.lookup).toBeNull();
+  });
+
   it("stops at the first proof of death and records the provider's error", async () => {
     let calls = 0;
 

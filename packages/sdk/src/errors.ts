@@ -154,6 +154,12 @@ export const withheldErrors = new WeakSet<SandboxError>();
 /** Timeout errors created by `ProcessHandle.wait()`'s own deadline timer. */
 export const waitDeadlineErrors = new WeakSet<SandboxError>();
 
+/**
+ * Evidence fields as the provider sent them, before an adapter scrubbed them for display. The core
+ * redacts the sandbox's secrets in these first, since scrubbing folds a multiline secret.
+ */
+const unscrubbedEvidence = new WeakMap<Error, Pick<NativeEvidence, "providerMessage">>();
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -773,7 +779,7 @@ export class Redactor {
           cause.cause === undefined
             ? undefined
             : scrubCause(
-                cause.cause instanceof Error ? cause.cause.message : String(cause.cause),
+                causeText(cause.cause, (text) => this.text(text)),
                 (text) => this.text(text),
               ),
       });
@@ -1007,8 +1013,36 @@ export interface NativeEvidence {
  * cause to its message, so the JSON is what reaches users; the fields stay readable on the adapter's
  * own error.
  */
-export function evidenceCause(evidence: NativeEvidence): Error & NativeEvidence {
-  return Object.assign(new Error(JSON.stringify(evidence)), evidence);
+export function evidenceCause(
+  evidence: NativeEvidence,
+  unscrubbed?: Pick<NativeEvidence, "providerMessage">,
+): Error & NativeEvidence {
+  const cause = Object.assign(new Error(JSON.stringify(evidence)), evidence);
+
+  if (unscrubbed !== undefined) unscrubbedEvidence.set(cause, unscrubbed);
+
+  return cause;
+}
+
+/**
+ * A cause's text for {@link Redactor.error}: adapter evidence with its unscrubbed message restored.
+ * Redacting secrets first can break a credential pattern's match, and scrubbing first can split a
+ * secret, so a message holding both is withheld whole.
+ */
+function causeText(cause: unknown, redact: (text: string) => string): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const raw = unscrubbedEvidence.get(cause)?.providerMessage;
+  const fields = evidenceFields(cause.message);
+
+  if (raw === undefined || fields === undefined) return cause.message;
+  const credentials = scrubCredentials(raw);
+  const hasCredential = credentials !== raw;
+  const hasSecret = redact(raw) !== raw;
+
+  return JSON.stringify({
+    ...Object.fromEntries(fields),
+    providerMessage: hasCredential && hasSecret ? redactedMarker : credentials,
+  });
 }
 
 /** A redact function for values an adapter knows, such as its API key. Empty values are skipped. */

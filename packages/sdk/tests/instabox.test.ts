@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { SandboxError } from "../src/errors.js";
+import { createSandbox } from "../src/index.js";
 import { instabox } from "../src/providers/instabox/index.js";
 import { fakeServer, type FakeServer } from "./http-fake.js";
 
@@ -215,6 +216,22 @@ describe("instabox transport review cases", () => {
     expect(create!.headers["user-agent"]).toMatch(/^sandbox-sdk\//);
     // Names Instabox reserves stay per command; the rest becomes the machine's environment.
     expect(JSON.parse(create!.body.toString()).env).toEqual({ API_TOKEN: "t1" });
+  });
+
+  test("a secret under a reserved name is refused before any machine is made", async () => {
+    server.on("POST /v1/machines", { status: 202, json: op("succeeded") });
+
+    // Only the machine's environment survives a reconnect, and it can't hold reserved names.
+    const error = await rejection(
+      createSandbox(provider(), {
+        env: { PATH: "/opt/bin:/usr/bin" },
+        secrets: { API_TOKEN: "t1", SSH_PRIVATE_KEY: "k" },
+      }),
+    );
+
+    expect(error.code).toBe("invalid_argument");
+    expect(error.message).toContain("SSH_PRIVATE_KEY");
+    expect(server.calls("POST /v1/machines")).toHaveLength(0);
   });
 
   test("a gateway timeout on a keyed create leaves the outcome unknown", async () => {

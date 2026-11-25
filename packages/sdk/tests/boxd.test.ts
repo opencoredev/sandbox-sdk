@@ -1168,6 +1168,117 @@ describe("boxd failure evidence", () => {
     }
   });
 
+  test("the adapter's own error keeps boxd's message scrubbed", () => {
+    const error = boxdError(
+      Object.assign(
+        new Error("rejected https://api.example/?token=abc\nAuthorization: Bearer zz9"),
+        {
+          grpcCode: 3,
+        },
+      ),
+      { call: "machines.list" },
+    );
+
+    const { providerMessage } = evidence(error);
+
+    expect(providerMessage).not.toContain("api.example");
+    expect(providerMessage).not.toContain("zz9");
+    expect(providerMessage).not.toContain("\n");
+  });
+
+  test("a multiline sandbox secret in boxd's message is redacted whole", async () => {
+    const secret =
+      "-----BEGIN KEY-----\nline-one-0123456789\nline-two-abcdefghij\n-----END KEY-----";
+
+    const box = await createSandbox(factory(), { secrets: { PRIVATE_KEY: secret } });
+    const machines = box.native.client.machines;
+
+    const resume = vi.spyOn(machines, "resume").mockRejectedValueOnce(
+      Object.assign(new Error(`bad value ${secret} in request`), {
+        name: "ConflictError",
+        grpcCode: 9,
+      }),
+    );
+
+    try {
+      await box.pause();
+
+      const error = await box.resume().then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+      const cause = String(error instanceof SandboxError ? error.cause : "");
+
+      expect(cause).toContain("bad value [REDACTED] in request");
+      expect(cause).not.toContain("line-one");
+      expect(cause).not.toContain("line-two");
+    } finally {
+      resume.mockRestore();
+      await box.destroy();
+    }
+  });
+
+  test("a URL that begins with a sandbox secret is still scrubbed whole", async () => {
+    const box = await createSandbox(factory(), { secrets: { STORE: "https://storage.example" } });
+    const machines = box.native.client.machines;
+
+    const resume = vi
+      .spyOn(machines, "resume")
+      .mockRejectedValueOnce(
+        Object.assign(
+          new Error("upload to https://storage.example/object?X-Amz-Signature=sig123 failed"),
+          { name: "ConflictError", grpcCode: 9 },
+        ),
+      );
+
+    try {
+      await box.pause();
+
+      const error = await box.resume().then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+      const cause = String(error instanceof SandboxError ? error.cause : "");
+
+      expect(cause).not.toContain("sig123");
+      expect(cause).not.toContain("storage.example");
+    } finally {
+      resume.mockRestore();
+      await box.destroy();
+    }
+  });
+
+  test("a credential label that overlaps a sandbox secret still hides its value", async () => {
+    const box = await createSandbox(factory(), { secrets: { APP: "myapp-api" } });
+    const machines = box.native.client.machines;
+
+    const resume = vi.spyOn(machines, "resume").mockRejectedValueOnce(
+      Object.assign(new Error("rejected myapp-api_key=hunter2 for this machine"), {
+        name: "ConflictError",
+        grpcCode: 9,
+      }),
+    );
+
+    try {
+      await box.pause();
+
+      const error = await box.resume().then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+      const cause = String(error instanceof SandboxError ? error.cause : "");
+
+      expect(cause).not.toContain("hunter2");
+      expect(cause).not.toContain("myapp-api");
+    } finally {
+      resume.mockRestore();
+      await box.destroy();
+    }
+  });
+
   test("a guest call never keeps boxd's text, which can echo user paths", () => {
     const error = boxdError(
       Object.assign(new Error("read /workspace/private.txt: input/output error"), {

@@ -92,12 +92,8 @@ export interface StyneTarget {
   snapshot?: string;
 }
 
-/**
- * Whether Styne said `target` is gone: `404 not_found`, or for a sandbox (never a snapshot or a request
- * about no sandbox) a 410 with an ended code, from a body that names no other resource. A route-level,
- * undecodable or foreign 404 or 410 says nothing.
- */
-export function isGoneAnswer(answer: StyneAnswer, target: StyneTarget): boolean {
+/** Whether an answer is about `target`: every resource its body names is the one asked about. */
+export function isAbout(answer: StyneAnswer, target: StyneTarget): boolean {
   const expected: Record<NameKey, string | undefined> = {
     sandboxID: target.sandboxId,
     name: target.snapshot,
@@ -105,10 +101,18 @@ export function isGoneAnswer(answer: StyneAnswer, target: StyneTarget): boolean 
     id: target.snapshot ?? target.sandboxId,
   };
 
-  if (
-    !nameKeys.every((key) => answer.names[key] === undefined || answer.names[key] === expected[key])
-  )
-    return false;
+  return nameKeys.every(
+    (key) => answer.names[key] === undefined || answer.names[key] === expected[key],
+  );
+}
+
+/**
+ * Whether Styne said `target` is gone: `404 not_found`, or for a sandbox (never a snapshot or a request
+ * about no sandbox) a 410 with an ended code, from a body that names no other resource. A route-level,
+ * undecodable or foreign 404 or 410 says nothing.
+ */
+export function isGoneAnswer(answer: StyneAnswer, target: StyneTarget): boolean {
+  if (!isAbout(answer, target)) return false;
 
   if (answer.status === 404) return answer.errorCode === "not_found";
 
@@ -123,29 +127,44 @@ export function isGoneAnswer(answer: StyneAnswer, target: StyneTarget): boolean 
 
 const requestId = /^[\w.:-]{1,128}$/;
 
+/** Each failure's answer, kept off the error itself: what Styne echoed back is never shown or serialized. */
+const answers = new WeakMap<StyneFailure, StyneAnswer>();
+
 /**
- * A failed request's cause: the status and Styne's own answer, so a caller can tell its target is gone
- * ({@link isGoneAnswer}), and the request ID. Holds only validated tokens, never body text.
+ * A failed request's cause. Its message holds the status, and the `error_code` and request ID only when
+ * redaction leaves them as they are, so no credential Styne echoes back is shown. Styne's own answer is
+ * kept privately for {@link answerBehind}.
  */
 export class StyneFailure extends Error {
-  constructor(
-    readonly answer: StyneAnswer,
-    request: string | undefined,
-  ) {
-    const code = answer.errorCode === undefined ? "" : ` ${answer.errorCode}`;
-    super(`HTTP ${answer.status}${code}${request === undefined ? "" : ` (request ${request})`}`);
+  constructor(answer: StyneAnswer, message: string) {
+    super(message);
     this.name = "StyneFailure";
+    answers.set(this, answer);
   }
 }
 
-/** The HTTP client's cause hook: every failed answer keeps Styne's own reading of it. */
-export function causeOf(failure: HttpFailure): Error | undefined {
+/** Styne's own answer behind a failed request, which the client keeps as the error's cause. */
+export function answerBehind(error: SandboxError): StyneAnswer | undefined {
+  return error.cause instanceof StyneFailure ? answers.get(error.cause) : undefined;
+}
+
+/**
+ * The HTTP client's cause hook: every failed answer keeps Styne's own reading of it. `redact` is the
+ * client's own redaction, which a value must pass unchanged to be shown.
+ */
+export function causeOf(failure: HttpFailure, redact: (text: string) => string): Error | undefined {
   if (failure.kind !== "status") return undefined;
-  const id = failure.headers.get("x-request-id") ?? undefined;
+  const answer = answerOf(failure.status, failure.body.json);
+
+  const shown = (value: string | null | undefined, allowed: RegExp) =>
+    isString(value) && allowed.test(value) && redact(value) === value ? value : undefined;
+
+  const code = shown(answer.errorCode, safeCode);
+  const request = shown(failure.headers.get("x-request-id"), requestId);
 
   return new StyneFailure(
-    answerOf(failure.status, failure.body.json),
-    id !== undefined && requestId.test(id) ? id : undefined,
+    answer,
+    `HTTP ${failure.status}${code === undefined ? "" : ` ${code}`}${request === undefined ? "" : ` (request ${request})`}`,
   );
 }
 
@@ -171,9 +190,10 @@ export function codeOf(errorCode: string | undefined): ErrorCode | undefined {
 }
 
 /**
- * The HTTP client's error hook, from Styne's own `error_code` only. A file route's 404 is a missing path;
- * the adapter checks the sandbox itself before it reports one. Any other 404 or 410 is `not_found` only
- * when Styne said so of this request's sandbox ({@link isGoneAnswer}); otherwise it is `provider`, never
+ * The HTTP client's error hook, from Styne's own `error_code` only. A 404 or 410 whose body names another
+ * resource is `provider`. A file route's 404 is a missing path; the adapter checks the sandbox itself
+ * before it reports one. `not_found` comes only from a 404 or 410 in which Styne said so of this request's
+ * sandbox ({@link isGoneAnswer}); `not_found` or an ended code on any other answer is `provider`, never
  * absence. A `501` (`not_implemented`, or no code) is a route Styne does not serve, so nothing ran. A write
  * answered with any other 5xx Styne does not document as a refusal may have taken effect, so it is
  * `outcome_unknown`.
@@ -192,15 +212,23 @@ export function mapError(failure: HttpFailure, request: FailedRequest): ErrorCod
   )
     return "outcome_unknown";
 
+  const missing = failure.status === 404 || failure.status === 410;
+  const target = { sandboxId: request.sandboxId };
+
+  // A 404 or 410 about another resource says nothing, whatever its code.
+  if (missing && !isAbout(answer, target)) return "provider";
+
   if (failure.status === 404 && /\/files(?:\/list)?$/.test(request.operation))
     return "file_not_found";
 
-  if (failure.status === 404 || failure.status === 410) {
-    if (isGoneAnswer(answer, { sandboxId: request.sandboxId })) return "not_found";
-    const mapped = codeOf(code);
+  // `not_found` comes only from Styne's own 404 or 410 about this request's sandbox.
+  if (missing && isGoneAnswer(answer, target)) return "not_found";
 
-    return mapped === undefined || mapped === "not_found" ? "provider" : mapped;
-  }
+  const mapped = codeOf(code);
 
-  return codeOf(code);
+  if (mapped === "not_found") return "provider";
+
+  if (mapped === undefined && missing) return "provider";
+
+  return mapped;
 }

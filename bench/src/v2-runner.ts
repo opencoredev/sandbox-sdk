@@ -68,6 +68,7 @@ import {
   heartbeatDetails,
   heartbeatWindow,
   parseBootId,
+  sessionRefusal,
   survivalFailure,
   type SurvivalVerdict,
 } from "./survival.js";
@@ -269,9 +270,11 @@ const leakPatterns: [RegExp, string][] = [
 export function sanitize(text: string) {
   let result = text;
 
+  // Each secret as written and as a JSON string escapes it, so a quoted or escaped copy is caught too.
   for (const [name, value] of Object.entries(process.env))
     if (/KEY|TOKEN|SECRET|PASSWORD/.test(name) && value && value.length > 5)
-      result = result.replaceAll(value, "[REDACTED]");
+      for (const form of new Set([value, JSON.stringify(value).slice(1, -1)]))
+        result = result.replaceAll(form, "[REDACTED]");
 
   for (const [pattern, replacement] of leakPatterns) result = result.replace(pattern, replacement);
 
@@ -3086,6 +3089,24 @@ export async function runV2(
       const info = report.providers.find((v) => v.name === p.name);
 
       if (info) info.note += `; ${scenario} documented not-run: ${excluded.reason}`;
+
+      return;
+    }
+
+    const refusal =
+      kind === "survival" ? sessionRefusal(p.name, survivalPlan, config["timeout-ms"]) : null;
+
+    if (refusal) {
+      report.admissionStopped?.push({
+        provider: p.name,
+        scenario,
+        iteration: cohortIndex,
+        track: config.track,
+        reason: `Survival not run: ${refusal}`,
+      });
+      const info = report.providers.find((v) => v.name === p.name);
+
+      if (info) info.note += `; ${scenario} not run: ${refusal}`;
 
       return;
     }
