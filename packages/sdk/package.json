@@ -182,7 +182,7 @@
     "@openai/agents": "^0.20.0",
     "@rivet-dev/agentos-core": "0.4.1",
     "@superserve/sdk": "0.11.4",
-    "@tenkicloud/sandbox": "^1.4.1",
+    "@tenkicloud/sandbox": "^1.6.0",
     "@upstash/box": "^0.7.9",
     "@vercel/sandbox": "3.8.0",
     "ai": "^7.0.143",

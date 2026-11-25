@@ -104,7 +104,7 @@
         "@daytonaio/sdk": "^0.225.0",
         "@insforge/instabox-sdk": "0.9.0",
         "@superserve/sdk": "0.11.4",
-        "@tenkicloud/sandbox": "^1.4.1",
+        "@tenkicloud/sandbox": "^1.6.0",
         "@upstash/box": "^0.7.9",
         "@vercel/sandbox": "3.8.0",
         "disk": "1.12.1",
@@ -185,7 +185,7 @@
         "@openai/agents": "^0.20.0",
         "@rivet-dev/agentos-core": "0.4.1",
         "@superserve/sdk": "0.11.4",
-        "@tenkicloud/sandbox": "^1.4.1",
+        "@tenkicloud/sandbox": "^1.6.0",
         "@upstash/box": "^0.7.9",
         "@vercel/sandbox": "3.8.0",
         "ai": "^7.0.143",
@@ -1249,7 +1249,7 @@
 
     "@takumi-rs/wasm": ["@takumi-rs/wasm@2.16.3", "", { "dependencies": { "@takumi-rs/helpers": "2.16.3" }, "peerDependencies": { "csstype": "*" }, "optionalPeers": ["csstype"] }, "sha512-5Qjbqdj27YlNm1EB/NaqMyAR4wRrCXffTWo5j79rFrvqUyl3U2wnPrmEibE5IAo+KwENduQpXcNp2OLSvJ8cDw=="],
 
-    "@tenkicloud/sandbox": ["@tenkicloud/sandbox@1.4.1", "", { "dependencies": { "@bufbuild/protobuf": "2.12.1", "@connectrpc/connect": "2.1.2", "@connectrpc/connect-node": "2.1.2", "ws": "8.21.3" } }, "sha512-0H7+EornkIlTc6GTMFMdkSKijvXOjqYkSWsZNeEcYh7vPjtnxFmrElTUXEBmPTeZXL2gmt+iPrhEcBthBopGHw=="],
+    "@tenkicloud/sandbox": ["@tenkicloud/sandbox@1.6.0", "", { "dependencies": { "@bufbuild/protobuf": "2.12.1", "@connectrpc/connect": "2.1.2", "@connectrpc/connect-node": "2.1.2", "ws": "8.21.3" } }, "sha512-46aHYNaxxxPK8OAOhlJr4OKyaTsOoMxS+QP4Bu8UD+NSKN+UGb5fWPrYLdAVN+j7S6aB1eIDtJGnyJII97Teig=="],
 
     "@turbo/darwin-64": ["@turbo/darwin-64@2.10.5", "", { "os": "darwin", "cpu": "x64" }, "sha512-ENvPwy3x5yS7MwNYHeWjqOBXkwIMp39Pd+/zXC6PoiNzF8EIvvLZOZZ+ny6L9x4WgS5vxUii2LM5gM+zjPdnWw=="],
 
