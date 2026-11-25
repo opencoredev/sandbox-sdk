@@ -8,11 +8,15 @@ const defaultStepTimeoutMs = 180_000;
  * Providers whose sandboxes stop at a hard lifetime the factory sets as `timeoutMs`, with that
  * lifetime's maximum. Modal stops a sandbox after 5 minutes unless told otherwise. Maritime's
  * adapter asks for an hour unless told otherwise (`timeLimitSeconds`, at most 24 hours, counted
- * from the create or the last resume).
+ * from the create or the last resume). Microsandbox's adapter also asks for an hour unless told
+ * otherwise (`max_duration_secs`, after which the sandbox stops and keeps billing its disk until the
+ * bench deletes it); 24 hours is the bench's own cap.
  */
 const lifetimeLimits: ReadonlyMap<string, number> = new Map([
   ["modal", 24 * 3_600_000],
   ["maritime", 24 * 3_600_000],
+  ["microsandbox", 24 * 3_600_000],
+  ["microsandbox-shared", 24 * 3_600_000],
 ]);
 
 /**
@@ -20,7 +24,7 @@ const lifetimeLimits: ReadonlyMap<string, number> = new Map([
  * for one whole iteration, restores included. Longer harnesses, such as the realistic workloads'
  * build and 60-minute held-open test, pass `--lifetime-ms` themselves.
  */
-/** The factory option a lifetime becomes: Modal's and Maritime's `timeoutMs`, or nothing for other providers. */
+/** The factory option a lifetime becomes: Modal's, Maritime's and Microsandbox's `timeoutMs`, or nothing for other providers. */
 export interface LifetimeOptions {
   timeoutMs?: number;
 }

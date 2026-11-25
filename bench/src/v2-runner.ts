@@ -12,7 +12,7 @@ import { readFile, mkdir } from "node:fs/promises";
 import { journalFiles } from "./files.js";
 import { resolve, join } from "node:path";
 import { z } from "zod";
-import type { ConfigV2 } from "./v2-config.js";
+import { isSizePreset, type ConfigV2 } from "./v2-config.js";
 import {
   destroyTimings,
   providerMember,
@@ -74,6 +74,16 @@ import { captureVercelMeter } from "./billing/providers.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import { failureOutcome } from "./failure.js";
 import {
+  attemptLabel,
+  cleanService,
+  isDefiniteRefusal,
+  settleAllocationAttempt,
+  tierLabel,
+} from "./microsandbox.js";
+import { microsandboxTier } from "./providers.js";
+import type { MicrosandboxHooks } from "@opencoredev/sandbox-sdk/microsandbox";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import {
   allocated,
   attemptApp,
   beginAllocation,
@@ -90,7 +100,29 @@ import {
  * source's size again. Other providers' snapshots or templates own their resources, and their
  * restores stay as published.
  */
-const restoreNeedsSize: ReadonlySet<string> = new Set(["modal"]);
+const restoreNeedsSize: ReadonlySet<string> = new Set([
+  "modal",
+  "microsandbox",
+  "microsandbox-shared",
+]);
+
+/**
+ * The size a restore asks for. A Microsandbox restore keeps the snapshot's disk and takes CPU and memory
+ * only, so an exact size loses its `diskGb`: `--size microsandbox=4:8192:64` creates cold with 64 GiB and
+ * restores at 4:8192.
+ */
+export function restoreSize(provider: string, size: NonNullable<CreateOptions["size"]>) {
+  if (microsandboxTier(provider) === undefined || isSizePreset(size)) return size;
+
+  return { cpu: size.cpu, memoryMb: size.memoryMb };
+}
+
+/** A Microsandbox provider that takes the bench's attempt hooks (`setAttemptHooks`). */
+function takesAttemptHooks(
+  provider: Provider,
+): provider is Provider & { setAttemptHooks(hooks: MicrosandboxHooks): void } {
+  return "setAttemptHooks" in provider && typeof provider.setAttemptHooks === "function";
+}
 
 export { scenarioNames } from "./scenarios.js";
 
@@ -174,10 +206,12 @@ const errorNote = (cause: unknown) =>
 
 /**
  * Credential shapes no environment variable names: Maritime's account and server keys (`mk_`, `mlk_`),
- * sandbox secrets (`mst_`) and URL tokens (`mut_`), and any `token=` query value, such as a preview URL's.
+ * sandbox secrets (`mst_`) and URL tokens (`mut_`), Microsandbox's organization keys and personal
+ * access tokens (`msb_`, `msb_pat_`), and any `token=` query value, such as a preview URL's.
  */
 const leakPatterns: [RegExp, string][] = [
   [/(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
+  [/msb_(?:pat_)?[A-Za-z0-9_-]+/g, "[REDACTED]"],
   [/([?&;]token=)[^&#\s"'<>]+/gi, "$1[REDACTED]"],
 ];
 
@@ -400,11 +434,26 @@ export async function runV2(
   interface OwnedEntry {
     provider: string;
     id: string;
-    kind: "sandbox" | "snapshot" | "snapshot-source";
+    /**
+     * `allocation-attempt`: a Microsandbox create journaled before it is sent, by the sandbox name it
+     * carries (`id`) and its allocation marker; a restore's also names its snapshot (`parent`) and source.
+     * `service`: a Microsandbox Service slug (`id`) journaled before it is made, for sandbox `parent`.
+     */
+    kind: "sandbox" | "snapshot" | "snapshot-source" | "allocation-attempt" | "service";
     parent: string | null;
     snapshotProof?: SnapshotProvenance;
     /** The save's idempotency key, journaled before a Maritime save so an unanswered one can be settled. */
     idempotencyKey?: string;
+    /** A Microsandbox create's allocation marker. */
+    allocId?: string;
+    /** A Microsandbox restore attempt's source sandbox. */
+    sourceId?: string | null;
+    /** When a Microsandbox create was journaled, for its settlement window. */
+    attemptedAt?: string;
+    /** The sandbox name a Microsandbox Service targets. */
+    sandboxName?: string;
+    /** A Microsandbox capture's name; equal to `id` while the capture is unconfirmed. */
+    snapshotName?: string;
   }
 
   const owned = new Map<string, OwnedEntry>();
@@ -452,6 +501,109 @@ export async function runV2(
     journal = next.catch(() => {});
 
     return next;
+  }
+
+  /** Microsandbox attempt names by the per-call label the tracked create adds. */
+  const attemptNames = new Map<string, string>();
+  /** The name of the latest Microsandbox capture journaled for each source sandbox. */
+  const captureNames = new Map<string, string>();
+
+  /**
+   * Journals each Microsandbox allocation before the adapter sends it: a create's name and marker, a
+   * Service's slug, a capture's name. A journal write that fails stops the request before it is sent.
+   */
+  function microsandboxJournal(name: string): MicrosandboxHooks {
+    return {
+      create: async (attempt) => {
+        const label = attempt.labels[attemptLabel];
+
+        if (label !== undefined) attemptNames.set(label, attempt.name);
+        owned.set(`${name}/allocation-attempt/${attempt.name}`, {
+          provider: name,
+          id: attempt.name,
+          kind: "allocation-attempt",
+          parent: attempt.from ?? null,
+          sourceId:
+            attempt.from === undefined
+              ? null
+              : (owned.get(`${name}/snapshot/${attempt.from}`)?.parent ?? null),
+          allocId: attempt.allocId,
+          attemptedAt: new Date().toISOString(),
+        });
+        await persist();
+      },
+      service: async (attempt) => {
+        owned.set(`${name}/service/${attempt.slug}`, {
+          provider: name,
+          id: attempt.slug,
+          kind: "service",
+          parent: attempt.sandboxId,
+          sandboxName: attempt.sandboxName,
+        });
+        await persist();
+      },
+      snapshot: async (attempt) => {
+        captureNames.set(attempt.sandboxId, attempt.name);
+        owned.set(`${name}/snapshot/${attempt.name}`, {
+          provider: name,
+          id: attempt.name,
+          kind: "snapshot",
+          parent: attempt.sandboxId,
+          snapshotProof: owned.get(`${name}/snapshot-source/${attempt.sandboxId}`)?.snapshotProof,
+          snapshotName: attempt.name,
+        });
+        await persist();
+      },
+    };
+  }
+
+  for (const p of ready)
+    if (microsandboxTier(p.name) !== undefined && takesAttemptHooks(p.provider))
+      p.provider.setAttemptHooks(microsandboxJournal(p.name));
+
+  /**
+   * Settles a Microsandbox create journaled by name: a sandbox carrying its marker joins the journal as a
+   * sandbox and leaves the attempt; one never made (404 past the settlement window) drops it. `true`
+   * while it is still unresolved, which keeps it, and a restore's snapshot and source, journaled.
+   */
+  async function settleAttempt(
+    p: ReadyProvider,
+    entry: OwnedEntry,
+  ): Promise<string | "pending" | null> {
+    const tier = microsandboxTier(p.name);
+
+    if (tier === undefined) return "pending";
+
+    const outcome = await settleAllocationAttempt(
+      {
+        id: entry.id,
+        allocId: entry.allocId,
+        attemptedAt: entry.attemptedAt,
+      },
+      tier,
+    );
+
+    if (outcome.kind === "pending") {
+      review(p.name, entry.id, outcome.reason, "allocation-attempt");
+
+      return "pending";
+    }
+
+    owned.delete(`${p.name}/allocation-attempt/${entry.id}`);
+
+    if (outcome.kind === "sandbox")
+      owned.set(`${p.name}/${outcome.id}`, {
+        provider: p.name,
+        id: outcome.id,
+        kind: "sandbox",
+        parent: null,
+      });
+    report.cleanupReview = report.cleanupReview?.filter(
+      (r) => !(r.provider === p.name && r.id === entry.id && r.kind === "allocation-attempt"),
+    );
+    await persist();
+
+    return outcome.kind === "sandbox" ? outcome.id : null;
   }
 
   function review(
@@ -590,6 +742,11 @@ export async function runV2(
 
         restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
+
+        // The adapter's destroy removed the sandbox's Services before deleting it (Microsandbox).
+        for (const [key, entry] of owned)
+          if (entry.provider === loaded.name && entry.kind === "service" && entry.parent === id)
+            owned.delete(key);
 
         // A timed destroy row carries the confirmed stop in its phases; any other deletion
         // journals it, so billing can still settle the sandbox's App (Modal).
@@ -798,10 +955,21 @@ export async function runV2(
                   await persist();
                 }
 
+                const tier = microsandboxTier(p.name);
+                // Names this call to the attempt hook, and its tier to sweeps (Microsandbox).
+                const attemptTag = tier === undefined ? undefined : crypto.randomUUID();
+
                 const request =
                   attempt === undefined
                     ? input
                     : { ...input, labels: { ...input.labels, ...attempt.labels } };
+
+                if (attemptTag !== undefined && tier !== undefined)
+                  request.labels = {
+                    ...request.labels,
+                    [attemptLabel]: attemptTag,
+                    [tierLabel]: tier,
+                  };
 
                 createClock.begin();
                 adapterCreateRejected = false;
@@ -811,6 +979,19 @@ export async function runV2(
                   info = await target.create(request);
                 } catch (error) {
                   adapterCreateRejected = true;
+
+                  // The adapter's own failure. Anything but outcome_unknown means nothing it made is
+                  // left (never sent, refused, or deleted on a fresh deadline): the attempt goes.
+                  const attemptName =
+                    attemptTag === undefined ? undefined : attemptNames.get(attemptTag);
+
+                  if (
+                    attemptName !== undefined &&
+                    !(error instanceof SandboxError && error.code === "outcome_unknown")
+                  ) {
+                    owned.delete(`${p.name}/allocation-attempt/${attemptName}`);
+                    await persist().catch(() => {});
+                  }
 
                   if (allocation) failedAllocation(allocation.app, allocation.id, p.name, error);
                   throw error;
@@ -856,6 +1037,15 @@ export async function runV2(
                   kind: "sandbox",
                   parent: null,
                 });
+
+                // The confirmed sandbox replaces its journaled attempt in the same write.
+                if (attemptTag !== undefined) {
+                  const attemptName = attemptNames.get(attemptTag);
+
+                  if (attemptName !== undefined)
+                    owned.delete(`${p.name}/allocation-attempt/${attemptName}`);
+                }
+
                 createPhases.adapterCreateMs = returned - (createClock.start ?? returned);
                 createPhases.apiReturnedMs = createPhases.adapterCreateMs;
                 const journalStart = performance.now();
@@ -1452,7 +1642,10 @@ export async function runV2(
                 );
               };
 
-              if (["daytona", "superserve", "maritime"].includes(p.name)) {
+              if (
+                ["daytona", "superserve", "maritime"].includes(p.name) ||
+                microsandboxTier(p.name) !== undefined
+              ) {
                 owned.set(`${p.name}/snapshot-source/${active.id}`, {
                   provider: p.name,
                   id: active.id,
@@ -1527,6 +1720,22 @@ export async function runV2(
                   : p.name === "maritime" && saveKey
                     ? await createNamedMaritimeSnapshot(active.id, snapshotId, saveKey)
                     : await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId);
+              } catch (error) {
+                // Microsandbox: a capture refused before any operation started made nothing, so its
+                // journaled name goes; any other failure keeps it for settlement.
+                const captured = captureNames.get(active.id);
+
+                if (
+                  captured !== undefined &&
+                  error instanceof SandboxError &&
+                  isDefiniteRefusal(error.code)
+                ) {
+                  owned.delete(`${p.name}/snapshot/${captured}`);
+                  captureNames.delete(active.id);
+                  await persist().catch(() => {});
+                }
+
+                throw error;
               } finally {
                 snapshotClock.finish();
               }
@@ -1542,6 +1751,15 @@ export async function runV2(
                 parent: active.id,
                 snapshotProof,
               };
+
+              // Microsandbox: the confirmed managed ID replaces the capture's journaled name.
+              const captured = captureNames.get(active.id);
+
+              if (captured !== undefined) {
+                confirmed.snapshotName = captured;
+                owned.delete(`${p.name}/snapshot/${captured}`);
+                captureNames.delete(active.id);
+              }
 
               if (owned.get(snapKey)?.idempotencyKey !== undefined) {
                 // A journaled save key (Maritime): disk drops the key before memory does, so a failed
@@ -1612,7 +1830,7 @@ export async function runV2(
 
                     // Only where the snapshot keeps files but not resources; elsewhere it stays unchanged.
                     if (createSize !== null && restoreNeedsSize.has(p.name))
-                      restoreOptions.size = createSize;
+                      restoreOptions.size = restoreSize(p.name, createSize);
                     restored = await createSandbox(tracked, restoreOptions);
                     createPhases.sdkReadyMs = performance.now() - (createClock.start ?? lifeStart);
 
@@ -2366,6 +2584,23 @@ export async function runV2(
   for (const p of ready) {
     const errors: string[] = [];
     const deletionErrors = new Map<string, string>();
+    // Microsandbox creates journaled before they were sent: each becomes a sandbox to delete, goes, or
+    // stays unresolved, which keeps its restore's snapshot and source.
+    let attemptsUnresolved = false;
+
+    for (const entry of [...owned.values()].filter(
+      (v) => v.provider === p.name && v.kind === "allocation-attempt",
+    )) {
+      try {
+        if ((await settleAttempt(p, entry)) === "pending" && entry.parent !== null)
+          attemptsUnresolved = true;
+      } catch (e) {
+        review(p.name, entry.id, errorNote(e), "allocation-attempt");
+        errors.push(errorNote(e));
+
+        if (entry.parent !== null) attemptsUnresolved = true;
+      }
+    }
 
     const ids = new Set(
       [...owned.values(), ...(report.cleanupReview ?? [])].flatMap((v) =>
@@ -2428,14 +2663,16 @@ export async function runV2(
         }
       }
 
-    const restoresUnresolved = [...ids].some(
-      (id) =>
-        !sourceIds.has(id) &&
-        (owned.has(`${p.name}/${id}`) ||
-          report.cleanupReview?.some(
-            (r) => r.provider === p.name && r.id === id && r.kind === "sandbox",
-          )),
-    );
+    const restoresUnresolved =
+      attemptsUnresolved ||
+      [...ids].some(
+        (id) =>
+          !sourceIds.has(id) &&
+          (owned.has(`${p.name}/${id}`) ||
+            report.cleanupReview?.some(
+              (r) => r.provider === p.name && r.id === id && r.kind === "sandbox",
+            )),
+      );
 
     for (const item of [...owned.values()].filter(
       (v) => v.provider === p.name && v.kind === "snapshot",
@@ -2530,6 +2767,24 @@ export async function runV2(
         await persist();
       } catch (e) {
         review(p.name, item.id, errorNote(e), "snapshot-source");
+        errors.push(errorNote(e));
+      }
+    }
+
+    // Microsandbox Services journaled before they were made, whether or not their sandbox is gone.
+    for (const entry of [...owned.values()].filter(
+      (v) => v.provider === p.name && v.kind === "service",
+    )) {
+      try {
+        await cleanService({
+          id: entry.id,
+          parent: entry.parent,
+          sandboxName: entry.sandboxName,
+        });
+        owned.delete(`${p.name}/service/${entry.id}`);
+        await persist();
+      } catch (e) {
+        review(p.name, entry.id, errorNote(e), "service");
         errors.push(errorNote(e));
       }
     }

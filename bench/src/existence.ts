@@ -37,7 +37,9 @@ export const lookupSchema = z.object({
 
 export type LookupEvidence = z.infer<typeof lookupSchema>;
 
-// Maritime keeps an ended sandbox readable for 7 days with `state: "ended"`.
+// Maritime keeps an ended sandbox readable for 7 days with `state: "ended"`. Microsandbox has no such
+// state: a `failed` or `stopped` sandbox is still allocated (and its disk billed) until it is deleted
+// and reads 404, so both stay present.
 const terminal = new Set(["deleted", "destroyed", "terminated", "ended"]);
 
 function redact(value: string) {
@@ -341,7 +343,14 @@ const lookupKeys = new Map([
   ["beam", "BEAM_TOKEN"],
   ["archil", "ARCHIL_API_KEY"],
   ["maritime", "MARITIME_API_KEY"],
+  ["microsandbox", "MSB_API_KEY"],
+  ["microsandbox-shared", "MSB_API_KEY"],
 ]);
+
+/** Microsandbox's control plane, as the adapter resolves it. */
+export function microsandboxBase() {
+  return `${(process.env.MSB_API_URL?.trim() || "https://api.microsandbox.dev").replace(/\/+$/, "")}/v1`;
+}
 
 /** Maritime's control plane, as the adapter resolves it. */
 export function maritimeBase() {
@@ -504,6 +513,20 @@ export async function lookupSandbox(
             headers: { Authorization: `Bearer ${process.env.MARITIME_API_KEY ?? ""}` },
             signal,
           });
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          return nativeInfo.parse(await response.json());
+        }
+
+        case "microsandbox":
+        case "microsandbox-shared": {
+          // GET only: it never starts, stops or changes the sandbox. A deleted one reads 404.
+          const response = await fetch(
+            `${microsandboxBase()}/sandboxes/${encodeURIComponent(id)}`,
+            { headers: { Authorization: `Bearer ${process.env.MSB_API_KEY ?? ""}` }, signal },
+          );
 
           if (!response.ok)
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });

@@ -141,7 +141,9 @@ function regionFor(
 
 /**
  * Providers in the held-open idle diagnostic. Maritime is not: its usage intervals leave out a paused
- * sandbox's disk ($0.08/GB-month), so an idle that pauses would read cheaper than it bills.
+ * sandbox's disk ($0.08/GB-month), so an idle that pauses would read cheaper than it bills. Neither
+ * Microsandbox tier is: its usage rows meter running intervals only and settle with no
+ * finalization signal, so its idle cost is provisional.
  */
 export const heldOpenProviders = [
   "e2b",
@@ -303,11 +305,15 @@ export async function loadSlotProvider(
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
-  // Modal's and Maritime's factory lifetime for creates without one; each attempt also passes its own below.
-  const lifetime: Record<string, number> =
-    setup.adapter === "modal" || setup.adapter === "maritime"
-      ? { [setup.adapter]: slotMs + 15 * 60_000 }
-      : {};
+  // Modal's, Maritime's and Microsandbox's factory lifetime for creates without one; each attempt also passes its own below.
+  const lifetime: Record<string, number> = [
+    "modal",
+    "maritime",
+    "microsandbox",
+    "microsandbox-shared",
+  ].includes(setup.adapter)
+    ? { [setup.adapter]: slotMs + 15 * 60_000 }
+    : {};
 
   const loaded = await loadProvider(setup.adapter, process.env, undefined, {
     template: config.template ? { [setup.adapter]: config.template } : {},

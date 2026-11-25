@@ -42,7 +42,7 @@ export async function writeOwnership(path: string, data: string) {
 export interface CleanupReview {
   provider: string;
   id: string;
-  kind: "sandbox" | "snapshot" | "snapshot-source";
+  kind: "sandbox" | "snapshot" | "snapshot-source" | "allocation-attempt" | "service";
   reason: string;
   status?: "checking" | "unresolved";
 }

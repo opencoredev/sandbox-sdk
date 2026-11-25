@@ -85,6 +85,8 @@ const allProviders = [
   "maritime",
   "beam",
   "archil",
+  "microsandbox",
+  "microsandbox-shared",
 ];
 
 const listingSchema = z.object({

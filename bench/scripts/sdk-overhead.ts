@@ -17,6 +17,8 @@ import {
   maritimeRun,
   rawRequestMs,
 } from "../src/maritime-raw.js";
+import { createRawMicrosandbox, type RawPeer } from "../src/microsandbox-raw.js";
+import { adapterSpec } from "../src/providers.js";
 
 type Sdk = typeof Core;
 
@@ -80,6 +82,9 @@ const nativePackages = {
   archil: "disk",
   // A direct-HTTP provider with no SDK of its own: the floor is fetch against its REST API.
   maritime: null,
+  // Both compute tiers run commands through the official microsandbox package.
+  microsandbox: "microsandbox",
+  "microsandbox-shared": "microsandbox",
 } as const;
 
 /** A provider this script can measure. */
@@ -449,7 +454,45 @@ const providers = {
       }),
     };
   },
+  microsandbox: () => loadMicrosandbox("standard"),
+  "microsandbox-shared": () => loadMicrosandbox("shared"),
 } satisfies Record<ProviderName, () => Promise<Loaded>>;
+
+/**
+ * Microsandbox on one compute tier. The floor is the official microsandbox package's own sandbox handle,
+ * from a RemoteContext with the adapter's key and tier (`box.native.sdk`).
+ */
+async function loadMicrosandbox(computeType: "standard" | "shared"): Promise<Loaded> {
+  const m: typeof import("@opencoredev/sandbox-sdk/microsandbox") = await import(
+    moduleUrl("providers/microsandbox/index.js")
+  );
+
+  const provider = m.microsandbox({ computeType });
+
+  return {
+    provider,
+    floor: (id) => {
+      const handle = once(async () => {
+        const { sandbox } = await provider
+          .native(id)
+          .sdk((): Promise<typeof import("microsandbox")> => import(nativeUrl("microsandbox")));
+
+        return sandbox;
+      });
+
+      return {
+        exec: async (command = "true") => {
+          const result = await (await handle()).exec(command);
+
+          if (result.code !== 0) throw new Error(`exit ${result.code}`);
+        },
+        write: async (path, data) => {
+          await (await handle()).fs().write(path, data);
+        },
+      };
+    },
+  };
+}
 
 interface NativeBox {
   id: string;
@@ -994,16 +1037,34 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     // Admitted for use and cleanup only once its answer carries this create's own owner marker.
     return createRawMaritime({ template: templates.get(name) ?? "base", labels: label, admit });
 
+  if (name === "microsandbox" || name === "microsandbox-shared") {
+    const peer: RawPeer = await import(nativeUrl("microsandbox"));
+
+    // Admitted for use and cleanup only once an answer carries this create's own owner marker.
+    return createRawMicrosandbox({
+      computeType: name === "microsandbox" ? "standard" : "shared",
+      labels: label,
+      peer,
+      admit,
+    });
+  }
+
   throw new Error(`Unknown provider ${name}`);
 }
 
 async function initCost(name: ProviderName): Promise<OpResult> {
   const pkg = nativePackages[name];
+  // The adapter's subpath and factory, and options pinned for this name (Microsandbox's tier).
+  const spec = adapterSpec(name);
+  const factoryOptions = new Map(Object.entries(spec.pinned));
+  const template = templates.get(name);
+
+  if (template !== undefined) factoryOptions.set("template", template);
 
   const sample = async (ours: boolean) => {
     // A provider with no SDK of its own has nothing to import: its baseline is the empty program.
     const code = ours
-      ? `const t=performance.now(); await import(${JSON.stringify(moduleUrl("index.js"))}); const m=await import(${JSON.stringify(moduleUrl(`providers/${name}/index.js`))}); m[${JSON.stringify(name)}](${JSON.stringify(templates.has(name) ? { template: templates.get(name) } : {})}); console.log(performance.now()-t);`
+      ? `const t=performance.now(); await import(${JSON.stringify(moduleUrl("index.js"))}); const m=await import(${JSON.stringify(moduleUrl(`providers/${spec.subpath}/index.js`))}); m[${JSON.stringify(spec.factory)}](${JSON.stringify(Object.fromEntries(factoryOptions))}); console.log(performance.now()-t);`
       : pkg === null
         ? "const t=performance.now(); console.log(performance.now()-t);"
         : `const t=performance.now(); await import(${JSON.stringify(nativeUrl(pkg))}); console.log(performance.now()-t);`;

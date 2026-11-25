@@ -19,6 +19,8 @@ import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot, settleJournaledSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
+import { cleanService, settleAllocationAttempt, tierLabel } from "./microsandbox.js";
+import { microsandboxTier } from "./providers.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import {
   ambiguousAllocations,
@@ -35,15 +37,23 @@ const resultsSchema = z.record(z.string(), z.json());
 const resource = z.object({
   provider: z.string(),
   id: z.string(),
-  kind: z.enum(["sandbox", "snapshot", "snapshot-source"]),
+  kind: z.enum(["sandbox", "snapshot", "snapshot-source", "allocation-attempt", "service"]),
   parent: z.string().nullable(),
   snapshotProof: snapshotProvenanceSchema.optional(),
   /** A Maritime save's idempotency key: present only while that save is unsettled. */
   idempotencyKey: z.string().optional(),
+  /** A Microsandbox create's allocation marker, its restore source and when it was journaled. */
+  allocId: z.string().optional(),
+  sourceId: z.string().nullable().optional(),
+  attemptedAt: z.string().optional(),
+  /** The sandbox name a Microsandbox Service targets. */
+  sandboxName: z.string().optional(),
+  /** A Microsandbox capture's name; equal to `id` while unconfirmed. */
+  snapshotName: z.string().optional(),
 });
 
 const reviewSchema = resource
-  .omit({ parent: true, snapshotProof: true, idempotencyKey: true })
+  .pick({ provider: true, id: true, kind: true })
   .extend({ reason: z.string(), status: z.enum(["checking", "unresolved"]).optional() });
 
 /** Recovery never treats a journal ID as permission to delete. */
@@ -186,10 +196,15 @@ export async function reapRun(
     const journaled = (journal?.apps ?? []).filter((app) => app.provider === p.name);
     let reconciled = false;
 
+    // A Microsandbox tier sweeps only its own tier's sandboxes: the adapter checks compute.type, and
+    // the bench's tier label must match too.
+    const tier = microsandboxTier(p.name);
+    const runLabels = { "sandbox-bench-run": config.run, "sandbox-sdk": "1" };
+
+    const sweepLabels = tier === undefined ? runLabels : { ...runLabels, [tierLabel]: tier };
+
     try {
-      for (const info of await deadline(config["timeout-ms"], () =>
-        p.provider.list({ "sandbox-bench-run": config.run, "sandbox-sdk": "1" }),
-      ))
+      for (const info of await deadline(config["timeout-ms"], () => p.provider.list(sweepLabels)))
         if (hasRunOwnership(info, config.run)) {
           candidates.add(info.id);
           // A sandbox whose create response was lost joins its App's journal entry.
@@ -221,6 +236,62 @@ export async function reapRun(
       }
     } catch (error) {
       errors.push(sanitize(error instanceof Error ? error.message : "Pending listing failed"));
+    }
+
+    // Microsandbox creates journaled before they were sent: a sandbox carrying the attempt's marker
+    // becomes a candidate, one never made (404 past the settlement window) goes, and anything else stays
+    // under review, keeping a restore's snapshot and source.
+    let attemptsUnresolved = false;
+
+    for (const entry of (journal?.resources ?? []).filter(
+      (r) => r.provider === p.name && r.kind === "allocation-attempt",
+    )) {
+      try {
+        if (tier === undefined) throw new Error("Allocation attempt for a provider without them");
+
+        const outcome = await deadline(config["timeout-ms"], () =>
+          settleAllocationAttempt(
+            {
+              id: entry.id,
+              allocId: entry.allocId,
+              attemptedAt: entry.attemptedAt,
+            },
+            tier,
+          ),
+        );
+
+        if (outcome.kind === "pending") {
+          review(p.name, entry.id, "allocation-attempt", outcome.reason);
+
+          if (entry.parent !== null) attemptsUnresolved = true;
+          continue;
+        }
+
+        if (journal) {
+          journal.resources = journal.resources.filter((r) => r !== entry);
+
+          if (outcome.kind === "sandbox") {
+            candidates.add(outcome.id);
+            journal.resources.push({
+              provider: p.name,
+              id: outcome.id,
+              kind: "sandbox",
+              parent: null,
+            });
+          }
+
+          reconciled = true;
+        }
+      } catch (error) {
+        review(
+          p.name,
+          entry.id,
+          "allocation-attempt",
+          sanitize(error instanceof Error ? error.message : "Allocation attempt lookup failed"),
+        );
+
+        if (entry.parent !== null) attemptsUnresolved = true;
+      }
     }
 
     if (journal && reconciled) await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
@@ -280,20 +351,53 @@ export async function reapRun(
 
     const sources = new Set(
       (journal?.resources ?? [])
-        .filter((r) => r.provider === p.name && r.kind !== "sandbox")
+        .filter(
+          (r) => r.provider === p.name && (r.kind === "snapshot" || r.kind === "snapshot-source"),
+        )
         .flatMap((r) => (r.kind === "snapshot-source" ? [r.id] : r.parent ? [r.parent] : [])),
     );
 
+    // An unresolved restore attempt keeps its source sandbox too.
+    for (const r of journal?.resources ?? [])
+      if (r.provider === p.name && r.kind === "allocation-attempt" && r.sourceId)
+        sources.add(r.sourceId);
+
     for (const id of candidates) if (!sources.has(id)) await deleteCandidate(id);
 
-    const restoresUnresolved = [...candidates].some(
-      (id) =>
-        !sources.has(id) &&
-        ((journal?.resources ?? []).some(
-          (r) => r.provider === p.name && r.id === id && r.kind === "sandbox",
-        ) ||
-          reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")),
-    );
+    const restoresUnresolved =
+      attemptsUnresolved ||
+      [...candidates].some(
+        (id) =>
+          !sources.has(id) &&
+          ((journal?.resources ?? []).some(
+            (r) => r.provider === p.name && r.id === id && r.kind === "sandbox",
+          ) ||
+            reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")),
+      );
+
+    // Microsandbox Services journaled before they were made, deleted whether or not their sandbox is
+    // gone, and only while they target that sandbox or nothing; others are never touched.
+    for (const entry of (journal?.resources ?? []).filter(
+      (r) => r.provider === p.name && r.kind === "service",
+    )) {
+      try {
+        await deadline(config["timeout-ms"], () =>
+          cleanService({
+            id: entry.id,
+            parent: entry.parent,
+            sandboxName: entry.sandboxName,
+          }),
+        );
+        await forget(entry);
+      } catch (error) {
+        review(
+          p.name,
+          entry.id,
+          entry.kind,
+          sanitize(error instanceof Error ? error.message : "Service cleanup failed"),
+        );
+      }
+    }
 
     // Source-scoped discovery uses durable proof, even when the source no longer exists.
     for (const entry of journal?.resources ?? []) {
@@ -423,7 +527,11 @@ export async function reapRun(
     for (const id of candidates)
       if (sources.has(id)) {
         const held = (journal?.resources ?? []).some(
-          (r) => r.provider === p.name && r.kind !== "sandbox" && (r.parent === id || r.id === id),
+          (r) =>
+            r.provider === p.name &&
+            (((r.kind === "snapshot" || r.kind === "snapshot-source") &&
+              (r.parent === id || r.id === id)) ||
+              (r.kind === "allocation-attempt" && r.sourceId === id)),
         );
 
         if (!held) await deleteCandidate(id);
@@ -447,7 +555,7 @@ export async function reapRun(
           if (signal.aborted) return;
 
           const [listed, pending] = await Promise.all([
-            p.provider.list({ "sandbox-bench-run": config.run, "sandbox-sdk": "1" }),
+            p.provider.list(sweepLabels),
             pendingForRun(p.provider, config.run),
           ]);
 

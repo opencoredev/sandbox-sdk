@@ -91,6 +91,26 @@ export const pricing: PriceTable = {
     notes:
       "Published virtual machine rates: $0.0055/vCPU-hour and $0.00275/GiB-hour of memory, per second while running, no minimum, at any size from 1 to 16 vCPU and 1 to 64 GiB; disk is included while running (small 2/4 = $0.022/hour, medium 4/8 $0.044, large 8/16 $0.088, xlarge 16/32 $0.176). A paused (asleep) sandbox costs $0.08/GB-month of disk and no compute, which these estimates leave out. Plan fee and its equal monthly usage credit ($100 on Growth) excluded.",
   },
+  microsandbox: {
+    ...base,
+    cpuSecond: 0.048 / 3600,
+    memoryGiBSecond: 0.003 / 3600,
+    diskGiBSecond: 0.0000625 / 3600,
+    retrieved: "2026-11-24",
+    source: "https://microsandbox.dev/pricing",
+    notes:
+      "Published Standard (dedicated CPU) rates: $0.048/vCPU-hour, $0.003/GiB-hour of memory and $0.0000625/GiB-hour of provisioned root disk, while running ($0.220/hour for 4 vCPU / 8 GiB / 64 GiB). A stopped sandbox stops CPU and memory billing but keeps billing its root disk until deleted; persistent volumes ($0.15/GiB-month), managed snapshots ($0.08/GiB-month), plan fees and credits excluded.",
+  },
+  "microsandbox-shared": {
+    ...base,
+    cpuSecond: 0.007 / 3600,
+    memoryGiBSecond: 0.000375 / 3600,
+    diskGiBSecond: 0.0000625 / 3600,
+    retrieved: "2026-11-24",
+    source: "https://microsandbox.dev/pricing",
+    notes:
+      "Published Shared (shared CPU, dedicated memory and disk) rates: $0.007/vCPU-hour, $0.000375/GiB-hour of memory and $0.0000625/GiB-hour of provisioned root disk, while running ($0.035/hour for 4 vCPU / 8 GiB / 64 GiB). A stopped sandbox keeps billing its root disk until deleted; persistent volumes, managed snapshots, plan fees and credits excluded.",
+  },
   superserve: {
     ...base,
     cpuSecond: 0.0504 / 3600,
@@ -340,6 +360,9 @@ export const defaultCompute: ComputeTable = {
   beam: { cpu: 1, memoryGiB: 0.125 },
   // Archil's default: 1 vCPU, 2048 MiB.
   archil: { cpu: 1, memoryGiB: 2 },
+  // Microsandbox Cloud's create defaults (CloudSandboxComputeResources): 1 vCPU, 512 MiB.
+  microsandbox: { cpu: 1, memoryGiB: 0.5 },
+  "microsandbox-shared": { cpu: 1, memoryGiB: 0.5 },
 };
 
 export function estimateCost(

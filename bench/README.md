@@ -326,6 +326,22 @@ Maritime's billing source is per sandbox: `GET /v1/sandboxes/{id}/info` and ever
 
 Snapshots are named by the run (`bench-<run>-<8 hex>`) and journaled with their source and the save's `Idempotency-Key` before `POST /v1/sandboxes/{id}/save`. A save whose answer was lost is settled by sending it again with that key and reading the snapshot, so a first 404 never drops the journal entry; an unsettled save keeps the entry, and its source, for `bench reap`.
 
+### Microsandbox
+
+Two bench providers run on one adapter, one per compute tier: `microsandbox` is Standard (dedicated CPU) and `microsandbox-shared` is Shared. `bench/src/providers.ts` resolves both to `@opencoredev/sandbox-sdk/microsandbox` and pins `computeType` last, so no option can move a run to the other tier. The adapter checks the tier on every create and scopes `list` and `find` to it, and the bench adds a `sandbox-bench-tier` label that its sweeps also match: a Standard sweep never sees, deletes or prices a Shared sandbox. Both read `MSB_API_KEY` (`~/.config/sandbox-bench/MSB_API_KEY`) and optional `MSB_API_URL`.
+
+Commands and files go through the `microsandbox` package (0.8.1), which needs its native platform package. Its published manifest omits the platform `optionalDependencies`, so on the collection machine install it next to the workspace first: `bun add -d @superradcompany/microsandbox-linux-x64-gnu@0.8.1` (133 MB, not committed).
+
+Rates (https://microsandbox.dev/pricing, 2026-11-24): Standard $0.048/vCPU-hour, $0.003/GiB-hour of memory and $0.0000625/GiB-hour of root disk ($0.220/hour at 4 vCPU / 8 GiB / 64 GiB); Shared $0.007, $0.000375 and $0.0000625 ($0.035/hour). Same-machine runs ask for `4:8192:64`; a restore keeps the snapshot's disk, so the runner forwards only `{ cpu, memoryMb }` on restores. The default size, 1 vCPU / 512 MiB, cannot run the realistic profiles.
+
+Every allocation is journaled before the adapter sends it, through the adapter's attempt hooks:
+
+- A create is journaled as `allocation-attempt` with the sandbox name it carries, its allocation marker and, for a restore, its snapshot and source. It becomes a `sandbox` entry when the adapter confirms the sandbox, and goes when the adapter fails with anything but `outcome_unknown` (nothing it made is left). Cleanup and recovery read an unresolved one by name: a sandbox carrying its marker on the right tier is deleted; a 404 keeps it for 15 minutes; anything else stays under review, and so do its restore's snapshot and source.
+- A preview's Service slug is journaled as `service` before `POST /v1/services`. The adapter's destroy deletes it with the sandbox; cleanup and recovery delete a journaled one independently of the sandbox, only while it targets that sandbox's name or nothing.
+- A snapshot's name is journaled with its source and proof before the source is stopped. The confirmed managed ID replaces it; a refusal before any operation started drops it; anything else is settled through `GET /v1/snapshots/by-name/{name}` and `GET /v1/snapshot-operations`, and a 404 with no operation never clears it.
+
+Billing reads `GET /v1/billing/usage/sandbox` and `GET /v1/billing/usage` once for the run window, prices each per-sandbox daily row at its own `compute_type`'s rates and cross-checks `costs.workloads`. A sandbox with neither is unavailable, never $0. Every cost is provisional (`complete: false`, low confidence): the rows meter running time only, so a stopped sandbox's disk is missing, and deletion is asynchronous. Neither tier is in the held-open idle diagnostic.
+
 ## Measure SDK overhead
 
 `scripts/sdk-overhead.ts` measures what Sandbox SDK adds over the adapter and the provider's official SDK. It is separate from the published benchmark.

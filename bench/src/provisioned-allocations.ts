@@ -74,6 +74,11 @@ const defaults: DefaultAllocations = {
   archil: { cpu: 1, memoryGiB: 2, diskGiB: 0 },
   // Maritime's default size, small: 2 vCPU / 4 GiB with a 12 GiB root disk (nproc, df, 2026-11-23).
   maritime: { cpu: 2, memoryGiB: 4, diskGiB: 12 },
+  // Microsandbox Cloud's create defaults (CloudSandboxComputeResources, openapi.json 2026-11-24):
+  // 1 vCPU / 512 MiB. The default root disk is not documented, so none is counted until a live run
+  // measures it.
+  microsandbox: { cpu: 1, memoryGiB: 0.5 },
+  "microsandbox-shared": { cpu: 1, memoryGiB: 0.5 },
 };
 
 export function provisionedAllocation(provider: string, template: string | null) {

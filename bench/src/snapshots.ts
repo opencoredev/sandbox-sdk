@@ -8,6 +8,15 @@ import {
   nativeModules,
   type NativeModules,
 } from "./existence.js";
+import {
+  capturedFrom,
+  deleteMicrosandboxSnapshot,
+  microsandboxSnapshotsFromSource,
+  readMicrosandboxSnapshot,
+  recordedSource,
+  settleMicrosandboxCapture,
+} from "./microsandbox.js";
+import { microsandboxTier } from "./providers.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
 
@@ -319,6 +328,11 @@ export async function snapshotCleaner(
     };
   }
 
+  if (microsandboxTier(name) !== undefined)
+    // By managed ID, or by name for a capture journaled before it was answered; also after the source
+    // sandbox is gone.
+    return deleteMicrosandboxSnapshot;
+
   if (name === "maritime") {
     // Deleted by name, also after the source sandbox has ended. Only `404 snapshot_not_found`
     // confirms absence; a route-level `404 resource_not_found` must fail so recovery retains it.
@@ -478,6 +492,9 @@ export async function snapshotsFromSource(
 ) {
   if (provider === "maritime") return snapshotsFromMaritimeSandbox(sourceSandboxId, journaled);
 
+  if (microsandboxTier(provider) !== undefined)
+    return microsandboxSnapshotsFromSource(sourceSandboxId, journaled);
+
   if (provider !== "superserve") return snapshotsFromDaytonaSandbox(sourceSandboxId);
 
   const { Snapshot } = await nativeModules.load("@superserve/sdk");
@@ -507,6 +524,21 @@ export async function inspectSnapshot(
   sourceId: string,
   id: string,
 ): Promise<{ exists: boolean; sourceId?: string }> {
+  // Microsandbox: by managed ID or name. The source is the snapshot's own `sandbox_id`, or the adapter's
+  // source label; a snapshot that records neither is never attributed to anyone.
+  if (microsandboxTier(name) !== undefined) {
+    const snapshot = await readMicrosandboxSnapshot(id);
+
+    if (snapshot === undefined) return { exists: false };
+
+    if (capturedFrom(snapshot, sourceId)) return { exists: true, sourceId };
+    const recorded = recordedSource(snapshot);
+
+    if (recorded === undefined) throw new Error("Snapshot source metadata unavailable");
+
+    return { exists: true, sourceId: recorded };
+  }
+
   try {
     let info: SnapshotInfo;
 
@@ -698,9 +730,14 @@ export const snapshotMetadata = { inspect: inspectSnapshot };
  */
 export async function settleJournaledSnapshot(
   name: string,
-  entry: { id: string; parent: string | null; idempotencyKey?: string },
+  entry: { id: string; parent: string | null; idempotencyKey?: string; snapshotName?: string },
   timeoutMs: number,
 ): Promise<"exists" | "absent"> {
+  // Microsandbox: a capture journaled by name before its request, never confirmed. Settled through the
+  // snapshot and its operation; an unresolved 404 throws and keeps the entry.
+  if (microsandboxTier(name) !== undefined && entry.snapshotName === entry.id)
+    return settleMicrosandboxCapture(entry.id, timeoutMs);
+
   if (name !== "maritime" || entry.idempotencyKey === undefined) return "exists";
 
   if (entry.parent === null) throw new Error("Snapshot source missing; no deletion attempted");
