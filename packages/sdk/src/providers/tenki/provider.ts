@@ -35,7 +35,7 @@ export interface TenkiOptions {
   apiKey?: string;
   /** @deprecated Use apiKey. Will be removed in 2.0.0. */
   authToken?: string;
-  /** Defaults to TENKI_API_ENDPOINT, then TENKI_API_URL, then https://api.tenki.cloud. */
+  /** Defaults to LUXOR_API_ENDPOINT, then LUXOR_API_URL, TENKI_API_ENDPOINT, TENKI_API_URL, then https://api.luxor.ai. */
   baseUrl?: string;
   /** Base image; default: the Luxor service default image. */
   image?: string;
@@ -63,7 +63,7 @@ export type TenkiConnection = Pick<TenkiOptions, "apiKey" | "authToken" | "baseU
 /** What a Tenki adapter builds its client with, in the shape `new TenkiSandbox(config)` takes. */
 export interface TenkiConfig {
   readonly authToken: string;
-  /** `undefined` leaves the endpoint to `@luxorai/sandbox`: TENKI_API_ENDPOINT, then TENKI_API_URL. */
+  /** `undefined` leaves the endpoint to `@luxorai/sandbox`: LUXOR_API_ENDPOINT, then LUXOR_API_URL, TENKI_API_ENDPOINT and TENKI_API_URL. */
   readonly baseUrl: string | undefined;
 }
 

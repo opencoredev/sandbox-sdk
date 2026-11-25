@@ -536,7 +536,12 @@ function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields
 
     case "tenki":
       return connection.config.baseUrl === undefined
-        ? { TENKI_API_ENDPOINT: env.TENKI_API_ENDPOINT, TENKI_API_URL: env.TENKI_API_URL }
+        ? {
+            LUXOR_API_ENDPOINT: env.LUXOR_API_ENDPOINT,
+            LUXOR_API_URL: env.LUXOR_API_URL,
+            TENKI_API_ENDPOINT: env.TENKI_API_ENDPOINT,
+            TENKI_API_URL: env.TENKI_API_URL,
+          }
         : {};
     case "vercel":
       return "token" in connection.config ? {} : { VERCEL_OIDC_TOKEN: env.VERCEL_OIDC_TOKEN };

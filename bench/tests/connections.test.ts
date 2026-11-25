@@ -51,6 +51,8 @@ const providerEnv = [
   "INSTABOX_API_URL",
   "SUPERSERVE_API_KEY",
   "SUPERSERVE_BASE_URL",
+  "LUXOR_API_ENDPOINT",
+  "LUXOR_API_URL",
   "TENKI_API_KEY",
   "TENKI_AUTH_TOKEN",
   "TENKI_API_ENDPOINT",
@@ -174,6 +176,8 @@ describe("a connection fingerprint names the whole connection without holding an
   it.each([
     ["boxd", "BOXD_BASE_URL", { BOXD_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["boxd", "BOXD_API_URL", { BOXD_API_KEY: "live-key" }, "https://elsewhere.invalid"],
+    ["tenki", "LUXOR_API_ENDPOINT", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
+    ["tenki", "LUXOR_API_URL", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["tenki", "TENKI_API_ENDPOINT", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["tenki", "TENKI_API_URL", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["vercel", "VERCEL_OIDC_TOKEN", {}, "other-oidc-token"],

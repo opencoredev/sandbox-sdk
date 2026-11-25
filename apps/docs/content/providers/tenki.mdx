@@ -180,18 +180,18 @@ await using box = await createSandbox(tenki(), {
 
 ## Configuration
 
-| Option             | Type                                   | Default                        | Env var                                    |
-| ------------------ | -------------------------------------- | ------------------------------ | ------------------------------------------ |
-| `apiKey`           | `string`                               |                                | `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`   |
-| `baseUrl`          | `string`                               | `https://api.tenki.cloud`      | `TENKI_API_ENDPOINT`, then `TENKI_API_URL` |
-| `image`            | `string`                               | Luxor's default image          |                                            |
-| `requestTimeoutMs` | `number`                               | `30_000`                       |                                            |
-| `waitTimeoutMs`    | `number`                               | `180_000`; snapshots `300_000` |                                            |
-| `resumeTimeoutMs`  | `number`                               | `180_000`, at most `900_000`   |                                            |
-| `pauseRetentionMs` | `number`                               | Luxor's retention              |                                            |
-| `previewTtlMs`     | `number`                               | Luxor's preview TTL            |                                            |
-| `volumes`          | `{ volumeId, mountPath, readOnly? }[]` |                                |                                            |
-| `workspaceId`      | `string`                               | Inferred from the API key      |                                            |
+| Option             | Type                                   | Default                        | Env var                                                                              |
+| ------------------ | -------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------ |
+| `apiKey`           | `string`                               |                                | `TENKI_AUTH_TOKEN`, then `TENKI_API_KEY`                                             |
+| `baseUrl`          | `string`                               | `https://api.luxor.ai`         | `LUXOR_API_ENDPOINT`, then `LUXOR_API_URL`, `TENKI_API_ENDPOINT` and `TENKI_API_URL` |
+| `image`            | `string`                               | Luxor's default image          |                                                                                      |
+| `requestTimeoutMs` | `number`                               | `30_000`                       |                                                                                      |
+| `waitTimeoutMs`    | `number`                               | `180_000`; snapshots `300_000` |                                                                                      |
+| `resumeTimeoutMs`  | `number`                               | `180_000`, at most `900_000`   |                                                                                      |
+| `pauseRetentionMs` | `number`                               | Luxor's retention              |                                                                                      |
+| `previewTtlMs`     | `number`                               | Luxor's preview TTL            |                                                                                      |
+| `volumes`          | `{ volumeId, mountPath, readOnly? }[]` |                                |                                                                                      |
+| `workspaceId`      | `string`                               | Inferred from the API key      |                                                                                      |
 
 `authToken` is a deprecated alias for `apiKey`. `volumes` mounts [Luxor volumes](https://luxor.ai/docs/sandbox/volumes) you created with the native SDK. `workspaceId` is only needed for service credentials that span workspaces; it scopes both creation and listing. A custom image needs Python 3, `sh`, Git, `tar`, `setsid`, and `nohup`, and must allow privileged execution. `box.native` is a typed Luxor `Session`; its `close()` terminates the VM, so use `box.close()` to detach.
 
