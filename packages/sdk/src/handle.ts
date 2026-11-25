@@ -494,13 +494,58 @@ export async function makeHandle<N>(
     });
   }
 
-  async function guardNative<R>(call: () => Promise<R>): Promise<R> {
+  async function recoverWithin(signal?: AbortSignal, remainingMs?: number): Promise<void> {
+    if (signal?.aborted || (remainingMs !== undefined && remainingMs <= 0)) return;
+
+    const pending = ready().catch(() => {});
+
+    if (!signal && remainingMs === undefined) {
+      await pending;
+
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        resolve();
+      };
+
+      const timer =
+        remainingMs !== undefined ? setTimeout(finish, Math.max(0, remainingMs)) : undefined;
+
+      signal?.addEventListener("abort", finish, { once: true });
+      void pending.finally(finish);
+    });
+  }
+
+  async function guardNative<R>(
+    call: () => Promise<R>,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<R> {
     check();
+
+    const deadlineAt =
+      options?.timeoutMs !== undefined ? Date.now() + Math.max(0, options.timeoutMs) : undefined;
 
     try {
       return await call();
     } catch (error) {
-      if (!recovered) await ready().catch(() => {});
+      const timedOutOrAborted =
+        options?.signal?.aborted === true ||
+        (error instanceof SandboxError && (error.code === "aborted" || error.code === "timeout"));
+
+      if (!recovered && !timedOutOrAborted) {
+        const remainingMs = deadlineAt !== undefined ? deadlineAt - Date.now() : undefined;
+
+        await recoverWithin(options?.signal, remainingMs);
+      }
 
       throw recovered
         ? redactor.error(error, provider.name, info.id)

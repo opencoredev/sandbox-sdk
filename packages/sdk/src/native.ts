@@ -149,7 +149,13 @@ const nativeApis = new WeakMap<object, NativeApi<string, AnyNativeSdk>>();
  * Wraps the async methods of a {@link NativeApi} built by {@link createNativeApi} so handle-level
  * checks and secret redaction apply to `box.native` calls without altering non-NativeApi clients.
  */
-export function guardNativeApi<N>(raw: N, guardCall: <R>(call: () => Promise<R>) => Promise<R>): N {
+export function guardNativeApi<N>(
+  raw: N,
+  guardCall: <R>(
+    call: () => Promise<R>,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
+  ) => Promise<R>,
+): N {
   if (!isObject(raw)) return raw;
   const api = nativeApis.get(raw);
 
@@ -159,10 +165,17 @@ export function guardNativeApi<N>(raw: N, guardCall: <R>(call: () => Promise<R>)
     method: HttpMethod,
     path: string,
     options?: NativeRequestOptions<string>,
-  ) => guardCall(() => api.request<T>(method, path, options));
+  ) =>
+    guardCall(() => api.request<T>(method, path, options), {
+      signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
+    });
 
   const fetch: NativeApi["fetch"] = (method, path, options) =>
-    guardCall(() => api.fetch(method, path, options));
+    guardCall(() => api.fetch(method, path, options), {
+      signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
+    });
 
   const sdk: AnyNativeSdk = (load) => guardCall(() => api.sdk(load));
 

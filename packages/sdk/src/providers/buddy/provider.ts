@@ -298,28 +298,18 @@ const lockCommand = (owner: string, leaseSeconds: number) =>
     `printf %s ${quote(owner)} > "$l/owner.tmp" && mv -f "$l/owner.tmp" "$l/owner"`,
   ].join("\n");
 
-/** Writes `credentials` to their private file only while `owner` still holds the endpoint lock. Exits 75 if lost. */
-const writeCredentialsCommand = (owner: string, credentials: PreviewCredentials) =>
+/** Writes `credentials` (when given) while `owner` holds the lock, then releases the lock. Exits 75 if lost before write. */
+const unlockCommand = (owner: string, credentials?: PreviewCredentials) =>
   [
     "umask 077",
     `l=${lockDir}`,
-    `[ "$(cat "$l/owner" 2>/dev/null)" = ${quote(owner)} ] || exit 75`,
-    `mkdir -p ${previewDir} || exit 1`,
-    `printf %s ${quote(Buffer.from(JSON.stringify(credentials)).toString("base64"))} | base64 -d > ${previewDir}/${credentials.port}.part && mv -f ${previewDir}/${credentials.port}.part ${previewDir}/${credentials.port} || exit 1`,
-  ].join("\n");
-
-/** Removes a preview's credential file only while `owner` still holds the endpoint lock. */
-const removeCredentialsCommand = (owner: string, port: number) =>
-  [
-    `l=${lockDir}`,
-    `[ "$(cat "$l/owner" 2>/dev/null)" = ${quote(owner)} ] && rm -f ${previewDir}/${port}`,
-    "exit 0",
-  ].join("\n");
-
-/** Releases the endpoint lock if `owner` still holds it. */
-const unlockCommand = (owner: string) =>
-  [
-    `l=${lockDir}`,
+    ...(credentials
+      ? [
+          `[ "$(cat "$l/owner" 2>/dev/null)" = ${quote(owner)} ] || exit 75`,
+          `mkdir -p ${previewDir} || exit 1`,
+          `printf %s ${quote(Buffer.from(JSON.stringify(credentials)).toString("base64"))} | base64 -d > ${previewDir}/${credentials.port}.part && mv -f ${previewDir}/${credentials.port}.part ${previewDir}/${credentials.port} || exit 1`,
+        ]
+      : []),
     `[ "$(cat "$l/owner" 2>/dev/null)" = ${quote(owner)} ] && rm -rf "$l"`,
     "exit 0",
   ].join("\n");
@@ -1716,6 +1706,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     if (found) {
       addSandboxToken(id, found.password);
       addSandboxToken(id, basic(found));
+      addSandboxToken(id, basic(found).slice("Basic ".length));
     }
 
     return found;
@@ -1798,49 +1789,24 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
         c.endpoint.name !== endpointName && c.kept ? [c.kept] : [],
       );
 
-      // Reuse any saved password on disk (e.g. after switching private -> public -> private) or persist
-      // the new credentials under the lock BEFORE patching Buddy, so Buddy never holds a BASIC password
-      // that disagrees with the guest's preview credential file. If the PATCH fails without confirming
-      // our update took, roll back any newly written file so retries do not trust mismatched credentials.
+      // Reuse any saved password on disk (e.g. after switching private -> public -> private) so the
+      // file already matches Buddy even if a later write fails. Only newly generated credentials
+      // (when no saved file exists) are written after PATCH succeeds, so a refused PATCH can never
+      // leave an unapplied password on disk.
       let made: PreviewCredentials | undefined;
-      let wroteNewCredentials = false;
+      let commitCredentials: PreviewCredentials | undefined;
 
       if (auth === "BASIC") {
         const saved = await readCredentials(id, port);
 
         if (saved) {
           made = saved;
-          addSandboxToken(id, basic(saved).slice("Basic ".length));
         } else {
           made = { port, login: "sbx", password: randomBytes(24).toString("base64url") };
+          commitCredentials = made;
           addSandboxToken(id, made.password);
           addSandboxToken(id, basic(made));
           addSandboxToken(id, basic(made).slice("Basic ".length));
-
-          const wrote = await run(id, writeCredentialsCommand(owner, made), {
-            deadline: lockDeadline,
-          });
-
-          if (wrote.exitCode === 75)
-            throw fail(
-              "the endpoint lock expired before saving credentials; retry",
-              "unavailable",
-              {
-                sandboxId: id,
-                retryable: true,
-              },
-            );
-
-          if (wrote.exitCode !== 0)
-            throw fail(
-              `the preview credentials could not be saved (exit ${wrote.exitCode})`,
-              "provider",
-              {
-                sandboxId: id,
-              },
-            );
-
-          wroteNewCredentials = true;
         }
       }
 
@@ -1856,13 +1822,6 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
       const existed = sandbox.endpoints.some((e) => e.name === endpointName);
       let after: BuddySandbox;
 
-      const rollbackNewCredentials = async () => {
-        if (wroteNewCredentials)
-          await shell(id, removeCredentialsCommand(owner, port), { timeoutMs: 30_000 }).catch(
-            () => {},
-          );
-      };
-
       try {
         after = parseSandbox(
           await http.json({
@@ -1873,29 +1832,18 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
           }),
         );
       } catch (error) {
-        if (!isUnknown(error)) {
-          await rollbackNewCredentials();
-          throw error;
-        }
+        if (!isUnknown(error)) throw error;
 
         // Under the lock no other client changed the endpoints: a new endpoint of ours with the asked
         // port and auth means the change took. A changed one cannot be told apart, so that stays unknown.
-        let check: BuddySandbox;
-
-        try {
-          check = await readSandbox(id, { deadline: lockDeadline });
-        } catch {
-          await rollbackNewCredentials();
+        const check = await readSandbox(id, { deadline: lockDeadline }).catch(() => {
           throw error;
-        }
+        });
 
         const applied = check.endpoints.find((e) => e.name === endpointName);
 
-        if (existed || !applied || applied.endpoint !== String(port) || authOf(applied) !== auth) {
-          await rollbackNewCredentials();
+        if (existed || !applied || applied.endpoint !== String(port) || authOf(applied) !== auth)
           throw error;
-        }
-
         after = check;
       }
 
@@ -1907,7 +1855,25 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
           sandboxId: id,
         });
 
-      await shell(id, unlockCommand(owner), { timeoutMs: 30_000 });
+      const unlocked = await run(id, unlockCommand(owner, commitCredentials), {
+        timeoutMs: 30_000,
+      });
+
+      if (unlocked.exitCode === 75)
+        throw fail("the endpoint lock expired before saving credentials; retry", "unavailable", {
+          sandboxId: id,
+          retryable: true,
+        });
+
+      if (unlocked.exitCode !== 0)
+        throw fail(
+          `the preview credentials could not be saved (exit ${unlocked.exitCode})`,
+          "provider",
+          {
+            sandboxId: id,
+          },
+        );
+
       released = true;
 
       return made ? { url, headers: { Authorization: basic(made) } } : { url };

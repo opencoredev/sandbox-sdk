@@ -1619,3 +1619,52 @@ test("refused preview PATCH rolls back newly written credentials so retry does n
     await box.destroy();
   }
 });
+
+test("first native call after reconnect honors timeoutMs and signal without waiting on slow secret recovery", async () => {
+  const secretValue = "buddy-bounded-native-secret-4120";
+  const box = await createSandbox(provider(), { secrets: { BOUNDED_SECRET: secretValue } });
+
+  try {
+    await box.close();
+
+    const slowRecoveryProvider = provider({
+      fetch: async (input, init) => {
+        const url = new URL(input);
+
+        if ((init?.method ?? "GET") === "GET" && url.pathname.endsWith("/execs"))
+          throw new TypeError(`boom ${secretValue}`);
+
+        if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/exec")) {
+          // Stall secret recovery far beyond the caller's 150ms native timeout.
+          await delay(3000);
+        }
+
+        return fetch(input, init);
+      },
+    });
+
+    const reopened = await connectSandbox(slowRecoveryProvider, box.id);
+
+    try {
+      const started = performance.now();
+
+      const err = await failure(
+        reopened.native.request<void>("GET", "/sandboxes/{sandbox_id}/execs", {
+          timeoutMs: 150,
+        }),
+      );
+
+      const elapsedMs = performance.now() - started;
+
+      expect(err).toBeInstanceOf(SandboxError);
+      expect(elapsedMs).toBeLessThan(1000);
+      expect(`${err?.message ?? ""} ${String(err?.cause ?? "")}`).not.toContain(secretValue);
+    } finally {
+      await reopened.close();
+    }
+  } finally {
+    await provider()
+      .destroy(box.id)
+      .catch(() => {});
+  }
+});
