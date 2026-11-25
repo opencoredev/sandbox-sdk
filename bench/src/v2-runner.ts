@@ -792,17 +792,6 @@ export async function runV2(
         restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
 
-        // Confirmed Services were deleted by destroy() and their slugs released; keep pending ones
-        // whose POST outcome is still unknown so independent Service cleanup can settle them.
-        for (const [key, entry] of owned)
-          if (
-            entry.provider === loaded.name &&
-            entry.kind === "service" &&
-            entry.parent === id &&
-            entry.serviceState === "created"
-          )
-            owned.delete(key);
-
         // A timed destroy row carries the confirmed stop in its phases; any other deletion
         // journals it, so billing can still settle the sandbox's App (Modal).
         if (!measurement)

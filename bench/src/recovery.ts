@@ -71,6 +71,11 @@ const settledSnapshotSchema = z.object({
   id: z.string(),
 });
 
+const settledServiceSchema = z.object({
+  provider: z.string(),
+  id: z.string(),
+});
+
 const reviewSchema = resource
   .pick({ provider: true, id: true, kind: true })
   .extend({ reason: z.string(), status: z.enum(["checking", "unresolved"]).optional() });
@@ -94,6 +99,7 @@ export async function reapRun(
     resources: z.infer<typeof resource>[];
     apps: JournalApp[];
     settledSnapshots: z.infer<typeof settledSnapshotSchema>[];
+    settledServices: z.infer<typeof settledServiceSchema>[];
   } | null = null;
 
   try {
@@ -105,6 +111,8 @@ export async function reapRun(
         apps: z.array(journalAppSchema).default([]),
         // Settled Microsandbox capture-name -> managed UUID aliases kept until results.json clears.
         settledSnapshots: z.array(settledSnapshotSchema).default([]),
+        // Settled Microsandbox Service reviews kept until results.json clears.
+        settledServices: z.array(settledServiceSchema).default([]),
       })
       .parse(JSON.parse(await readFile(path, "utf8")));
   } catch (error) {
@@ -146,6 +154,20 @@ export async function reapRun(
   let failed = false;
   const deletions = new DeletionWork();
 
+  // Single serialized writer for ownership.json so a timed-out cleanup hook can never publish a
+  // stale copy over newer journal state.
+  let journalWriteChain = Promise.resolve();
+
+  const persistJournal = () => {
+    const next = journalWriteChain.then(() =>
+      writeOwnership(path, JSON.stringify(journal, null, 2) + "\n"),
+    );
+
+    journalWriteChain = next.catch(() => {});
+
+    return next;
+  };
+
   for (const p of providers) {
     if (p.kind === "skipped") {
       process.stderr.write(`SKIP ${p.name}: ${p.note}\n`);
@@ -174,7 +196,7 @@ export async function reapRun(
         journal.resources = journal.resources.filter(
           (r) => !(r.provider === p.name && r.id === id && r.kind === "sandbox"),
         );
-        await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+        await persistJournal();
       }
 
       return true;
@@ -230,18 +252,32 @@ export async function reapRun(
       );
 
     const forget = async (entry: z.infer<typeof resource>) => {
-      if (journal) {
-        journal.resources = journal.resources.filter((r) => r !== entry);
-        await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
-      }
-
-      for (const item of reviews.filter(
+      const matchingReviews = reviews.filter(
         (r) =>
           r.provider === entry.provider &&
           r.kind === entry.kind &&
           (r.id === entry.id || (entry.snapshotName !== undefined && r.id === entry.snapshotName)),
-      ))
-        reviews.splice(reviews.indexOf(item), 1);
+      );
+
+      if (journal) {
+        journal.resources = journal.resources.filter((r) => r !== entry);
+
+        if (
+          entry.kind === "service" &&
+          matchingReviews.length > 0 &&
+          !journal.settledServices.some((s) => s.provider === entry.provider && s.id === entry.id)
+        ) {
+          journal.settledServices.push({ provider: entry.provider, id: entry.id });
+        }
+
+        await persistJournal();
+      }
+
+      for (const item of matchingReviews) {
+        const index = reviews.indexOf(item);
+
+        if (index >= 0) reviews.splice(index, 1);
+      }
     };
 
     const candidates = new Set(
@@ -287,7 +323,13 @@ export async function reapRun(
         pendingOwned.add(item.id);
         candidates.add(item.id);
         reconciled = reconcileDiscovered(journaled, p.name, item) || reconciled;
-        journal ??= { runId: config.run, resources: [], apps: [], settledSnapshots: [] };
+        journal ??= {
+          runId: config.run,
+          resources: [],
+          apps: [],
+          settledSnapshots: [],
+          settledServices: [],
+        };
 
         if (
           !journal.resources.some(
@@ -355,7 +397,7 @@ export async function reapRun(
       }
     }
 
-    if (journal && reconciled) await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+    if (journal && reconciled) await persistJournal();
 
     const deleteCandidate = async (id: string) => {
       if (!(await owned(id))) {
@@ -372,7 +414,13 @@ export async function reapRun(
 
       try {
         if (reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
-          journal ??= { runId: config.run, resources: [], apps: [], settledSnapshots: [] };
+          journal ??= {
+            runId: config.run,
+            resources: [],
+            apps: [],
+            settledSnapshots: [],
+            settledServices: [],
+          };
 
           if (
             !journal.resources.some(
@@ -380,7 +428,7 @@ export async function reapRun(
             )
           )
             journal.resources.push({ provider: p.name, id, kind: "sandbox", parent: null });
-          await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+          await persistJournal();
           recordVerifiedRelease(reviews, releases, p.name, id);
         }
 
@@ -409,12 +457,7 @@ export async function reapRun(
         }).catch(() => {});
 
         const retired = (journal?.resources ?? []).filter(
-          (entry) =>
-            entry.provider === p.name &&
-            ((entry.kind === "sandbox" && entry.id === id) ||
-              (entry.kind === "service" &&
-                entry.parent === id &&
-                entry.serviceState === "created")),
+          (entry) => entry.provider === p.name && entry.kind === "sandbox" && entry.id === id,
         );
 
         for (const entry of retired) await forget(entry);
@@ -538,7 +581,7 @@ export async function reapRun(
           }
 
           try {
-            await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+            if (journal) await persistJournal();
           } catch (error) {
             if (journal && previousResources) journal.resources = previousResources;
             throw error;
@@ -609,7 +652,7 @@ export async function reapRun(
               }
 
               try {
-                await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+                await persistJournal();
               } catch (error) {
                 journal.resources = previousResources;
                 journal.settledSnapshots = previousSettled;
@@ -724,6 +767,20 @@ export async function reapRun(
           // Keep the review until absence can be proven.
         }
       }
+
+      for (const item of reviews.filter((r) => r.provider === p.name && r.kind === "service")) {
+        const stillJournaled = (journal?.resources ?? []).some(
+          (r) => r.provider === p.name && r.kind === "service" && r.id === item.id,
+        );
+
+        if (stillJournaled) continue;
+
+        if (journal?.settledServices.some((s) => s.provider === p.name && s.id === item.id)) {
+          const index = reviews.indexOf(item);
+
+          if (index >= 0) reviews.splice(index, 1);
+        }
+      }
     }
 
     for (const id of candidates)
@@ -824,6 +881,10 @@ export async function reapRun(
   for (const entry of resolutions)
     process.stdout.write(`cleanupResolved: ${JSON.stringify(entry)}\n`);
 
+  // Drain any in-flight serialized ownership.json writes (e.g. from a timed-out cleanup hook) before
+  // publishing results.json or returning.
+  await journalWriteChain;
+
   if (results || reviews.length || releases.length || resolutions.length) {
     const record = {
       ...(results ?? { runId: config.run }),
@@ -835,9 +896,9 @@ export async function reapRun(
     await writeOwnership(join(config.out, "results.json"), JSON.stringify(record, null, 2) + "\n");
   }
 
-  // Once results.json is durably written, drop settled capture-name aliases whose reviews cleared.
-  if (journal && journal.settledSnapshots.length > 0) {
-    const retained = journal.settledSnapshots.filter((alias) =>
+  // Once results.json is durably written, drop settled snapshot/service markers whose reviews cleared.
+  if (journal && (journal.settledSnapshots.length > 0 || journal.settledServices.length > 0)) {
+    const retainedSnapshots = journal.settledSnapshots.filter((alias) =>
       reviews.some(
         (r) =>
           r.provider === alias.provider &&
@@ -846,9 +907,19 @@ export async function reapRun(
       ),
     );
 
-    if (retained.length !== journal.settledSnapshots.length) {
-      journal.settledSnapshots = retained;
-      await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+    const retainedServices = journal.settledServices.filter((settled) =>
+      reviews.some(
+        (r) => r.provider === settled.provider && r.kind === "service" && r.id === settled.id,
+      ),
+    );
+
+    if (
+      retainedSnapshots.length !== journal.settledSnapshots.length ||
+      retainedServices.length !== journal.settledServices.length
+    ) {
+      journal.settledSnapshots = retainedSnapshots;
+      journal.settledServices = retainedServices;
+      await persistJournal();
     }
   }
 

@@ -364,8 +364,13 @@ export function createMicrosandboxProvider(
   const names = new Map<string, string>();
   /** Guest agent handles per sandbox ID, made once and dropped when the sandbox stops or goes. */
   const handles = new Map<string, Promise<PeerSandbox>>();
-  /** Service slugs this adapter made or was about to make, per sandbox ID, with the sandbox name they target. */
-  const ownedServices = new Map<string, Map<string, string>>();
+
+  /** Service slugs this adapter made or was about to make, per sandbox ID, with target name and creation timestamp. */
+  const ownedServices = new Map<
+    string,
+    Map<string, { target: string; createdAt?: string | undefined }>
+  >();
+
   /** Public Service URLs per sandbox ID and port. */
   const previews = new Map<string, string>();
   /** Tokens seen in answers, for redaction. Kept for the client's life. */
@@ -627,9 +632,13 @@ export function createMicrosandboxProvider(
   }
 
   /** Records Service `slug` of sandbox `id` as this adapter's, so a later destroy still finds it once detached. */
-  function ownService(id: string, slug: string, sandboxName: string) {
-    const owned = ownedServices.get(id) ?? new Map<string, string>();
-    owned.set(slug, sandboxName);
+  function ownService(id: string, slug: string, sandboxName: string, createdAt?: string) {
+    const owned =
+      ownedServices.get(id) ??
+      new Map<string, { target: string; createdAt?: string | undefined }>();
+
+    const existing = owned.get(slug);
+    owned.set(slug, { target: sandboxName, createdAt: createdAt ?? existing?.createdAt });
     ownedServices.set(id, owned);
 
     return owned;
@@ -691,7 +700,7 @@ export function createMicrosandboxProvider(
 
           for (const service of answer.data)
             if (isOwnedSlug(service.slug, id) && service.target?.sandbox === sandboxName)
-              ownService(id, service.slug, sandboxName);
+              ownService(id, service.slug, sandboxName, service.createdAt);
           cursor = answer.nextCursor;
 
           if (cursor === undefined) break;
@@ -701,7 +710,8 @@ export function createMicrosandboxProvider(
       }
 
     // Deleting the entry being visited is safe while iterating a Map.
-    for (const [slug, target] of ownedServices.get(id) ?? new Map<string, string>()) {
+    for (const [slug, entry] of ownedServices.get(id) ??
+      new Map<string, { target: string; createdAt?: string | undefined }>()) {
       if (!isOwnedSlug(slug, id)) continue;
 
       try {
@@ -725,10 +735,27 @@ export function createMicrosandboxProvider(
           throw error;
         }
 
-        // Never a Service that now targets another sandbox.
-        if (service.target !== null && service.target.sandbox !== target) {
+        // Never a Service that now targets another sandbox, or a detached Service whose creation
+        // timestamp does not prove it is the same Service instance this adapter owned.
+        if (service.target !== null) {
+          if (service.target.sandbox !== entry.target) {
+            ownedServices.get(id)?.delete(slug);
+            await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
+            continue;
+          }
+        } else if (
+          entry.createdAt === undefined ||
+          service.createdAt === undefined ||
+          service.createdAt !== entry.createdAt
+        ) {
           ownedServices.get(id)?.delete(slug);
-          await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
+
+          if (
+            entry.createdAt !== undefined &&
+            service.createdAt !== undefined &&
+            service.createdAt !== entry.createdAt
+          )
+            await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
           continue;
         }
 
@@ -1188,13 +1215,15 @@ export function createMicrosandboxProvider(
       created = found;
     }
 
-    if (created.target?.sandbox === sandboxName)
+    if (created.target?.sandbox === sandboxName) {
+      ownService(id, slug, sandboxName, created.createdAt);
       await hooks.serviceSettled?.({
         sandboxId: id,
         slug,
         outcome: "created",
         createdAt: created.createdAt,
       });
+    }
 
     return created;
   }
@@ -1221,6 +1250,7 @@ export function createMicrosandboxProvider(
 
     if (service === "taken" || !routes(service, sandboxName, port))
       throw fail(`no Service could be made for port ${port}`, "provider", { sandboxId: id });
+    ownService(id, service.slug, sandboxName, service.createdAt);
     const url = serviceUrl(service);
 
     for (const token of tokensIn(url)) tokens.add(token);

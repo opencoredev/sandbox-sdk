@@ -1506,4 +1506,219 @@ describe("independent review reproductions", () => {
       await destroying;
     }
   });
+
+  test("R5-1 retrying SDK destroy preserves a detached replacement Service with a different created_at", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const other = await p.create({ labels: {} });
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    await p.previewUrl(source.id, 3000);
+    const original = fake.services.get(slug);
+    const replacementTarget = fake.sandboxes.get(other.id);
+
+    if (!original || !replacementTarget) throw new Error("Missing Service retry fixtures");
+    fake.faults.serviceDeleteFails = true;
+    await expect(p.destroy(source.id)).rejects.toThrow("could not be removed");
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    fake.faults.serviceDeleteFails = false;
+
+    const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+
+    const delOrig = await realFetch(`${fake.url}/v1/services/${slug}`, {
+      method: "DELETE",
+      headers,
+    });
+
+    await delOrig.body?.cancel();
+    expect(delOrig.ok).toBe(true);
+
+    const makeRep = await realFetch(`${fake.url}/v1/services`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ slug, target: { sandbox: replacementTarget.name, port: 3000 } }),
+    });
+
+    await makeRep.body?.cancel();
+    expect(makeRep.ok).toBe(true);
+
+    const delTarget = await realFetch(`${fake.url}/v1/sandboxes/${other.id}`, {
+      method: "DELETE",
+      headers,
+    });
+
+    await delTarget.body?.cancel();
+    expect(delTarget.ok).toBe(true);
+    const replacement = fake.services.get(slug);
+    expect(replacement?.status).toBe("detached");
+    expect(replacement?.createdAt).not.toBe(original.createdAt);
+    await p.destroy(source.id);
+    expect(fake.services.get(slug)).toBe(replacement);
+  });
+
+  test("R5-2 failed Service listing during reap still cleans confirmed Service via exact sweep", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const sandbox = fake.sandboxes.get(source.id);
+
+    if (!sandbox) throw new Error("Owned sandbox is missing");
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    await p.previewUrl(source.id, 3000);
+    const createdAt = fake.services.get(slug)?.createdAt;
+
+    if (!createdAt) throw new Error("Created Service lacks a timestamp");
+    await journal([
+      { provider: "microsandbox", id: source.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: slug,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "created",
+        serviceCreatedAt: createdAt,
+      },
+    ]);
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = new URL(String(input));
+
+      if (url.pathname === "/v1/services" && url.searchParams.has("sandbox"))
+        return Promise.resolve(
+          Response.json({ error: { code: "internal_error" } }, { status: 500 }),
+        );
+
+      return realFetch(input, init);
+    });
+    expect(await reap()).toBe(false);
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    expect(fake.services.has(slug)).toBe(false);
+  });
+
+  test("R5-3 timed-out cleanup hook cannot overwrite a newer ownership journal", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const sandbox = fake.sandboxes.get(source.id);
+
+    if (!sandbox) throw new Error("Owned sandbox is missing");
+    const slug1 = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    const slug2 = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3001`;
+    await p.previewUrl(source.id, 3000);
+    await p.previewUrl(source.id, 3001);
+    await journal([
+      { provider: "microsandbox", id: source.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: slug1,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "created",
+        serviceCreatedAt: fake.services.get(slug1)?.createdAt,
+      },
+      {
+        provider: "microsandbox",
+        id: slug2,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "created",
+        serviceCreatedAt: fake.services.get(slug2)?.createdAt,
+      },
+    ]);
+    const ownershipPath = join(out, "ownership.json");
+    const realRename = journalFiles.rename;
+    let releaseFirst: (() => void) | undefined;
+
+    const allowFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    let held = false;
+    vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (to === ownershipPath && !held) {
+        const ids = z
+          .object({ resources: z.array(z.object({ id: z.string() })) })
+          .parse(JSON.parse(await readFile(from, "utf8")))
+          .resources.map((r) => r.id);
+
+        if (ids.includes(source.id) && ids.includes(slug2) && ids.length === 2) {
+          held = true;
+          await allowFirst;
+        }
+      }
+
+      await realRename(from, to);
+    });
+    const reaping = reap();
+
+    try {
+      await deadline(600, () => reaping);
+    } catch (error) {
+      if (!(error instanceof DeadlineError)) throw error;
+    } finally {
+      releaseFirst?.();
+    }
+
+    expect(await reaping).toBe(false);
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    expect(fake.services.size).toBe(0);
+    expect(
+      z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
+        .resources,
+    ).toEqual([]);
+  });
+
+  test("R5-4 interrupted results write does not leave an orphan Service review", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const sandbox = fake.sandboxes.get(source.id);
+
+    if (!sandbox) throw new Error("Owned sandbox is missing");
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    await p.previewUrl(source.id, 3000);
+    await journal([
+      { provider: "microsandbox", id: source.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: slug,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "created",
+        serviceCreatedAt: fake.services.get(slug)?.createdAt,
+      },
+    ]);
+    await writeFile(
+      join(out, "results.json"),
+      JSON.stringify({
+        runId: run,
+        cleanupReview: [
+          { provider: "microsandbox", id: slug, kind: "service", reason: "old cleanup failure" },
+        ],
+      }),
+    );
+    const realRename = journalFiles.rename;
+
+    const rename = vi
+      .spyOn(journalFiles, "rename")
+      .mockImplementation((from, to) =>
+        to === join(out, "results.json")
+          ? Promise.reject(new Error("simulated results write failure"))
+          : realRename(from, to),
+      );
+
+    await expect(reap()).rejects.toThrow("simulated results write failure");
+    expect(fake.services.has(slug)).toBe(false);
+    rename.mockRestore();
+
+    const failed = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
+
+    expect({ failed, reviewedIds: results.cleanupReview.map((item) => item.id) }).toEqual({
+      failed: false,
+      reviewedIds: [],
+    });
+  });
 });
