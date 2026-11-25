@@ -547,9 +547,12 @@ export async function makeHandle<N>(
         await recoverWithin(options?.signal, remainingMs);
       }
 
-      throw recovered
-        ? redactor.error(error, provider.name, info.id)
-        : withheld("native", error instanceof SandboxError ? error : undefined);
+      if (recovered) throw redactor.error(error, provider.name, info.id);
+
+      if (options?.signal?.aborted)
+        throw withheld("native", new SandboxError("Aborted", { code: "aborted" }));
+
+      throw withheld("native", error instanceof SandboxError ? error : undefined);
     }
   }
 

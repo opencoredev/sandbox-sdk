@@ -143,7 +143,10 @@ export interface NativeApiOptions<Plane extends string> {
   sdk?: NativeSdkBinding;
 }
 
-const nativeApis = new WeakMap<object, NativeApi<string, AnyNativeSdk>>();
+const nativeApis = new WeakMap<
+  object,
+  { api: NativeApi<string, AnyNativeSdk>; timeoutMs: number }
+>();
 
 /**
  * Wraps the async methods of a {@link NativeApi} built by {@link createNativeApi} so handle-level
@@ -157,9 +160,10 @@ export function guardNativeApi<N>(
   ) => Promise<R>,
 ): N {
   if (!isObject(raw)) return raw;
-  const api = nativeApis.get(raw);
+  const entry = nativeApis.get(raw);
 
-  if (!api) return raw;
+  if (!entry) return raw;
+  const { api, timeoutMs } = entry;
 
   const request: NativeApi["request"] = <T = unknown>(
     method: HttpMethod,
@@ -168,13 +172,13 @@ export function guardNativeApi<N>(
   ) =>
     guardCall(() => api.request<T>(method, path, options), {
       signal: options?.signal,
-      timeoutMs: options?.timeoutMs,
+      timeoutMs: options?.timeoutMs ?? timeoutMs,
     });
 
   const fetch: NativeApi["fetch"] = (method, path, options) =>
     guardCall(() => api.fetch(method, path, options), {
       signal: options?.signal,
-      timeoutMs: options?.timeoutMs,
+      timeoutMs: options?.timeoutMs ?? timeoutMs,
     });
 
   const sdk: AnyNativeSdk = (load) => guardCall(() => api.sdk(load));
@@ -321,10 +325,13 @@ export function createNativeApi<Plane extends string, Sdk extends NativeSdkLoade
   };
 
   nativeApis.set(api, {
-    sandboxId,
-    request: api.request,
-    fetch: api.fetch,
-    sdk: connect,
+    api: {
+      sandboxId,
+      request: api.request,
+      fetch: api.fetch,
+      sdk: connect,
+    },
+    timeoutMs: http.timeoutMs,
   });
 
   return api;

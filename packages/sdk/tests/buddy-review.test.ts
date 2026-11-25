@@ -1662,6 +1662,66 @@ test("first native call after reconnect honors timeoutMs and signal without wait
     } finally {
       await reopened.close();
     }
+
+    // Provider default requestTimeoutMs also bounds recovery when per-call timeoutMs is omitted.
+    const defaultTimeoutProvider = provider({
+      requestTimeoutMs: 175,
+      fetch: async (input, init) => {
+        const url = new URL(input);
+
+        if ((init?.method ?? "GET") === "GET" && url.pathname.endsWith("/execs"))
+          return Response.json({ errors: [{ message: `auth ${secretValue}` }] }, { status: 401 });
+
+        if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/exec")) await delay(3000);
+
+        return fetch(input, init);
+      },
+    });
+
+    const reopenedDefault = await connectSandbox(defaultTimeoutProvider, box.id);
+
+    try {
+      const started = performance.now();
+
+      const err = await failure(
+        reopenedDefault.native.request<void>("GET", "/sandboxes/{sandbox_id}/execs"),
+      );
+
+      expect(err).toBeInstanceOf(SandboxError);
+      expect(performance.now() - started).toBeLessThan(650);
+      expect(`${err?.message ?? ""} ${String(err?.cause ?? "")}`).not.toContain(secretValue);
+
+      // Aborting while recovery is waiting reports code "aborted" for both request and fetch.
+      const ctrlReq = new AbortController();
+      const timerReq = setTimeout(() => ctrlReq.abort(), 40);
+
+      try {
+        await expect(
+          reopenedDefault.native.request("GET", "/sandboxes/{sandbox_id}/execs", {
+            signal: ctrlReq.signal,
+            timeoutMs: 2000,
+          }),
+        ).rejects.toMatchObject({ code: "aborted" });
+      } finally {
+        clearTimeout(timerReq);
+      }
+
+      const ctrlFetch = new AbortController();
+      const timerFetch = setTimeout(() => ctrlFetch.abort(), 40);
+
+      try {
+        await expect(
+          reopenedDefault.native.fetch("GET", "/sandboxes/{sandbox_id}/execs", {
+            signal: ctrlFetch.signal,
+            timeoutMs: 2000,
+          }),
+        ).rejects.toMatchObject({ code: "aborted" });
+      } finally {
+        clearTimeout(timerFetch);
+      }
+    } finally {
+      await reopenedDefault.close();
+    }
   } finally {
     await provider()
       .destroy(box.id)

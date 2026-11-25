@@ -237,6 +237,8 @@ interface SerializedBody {
 export interface HttpClient<Plane extends string = string> {
   readonly provider: string;
   readonly label: string;
+  /** Default per-request timeout in milliseconds. */
+  readonly timeoutMs: number;
   /** Redacts credentials seen so far, `secrets()` and credential-shaped text. */
   readonly redact: (text: string) => string;
   /** Send a request and buffer the response body (bounded by `maxBytes`). Non-2xx rejects. */
@@ -1424,6 +1426,7 @@ export function createHttpClient<Plane extends string>(
   return {
     provider,
     label,
+    timeoutMs,
     redact,
     request,
     async json(input) {
