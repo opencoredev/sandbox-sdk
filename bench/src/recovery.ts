@@ -24,6 +24,7 @@ import { isMissingFile } from "./files.js";
 import {
   cleanService,
   isRetrySlug,
+  probePendingService,
   readMicrosandboxSnapshot,
   settleAllocationAttempt,
   settleMicrosandboxCapture,
@@ -513,6 +514,31 @@ export async function reapRun(
             journal.resources.push({ provider: p.name, id, kind: "sandbox", parent: null });
           await persistJournal();
           recordVerifiedRelease(reviews, releases, p.name, id);
+        }
+
+        if (tier !== undefined) {
+          const unprovenServices = (journal?.resources ?? []).filter(
+            (r) =>
+              r.provider === p.name &&
+              r.kind === "service" &&
+              r.parent === id &&
+              r.sandboxName !== undefined &&
+              (r.serviceState !== "created" || r.serviceCreatedAt === undefined),
+          );
+
+          for (const svc of unprovenServices) {
+            const probed = await deadline(config["timeout-ms"], () =>
+              probePendingService(svc.id, svc.sandboxName!),
+            );
+
+            if (probed.kind === "attached") {
+              if (probed.createdAt === undefined)
+                throw new Error(
+                  `Attached Service ${svc.id} lacks creation timestamp; retaining sandbox ${id} for retry`,
+                );
+              await persistServicePromotion([svc], probed.createdAt);
+            }
+          }
         }
 
         await deadline(config["timeout-ms"], () =>

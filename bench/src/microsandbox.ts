@@ -187,6 +187,47 @@ export type ServiceOutcome =
   | { kind: "foreign" }
   | { kind: "pending"; reason: string };
 
+export type ServiceProbeOutcome =
+  | { kind: "attached"; createdAt: string | undefined }
+  | { kind: "other" };
+
+/**
+ * Read-only exact check for an unresolved Service before deleting its parent sandbox. Returns
+ * `attached` with the server `created_at` when the live Service still targets `sandboxName`,
+ * `other` on 404, detached, or foreign target, and throws on HTTP/network errors so the parent
+ * sandbox is kept until attachment can be checked.
+ */
+export async function probePendingService(
+  slug: string,
+  sandboxName: string,
+): Promise<ServiceProbeOutcome> {
+  const read = await microsandboxFetch(`/services/${encodeURIComponent(slug)}`);
+
+  if (read.status === 404) {
+    await read.body?.cancel();
+
+    return { kind: "other" };
+  }
+
+  if (!read.ok) {
+    await read.body?.cancel();
+    throw new MicrosandboxHttpError("Microsandbox Service read failed", read.status);
+  }
+
+  const service = serviceSchema.parse(await read.json());
+
+  if (service.slug !== slug) throw new Error("Microsandbox Service read answered another slug");
+
+  if (
+    service.target !== null &&
+    service.target !== undefined &&
+    service.target.sandbox === sandboxName
+  )
+    return { kind: "attached", createdAt: service.created_at };
+
+  return { kind: "other" };
+}
+
 /**
  * Deletes a journaled Service when ownership is proven: it targets the journaled sandbox name, or it
  * is detached after a confirmed create (`state === "created"`) and nothing says the slug was taken.

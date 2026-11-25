@@ -2584,4 +2584,102 @@ describe("independent review reproductions", () => {
       });
     },
   );
+
+  test("R12 fresh reap persists pending attached Service proof even when filtered Service list fails", async () => {
+    const creator = adapter();
+    const source = await creator.create({ labels: labels() });
+    const ownership = join(out, "ownership.json");
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+
+    const readProof = async () =>
+      z
+        .object({
+          resources: z.array(
+            z.object({
+              id: z.string(),
+              kind: z.string(),
+              serviceState: z.enum(["pending", "created"]).optional(),
+              serviceCreatedAt: z.string().optional(),
+            }),
+          ),
+        })
+        .parse(JSON.parse(await readFile(ownership, "utf8")))
+        .resources.find((entry) => entry.id === slug);
+
+    creator.setAttemptHooks({
+      service: async ({ sandboxId, sandboxName, slug: attemptSlug }) => {
+        await journal([
+          { provider: "microsandbox", id: sandboxId, kind: "sandbox", parent: null },
+          {
+            provider: "microsandbox",
+            id: attemptSlug,
+            kind: "service",
+            parent: sandboxId,
+            sandboxName,
+            serviceState: "pending",
+          },
+        ]);
+      },
+    });
+    await creator.previewUrl(source.id, 3000);
+    const service = fake.services.get(slug);
+
+    if (!service || service.target === null || service.createdAt === undefined)
+      throw new Error("Fixture did not create the attached Service");
+    const createdAt = service.createdAt;
+    let failedLists = 0;
+    let proofAtFirstDelete: unknown;
+    let firstDelete: string | undefined;
+    const servicePath = `/v1/services/${slug}`;
+    const sandboxPath = `/v1/sandboxes/${source.id}`;
+
+    const wire = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+
+      if (
+        failedLists === 0 &&
+        init?.method === "GET" &&
+        url.pathname === "/v1/services" &&
+        url.searchParams.get("sandbox") === service.target?.sandbox
+      ) {
+        failedLists++;
+
+        return Response.json({ error: "one-shot filtered Service list failure" }, { status: 500 });
+      }
+
+      if (
+        firstDelete === undefined &&
+        init?.method === "DELETE" &&
+        (url.pathname === servicePath || url.pathname === sandboxPath)
+      ) {
+        firstDelete = url.pathname;
+        proofAtFirstDelete = await readProof();
+      }
+
+      return realFetch(input, init);
+    });
+
+    await reap();
+    expect(failedLists).toBe(1);
+    wire.mockRestore();
+
+    const retryFailed = await reap();
+
+    expect({
+      proofAtFirstDelete,
+      retryFailed,
+      serviceAfterRetry: fake.services.get(slug)?.status,
+      stillJournaled: (await readProof())?.serviceState,
+    }).toEqual({
+      proofAtFirstDelete: {
+        id: slug,
+        kind: "service",
+        serviceState: "created",
+        serviceCreatedAt: createdAt,
+      },
+      retryFailed: false,
+      serviceAfterRetry: undefined,
+      stillJournaled: undefined,
+    });
+  });
 });
