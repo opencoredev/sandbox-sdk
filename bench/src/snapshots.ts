@@ -74,11 +74,17 @@ async function withModal<T>(
   }
 }
 
-/** Superserve's connection for `@superserve/sdk` calls: the key and its region's control plane. */
-function superserveConnection(provider: Provider) {
+/**
+ * Superserve's control plane on the key's region, with redirects refused: `@superserve/sdk` follows them,
+ * and would send `X-API-Key` wherever one points.
+ */
+function superserveFetch(provider: Provider, path: string, init: RequestInit = {}) {
   const { apiKey, baseUrl } = connectionOf(provider, "superserve");
+  const headers = new Headers(init.headers);
 
-  return { apiKey, baseUrl: endpoint(baseUrl) };
+  headers.set("X-API-Key", apiKey);
+
+  return fetch(`${endpoint(baseUrl)}${path}`, { ...init, headers, redirect: "error" });
 }
 
 /**
@@ -404,10 +410,15 @@ export async function snapshotCleaner(
   }
 
   if (name === "superserve") {
-    const { Snapshot } = await nativeModules.load("@superserve/sdk");
-
     return async (id) => {
-      await Snapshot.deleteById(id, superserveConnection(provider));
+      const response = await superserveFetch(provider, `/snapshots/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+
+      await response.body?.cancel();
+
+      if (!response.ok && response.status !== 404)
+        throw httpError("Superserve snapshot delete failed", response.status);
     };
   }
 
@@ -756,11 +767,20 @@ export async function snapshotsFromSource(
 
   if (name !== "superserve") return snapshotsFromDaytonaSandbox(provider, sourceSandboxId);
 
-  const { Snapshot } = await nativeModules.load("@superserve/sdk");
+  const response = await superserveFetch(
+    provider,
+    `/sandboxes/${encodeURIComponent(sourceSandboxId)}/snapshots`,
+  );
+
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw httpError("Snapshot listing unavailable", response.status);
+  }
 
   return z
-    .array(z.object({ id: z.string(), name: z.string().optional() }))
-    .parse(await Snapshot.list(sourceSandboxId, superserveConnection(provider)));
+    .array(z.object({ id: z.string(), name: z.string().nullish() }))
+    .parse(await response.json())
+    .map(({ id, name }): { id: string; name?: string } => (name ? { id, name } : { id }));
 }
 
 const snapshotInfo = z.object({
@@ -872,9 +892,22 @@ export async function inspectSnapshot(
       }
 
       case "superserve": {
-        const { Snapshot } = await nativeModules.load("@superserve/sdk");
+        const response = await superserveFetch(provider, `/snapshots/${encodeURIComponent(id)}`);
 
-        info = snapshotInfo.parse(await Snapshot.get(id, superserveConnection(provider)));
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw httpError("Snapshot metadata unavailable", response.status);
+        }
+
+        const snapshot = z
+          .object({ id: z.string(), name: z.string().nullish(), sandbox_id: z.string().nullish() })
+          .parse(await response.json());
+
+        info = {
+          id: snapshot.id,
+          name: snapshot.name ?? undefined,
+          sandboxId: snapshot.sandbox_id,
+        };
         break;
       }
 

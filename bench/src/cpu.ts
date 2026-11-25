@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Sandbox } from "@opencoredev/sandbox-sdk";
 import { statistics } from "./stats.js";
 import { deadline, DeadlineError } from "./timing.js";
-import { command } from "./workloads.js";
+import { probeCommand } from "./workloads.js";
 
 /**
  * Fixed work for the CPU probe (probes/cpu.py): `segments` runs of `steps` iterations of the same
@@ -308,7 +308,7 @@ export interface StagedCpuProbe {
 /** One read of the guest clock: its offset from the host's, right to within half the round trip. */
 async function readGuestClock(box: Sandbox, path: string, timeoutMs: number, signal?: AbortSignal) {
   const before = hostEpochMs();
-  const reply = await command(box, `python3 ${path} clock`, timeoutMs, signal);
+  const reply = await probeCommand(box, `python3 ${path} clock`, timeoutMs, signal);
   const after = hostEpochMs();
   const guestMs = Number(reply) * 1000;
 
@@ -425,7 +425,7 @@ export async function runStagedCpuProbe(
 ) {
   const dispatchedAt = performance.now();
   const dispatchedEpoch = hostEpochMs();
-  const output = await command(box, staged.command, timeoutMs, signal);
+  const output = await probeCommand(box, staged.command, timeoutMs, signal, maxProbeOutputChars);
   const returnedAt = performance.now();
 
   if (signal?.aborted) throw new Error("CPU probe aborted");

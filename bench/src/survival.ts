@@ -1,5 +1,7 @@
 import { z } from "zod";
+import type { Sandbox } from "@opencoredev/sandbox-sdk";
 import { DeadlineError, deadline } from "./timing.js";
+import { probeCommand } from "./workloads.js";
 import { failureOutcome, failureSignal, type FailureOutcome } from "./failure.js";
 import { lookupSchema, type LookupEvidence } from "./existence.js";
 import type { SurvivalPlan } from "./scenarios.js";
@@ -20,6 +22,11 @@ export function parseBootId(output: string) {
   if (!bootIdPattern.test(bootId)) throw new Error("Heartbeat reply is not a boot ID");
 
   return bootId.toLowerCase();
+}
+
+/** One heartbeat: the guest's boot ID. A failed or oversized reply is a fixed error, never guest text. */
+export async function sendHeartbeat(box: Sandbox, timeoutMs: number, signal?: AbortSignal) {
+  return parseBootId(await probeCommand(box, heartbeatCommand, timeoutMs, signal, 4096));
 }
 
 /**

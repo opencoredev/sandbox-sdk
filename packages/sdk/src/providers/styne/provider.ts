@@ -250,6 +250,9 @@ const defaultLifetimeMs = 3_600_000;
 /** A command's stdin goes in base64 lines of this many bytes. */
 const stdinChunkBytes = 1024 * 1024;
 
+/** A whole-file read is buffered in memory, so it stops at the shared HTTP client's default of 32 MiB. */
+const maxReadBytes = 32 * 1024 * 1024;
+
 type Body = JsonObject;
 
 /** A 2xx body as JSON, or `undefined` when it is empty or not JSON: each caller treats that as unreadable. */
@@ -801,7 +804,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
         ...sandboxPath(id, "/files"),
         query: { path },
         timeoutMs: 300_000,
-        maxBytes: 2 ** 32,
+        maxBytes: maxReadBytes,
       });
 
       return response.body;

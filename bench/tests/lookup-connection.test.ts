@@ -13,7 +13,7 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { ModalClientParams } from "../src/connections.js";
 import { lookupSandbox } from "../src/existence.js";
 import { loadProvider, type FactoryOptions } from "../src/providers.js";
-import { inspectSnapshot, snapshotCleaner } from "../src/snapshots.js";
+import { inspectSnapshot, snapshotCleaner, snapshotsFromSource } from "../src/snapshots.js";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { bound, fakeNativeModules } from "./native-fakes.js";
 
@@ -597,7 +597,9 @@ describe("raw reads and deletes keep the key on the adapter's origin", () => {
       if (url.pathname.endsWith(`/machines/${id}`)) return Response.json({ id, state: "running" });
 
       if (url.pathname.endsWith(`/snapshots/${id}`))
-        return Response.json({ id, sourceMachineId: "source" });
+        return Response.json({ id, sourceMachineId: "source", sandbox_id: "source" });
+
+      if (url.pathname.endsWith("/source/snapshots")) return Response.json([{ id }]);
 
       return Response.json({ id, status: "active" });
     });
@@ -618,12 +620,23 @@ describe("raw reads and deletes keep the key on the adapter's origin", () => {
       await snapshotCleaner("instabox", instabox, "source")
     )(id);
     expect((await lookupSandbox(superserve, id, budget)).result).toBe("present");
+    expect(await inspectSnapshot("superserve", superserve, "source", id)).toEqual({
+      exists: true,
+      sourceId: "source",
+    });
+    expect(await snapshotsFromSource("superserve", superserve, "source")).toEqual([{ id }]);
+    await (
+      await snapshotCleaner("superserve", superserve, "source")
+    )(id);
 
     expect(sent).toEqual([
       `GET /ib/v1/machines/${id} error`,
       `GET /ib/v1/snapshots/${id} error`,
       `DELETE /ib/v1/snapshots/${id} error`,
       `GET /ss/sandboxes/${id} error`,
+      `GET /ss/snapshots/${id} error`,
+      `GET /ss/sandboxes/source/snapshots error`,
+      `DELETE /ss/snapshots/${id} error`,
     ]);
   });
 

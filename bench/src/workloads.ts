@@ -14,6 +14,27 @@ export async function command(box: Sandbox, cmd: string, timeoutMs: number, sign
   return r.stdout.trim();
 }
 
+/**
+ * A probe whose reply is parsed and never quoted: a failed command reports only its exit code, and a
+ * reply past `maxBytes` is refused, so no guest text reaches a report. Errors `box.run` itself throws
+ * (a gone sandbox, quota) pass through unchanged.
+ */
+export async function probeCommand(
+  box: Sandbox,
+  cmd: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  maxBytes = 256 * 1024,
+) {
+  const r = await box.run(cmd, { timeoutMs, signal, maxOutputBytes: maxBytes });
+
+  if (!r.ok) throw new Error(`Guest exit ${r.exitCode}`);
+
+  if (r.truncated) throw new Error(`Guest probe output exceeded ${maxBytes} bytes`);
+
+  return r.stdout.trim();
+}
+
 export async function uploadFixture(box: Sandbox) {
   for (const file of await readdir(new URL("../fixtures/vite-react/", import.meta.url)))
     if (file !== "node_modules")

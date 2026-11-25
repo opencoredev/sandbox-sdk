@@ -36,6 +36,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();
   await Promise.all(dirs.splice(0).map((out) => rm(out, { recursive: true, force: true })));
@@ -214,8 +215,8 @@ it.each(["e2b", "daytona", "boxd", "tenki", "freestyle", "superserve"])(
           vms = { get: vi.fn(), snapshots: { get, delete: vi.fn() } };
         },
       },
-      "@superserve/sdk": { Snapshot: { get, list: vi.fn(), deleteById: vi.fn() } },
     });
+    vi.stubGlobal("fetch", async () => Response.json({ id: "snapshot", sandbox_id: "source" }));
     expect(await snapshots.inspectSnapshot(name, provider, "source", "snapshot")).toEqual(
       name === "e2b" ? { exists: true } : { exists: true, sourceId: "source" },
     );

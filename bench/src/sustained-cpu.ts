@@ -37,6 +37,7 @@ import {
 } from "@opencoredev/sandbox-sdk";
 import type { Labels, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
+import { cmdlineFlags } from "./fairness/security-probe.js";
 import { isMissingFile } from "./files.js";
 import { loadProvider } from "./providers.js";
 import { collectMetadata } from "./publication.js";
@@ -228,7 +229,8 @@ const fingerprintSchema = z.object({
   uptimeAtStartS: z.number().nonnegative().nullable(),
   python: z.string().nullable(),
   pythonPath: z.string().nullable(),
-  cmdline: z.string().nullable(),
+  /** The kernel command line reduced to its allowlisted parameters; the raw line is guest text. */
+  kernelFlags: z.array(z.string()).default([]),
 });
 
 export type Fingerprint = z.infer<typeof fingerprintSchema>;
@@ -599,7 +601,7 @@ export function parseFingerprint(stdout: string): Fingerprint {
     uptimeAtStartS: number("uptime"),
     python: text("python"),
     pythonPath: text("pythonPath"),
-    cmdline: text("cmdline"),
+    kernelFlags: Object.values(cmdlineFlags(text("cmdline") ?? "")).flat(),
   };
 }
 

@@ -84,8 +84,9 @@ export interface RawStyneBox {
  * A raw create with the adapter's defaults (the template, a one-hour lifetime), carrying a fresh owner
  * marker in its metadata. Styne's create answer has no metadata, so the sandbox it names is read back
  * and admitted for use and cleanup only when it carries that marker: an answer naming any other sandbox
- * is left alone. A create that fails without a 4xx refusal may still have made one, so the sandbox
- * carrying the marker is looked for and admitted for cleanup before the failure is reported.
+ * is left alone. A create that fails without a 4xx refusal may still have made one, and a read-back that
+ * fails or answers garbage proves nothing, so in both cases the sandbox carrying the marker is looked for
+ * and admitted for cleanup before the failure is reported.
  */
 export async function createRawStyne(input: {
   template: string;
@@ -114,9 +115,17 @@ export async function createRawStyne(input: {
     throw error;
   }
 
-  const record = styneRecord.parse(
-    await (await styneCall(`/sandboxes/${encodeURIComponent(id)}`)).json(),
-  );
+  let record: z.infer<typeof styneRecord>;
+
+  // An unanswered or unreadable read-back proves nothing either way, so the marker decides cleanup.
+  try {
+    record = styneRecord.parse(
+      await (await styneCall(`/sandboxes/${encodeURIComponent(id)}`)).json(),
+    );
+  } catch (error) {
+    await recoverByOwner(owner, input.admit).catch(() => {});
+    throw error;
+  }
 
   if (record.sandboxID !== id || record.metadata?.[rawOwnerLabel] !== owner) {
     await recoverByOwner(owner, input.admit).catch(() => {});

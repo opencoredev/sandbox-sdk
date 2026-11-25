@@ -441,6 +441,21 @@ describe("security-probe", () => {
     ]);
   });
 
+  it("keeps a notable parameter's value only when it is one that parameter takes", () => {
+    expect(
+      cmdlineFlags(
+        "idle=poll nohz-full=1-3,7 isolcpus=nohz,domain,2-5 nosmt idle=token-guestsecret isolcpus=/etc/key constructor=1",
+      ).notable,
+    ).toEqual([
+      "idle=poll",
+      "nohz_full=1-3,7",
+      "isolcpus=nohz,domain,2-5",
+      "nosmt",
+      "idle",
+      "isolcpus",
+    ]);
+  });
+
   it("parses the probe's sections", () => {
     const stdout = [
       "@@uname",

@@ -116,8 +116,19 @@ export const mitigationFlags: readonly { readonly name: string; readonly value: 
     { name: "nokaslr", value: null },
   ];
 
-/** Performance-oriented parameters worth showing beside the mitigations. */
-export const notableFlags = ["cpuidle_haltpoll.force", "idle", "nosmt", "isolcpus", "nohz_full"];
+const cpuList = String.raw`\d{1,4}(-\d{1,4})?(,\d{1,4}(-\d{1,4})?){0,15}`;
+
+/**
+ * Performance-oriented parameters worth showing beside the mitigations, each with the values it may
+ * be reported with. Any other value is guest text, so only the name is kept.
+ */
+export const notableFlags: ReadonlyMap<string, RegExp> = new Map([
+  ["cpuidle_haltpoll.force", /^[YyNn01]$/],
+  ["idle", /^(poll|halt|nomwait)$/],
+  ["nosmt", /^force$/],
+  ["isolcpus", new RegExp(`^((nohz|domain|managed_irq),){0,3}${cpuList}$`)],
+  ["nohz_full", new RegExp(`^${cpuList}$`)],
+]);
 
 /** The kernel treats `-` and `_` in a parameter name alike. */
 const normalName = (name: string) => name.replaceAll("-", "_");
@@ -169,7 +180,13 @@ export function cmdlineFlags(cmdline: string) {
     .filter((p) => mitigationFlags.some((f) => f.name === p.name && f.value === p.value))
     .map((p) => p.token);
 
-  const notable = parsed.filter((p) => notableFlags.includes(p.name)).map((p) => p.token);
+  const notable = parsed.flatMap(({ name, value }) => {
+    const allowed = notableFlags.get(name);
+
+    if (!allowed) return [];
+
+    return value !== null && allowed.test(value) ? [`${name}=${value}`] : [name];
+  });
 
   return { weakening, notable };
 }

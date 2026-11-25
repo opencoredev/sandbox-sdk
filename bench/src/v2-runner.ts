@@ -67,7 +67,7 @@ import {
   heartbeatCommand,
   heartbeatDetails,
   heartbeatWindow,
-  parseBootId,
+  sendHeartbeat,
   sessionRefusal,
   survivalFailure,
   type SurvivalVerdict,
@@ -2157,8 +2157,7 @@ export async function runV2(
 
           const result = await heartbeatWindow({
             plan: survivalPlan,
-            heartbeat: async (signal) =>
-              parseBootId(await command(active, heartbeatCommand, timeout, signal)),
+            heartbeat: (signal) => sendHeartbeat(active, timeout, signal),
             lookup: (ms) => lookupSandbox(p.provider, active.id, ms),
             heartbeatTimeoutMs: timeout,
             // One deadline for the whole cohort, leaving its cleanup steps reserved.

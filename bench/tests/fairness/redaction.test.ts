@@ -295,7 +295,7 @@ describe("a completed security probe", () => {
       "@@version",
       "Linux version 6.1.102 (gcc 12)",
       "@@cmdline",
-      `console=ttyS0 mitigations=off root.key=${bootSecret} virtio_mmio.device=4K@0xd0000000:5`,
+      `console=ttyS0 mitigations=off root.key=${bootSecret} virtio_mmio.device=4K@0xd0000000:5 idle=${bootSecret} nohz_full=${bootSecret}`,
       "@@vulnerabilities",
       "meltdown=Not affected",
       "@@cpuinfo",
@@ -359,6 +359,10 @@ describe("a completed security probe", () => {
     expect(entry?.status, entry?.reason ?? "").toBe("completed");
     expect(securityProbe.resultSchema.parse(entry?.result).weakeningFlags).toEqual([
       "mitigations=off",
+    ]);
+    expect(securityProbe.resultSchema.parse(entry?.result).notableFlags).toEqual([
+      "idle",
+      "nohz_full",
     ]);
 
     const persisted = await Promise.all([

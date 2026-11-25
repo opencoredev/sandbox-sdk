@@ -292,3 +292,28 @@ test("backfill #90: a ranged file read stops streaming once its range is in", as
   expect(cancelled).toBe(true);
   expect(pulled).toBeLessThanOrEqual(4 * chunk);
 });
+
+test("backfill #90: a whole-file read refuses a file over 32 MiB instead of buffering it", async () => {
+  const chunk = 1024 * 1024;
+  let pulled = 0;
+
+  const p = styne({
+    apiKey: "review-fixture-api-key",
+    baseUrl: "https://api.styne.invalid",
+    fetch: async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (pulled > 64 * chunk) return controller.close();
+            controller.enqueue(new Uint8Array(chunk));
+            pulled += chunk;
+          },
+        }),
+      ),
+  });
+
+  await expect(p.files.read(id, "/workspace/huge.bin")).rejects.toMatchObject({
+    code: "unsupported",
+  });
+  expect(pulled).toBeLessThanOrEqual(34 * chunk);
+});

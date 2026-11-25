@@ -1,13 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { createSandbox, type RunResult } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
 import {
   cpuResult,
   lcgChecksum,
   maxProbeOutputChars,
+  runStagedCpuProbe,
   segmentConsistency,
   throughputSpread,
+  type StagedCpuProbe,
 } from "../src/cpu.js";
+import { failureOutcome } from "../src/failure.js";
 
 const probePath = new URL("../probes/cpu.py", import.meta.url);
 const at = 1_800_000_000;
@@ -206,5 +211,57 @@ describe("throughputSpread", () => {
       maxOverMin: null,
       cv: null,
     });
+  });
+});
+
+describe("runStagedCpuProbe on a failing guest", () => {
+  const guestText = "Traceback: TOKEN=sk-guest-secret in /home/guest/private";
+
+  const staged: StagedCpuProbe = {
+    challenge: { work: { segments: 1, steps: 1 }, seed: 1, workers: 1 },
+    command: "python3 /tmp/probe.py run",
+    clockOffsetMs: 0,
+  };
+
+  async function failing(result: Partial<RunResult>) {
+    const sandbox = await createSandbox(memory());
+
+    vi.spyOn(sandbox, "run").mockResolvedValue({
+      ok: false,
+      exitCode: 1,
+      stdout: guestText,
+      stderr: guestText,
+      output: guestText,
+      durationMs: 1,
+      truncated: false,
+      timedOut: false,
+      cwd: "/workspace",
+      command: "",
+      ...result,
+    });
+
+    return sandbox;
+  }
+
+  it("reports a failed probe by its exit code alone", async () => {
+    const error = await runStagedCpuProbe(await failing({}), staged, 1000).catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(failureOutcome(error, (text) => text)).toEqual({
+      kind: "failure",
+      note: "Guest exit 1",
+    });
+  });
+
+  it("refuses an oversized reply with a fixed message", async () => {
+    const error = await runStagedCpuProbe(
+      await failing({ ok: true, exitCode: 0, truncated: true }),
+      staged,
+      1000,
+    ).catch((e: Error) => e);
+
+    expect(failureOutcome(error, (text) => text).note).toBe(
+      `Guest probe output exceeded ${maxProbeOutputChars} bytes`,
+    );
   });
 });

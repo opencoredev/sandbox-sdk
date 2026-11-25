@@ -99,3 +99,41 @@ describe("raw Styne calls", () => {
     expect(admitted).toEqual([box]);
   });
 });
+
+describe("a raw Styne create whose read-back fails", () => {
+  it.each([
+    ["is refused", [503, { error: "unavailable" }]],
+    ["is garbage", [200, { unexpected: true }]],
+  ] as const)(
+    "still admits the sandbox carrying its marker when the read %s",
+    async (_, answer) => {
+      vi.stubEnv("STYNE_API_URL", "https://api.styne.invalid");
+      let owner = "";
+
+      stubFetch((method, url, body) => {
+        if (method === "POST") {
+          owner = JSON.parse(body).metadata[rawOwnerLabel];
+
+          return [201, { sandboxID: "vmMine" }];
+        }
+
+        if (url.pathname === "/sandboxes/vmMine") return [answer[0], answer[1]];
+
+        return [
+          200,
+          [
+            { sandboxID: "vmMine", metadata: { [rawOwnerLabel]: owner } },
+            { sandboxID: "vmOther", metadata: { [rawOwnerLabel]: "someone-else" } },
+          ],
+        ];
+      });
+
+      const admitted: RawStyneBox[] = [];
+
+      await expect(
+        createRawStyne({ template: "base", labels: {}, admit: (box) => admitted.push(box) }),
+      ).rejects.toThrow();
+      expect(admitted.map((box) => box.id)).toEqual(["vmMine"]);
+    },
+  );
+});
