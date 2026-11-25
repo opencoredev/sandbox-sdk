@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { expect, it } from "vitest";
+import { z } from "zod";
 
 type Manifest = {
   devDependencies: Record<string, string>;
@@ -17,9 +18,14 @@ const triples = {
   "linux-x64": "linux-x64-gnu",
 } satisfies Record<string, string>;
 
-const triple = Object.entries(triples).find(
-  ([host]) => host === `${process.platform}-${process.arch}`,
-)?.[1];
+const report = z
+  .object({ header: z.object({ glibcVersionRuntime: z.string().optional() }) })
+  .parse(process.report.getReport());
+
+const glibc = report.header.glibcVersionRuntime !== undefined;
+
+const published =
+  `${process.platform}-${process.arch}` in triples && (process.platform !== "linux" || glibc);
 
 it("pins each Microsandbox platform package to the microsandbox version", () => {
   const version = manifest.devDependencies.microsandbox;
@@ -31,11 +37,8 @@ it("pins each Microsandbox platform package to the microsandbox version", () => 
   }
 });
 
-it.runIf(triple !== undefined)(
-  "loads the Microsandbox native binding the adapter's create needs",
-  () => {
-    const native: unknown = createRequire(import.meta.url)("microsandbox/native");
+it.runIf(published)("loads the Microsandbox native binding the adapter's create needs", () => {
+  const native: unknown = createRequire(import.meta.url)("microsandbox/native");
 
-    expect(native).toBeTypeOf("object");
-  },
-);
+  expect(native).toBeTypeOf("object");
+});
