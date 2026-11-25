@@ -21,15 +21,19 @@ const hex = /^[0-9a-f]{16}$/;
 
 /** Everything a provider's connection reads from the environment, cleared for each test. */
 const connectionEnv = [
+  "ARCHIL_API_KEY",
+  "ARCHIL_REGION",
   "BEAM_TOKEN",
   "BEAM_WORKSPACE_ID",
   "DOCKER_HOST",
+  "MARITIME_API_URL",
   "MODAL_PROFILE",
   "MODAL_CONFIG_PATH",
   "MODAL_TOKEN_ID",
   "MODAL_TOKEN_SECRET",
   "MODAL_ENVIRONMENT",
   "MODAL_SERVER_URL",
+  "STYNE_API_URL",
   "BOXD_API_KEY",
   "BOXD_BASE_URL",
   "BOXD_API_URL",
@@ -315,6 +319,7 @@ describe("no provider the bench builds skips the fingerprint check", () => {
     vi.stubEnv("DOCKER_HOST", docker.host);
 
     for (const key of [
+      "ARCHIL_API_KEY",
       "BASETEN_API_KEY",
       "BEAM_TOKEN",
       "BEAM_WORKSPACE_ID",
@@ -324,6 +329,8 @@ describe("no provider the bench builds skips the fingerprint check", () => {
       "E2B_API_KEY",
       "FREESTYLE_API_KEY",
       "INSTABOX_API_KEY",
+      "MARITIME_API_KEY",
+      "STYNE_API_KEY",
       "SUPERSERVE_API_KEY",
       "TENKI_API_KEY",
       "UPSTASH_BOX_API_KEY",

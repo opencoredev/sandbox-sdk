@@ -139,6 +139,10 @@ function regionFor(
   return region;
 }
 
+/**
+ * Providers in the held-open idle diagnostic. Maritime is not: its usage intervals leave out a paused
+ * sandbox's disk ($0.08/GB-month), so an idle that pauses would read cheaper than it bills.
+ */
 export const heldOpenProviders = [
   "e2b",
   "daytona",
@@ -149,6 +153,8 @@ export const heldOpenProviders = [
   "modal",
   "vercel",
   "instabox",
+  "archil",
+  "styne",
 ];
 
 /** Idle lengths of the held-open diagnostic, provider defaults, with the matched zero-wait twin. */
@@ -298,9 +304,11 @@ export async function loadSlotProvider(
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
-  // Modal's factory lifetime for creates without one; each attempt also passes its own below.
+  // Modal's, Maritime's and Styne's factory lifetime for creates without one; each attempt also passes its own below.
   const lifetime: Record<string, number> =
-    setup.adapter === "modal" ? { modal: slotMs + 15 * 60_000 } : {};
+    setup.adapter === "modal" || setup.adapter === "maritime" || setup.adapter === "styne"
+      ? { [setup.adapter]: slotMs + 15 * 60_000 }
+      : {};
 
   const loaded = await loadProvider(setup.adapter, process.env, undefined, {
     template: config.template ? { [setup.adapter]: config.template } : {},
@@ -971,7 +979,7 @@ async function billing(args: string[]) {
   const raw: object[] = [];
 
   for (const [adapter, items] of byAdapter) {
-    if (["tenki", "freestyle", "baseten", "beam"].includes(adapter)) continue;
+    if (["tenki", "freestyle", "baseten", "beam", "styne"].includes(adapter)) continue;
 
     const rows: OwnedSandbox[] = items.flatMap(({ record, sandboxIds }) =>
       sandboxIds.map((id) => ({
@@ -1012,7 +1020,7 @@ async function billing(args: string[]) {
     // The recorded provider name already says which product ran (upstash-ephemeral).
     const base = { attemptId: record.attemptId, product: null, allocation, usage: null };
 
-    if (["tenki", "freestyle", "baseten", "beam"].includes(setup.adapter))
+    if (["tenki", "freestyle", "baseten", "beam", "styne"].includes(setup.adapter))
       return {
         ...base,
         charge: { kind: "estimate", source: "billing rules at list price (no billing data)" },

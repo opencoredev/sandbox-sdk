@@ -10,6 +10,13 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Boxd } from "@boxd-sh/sdk";
 import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { TenkiSandbox } from "@tenkicloud/sandbox";
+import type { Archil as ArchilClient } from "disk";
+import {
+  createRawMaritime,
+  maritimePlane,
+  maritimeRun,
+  rawRequestMs,
+} from "../src/maritime-raw.js";
 
 type Sdk = typeof Core;
 
@@ -49,6 +56,45 @@ const runId = `sbx57-${Date.now().toString(36)}`;
 const label = { "sdk-overhead-run": runId };
 const moduleUrl = (path: string) => pathToFileURL(resolve(sdkRoot, "dist", path)).href;
 
+/**
+ * Styne's REST API with the run's key, as the floor and raw creates call it. Styne has no peer SDK:
+ * its official `styne-sdk` is not what the adapter replaces, so the floor is the API itself.
+ */
+async function styneCall(
+  path: string,
+  init: { method?: string; body?: BodyInit; json?: object } = {},
+) {
+  const response = await fetch(`${process.env.STYNE_API_URL ?? "https://api.styne.ai"}${path}`, {
+    method: init.method ?? "GET",
+    headers: {
+      Authorization: `Bearer ${process.env.STYNE_API_KEY ?? ""}`,
+      "Content-Type": init.json === undefined ? "application/octet-stream" : "application/json",
+    },
+    body: init.json === undefined ? init.body : JSON.stringify(init.json),
+  });
+
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw Object.assign(new Error(`Styne ${path.split("/")[1]} failed: HTTP ${response.status}`), {
+      status: response.status,
+    });
+  }
+
+  return response;
+}
+
+/** One command to its end through `POST /sandboxes/{id}/commands`; a non-zero exit throws. */
+async function styneRun(id: string, command: string) {
+  const response = await styneCall(`/sandboxes/${encodeURIComponent(id)}/commands`, {
+    method: "POST",
+    json: { argv: ["sh", "-c", command], timeoutMs },
+  });
+
+  const result = z.object({ exitCode: z.number().nullable() }).parse(await response.json());
+
+  if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}`);
+}
+
 const nativeUrl = (name: string) =>
   import.meta.resolve(name, pathToFileURL(resolve(sdkRoot, "package.json")).href);
 
@@ -70,6 +116,10 @@ const nativePackages = {
   baseten: "@basetenlabs/sandbox",
   instabox: "@insforge/instabox-sdk",
   beam: "@beamcloud/beam-js",
+  archil: "disk",
+  // A direct-HTTP provider with no SDK of its own: the floor is fetch against its REST API.
+  maritime: null,
+  styne: null,
 } as const;
 
 /** A provider this script can measure. */
@@ -375,6 +425,95 @@ const providers = {
       },
     };
   },
+  async archil() {
+    const m: typeof import("@opencoredev/sandbox-sdk/archil") = await import(
+      moduleUrl("providers/archil/index.js")
+    );
+
+    const provider = m.archil();
+
+    // The floor is the official SDK's sandbox handle the adapter already holds.
+    return {
+      provider,
+      floor: (id) => {
+        const { sandbox } = provider.native(id);
+
+        return {
+          exec: async (command = "true") => {
+            const r = await sandbox.exec(command);
+
+            if (r.status !== "completed" || r.exitCode !== 0)
+              throw new Error(`exit ${r.exitCode ?? r.status}`);
+          },
+          write: async (path, data) => {
+            await sandbox.files.uploadFile(data, path);
+          },
+        };
+      },
+    };
+  },
+
+  async maritime() {
+    const m: typeof import("@opencoredev/sandbox-sdk/maritime") = await import(
+      moduleUrl("providers/maritime/index.js")
+    );
+
+    const template = templates.get("maritime");
+    const provider = m.maritime(template === undefined ? {} : { template });
+
+    // The adapter calls the REST API itself; the floor is the same API with plain fetch.
+    return {
+      provider,
+      floor: (id) => ({
+        exec: (command = "true") => maritimeRun(id, command),
+        write: async (path, data) => {
+          const plane = await maritimePlane(id);
+
+          const response = await fetch(
+            `${plane.dataPlaneUrl}/files?path=${encodeURIComponent(path)}`,
+            {
+              method: "PUT",
+              headers: {
+                "X-Maritime-Token": plane.secret,
+                "Content-Type": "application/octet-stream",
+              },
+              body: new Uint8Array(data),
+              signal: AbortSignal.timeout(rawRequestMs),
+            },
+          );
+
+          await response.body?.cancel();
+
+          if (!response.ok) throw new Error(`Maritime write failed: HTTP ${response.status}`);
+        },
+      }),
+    };
+  },
+
+  async styne() {
+    const m: typeof import("@opencoredev/sandbox-sdk/styne") = await import(
+      moduleUrl("providers/styne/index.js")
+    );
+
+    const template = templates.get("styne");
+    const provider = m.styne(template === undefined ? {} : { template });
+
+    // The adapter calls the REST API itself; the floor is the same API with plain fetch.
+    return {
+      provider,
+      floor: (id) => ({
+        exec: (command = "true") => styneRun(id, command),
+        write: async (path, data) => {
+          await (
+            await styneCall(
+              `/sandboxes/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`,
+              { method: "PUT", body: new Uint8Array(data) },
+            )
+          ).body?.cancel();
+        },
+      }),
+    };
+  },
 } satisfies Record<ProviderName, () => Promise<Loaded>>;
 
 interface NativeBox {
@@ -391,6 +530,8 @@ interface NativeClients {
   beam?: InstanceType<typeof import("@beamcloud/beam-js").Sandbox>;
   boxd?: Boxd;
   tenki?: TenkiSandbox;
+  /** One client for every native Archil create, as the adapter keeps one per provider. */
+  archil?: ArchilClient;
 }
 
 const nativeClients: NativeClients = {};
@@ -433,6 +574,59 @@ async function quietly<T>(action: () => Promise<T>): Promise<T> {
     return await action();
   } finally {
     Object.assign(console, original);
+  }
+}
+
+/** Stops an Archil sandbox without waiting on a stop that never settles: at most 60 s, then delete. */
+/** Deletes within 60 s; a delete still unanswered then is left to the final cleanup sweep. */
+async function deleteBounded(box: import("disk").Sandbox) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const outcome = await Promise.race([
+      box.delete().then(() => "deleted" as const),
+      new Promise<"late">((resolve) => {
+        timer = setTimeout(() => resolve("late"), 60_000);
+      }),
+    ]);
+
+    if (outcome === "late") throw new Error(`Archil delete of ${box.id} was not answered in 60 s`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function stopBounded(box: import("disk").Sandbox) {
+  const deadline = Date.now() + 60_000;
+
+  // Each request gets what is left of the deadline, so a stalled call can't hold cleanup. The timer
+  // is cleared once the race settles, so it never keeps a finished run alive.
+  const within = async (action: Promise<unknown>): Promise<void> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      await Promise.race([
+        action.then(
+          () => {},
+          () => {},
+        ),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  await within(box.stop({ wait: false }));
+
+  while (
+    Date.now() < deadline &&
+    !["stopped", "exited", "failed", "deleted"].includes(box.status)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await within(box.refresh());
   }
 }
 
@@ -776,16 +970,150 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     return raw;
   }
 
+  if (name === "archil") {
+    const m: typeof import("disk") = await import(nativeUrl("disk"));
+
+    const client = (nativeClients.archil ??= new m.Archil({
+      apiKey: process.env.ARCHIL_API_KEY ?? "",
+      region: process.env.ARCHIL_REGION ?? "aws-us-east-1",
+    }));
+
+    // Archil keeps no labels; the name carries the run ID (lowercase, hyphens, at most 63
+    // characters). Same defaults as the adapter: Archil's node:24-bookworm, 1 vCPU / 2048 MiB.
+    // Allocate without waiting, as the adapter does, so the ID is admitted for cleanup before the
+    // readiness poll can fail; the poll stays inside this create's timing.
+    const nativeName = `${runId}-native-${crypto.randomUUID().slice(0, 8)}`;
+    let box: Awaited<ReturnType<typeof client.sandboxes.create>>;
+
+    try {
+      box = await client.sandboxes.create({ name: nativeName }, { wait: false });
+    } catch (error) {
+      // A refusal made nothing. A lost answer may still have allocated: the name is this create's
+      // alone, so find it, admit it for cleanup and fail this create.
+      if (error instanceof m.ArchilApiError && error.status < 500) throw error;
+      const found = (await client.sandboxes.list()).find((native) => native.name === nativeName);
+
+      if (found)
+        admit({
+          id: found.id,
+          exec: async () => {
+            throw new Error("Archil create answer was lost");
+          },
+          destroy: async () => {
+            await stopBounded(found);
+            await deleteBounded(found);
+          },
+          exists: async () => {
+            try {
+              return (await client.sandboxes.get(found.id)).status !== "deleted";
+            } catch (cause) {
+              if (cause instanceof m.ArchilApiError && cause.status === 404) return false;
+              throw cause;
+            }
+          },
+        });
+      throw error;
+    }
+
+    const raw = {
+      id: box.id,
+      exec: async () => {
+        const r = await box.exec("true");
+
+        if (r.status !== "completed" || r.exitCode !== 0)
+          throw new Error(`exit ${r.exitCode ?? r.status}`);
+      },
+      destroy: async () => {
+        // A sandbox that already stopped or failed refuses stop; delete it either way.
+        await stopBounded(box);
+        await deleteBounded(box);
+      },
+      exists: async () => {
+        try {
+          const found = await client.sandboxes.get(box.id);
+
+          return found.status !== "deleted";
+        } catch (error) {
+          if (error instanceof m.ArchilApiError && error.status === 404) return false;
+          throw error;
+        }
+      },
+    };
+
+    admit(raw);
+
+    const deadline = Date.now() + 180_000;
+
+    while (box.status === "pending") {
+      if (Date.now() > deadline) throw new Error("Archil sandbox did not start in time");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await box.refresh();
+    }
+
+    if (box.status !== "running") throw new Error(`Archil sandbox did not start (${box.status})`);
+
+    return raw;
+  }
+
+  if (name === "maritime")
+    // Admitted for use and cleanup only once its answer carries this create's own owner marker.
+    return createRawMaritime({ template: templates.get(name) ?? "base", labels: label, admit });
+
+  if (name === "styne") {
+    // Same template and lifetime as the adapter's defaults: base, one hour.
+    const created = z.object({ sandboxID: z.string() }).parse(
+      await (
+        await styneCall("/sandboxes", {
+          method: "POST",
+          json: { templateID: templates.get(name) ?? "base", metadata: label, timeout: 3600 },
+        })
+      ).json(),
+    );
+
+    const id = created.sandboxID;
+
+    return {
+      id,
+      exec: () => styneRun(id, "true"),
+      destroy: async () => {
+        try {
+          await (
+            await styneCall(`/sandboxes/${encodeURIComponent(id)}`, { method: "DELETE" })
+          ).body?.cancel();
+        } catch (error) {
+          // A second delete answers 404, an ended sandbox 410.
+          if (!styneGone.safeParse(error).success) throw error;
+        }
+      },
+      exists: async () => {
+        try {
+          await (await styneCall(`/sandboxes/${encodeURIComponent(id)}`)).body?.cancel();
+
+          return true;
+        } catch (error) {
+          if (styneGone.safeParse(error).success) return false;
+          throw error;
+        }
+      },
+    };
+  }
+
   throw new Error(`Unknown provider ${name}`);
 }
+
+/** Styne's answer for a sandbox that is gone: 404, or 410 while it still remembers it. */
+const styneGone = z.object({ status: z.union([z.literal(404), z.literal(410)]) });
 
 async function initCost(name: ProviderName): Promise<OpResult> {
   const pkg = nativePackages[name];
 
   const sample = async (ours: boolean) => {
+    // A provider with no SDK of its own has nothing to import: its baseline is the empty program.
     const code = ours
       ? `const t=performance.now(); await import(${JSON.stringify(moduleUrl("index.js"))}); const m=await import(${JSON.stringify(moduleUrl(`providers/${name}/index.js`))}); m[${JSON.stringify(name)}](${JSON.stringify(templates.has(name) ? { template: templates.get(name) } : {})}); console.log(performance.now()-t);`
-      : `const t=performance.now(); await import(${JSON.stringify(nativeUrl(pkg))}); console.log(performance.now()-t);`;
+      : pkg === null
+        ? "const t=performance.now(); console.log(performance.now()-t);"
+        : `const t=performance.now(); await import(${JSON.stringify(nativeUrl(pkg))}); console.log(performance.now()-t);`;
 
     const output = execFileSync(process.execPath, ["--eval", code], {
       encoding: "utf8",

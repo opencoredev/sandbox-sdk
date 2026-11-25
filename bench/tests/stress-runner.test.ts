@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { runV2 } from "../src/v2-runner.js";
 import { parseV2 } from "../src/v2-config.js";
+import { boundFake } from "./native-fakes.js";
 
 const dirs: string[] = [];
 
@@ -61,7 +62,7 @@ it("keeps every survival member alive through its window, then cleans up", async
   const provider = heartbeatProvider();
 
   const report = await runV2(
-    [{ kind: "ready", name: "boat", cloud: false, region: null, provider }],
+    [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(provider) }],
     parseV2(survivalArgs(dir)),
     async () => {},
   );
@@ -102,7 +103,7 @@ it("records a sandbox that disappears mid-window as dead and still cleans up the
   });
 
   const report = await runV2(
-    [{ kind: "ready", name: "boat", cloud: false, region: null, provider }],
+    [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(provider) }],
     // Cleanup waits this long for the vanished sandbox to show in listings before proving it absent.
     parseV2([...survivalArgs(dir), "--ownership-visibility-ms", "500"]),
     async () => {},
@@ -136,7 +137,7 @@ it("marks a member whose heartbeat hangs past the interval unresponsive", async 
   });
 
   const report = await runV2(
-    [{ kind: "ready", name: "boat", cloud: false, region: null, provider }],
+    [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(provider) }],
     parseV2(survivalArgs(dir)),
     async () => {},
   );
@@ -162,7 +163,7 @@ it("fails a CPU burst whose members cannot run the probe, without leaving sandbo
   const provider = memory();
 
   const report = await runV2(
-    [{ kind: "ready", name: "boat", cloud: false, region: null, provider }],
+    [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(provider) }],
     parseV2([
       "--providers",
       "boat",
@@ -210,7 +211,7 @@ it("reserves a survival member's whole window against the dollar budget", async 
 
   // boat's fixed rate: a 3-member cohort reserving 4 x 180 s + 300 s each exceeds 1 cent.
   const report = await runV2(
-    [{ kind: "ready", name: "boat", cloud: false, region: null, provider }],
+    [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(provider) }],
     parseV2([
       ...survivalArgs(dir),
       "--max-dollars",

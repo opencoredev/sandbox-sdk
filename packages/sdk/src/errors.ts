@@ -47,6 +47,8 @@ export interface ErrorOptions {
   retryable?: boolean;
   /** The next step, on its own. Default: a generic step for `code`. */
   hint?: string;
+  /** How long the provider asked callers to wait before retrying, from its `Retry-After`. */
+  retryAfterMs?: number;
   cause?: unknown;
 }
 
@@ -85,6 +87,8 @@ export class SandboxError extends Error {
   readonly provider: string;
   /** The sandbox involved, when there is one. */
   readonly sandboxId?: string;
+  /** How long the provider asked callers to wait before retrying, when it said. {@link withRetry} honours it. */
+  readonly retryAfterMs?: number;
   constructor(message: string, options: ErrorOptions) {
     super(message, { cause: options.cause });
     this.name = "SandboxError";
@@ -93,6 +97,7 @@ export class SandboxError extends Error {
     this.hint = options.hint ?? hints[options.code] ?? hints.provider;
     this.provider = options.provider ?? "unknown";
     this.sandboxId = options.sandboxId;
+    this.retryAfterMs = options.retryAfterMs;
   }
   static {
     // The published build is minified, so the class itself is named something like `e`. Node prints
@@ -108,14 +113,25 @@ export class SandboxError extends Error {
     const stack = this.stack ?? "";
     const frames = stack.indexOf("\n    at ") >= 0 ? stack.slice(stack.indexOf("\n    at ")) : "";
 
-    const fields = {
-      code: this.code,
-      provider: this.provider,
-      sandboxId: this.sandboxId,
-      retryable: this.retryable,
-      hint: this.hint,
-      cause: this.cause,
-    };
+    const fields =
+      this.retryAfterMs === undefined
+        ? {
+            code: this.code,
+            provider: this.provider,
+            sandboxId: this.sandboxId,
+            retryable: this.retryable,
+            hint: this.hint,
+            cause: this.cause,
+          }
+        : {
+            code: this.code,
+            provider: this.provider,
+            sandboxId: this.sandboxId,
+            retryable: this.retryable,
+            retryAfterMs: this.retryAfterMs,
+            hint: this.hint,
+            cause: this.cause,
+          };
 
     return `SandboxError [${this.code}]: ${this.message}${frames} ${inspect(fields, options)}`;
   }
@@ -130,35 +146,627 @@ export function isNotFound(
   );
 }
 
+const redactedMarker = "[REDACTED]";
+
+/** Errors whose provider details were intentionally withheld before secret recovery completed. */
+export const withheldErrors = new WeakSet<SandboxError>();
+
+/** Timeout errors created by `ProcessHandle.wait()`'s own deadline timer. */
+export const waitDeadlineErrors = new WeakSet<SandboxError>();
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** The `lastIndex`/`exec`/`test` surface of a global RegExp that {@link Redactor} uses. */
+interface LiteralPattern {
+  lastIndex: number;
+  exec(text: string): { readonly index: number; readonly 0: string } | null;
+  test(text: string): boolean;
+}
+
+/** Engines cap regex size (V8 rejects long single-character runs, JSC rejects ~1 MiB patterns) and their SyntaxError quotes the pattern, so longer alternations use {@link literalPattern}. */
+const maxRegExpSource = 16_384;
+
+/** Leftmost match over literal `items` (longest first), like a global alternation RegExp, using indexOf. */
+function literalPattern(items: readonly string[]): LiteralPattern {
+  let next: number[] = [];
+
+  const pattern: LiteralPattern = {
+    lastIndex: 0,
+    exec(text) {
+      if (pattern.lastIndex === 0) next = items.map(() => -2);
+      let best = -1;
+      let bestItem = "";
+
+      for (const [index, item] of items.entries()) {
+        let at = next[index] ?? -2;
+
+        if (at === -2 || (at !== -1 && at < pattern.lastIndex)) {
+          at = text.indexOf(item, pattern.lastIndex);
+          next[index] = at;
+        }
+
+        if (at !== -1 && (best === -1 || at < best)) {
+          best = at;
+          bestItem = item;
+        }
+      }
+
+      if (best === -1) {
+        pattern.lastIndex = 0;
+
+        return null;
+      }
+
+      pattern.lastIndex = best + bestItem.length;
+
+      return { index: best, 0: bestItem };
+    },
+    test(text) {
+      pattern.lastIndex = 0;
+      const found = pattern.exec(text) !== null;
+      pattern.lastIndex = 0;
+
+      return found;
+    },
+  };
+
+  return pattern;
+}
+
+/** @internal One segment of a redacted string mapped back to its original `[start, end)` range. */
+export interface RedactedSegment {
+  readonly text: string;
+  readonly redacted: boolean;
+  readonly start: number;
+  readonly end: number;
+}
+
+/** @internal Redacted text together with its source-mapped segments. */
+export interface RedactedText {
+  readonly text: string;
+  readonly segments: RedactedSegment[];
+}
+
 /** @internal Redacts registered secrets from text and errors. */
 export class Redactor {
   private values = new Set<string>();
+  private primaryPattern: LiteralPattern | undefined;
+  private markerSubPattern: RegExp | undefined;
+  private leftPrefixes: string[] = [];
+  private rightSuffixes: string[] = [];
+  private aroundPairs: [string, string][] = [];
+  private chainLeft: string[] = [];
+  private rightStreamSuffixes: string[] = [];
+  private outsideSecrets: string[] = [];
+  private cachedSecrets: string[] = [];
+  private cachedMaxLength = 1;
+  private mergesAdjacentMarkers = false;
+  private compiled = false;
   add(values: Iterable<string>) {
-    for (const value of values) if (value) this.values.add(value);
+    for (const value of values)
+      if (value && !this.values.has(value)) {
+        this.values.add(value);
+        this.compiled = false;
+      }
   }
-  text(value: string): string {
-    for (const secret of [...this.values].sort((a, b) => b.length - a.length))
-      value = value.split(secret).join("[REDACTED]");
+  private compile() {
+    if (this.compiled) return;
+    const outside: string[] = [];
+    const inside: string[] = [];
 
-    return value;
+    for (const secret of this.values) {
+      if (redactedMarker.includes(secret)) inside.push(secret);
+      else outside.push(secret);
+    }
+
+    outside.sort((a, b) => b.length - a.length);
+    this.outsideSecrets = outside;
+    const primarySource = outside.map(escapeRegExp).join("|");
+
+    this.primaryPattern =
+      outside.length === 0
+        ? undefined
+        : primarySource.length > maxRegExpSource
+          ? literalPattern(outside)
+          : new RegExp(primarySource, "g");
+
+    const left = new Set<string>();
+    const right = new Set<string>();
+    const around: [string, string][] = [];
+
+    for (const secret of outside) {
+      // Include full-marker overlap (overlap === redactedMarker.length) when the secret
+      // starts or ends with `[REDACTED]` plus additional text.
+      const limit = Math.min(secret.length - 1, redactedMarker.length);
+
+      for (let overlap = 1; overlap <= limit; overlap++) {
+        if (redactedMarker.endsWith(secret.slice(0, overlap))) right.add(secret.slice(overlap));
+
+        if (redactedMarker.startsWith(secret.slice(secret.length - overlap))) {
+          left.add(secret.slice(0, secret.length - overlap));
+        }
+      }
+
+      // Capture secrets containing `[REDACTED]` in the middle (e.g. `X[REDACTED]Y`) so
+      // batch expansion stays linear and streaming holds the leading prefix `X`.
+      let markerAt = secret.indexOf(redactedMarker);
+
+      while (markerAt !== -1) {
+        const before = secret.slice(0, markerAt);
+        const after = secret.slice(markerAt + redactedMarker.length);
+
+        if (before && after) around.push([before, after]);
+
+        markerAt = secret.indexOf(redactedMarker, markerAt + 1);
+      }
+    }
+
+    this.leftPrefixes = [...left].sort((a, b) => b.length - a.length);
+    this.rightSuffixes = [...right].sort((a, b) => b.length - a.length);
+    this.aroundPairs = around;
+    this.chainLeft = [...new Set([...left, ...around.map(([before]) => before)])].sort(
+      (a, b) => b.length - a.length,
+    );
+    this.rightStreamSuffixes = [
+      ...new Set([...this.rightSuffixes, ...this.aroundPairs.map(([, after]) => after)]),
+    ].sort((a, b) => b.length - a.length);
+    this.cachedSecrets = [...this.values].sort((a, b) => b.length - a.length);
+
+    let maxLength = 1;
+
+    for (const item of this.cachedSecrets) {
+      if (item.length > maxLength) maxLength = item.length;
+    }
+
+    this.cachedMaxLength = maxLength;
+
+    const doubleMarker = redactedMarker + redactedMarker;
+    this.mergesAdjacentMarkers = outside.some((secret) => doubleMarker.includes(secret));
+
+    if (inside.length > 0) {
+      const alternatives = [...new Set([...inside, redactedMarker])].sort(
+        (a, b) => b.length - a.length,
+      );
+
+      this.markerSubPattern = new RegExp(alternatives.map(escapeRegExp).join("|"), "g");
+    } else this.markerSubPattern = undefined;
+
+    this.compiled = true;
   }
-  get secrets() {
-    return [...this.values].sort((a, b) => b.length - a.length);
+  private findPrimarySpans(next: string): [number, number][] {
+    if (!this.primaryPattern) return [];
+
+    // Phase 1: locate all existing `[REDACTED]` markers so matched spans absorb overlapped markers.
+    const markers: [number, number][] = [];
+    let pos = next.indexOf(redactedMarker);
+
+    while (pos !== -1) {
+      markers.push([pos, pos + redactedMarker.length]);
+      pos = next.indexOf(redactedMarker, pos + redactedMarker.length);
+    }
+
+    // Store `[start, end, leftMarker]` per span so leftward merges skip already-absorbed markers in O(1).
+    const spans: [number, number, number][] = [];
+    this.primaryPattern.lastIndex = 0;
+    let match: ReturnType<LiteralPattern["exec"]>;
+    let scanMarker = 0;
+
+    while ((match = this.primaryPattern.exec(next)) !== null) {
+      let start = match.index;
+      let end = start + match[0].length;
+
+      while (scanMarker < markers.length && (markers[scanMarker]?.[1] ?? 0) <= start) {
+        scanMarker++;
+      }
+
+      let leftMarker = scanMarker;
+      let rightMarker = scanMarker;
+
+      const absorbMarkers = () => {
+        let expanded = true;
+
+        while (expanded) {
+          expanded = false;
+
+          while (leftMarker > 0 && (markers[leftMarker - 1]?.[1] ?? 0) > start) {
+            leftMarker--;
+            const marker = markers[leftMarker];
+
+            if (marker) {
+              if (marker[0] < start) {
+                start = marker[0];
+                expanded = true;
+              }
+
+              if (marker[1] > end) {
+                end = marker[1];
+                expanded = true;
+              }
+            }
+          }
+
+          while (rightMarker < markers.length && (markers[rightMarker]?.[0] ?? 0) < end) {
+            const marker = markers[rightMarker];
+            rightMarker++;
+
+            if (marker) {
+              if (marker[0] < start) {
+                start = marker[0];
+                expanded = true;
+              }
+
+              if (marker[1] > end) {
+                end = marker[1];
+                expanded = true;
+              }
+            }
+          }
+        }
+      };
+
+      absorbMarkers();
+
+      // Phase 2: greedily expand cross-secret overlapping matches and right/left/around suffixes & prefixes
+      // that would form new secret matches against `[REDACTED]`, then merge overlapping spans.
+      let activeSecret = match[0];
+      let grew = true;
+
+      while (grew) {
+        grew = false;
+
+        if (this.outsideSecrets.length > 1) {
+          for (const secret of this.outsideSecrets) {
+            if (secret.length < 2 || secret === activeSecret) continue;
+
+            const from = Math.max(start + 1, end - secret.length + 1);
+
+            if (from >= end) continue;
+
+            const windowEnd = Math.min(next.length, end - 1 + secret.length);
+
+            if (windowEnd <= end) continue;
+
+            const at = next.slice(from, windowEnd).lastIndexOf(secret);
+
+            if (at !== -1) {
+              const matchEnd = from + at + secret.length;
+
+              if (matchEnd > end) {
+                end = matchEnd;
+                activeSecret = secret;
+                absorbMarkers();
+                grew = true;
+                break;
+              }
+            }
+          }
+
+          if (grew) continue;
+        }
+
+        for (const suffix of this.rightSuffixes) {
+          if (end < next.length && next.startsWith(suffix, end)) {
+            end += suffix.length;
+            absorbMarkers();
+            grew = true;
+            break;
+          }
+        }
+
+        const prevEnd = spans.at(-1)?.[1] ?? 0;
+
+        for (const prefix of this.leftPrefixes) {
+          if (start - prefix.length >= prevEnd && next.startsWith(prefix, start - prefix.length)) {
+            start -= prefix.length;
+            absorbMarkers();
+            grew = true;
+            break;
+          }
+        }
+
+        for (const [before, after] of this.aroundPairs) {
+          if (
+            start >= before.length &&
+            end + after.length <= next.length &&
+            next.startsWith(before, start - before.length) &&
+            next.startsWith(after, end)
+          ) {
+            start -= before.length;
+            end += after.length;
+            absorbMarkers();
+            grew = true;
+            break;
+          }
+        }
+
+        while (spans.length > 0) {
+          const previous = spans.at(-1);
+
+          if (
+            !previous ||
+            (this.mergesAdjacentMarkers ? start > previous[1] : start >= previous[1])
+          )
+            break;
+          spans.pop();
+          start = Math.min(start, previous[0]);
+          leftMarker = Math.min(leftMarker, previous[2]);
+          absorbMarkers();
+          grew = true;
+        }
+      }
+
+      spans.push([start, end, leftMarker]);
+      scanMarker = rightMarker;
+
+      if (this.primaryPattern.lastIndex < end) this.primaryPattern.lastIndex = end;
+    }
+
+    return spans.map(([start, end]) => [start, end]);
   }
-  get maxLength() {
-    return Math.max(1, ...[...this.values].map((value) => value.length));
+  private findMarkerSubSpans(next: string): [number, number][] {
+    if (!this.markerSubPattern) return [];
+    const spans: [number, number][] = [];
+    this.markerSubPattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = this.markerSubPattern.exec(next)) !== null) {
+      if (match[0] !== redactedMarker) spans.push([match.index, match.index + match[0].length]);
+    }
+
+    return spans;
+  }
+  /**
+   * Replaces every registered secret with `[REDACTED]`. Secrets that are not substrings of
+   * `[REDACTED]` run without exempting literal markers, while secrets inside `[REDACTED]` match
+   * whole markers verbatim. Passes repeat to a fixed point so neither literal markers nor
+   * replacement-created boundaries can retain a secret substring, and redacting twice is a no-op.
+   */
+  text(value: string): string {
+    if (this.values.size === 0) return value;
+    this.compile();
+    let result = value;
+
+    for (let pass = 0; pass < 512; pass++) {
+      let next = result;
+      const spans = this.findPrimarySpans(next);
+
+      if (spans.length > 0) {
+        let out = "";
+        let cursor = 0;
+
+        for (const [start, end] of spans) {
+          out += next.slice(cursor, start) + redactedMarker;
+          cursor = end;
+        }
+
+        next = out + next.slice(cursor);
+      }
+
+      if (this.markerSubPattern) next = next.replace(this.markerSubPattern, redactedMarker);
+
+      if (next === result) return result;
+      result = next;
+    }
+
+    // Secrets that keep re-forming past the pass budget fail closed cleanly.
+    return redactedMarker;
+  }
+  /** Redact `value` and return each output segment mapped back to its original `[start, end)` range. */
+  redactSegments(value: string): RedactedText {
+    if (this.values.size === 0 || !value) {
+      return {
+        text: value,
+        segments: value ? [{ text: value, redacted: false, start: 0, end: value.length }] : [],
+      };
+    }
+
+    this.compile();
+    let result = value;
+
+    let segments: RedactedSegment[] = [
+      { text: value, redacted: false, start: 0, end: value.length },
+    ];
+
+    const applySpans = (
+      current: string,
+      currentSegments: RedactedSegment[],
+      spans: readonly [number, number][],
+    ): RedactedText => {
+      if (spans.length === 0) return { text: current, segments: currentSegments };
+      const nextSegments: RedactedSegment[] = [];
+      let segIndex = 0;
+      let segOffset = 0;
+
+      const emitUnchanged = (from: number, to: number) => {
+        if (to <= from) return;
+
+        while (segIndex < currentSegments.length) {
+          const seg = currentSegments[segIndex];
+
+          if (!seg) break;
+          const segEnd = segOffset + seg.text.length;
+
+          if (segEnd <= from) {
+            segOffset = segEnd;
+            segIndex++;
+            continue;
+          }
+
+          if (segOffset >= to) break;
+          const sliceStart = Math.max(from, segOffset) - segOffset;
+          const sliceEnd = Math.min(to, segEnd) - segOffset;
+          const piece = seg.text.slice(sliceStart, sliceEnd);
+
+          if (piece) {
+            nextSegments.push(
+              seg.redacted
+                ? { text: piece, redacted: true, start: seg.start, end: seg.end }
+                : {
+                    text: piece,
+                    redacted: false,
+                    start: seg.start + sliceStart,
+                    end: seg.start + sliceEnd,
+                  },
+            );
+          }
+
+          if (segEnd <= to) {
+            segOffset = segEnd;
+            segIndex++;
+          } else break;
+        }
+      };
+
+      const consumeReplaced = (from: number, to: number) => {
+        let origStart = value.length;
+        let origEnd = 0;
+
+        while (segIndex < currentSegments.length) {
+          const seg = currentSegments[segIndex];
+
+          if (!seg) break;
+          const segEnd = segOffset + seg.text.length;
+
+          if (segEnd <= from) {
+            segOffset = segEnd;
+            segIndex++;
+            continue;
+          }
+
+          if (segOffset >= to) break;
+          const sliceStart = Math.max(from, segOffset) - segOffset;
+          const sliceEnd = Math.min(to, segEnd) - segOffset;
+          const pieceStart = seg.redacted ? seg.start : seg.start + sliceStart;
+          const pieceEnd = seg.redacted ? seg.end : seg.start + sliceEnd;
+
+          if (pieceStart < origStart) origStart = pieceStart;
+
+          if (pieceEnd > origEnd) origEnd = pieceEnd;
+
+          if (segEnd <= to) {
+            segOffset = segEnd;
+            segIndex++;
+          } else break;
+        }
+
+        nextSegments.push({
+          text: redactedMarker,
+          redacted: true,
+          start: origStart,
+          end: origEnd,
+        });
+      };
+
+      let cursor = 0;
+      let out = "";
+
+      for (const [start, end] of spans) {
+        emitUnchanged(cursor, start);
+        consumeReplaced(start, end);
+        out += current.slice(cursor, start) + redactedMarker;
+        cursor = end;
+      }
+
+      emitUnchanged(cursor, current.length);
+
+      return { text: out + current.slice(cursor), segments: nextSegments };
+    };
+
+    for (let pass = 0; pass < 512; pass++) {
+      let next = result;
+      let nextSegments = segments;
+      const primarySpans = this.findPrimarySpans(next);
+
+      if (primarySpans.length > 0) {
+        const applied = applySpans(next, nextSegments, primarySpans);
+        next = applied.text;
+        nextSegments = applied.segments;
+      }
+
+      const subSpans = this.findMarkerSubSpans(next);
+
+      if (subSpans.length > 0) {
+        const applied = applySpans(next, nextSegments, subSpans);
+        next = applied.text;
+        nextSegments = applied.segments;
+      }
+
+      if (next === result) return { text: result, segments };
+      result = next;
+      segments = nextSegments;
+    }
+
+    return {
+      text: redactedMarker,
+      segments: [{ text: redactedMarker, redacted: true, start: 0, end: value.length }],
+    };
+  }
+  hasMatch(value: string): boolean {
+    if (this.values.size === 0 || !value) return false;
+    this.compile();
+
+    if (this.primaryPattern) {
+      this.primaryPattern.lastIndex = 0;
+
+      if (this.primaryPattern.test(value)) return true;
+    }
+
+    if (this.markerSubPattern) {
+      this.markerSubPattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+
+      while ((match = this.markerSubPattern.exec(value)) !== null) {
+        if (match[0] !== redactedMarker) return true;
+      }
+    }
+
+    return false;
+  }
+  get secrets(): readonly string[] {
+    this.compile();
+
+    return this.cachedSecrets;
+  }
+  get maxLength(): number {
+    this.compile();
+
+    return this.cachedMaxLength;
+  }
+  get overlapLeft(): readonly string[] {
+    this.compile();
+
+    return this.leftPrefixes;
+  }
+  get streamChainLeft(): readonly string[] {
+    this.compile();
+
+    return this.chainLeft;
+  }
+  get streamRightSuffixes(): readonly string[] {
+    this.compile();
+
+    return this.rightStreamSuffixes;
   }
   /** Map any thrown value to a scrubbed SandboxError. */
   error(cause: unknown, provider: string, sandboxId?: string): SandboxError {
+    if (cause instanceof SandboxError && withheldErrors.has(cause)) return cause;
+    const safeProvider = scrubCredentials(this.text(provider));
+
+    const scrubId = (id: string | undefined) =>
+      id === undefined ? undefined : scrubCredentials(this.text(id));
+
     if (cause instanceof SandboxError) {
       // Adapters build these from native text, so scrub them too. Messages keep their lines and length: log tails live there.
-      return new SandboxError(scrubCredentials(this.text(cause.message)), {
+      const mapped = new SandboxError(scrubCredentials(this.text(cause.message)), {
         code: cause.code,
         retryable: cause.retryable,
+        retryAfterMs: cause.retryAfterMs,
         hint: scrubCredentials(this.text(cause.hint)),
-        provider,
+        provider: safeProvider,
         // Create paths know no ID yet; keep the one an adapter named, such as a box it could not delete.
-        sandboxId: sandboxId ?? cause.sandboxId,
+        sandboxId: scrubId(sandboxId ?? cause.sandboxId),
         // Do not preserve arbitrary native objects: they may contain credentials in fields or cycles.
         // Adapter evidence (see evidenceCause) keeps its fields as the JSON in its message.
         cause:
@@ -169,6 +777,10 @@ export class Redactor {
                 (text) => this.text(text),
               ),
       });
+
+      if (waitDeadlineErrors.has(cause)) waitDeadlineErrors.add(mapped);
+
+      return mapped;
     }
 
     // A raw failure reached the core, usually an SDK or adapter bug. Its scrubbed text is the only clue, so keep it in both places.
@@ -183,8 +795,8 @@ export class Redactor {
       {
         code: "provider",
         hint: hints.provider,
-        provider,
-        sandboxId,
+        provider: safeProvider,
+        sandboxId: scrubId(sandboxId),
         cause: nativeDetail(cause, (text) => this.text(text)),
       },
     );
@@ -198,14 +810,18 @@ const credentialPatterns: [RegExp, string][] = [
     /(\bauthorization["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n;]+)/gi,
     "$1[REDACTED]",
   ],
-  [/\bBearer\s+[^\s"',;]+/gi, "Bearer [REDACTED]"],
+  [
+    // Token68 has no quotes or backslashes, so optional (escaped) quotes around it keep this linear.
+    /\bBearer\s+\\*["']?[^\s"'\\,;]+(?:\\*["'])?/gi,
+    "Bearer [REDACTED]",
+  ],
   [
     /((?:["']?(?:api[-_]?key|access[-_]?token|token|password|secret)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi,
     "$1[REDACTED]",
   ],
 ];
 
-function scrubCredentials(text: string): string {
+export function scrubCredentials(text: string): string {
   for (const [pattern, replacement] of credentialPatterns)
     text = text.replace(pattern, replacement);
 

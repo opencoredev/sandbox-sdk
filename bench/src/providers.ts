@@ -9,6 +9,8 @@ const templateKeys = new Map([
   ["e2b", "template"],
   ["superserve", "template"],
   ["instabox", "template"],
+  ["maritime", "template"],
+  ["styne", "template"],
   ["daytona", "snapshot"],
   ["freestyle", "snapshotId"],
   ["tenki", "image"],
@@ -16,6 +18,7 @@ const templateKeys = new Map([
   ["modal", "image"],
   ["baseten", "image"],
   ["beam", "image"],
+  ["archil", "image"],
   ["local", "image"],
 ]);
 
@@ -69,6 +72,8 @@ export type LoadedProvider = ReadyProvider | SkippedProvider;
 const credentials = new Map([
   ["superserve", ["SUPERSERVE_API_KEY"]],
   ["instabox", ["INSTABOX_API_KEY"]],
+  ["maritime", ["MARITIME_API_KEY"]],
+  ["styne", ["STYNE_API_KEY"]],
   ["e2b", ["E2B_API_KEY"]],
   ["railway", ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"]],
   ["vercel", ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID"]],
@@ -81,6 +86,7 @@ const credentials = new Map([
   ["modal", ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]],
   ["baseten", ["BASETEN_API_KEY"]],
   ["beam", ["BEAM_TOKEN", "BEAM_WORKSPACE_ID"]],
+  ["archil", ["ARCHIL_API_KEY"]],
 ]);
 
 /**
@@ -100,6 +106,8 @@ const regionKeys = new Map([
   ["daytona", "DAYTONA_TARGET"],
   // Pins sandboxes at Modal's region price multiplier; loadProvider passes it to the adapter.
   ["modal", "MODAL_SANDBOX_REGION"],
+  // Archil keys are region-scoped; the adapter reads ARCHIL_REGION itself (default aws-us-east-1).
+  ["archil", "ARCHIL_REGION"],
 ]);
 
 // Providers whose region places the sandbox and sets its price, so the label and the placement
@@ -329,6 +337,8 @@ const providerMembers = {
   previewMode: (target) => target.previewMode,
   inlineActivity: (target) => target.inlineActivity,
   procActivity: (target) => target.procActivity,
+  recordsSecretNames: (target) => target.recordsSecretNames,
+  readsMetadataOnlyWhenRunning: (target) => target.readsMetadataOnlyWhenRunning,
   commandShell: (target) => target.commandShell,
   processRecordRoot: (target) => target.processRecordRoot,
   capabilities: (target) => target.capabilities,

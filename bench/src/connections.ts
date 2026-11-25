@@ -39,10 +39,11 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  * use, from the SDK's `resolveConfig`. The harness reads, snapshots and cleans up through the
  * connection of the exact adapter instance that created the sandboxes. A read sent to another
  * endpoint, account, team or project answers 404 for a sandbox that is running, which would be
- * recorded as absence. Local, Modal and Railway have no `resolveConfig`; their connection is read
- * here from the same options and variables their adapters read.
+ * recorded as absence. Archil, Local, Maritime, Modal, Railway and Styne have no `resolveConfig`;
+ * their connection is read here from the same options and variables their adapters read.
  */
 export interface Connections {
+  archil: ArchilConfig;
   baseten: BasetenConfig;
   beam: BeamConfig;
   boat: BoatConfig;
@@ -52,12 +53,42 @@ export interface Connections {
   freestyle: FreestyleConfig;
   instabox: InstaboxConfig;
   local: LocalConfig;
+  maritime: MaritimeConfig;
   modal: ModalConfig;
   railway: RailwayConfig;
+  styne: StyneConfig;
   superserve: SuperserveConfig;
   tenki: TenkiConfig;
   upstash: UpstashConfig;
   vercel: VercelConfig;
+}
+
+/**
+ * What `archil()` builds its client from (`connectClient` in the Archil adapter): the key, trimmed,
+ * and the region the key belongs to. Archil keys are region-scoped, so the region picks the
+ * control plane its requests reach.
+ */
+export interface ArchilConfig {
+  readonly apiKey: string;
+  readonly region: string;
+}
+
+/**
+ * What `maritime()` sends its requests with (`createMaritimeProvider`): the key, trimmed, and the
+ * API host without trailing slashes. The control plane is `${baseUrl}/v1`.
+ */
+export interface MaritimeConfig {
+  readonly apiKey: string;
+  readonly baseUrl: string;
+}
+
+/**
+ * What `styne()` sends its requests with (`createStyneProvider`): the key, trimmed, and the API
+ * host without trailing slashes.
+ */
+export interface StyneConfig {
+  readonly apiKey: string;
+  readonly baseUrl: string;
 }
 
 /** The Docker socket `local()` talks to (`new Docker(options.dockerHost)` in the local adapter). */
@@ -106,6 +137,7 @@ const connectionOptions = z.object({
   jwtToken: z.string().optional(),
   organizationId: z.string().optional(),
   projectId: z.string().optional(),
+  region: z.string().optional(),
   target: z.string().optional(),
   teamId: z.string().optional(),
   token: z.string().optional(),
@@ -115,6 +147,39 @@ const connectionOptions = z.object({
 });
 
 export type ConnectionOptions = z.infer<typeof connectionOptions>;
+
+/** As the Archil adapter resolves it: options, then ARCHIL_API_KEY and ARCHIL_REGION. */
+function archilConfig(options: ConnectionOptions): ArchilConfig {
+  const apiKey = (options.apiKey ?? process.env.ARCHIL_API_KEY)?.trim();
+
+  if (!apiKey) throw Object.assign(new Error("Archil API key is missing"), { code: "auth" });
+
+  return { apiKey, region: options.region ?? process.env.ARCHIL_REGION ?? "aws-us-east-1" };
+}
+
+/** As the Maritime adapter resolves it: options, then MARITIME_API_KEY and MARITIME_API_URL. */
+function maritimeConfig(options: ConnectionOptions): MaritimeConfig {
+  const apiKey = (options.apiKey ?? process.env.MARITIME_API_KEY)?.trim();
+
+  if (!apiKey) throw Object.assign(new Error("Maritime API key is missing"), { code: "auth" });
+
+  return {
+    apiKey,
+    baseUrl: endpoint(options.baseUrl ?? process.env.MARITIME_API_URL ?? "https://api.maritime.sh"),
+  };
+}
+
+/** As the Styne adapter resolves it: options, then STYNE_API_KEY and STYNE_API_URL. */
+function styneConfig(options: ConnectionOptions): StyneConfig {
+  const apiKey = (options.apiKey ?? process.env.STYNE_API_KEY)?.trim();
+
+  if (!apiKey) throw Object.assign(new Error("Styne API key is missing"), { code: "auth" });
+
+  return {
+    apiKey,
+    baseUrl: endpoint(options.baseUrl ?? process.env.STYNE_API_URL ?? "https://api.styne.ai"),
+  };
+}
 
 /** The local adapter's socket: `dockerHost`, then DOCKER_HOST, then Docker's default socket. */
 function localConfig(options: ConnectionOptions): LocalConfig {
@@ -145,6 +210,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
   const env = process.env;
 
   switch (name) {
+    case "archil":
+      return { name, config: archilConfig(options) };
     case "baseten":
       return { name, config: basetenConfig(options) };
     case "beam":
@@ -163,6 +230,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
       return { name, config: instaboxConfig(options) };
     case "local":
       return { name, config: localConfig(options) };
+    case "maritime":
+      return { name, config: maritimeConfig(options) };
     case "modal":
       return {
         name,
@@ -181,6 +250,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
           authType: options.authType,
         },
       };
+    case "styne":
+      return { name, config: styneConfig(options) };
     case "superserve":
       return { name, config: superserveConfig(options) };
     case "tenki":
@@ -199,6 +270,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
 /** A connection keyed by its provider, for typed reads by name. */
 function byName(connection: Connection): Partial<Connections> {
   switch (connection.name) {
+    case "archil":
+      return { archil: connection.config };
     case "baseten":
       return { baseten: connection.config };
     case "beam":
@@ -217,10 +290,14 @@ function byName(connection: Connection): Partial<Connections> {
       return { instabox: connection.config };
     case "local":
       return { local: connection.config };
+    case "maritime":
+      return { maritime: connection.config };
     case "modal":
       return { modal: connection.config };
     case "railway":
       return { railway: connection.config };
+    case "styne":
+      return { styne: connection.config };
     case "superserve":
       return { superserve: connection.config };
     case "tenki":
@@ -318,6 +395,24 @@ export interface ModalClientParams {
   tokenId?: string;
   tokenSecret?: string;
   environment?: string;
+}
+
+/**
+ * The `ModalClient` params for a bound Modal connection, built as `modal()` builds its client:
+ * set fields are passed, unset ones stay unset so the SDK resolves them. Every Modal client the
+ * harness makes for an adapter instance (fingerprint, lookup, snapshot reads) uses these, so each
+ * reaches the connection the adapter and its fingerprint reach.
+ */
+export function modalClientParams(config: ModalConfig): ModalClientParams {
+  const params: ModalClientParams = {};
+
+  if (config.tokenId !== undefined) params.tokenId = config.tokenId;
+
+  if (config.tokenSecret !== undefined) params.tokenSecret = config.tokenSecret;
+
+  if (config.environment !== undefined) params.environment = config.environment;
+
+  return params;
 }
 
 const sdkPackage = new URL("../../packages/sdk/package.json", import.meta.url);
@@ -466,15 +561,7 @@ const modalProfile = z.object({
  */
 async function modalProfileOf(config: ModalConfig) {
   const { ModalClient } = await connectionProbes.loadModal();
-  // As the adapter builds its client: unset fields stay unset, so the SDK resolves them.
-  const params: ModalClientParams = {};
-
-  if (config.tokenId !== undefined) params.tokenId = config.tokenId;
-
-  if (config.tokenSecret !== undefined) params.tokenSecret = config.tokenSecret;
-
-  if (config.environment !== undefined) params.environment = config.environment;
-  const client = new ModalClient(params);
+  const client = new ModalClient(modalClientParams(config));
 
   try {
     return modalProfile.parse(client.profile);
@@ -526,7 +613,7 @@ async function identity(connection: Connection): Promise<Identity> {
   }
 }
 
-type Fingerprint =
+export type Fingerprint =
   | { readonly kind: "known"; readonly value: string }
   | { readonly kind: "unknown"; readonly reason: string };
 
@@ -547,16 +634,25 @@ async function fingerprintNow(
 }
 
 /**
- * This instance's connection fingerprint for the run's journal, or null when it has none: it was
- * never bound, its connection failed to resolve, or its identity could not be read.
+ * This instance's connection fingerprint for the run's journal, or why it has none: it was never
+ * bound, its connection failed to resolve, or its identity could not be read. The reason names no
+ * connection value.
  */
-export async function fingerprintOf(provider: Provider): Promise<string | null> {
+export async function journalFingerprint(provider: Provider): Promise<Fingerprint> {
   const binding = bindings.get(provider);
 
-  if (binding === undefined || binding.kind === "failed") return null;
+  if (binding === undefined) return { kind: "unknown", reason: "adapter instance not bound" };
 
-  if (binding.kind === "in-process") return binding.fingerprint;
-  const current = await fingerprintNow(binding);
+  if (binding.kind === "failed") return { kind: "unknown", reason: binding.reason };
+
+  if (binding.kind === "in-process") return { kind: "known", value: binding.fingerprint };
+
+  return fingerprintNow(binding);
+}
+
+/** {@link journalFingerprint}'s value, or null when the instance has none. */
+export async function fingerprintOf(provider: Provider): Promise<string | null> {
+  const current = await journalFingerprint(provider);
 
   return current.kind === "known" ? current.value : null;
 }

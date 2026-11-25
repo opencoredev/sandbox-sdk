@@ -14,7 +14,7 @@ import { estimateCost, priceAtSize } from "../src/pricing.js";
 import { providerDefaults } from "../src/providers.js";
 import { providerSetup } from "../src/realistic/setup.js";
 import { snapshotMetadata } from "../src/snapshots.js";
-import { bound, fakeNativeModules } from "./native-fakes.js";
+import { bound, fakeNativeModules, boundFake } from "./native-fakes.js";
 
 /** Vercel's SDK throws an APIError that carries the HTTP Response. */
 const notFound = () =>
@@ -201,7 +201,7 @@ it("deletes a cost-suite sandbox when Vercel's meter capture never returns", asy
   const { parseV2 } = await import("../src/v2-config.js");
   const out = await mkdtemp(join(tmpdir(), "bench-vercel-stall-"));
   const stop = vi.spyOn(vercelMeter, "stop").mockImplementation(() => new Promise(() => {}));
-  const provider = memory();
+  const provider = boundFake(memory());
 
   const report = await runV2(
     [{ kind: "ready", name: "vercel", cloud: false, region: null, provider }],

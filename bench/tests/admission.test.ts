@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { boundFake } from "./native-fakes.js";
 
 it("fails the real CLI with explicit sandbox admission coverage evidence", async () => {
   const out = await mkdtemp(join(tmpdir(), "bench-admission-"));
@@ -60,7 +61,7 @@ it("records every scenario denied by the dollar guard without calling create", a
 
   try {
     const report = await runV2(
-      [{ kind: "ready", name: "boat", cloud: false, region: null, provider: memory() }],
+      [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(memory()) }],
       parseV2([
         "--providers",
         "boat",
@@ -103,7 +104,7 @@ it.each(["tenki", "e2b", "upstash", "freestyle"])(
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name, cloud: false, region: null, provider: memory() }],
+        [{ kind: "ready", name, cloud: false, region: null, provider: boundFake(memory()) }],
         parseV2([
           "--providers",
           name,
@@ -143,7 +144,7 @@ it("keeps documented Boat K25 exclusions out of admission failures", async () =>
 
   try {
     const report = await runV2(
-      [{ kind: "ready", name: "boat", cloud: false, region: null, provider: memory() }],
+      [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(memory()) }],
       parseV2([
         "--providers",
         "boat",

@@ -11,6 +11,7 @@ export const externalPackages: readonly string[] = [
   "@beamcloud/beam-js",
   "@boatdev/sdk",
   "@boxd-sh/sdk",
+  "disk",
   "@daytonaio/sdk",
   "@daytona/api-client",
   "@daytona/toolbox-api-client",
@@ -23,7 +24,9 @@ export const externalPackages: readonly string[] = [
   "e2b",
   "freestyle",
   "modal",
+  "maritime-sdk",
   "railway",
+  "styne-sdk",
   // Agent frameworks and test runners behind their own subpaths.
   "@mastra/core",
   "@openai/agents",

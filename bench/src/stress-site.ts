@@ -25,7 +25,7 @@ import {
 
 /** A merged stress report (`bun bench merge` over stress runs only), as site-data reads it. */
 export type StressReport = Pick<PublicationReport, "samples" | "sources" | "bootstrapSeed"> &
-  Partial<Pick<PublicationReport, "stressSelectionRemoved">>;
+  Partial<Pick<PublicationReport, "stressSelectionRemoved" | "stressSelectionRemovedByTrack">>;
 
 type StressInput = Pick<
   MergedSample,
@@ -39,6 +39,7 @@ type StressInput = Pick<
   | "sourceIteration"
   | "requestedSize"
   | "template"
+  | "product"
 >;
 
 const finite = z.number().finite();
@@ -98,11 +99,18 @@ function groupBy<T>(rows: readonly T[], key: (row: T) => string) {
   return [...groups.values()];
 }
 
-/** The allocation a row was collected at: requested size and template. */
-const allocation = (s: Pick<StressInput, "requestedSize" | "template">) => ({
+/**
+ * The allocation a row was collected at: requested size, template and native product (such as
+ * Upstash's `ephemeral`), so two products of one provider are never pooled into one entry.
+ */
+const allocation = (s: Pick<StressInput, "requestedSize" | "template" | "product">) => ({
   requestedSize: s.requestedSize ?? null,
   template: s.template ?? null,
+  product: s.product ?? null,
 });
+
+/** An entry's allocation when the group has no row to read it from. */
+const noAllocation = { requestedSize: null, template: null, product: null };
 
 /**
  * Failures by the harness's taxonomy: account limits and client errors are not the provider's.
@@ -148,9 +156,14 @@ const iterationKey = (s: Pick<StressInput, "sourceRunId" | "provider" | "sourceI
  * Failed creates of a cpu-sustained run's iterations that have no probe row: `runV2` records a
  * failed create as the iteration's `cold` row and returns before the probe. Only the sustained
  * run's own `cold` rows count, never a cohort's member rows; an iteration with a probe row is
- * already counted by that row (or the failure that blocked it).
+ * already counted by that row (or the failure that blocked it). Only the iterations a source run
+ * planned a probe for count (below its `runs`): an older run with `--workload-runs` above `runs`
+ * also created extra iterations that were never going to probe.
  */
-function unprobedCreateFailures(samples: readonly StressInput[]) {
+function unprobedCreateFailures(
+  samples: readonly StressInput[],
+  plannedRuns: ReadonlyMap<string, number>,
+) {
   const probed = new Set(
     samples.flatMap((s) => (s.scenario === "cpu-sustained" ? [iterationKey(s)] : [])),
   );
@@ -160,7 +173,36 @@ function unprobedCreateFailures(samples: readonly StressInput[]) {
       s.suite === "cpu-sustained" &&
       s.scenario === "cold" &&
       s.outcome.kind === "failure" &&
+      s.sourceIteration < (plannedRuns.get(s.sourceRunId) ?? Number.POSITIVE_INFINITY) &&
       !probed.has(iterationKey(s)),
+  );
+}
+
+/**
+ * The failed row a blocked row names in `blocked_by`, from the same source run, provider and
+ * iteration; undefined when the row is not blocked or its blocker did not fail. `step` names a
+ * row's step the way `blocked_by` does: the scenario itself, or a cohort row's member.
+ */
+function failedBlocker({
+  blocked,
+  rows,
+  step = (s) => s.scenario,
+}: {
+  blocked: StressInput;
+  rows: readonly StressInput[];
+  step?: (row: StressInput) => string | undefined;
+}) {
+  const { outcome } = blocked;
+
+  if (outcome.kind !== "blocked") return undefined;
+
+  return rows.find(
+    (s) =>
+      s.sourceRunId === blocked.sourceRunId &&
+      s.sourceIteration === blocked.sourceIteration &&
+      s.provider === blocked.provider &&
+      step(s) === outcome.blocked_by &&
+      s.outcome.kind === "failure",
   );
 }
 
@@ -174,18 +216,7 @@ function sustainedAttempts(
   failedCreates: readonly StressInput[],
   samples: readonly StressInput[],
 ) {
-  const blocker = (probe: StressInput) =>
-    probe.outcome.kind === "blocked"
-      ? samples.find(
-          (s) =>
-            probe.outcome.kind === "blocked" &&
-            s.sourceRunId === probe.sourceRunId &&
-            s.sourceIteration === probe.sourceIteration &&
-            s.provider === probe.provider &&
-            s.scenario === probe.outcome.blocked_by &&
-            s.outcome.kind === "failure",
-        )
-      : undefined;
+  const blocker = (probe: StressInput) => failedBlocker({ blocked: probe, rows: samples });
 
   const failed = probes.flatMap((probe) => {
     if (probe.outcome.kind === "failure") return [probe];
@@ -203,10 +234,18 @@ function sustainedAttempts(
 }
 
 /** cpu-sustained per provider and allocation. */
-function cpuSustained(samples: readonly StressInput[], seed: number) {
+function cpuSustained({
+  samples,
+  seed,
+  plannedRuns,
+}: {
+  samples: readonly StressInput[];
+  seed: number;
+  plannedRuns: ReadonlyMap<string, number>;
+}) {
   const rows = [
     ...samples.filter((s) => /^cpu-sustained(-single|-all)?$/.test(s.scenario)),
-    ...unprobedCreateFailures(samples),
+    ...unprobedCreateFailures(samples, plannedRuns),
   ];
 
   return groupBy(rows, (s) => JSON.stringify([s.provider, allocation(s)])).map((mine) => {
@@ -225,7 +264,7 @@ function cpuSustained(samples: readonly StressInput[], seed: number) {
 
     return {
       provider: first?.provider ?? "",
-      ...allocation(first ?? { requestedSize: null, template: null }),
+      ...allocation(first ?? noAllocation),
       single: throughput(single, seed),
       all: throughput(all, seed),
       singleSeconds: seconds(singleDetails),
@@ -293,6 +332,32 @@ function cohortUnits(samples: readonly StressInput[], kind: "cpu-burst" | "survi
 /** Rows of one member scenario across units. */
 const member = (units: readonly CohortUnit[], name: string) =>
   units.flatMap((u) => u.rows.filter((s) => parseCohortScenario(s.scenario)?.member === name));
+
+const memberStep = (s: StressInput) => parseCohortScenario(s.scenario)?.member;
+
+/**
+ * Each admitted cpu-burst member's failure, counted once: its failed create, its failed CPU run,
+ * or the failed step (such as its fingerprint) that blocked the run. A member whose fingerprint
+ * failed after it started is a failed attempt, not one that silently drops out of the counts.
+ */
+function cpuMemberFailures(units: readonly CohortUnit[]) {
+  return units.flatMap((u) =>
+    u.cold.flatMap((cold) => {
+      if (cold.outcome.kind === "failure") return [cold];
+
+      const cpu = u.rows.find(
+        (s) => memberStep(s) === "cpu" && s.sourceIteration === cold.sourceIteration,
+      );
+
+      if (!cpu) return [];
+
+      if (cpu.outcome.kind === "failure") return [cpu];
+      const cause = failedBlocker({ blocked: cpu, rows: u.rows, step: memberStep });
+
+      return cause ? [cause] : [];
+    }),
+  );
+}
 
 /** Incomplete cohorts (budget or caps admitted fewer than K): reported, never pooled into K-way figures. */
 const incomplete = (units: readonly CohortUnit[]) => {
@@ -377,7 +442,7 @@ function cpuBurst(units: readonly CohortUnit[]) {
 
     return {
       provider: first?.provider ?? "",
-      ...allocation(first?.cold[0] ?? first?.rows[0] ?? { requestedSize: null, template: null }),
+      ...allocation(first?.cold[0] ?? first?.rows[0] ?? noAllocation),
       work: (first && work(first)) ?? null,
       cohorts: complete.length,
       completeCohorts: finished.length,
@@ -392,7 +457,7 @@ function cpuBurst(units: readonly CohortUnit[]) {
         ready: values(member(complete, "cold")).length,
         completed: values(member(complete, "cpu")).length,
       },
-      failures: failureClasses([...member(complete, "cold"), ...member(complete, "cpu")]),
+      failures: failureClasses(cpuMemberFailures(complete)),
       /** From cohorts that all completed with a proven overlap of their CPU phases. */
       perSandbox: {
         cohorts: together.length,
@@ -498,7 +563,7 @@ function burstSurvival(units: readonly CohortUnit[]) {
 
     return {
       provider: first?.provider ?? "",
-      ...allocation(first?.cold[0] ?? first?.rows[0] ?? { requestedSize: null, template: null }),
+      ...allocation(first?.cold[0] ?? first?.rows[0] ?? noAllocation),
       windowS: p ? p.windowMs / 1000 : null,
       heartbeatS: p ? p.intervalMs / 1000 : null,
       cohorts: complete.length,
@@ -532,6 +597,27 @@ const counts_ = (xs: readonly string[]) => [
 /** Cohort sizes collected for one kind, ascending. */
 function sizes(units: readonly CohortUnit[]) {
   return [...new Set(units.map((u) => u.k))].sort((a, b) => a - b);
+}
+
+/**
+ * The stress rows the attempt policy removed on one track. A report merged before removals were
+ * kept by track holds only the total. When every source ran on one track the total is that
+ * track's, and the other track removed nothing; when its runs span tracks it cannot be split
+ * (unless nothing was removed), and the report must be merged again.
+ */
+function trackRemovals(report: StressReport, track: "default" | "same-spec") {
+  const byTrack = report.stressSelectionRemovedByTrack;
+
+  if (byTrack) return byTrack[track] ?? {};
+  const total = report.stressSelectionRemoved ?? {};
+  const tracks = new Set(report.sources.map((s) => s.config.track ?? "default"));
+
+  if (Object.keys(total).length === 0) return {};
+
+  if (tracks.size === 1) return tracks.has(track) ? total : {};
+  throw new Error(
+    "The stress report's selection removals are not split by track and its runs span tracks: merge it again",
+  );
 }
 
 /**
@@ -569,9 +655,17 @@ export function stressData(report: StressReport | null, track: "default" | "same
       suite: s.suite,
       samples: samples.filter((x) => x.sourceRunId === s.runId).length,
     })),
-    /** Stress rows the attempt policy removed, by whole cohort or iteration, by reason. */
-    selectionRemoved: report.stressSelectionRemoved ?? {},
-    cpuSustained: cpuSustained(samples, report.bootstrapSeed),
+    /** This track's stress rows the attempt policy removed, by whole cohort or iteration, by reason. */
+    selectionRemoved: trackRemovals(report, track),
+    cpuSustained: cpuSustained({
+      samples,
+      seed: report.bootstrapSeed,
+      plannedRuns: new Map(
+        report.sources.flatMap((s) =>
+          s.config.runs === undefined ? [] : [[s.runId, s.config.runs]],
+        ),
+      ),
+    }),
     cpuBurst: sizes(cpu).map((k) => ({ k, providers: cpuBurst(cpu.filter((u) => u.k === k)) })),
     burstSurvival: sizes(survival).map((k) => ({
       k,

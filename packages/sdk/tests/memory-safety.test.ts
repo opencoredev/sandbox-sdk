@@ -49,3 +49,16 @@ test("memory preserves implemented conditionals, redirects, quoted and escaped o
     await box.destroy();
   }
 });
+
+test("the memory shell treats backslashes as POSIX sh does", async () => {
+  await using box = await createSandbox(memory());
+  const run = async (command: string) => (await box.run(command)).stdout;
+
+  // Unquoted, a backslash keeps the next character: \n is n.
+  expect(await run("echo a\\nb")).toBe("anb\n");
+  // In double quotes it stays before other characters, so printf still expands \n.
+  expect(await run('printf "a\\nb"')).toBe("a\nb");
+  // It escapes $ and " in double quotes, and the next character anywhere outside quotes.
+  expect(await run('echo "\\$HOME \\"q\\""')).toBe('$HOME "q"\n');
+  expect(await run("echo \\$HOME")).toBe("$HOME\n");
+});

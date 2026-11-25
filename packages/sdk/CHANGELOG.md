@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.1
+
+### Patch Changes
+
+- b234b68: Archil: a command whose process connection Archil closes before the exit event arrives (seen when a command prints a few hundred KB, such as a `cat` of a large file run more than once on a sandbox) now returns its exit code and every output byte, instead of failing with `outcome_unknown`. The adapter reconnects to the process by ID from the next undelivered byte, which replays the rest of the output and reports the exit, up to three times; only if that fails is the command stopped and reported as before. File helpers get the same recovery.
+
+## 1.3.0
+
+### Minor Changes
+
+- f56d72e: Add the Archil provider, `archil()` from `@opencoredev/sandbox-sdk/archil`. It runs Archil sandboxes through Archil's official `disk` SDK (1.12.1 or later), an optional peer, because Archil runs processes over a WebSocket protocol that `fetch` cannot carry. It supports commands with separate stdout and stderr and stdin, files, listing and reconnect, public preview URLs, pause and resume with memory, a terminal, network policies (`"none"` and allow lists, on paid plans; free-plan sandboxes have no outbound access), and `size` presets (small 1 vCPU / 2048 MiB, medium 2 / 4096, large 4 / 8192) and exact sizes of 1 to 32 whole vCPUs and 256 to 65536 MiB. With no `size`, a sandbox gets Archil's own default of 1 vCPU and 2048 MiB on `node:24-bookworm`. Keys are exact, because Archil names are unique per account; labels are stored in a marker file in the sandbox, so `listSandboxes` and `reapSandboxes` leave out a paused or stopped sandbox until it runs again (its marker can't be read without waking it); `connectSandbox` by ID still works without waking it, and reopening by `key` wakes and verifies it. A new optional provider flag, `readsMetadataOnlyWhenRunning`, tells the core this: it reopens such a keyed sandbox through `find`, idle-only reaping leaves a sleeping one alone instead of waking it, and `await using` on a handle connected while it slept closes it rather than destroying it. `CreateInput.secretNames` and `Provider.recordsSecretNames` let an adapter write the secret-names record itself before it publishes readiness; only Archil uses them. `timeoutMs` takes 60 seconds to 24 hours and `idleTimeoutMs` up to 24 hours, both in whole seconds, and both pause the sandbox when they fire, as does Archil's 30-minute default idle timeout; a command on a paused sandbox fails with `unavailable` until `box.resume()`. There are no snapshots, templates or disk size (the root disk is fixed), so `from` and `diskGb` fail with `unsupported`. A refusal for the plan's concurrent-sandbox cap is reported as `quota`. `box.native` returns the `disk` `Sandbox` and `Archil` client. When bundling, keep `disk` external: it loads `undici` at run time, and an inlined `disk` fails with `unavailable` saying so. Set `ARCHIL_API_KEY`, and `ARCHIL_REGION` for a key outside `aws-us-east-1`, and optionally pass `image` (a public OCI reference) or `imageId`.
+
 ## 1.2.0
 
 ### Minor Changes

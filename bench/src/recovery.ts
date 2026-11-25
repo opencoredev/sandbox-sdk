@@ -18,7 +18,7 @@ import {
 import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { fingerprintSchema, reapConnection } from "./connections.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
-import { snapshotsFromSource, deleteProvenSnapshot } from "./snapshots.js";
+import { snapshotsFromSource, deleteProvenSnapshot, settleJournaledSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import {
@@ -39,10 +39,12 @@ const resource = z.object({
   kind: z.enum(["sandbox", "snapshot", "snapshot-source"]),
   parent: z.string().nullable(),
   snapshotProof: snapshotProvenanceSchema.optional(),
+  /** A Maritime save's idempotency key: present only while that save is unsettled. */
+  idempotencyKey: z.string().optional(),
 });
 
 const reviewSchema = resource
-  .omit({ parent: true, snapshotProof: true })
+  .omit({ parent: true, snapshotProof: true, idempotencyKey: true })
   .extend({ reason: z.string(), status: z.enum(["checking", "unresolved"]).optional() });
 
 /** A journal from before connection fingerprints: it kept each connection's endpoints as text. */
@@ -334,8 +336,14 @@ export async function reapRun(
         if (proof.sourceId !== entry.id || proof.runLabel !== config.run)
           throw new Error("Snapshot-source provenance mismatch");
 
+        const journaled = new Set(
+          (journal?.resources ?? [])
+            .filter((r) => r.provider === p.name && r.kind === "snapshot" && r.parent === entry.id)
+            .map((r) => r.id),
+        );
+
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, p.provider, entry.id),
+          snapshotsFromSource(p.name, p.provider, entry.id, journaled),
         )) {
           const item = {
             provider: p.name,
@@ -345,8 +353,28 @@ export async function reapRun(
             snapshotProof: proof,
           };
 
-          journal?.resources.push(item);
-          await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+          // Entries already journaled for this snapshot, such as a Maritime save still pending with its
+          // idempotency key. Replace them with the confirmed snapshot entry BEFORE deleting: if the
+          // delete succeeds on the server and drops its response, a later step must inspect/delete the
+          // snapshot rather than replaying the save POST.
+          const earlier = (journal?.resources ?? []).filter(
+            (r) => r.provider === p.name && r.kind === "snapshot" && r.id === snapshot.id,
+          );
+
+          const previousResources = journal ? [...journal.resources] : null;
+
+          if (journal) {
+            journal.resources = journal.resources.filter((r) => !earlier.includes(r));
+            journal.resources.push(item);
+          }
+
+          try {
+            await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+          } catch (error) {
+            if (journal && previousResources) journal.resources = previousResources;
+            throw error;
+          }
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,
@@ -356,6 +384,7 @@ export async function reapRun(
             config.run,
             config["timeout-ms"],
           );
+
           await forget(item);
         }
 
@@ -370,22 +399,49 @@ export async function reapRun(
       }
     }
 
-    for (const entry of journal?.resources ?? []) {
-      if (entry.provider !== p.name || entry.kind !== "snapshot") continue;
-
+    for (const entry of (journal?.resources ?? []).filter(
+      (r) => r.provider === p.name && r.kind === "snapshot",
+    )) {
       try {
         if (restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
-        await deleteProvenSnapshot(
-          p.name,
-          p.provider,
-          entry.id,
-          entry.parent,
-          entry.snapshotProof,
-          config.run,
-          config["timeout-ms"],
-        );
-        await forget(entry);
+
+        if (
+          (await settleJournaledSnapshot(p.name, p.provider, entry, config["timeout-ms"])) ===
+          "exists"
+        ) {
+          let confirmed = entry;
+
+          if (entry.idempotencyKey !== undefined) {
+            const { idempotencyKey: _, ...withoutKey } = entry;
+            confirmed = withoutKey;
+
+            if (journal) {
+              const previousResources = [...journal.resources];
+              journal.resources = journal.resources.map((r) => (r === entry ? confirmed : r));
+
+              try {
+                await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+              } catch (error) {
+                journal.resources = previousResources;
+                throw error;
+              }
+            }
+          }
+
+          await deleteProvenSnapshot(
+            p.name,
+            p.provider,
+            confirmed.id,
+            confirmed.parent,
+            confirmed.snapshotProof,
+            config.run,
+            config["timeout-ms"],
+          );
+          await forget(confirmed);
+        } else {
+          await forget(entry);
+        }
       } catch (error) {
         review(
           p.name,

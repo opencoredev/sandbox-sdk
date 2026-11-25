@@ -30,8 +30,10 @@ import {
 } from "../src/survival.js";
 import { parseV2 } from "../src/v2-config.js";
 import type { Sample } from "../src/v2-model.js";
+import { PendingWork } from "../src/timing.js";
 import { writeV2 } from "../src/v2-report.js";
 import { runV2 } from "../src/v2-runner.js";
+import { boundFake } from "./native-fakes.js";
 
 const bootId = "4f9c1d1e-8b2a-4c1e-9d3f-0a1b2c3d4e5f";
 
@@ -486,7 +488,7 @@ async function collect(run: string, args: string[]) {
   });
 
   await runV2(
-    [{ kind: "ready", name: "boat", cloud: false, region: null, provider }],
+    [{ kind: "ready", name: "boat", cloud: false, region: null, provider: boundFake(provider) }],
     parseV2(["--providers", "boat", "--run", run, "--out", dir, ...args]),
     (report) => writeV2(report, dir),
   );
@@ -645,5 +647,158 @@ describe("findings 1, 2 and 4: publication", () => {
       ?.providers;
 
     expect(entries?.map((e) => e.windowS).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([1, 300]);
+  });
+});
+
+describe("PR 75 review: the diagnostic clock read never discards a verified CPU result", () => {
+  /**
+   * The memory fake with a probes/cpu.py stand-in: the first clock read answers, the run reports
+   * honest work, and every clock read after it does what `after` says.
+   */
+  function probeBox(after: "fail" | "hang", onHangEnd: () => void = () => {}) {
+    const provider = memory();
+    let clocks = 0;
+
+    provider.register("python3", async ({ args, stdout }) => {
+      const [, mode, ...rest] = args;
+
+      if (mode === "clock") {
+        if (clocks++ === 0) {
+          stdout(`${Date.now() / 1000}\n`);
+
+          return 0;
+        }
+
+        if (after === "hang") {
+          await sleep(3_000);
+          onHangEnd();
+        }
+
+        return 1;
+      }
+
+      const [segments = 0, steps = 0, , seed = 0] = rest.map(Number);
+
+      const phase = async () => {
+        const startedAt = Date.now() / 1000;
+        await sleep(40);
+        const endedAt = Date.now() / 1000;
+        const seconds = endedAt - startedAt;
+
+        return {
+          checksum: lcgChecksum(seed, segments * steps),
+          seconds,
+          rates: Array.from({ length: segments }, () => (steps * segments) / seconds),
+          startedAt,
+          endedAt,
+        };
+      };
+
+      const single = await phase();
+      const worker = await phase();
+      stdout(
+        JSON.stringify({
+          segments,
+          steps,
+          seed,
+          single,
+          all: {
+            workers: [worker],
+            wallSeconds: worker.seconds,
+            startedAt: worker.startedAt,
+            endedAt: worker.endedAt,
+          },
+          cpus: { visible: 1, affinity: 1, quota: null },
+          python: "fake",
+        }),
+      );
+
+      return 0;
+    });
+
+    return provider;
+  }
+
+  const challenge = { work: { segments: 2, steps: 1_000_000 }, seed: 12345, workers: 1 };
+
+  it("keeps the result and records why when the clock read fails", async () => {
+    const box = await createSandbox(probeBox("fail"), {});
+
+    try {
+      const ran = await runStagedCpuProbe(box, await stageCpuProbe(box, challenge, 5000), 5000);
+
+      expect(ran.result.singleOpsPerSecond).toBeGreaterThan(0);
+      expect(ran).toMatchObject({ clockDriftMs: null, clockDriftUnread: "failed" });
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  it("gives up on a clock read that would outlast the step, and keeps the result", async () => {
+    const box = await createSandbox(probeBox("hang"), {});
+
+    try {
+      const staged = await stageCpuProbe(box, challenge, 5000);
+      const endBy = performance.now() + 1000;
+      const ran = await runStagedCpuProbe(box, staged, 5000, { endBy });
+
+      // Returned before the step's end, with the run's own measurements intact.
+      expect(performance.now()).toBeLessThan(endBy);
+      expect(ran.result.allOpsPerSecond).toBeGreaterThan(0);
+      expect(ran).toMatchObject({ clockDriftMs: null, clockDriftUnread: "timed-out" });
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  it("keeps a timed-out clock read in pending work until the guest command settles", async () => {
+    let hangEnded = false;
+
+    const box = await createSandbox(
+      probeBox("hang", () => {
+        hangEnded = true;
+      }),
+      {},
+    );
+
+    const pending = new PendingWork();
+
+    try {
+      const staged = await stageCpuProbe(box, challenge, 5000);
+      const endBy = performance.now() + 1000;
+
+      const ran = await runStagedCpuProbe(box, staged, 5000, {
+        endBy,
+        track: (work) => pending.track(work),
+      });
+
+      // The verified result is kept, and the read is reported as given up on...
+      expect(ran.result.allOpsPerSecond).toBeGreaterThan(0);
+      expect(ran).toMatchObject({ clockDriftMs: null, clockDriftUnread: "timed-out" });
+      expect(hangEnded).toBe(false);
+      // ...but cleanup cannot pass its drain check while the guest command is still running.
+      expect(await pending.drain(100)).toBe(false);
+      expect(await pending.drain(5000)).toBe(true);
+      expect(hangEnded).toBe(true);
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  it("skips the clock read when the step has no time left", async () => {
+    const box = await createSandbox(probeBox("hang"), {});
+
+    try {
+      const staged = await stageCpuProbe(box, challenge, 5000);
+
+      const ran = await runStagedCpuProbe(box, staged, 5000, {
+        endBy: performance.now(),
+      });
+
+      expect(ran.result.singleOpsPerSecond).toBeGreaterThan(0);
+      expect(ran).toMatchObject({ clockDriftMs: null, clockDriftUnread: "no-time-left" });
+    } finally {
+      await box.destroy();
+    }
   });
 });

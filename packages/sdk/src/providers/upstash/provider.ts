@@ -285,8 +285,14 @@ export interface UpstashConfig {
  * The key and base URL `upstash(options)` sends its own requests with, such as creates, read from
  * `options` and the environment as the adapter reads them. Throws `auth` when the key is missing,
  * as the adapter does. The adapter's `@upstash/box` calls get the `baseUrl` option as given, and the
- * package resolves the rest. Pass this object to `@upstash/box` calls, such as
- * `Box.get(id, resolveConfig())`, to reach where the adapter creates boxes.
+ * package resolves the rest. `@upstash/box` drops one more trailing slash itself, so put one back
+ * on `baseUrl` to reach where the adapter creates boxes, whatever the base URL ends in:
+ *
+ * ```ts
+ * const config = resolveConfig();
+ * const box = await Box.get(id, { ...config, baseUrl: `${config.baseUrl}/` });
+ * ```
+ *
  * It holds the credentials: never log, print or store it.
  */
 export function resolveConfig(options: UpstashConnection = {}): UpstashConfig {

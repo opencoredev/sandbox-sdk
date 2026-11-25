@@ -292,6 +292,28 @@ export const providerSetups: readonly ProviderSetup[] = [
     },
   },
   {
+    // Maritime (2026-11-23): the default is small, 2 vCPU / 4 GiB with a 12 GiB root disk, Ubuntu
+    // 24.04 with glibc, Node.js 22, Python 3.12 and git; same-machine asks for 4/8, which the adapter
+    // sends as the medium preset (50 GiB disk). Commands run as uid 1000 with passwordless sudo.
+    // `timeoutMs` is Maritime's time limit, counted from the create or the last resume, so it bounds
+    // the billable time the spend guard reserves. An idle sandbox pauses after 120 s by default and
+    // wakes on the next call. https://maritime.sh/docs/limits
+    name: "maritime",
+    adapter: "maritime",
+    product: null,
+    lifetime: true,
+    pricingKey: "maritime",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 50),
+        tooSmall: {},
+      },
+      default: { vcpu: 2, provisioned: size(2, 4, 12), tooSmall: {} },
+    },
+  },
+  {
     // Baseten (limits as of 2026-11-13): memory sets CPU, 2 GiB per vCPU up to 4. Baseten holds a
     // sandbox's files in its memory, so the build's workspace goes on an 8 GiB volume (the
     // account's cap, 2026-11-16), as Baseten advised: without one, its node_modules sat in RAM and
@@ -346,6 +368,51 @@ export const providerSetups: readonly ProviderSetup[] = [
         provisioned: size(1, 0.125, 0),
         tooSmall: { "fix-and-test": fit.beam128m, build: fit.beam128m },
       },
+    },
+  },
+  {
+    // Archil (docs and the adapter, 2026-11-21): 1 to 32 whole vCPUs and 256 to 65536 MiB per
+    // sandbox. Default is Archil's own 1 vCPU / 2048 MiB; FIT.md measured 1 vCPU / 1 GiB, not
+    // 2 GiB, so no profile is ruled out until a default-track run shows one. The adapter's image is
+    // Archil's default node:24-bookworm (glibc). The root disk is about 1 TB and not configurable,
+    // so no 20 GB disk rule applies; its data is billed as storage, outside these sizes. Lifetime
+    // expiry and the idle timeout (default 1800 s) pause the sandbox rather than delete it.
+    name: "archil",
+    adapter: "archil",
+    product: null,
+    lifetime: true,
+    pricingKey: "archil",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 0),
+        tooSmall: {},
+      },
+      default: { vcpu: 1, provisioned: size(1, 2, 0), tooSmall: {} },
+    },
+  },
+  {
+    // Styne (2026-11-23): the base template is Styne's default size, 4 vCPU / 8 GiB with a 51 GiB
+    // root disk (df on /workspace), Debian 12 with glibc, Node.js, Python 3 and git, so both tracks
+    // run the same machine; same-machine asks for 4/8 explicitly. Styne counts `timeoutMs` in
+    // running time: it puts a sandbox to sleep only when nothing started in it runs, and the clock
+    // and the meter stop while it sleeps. So a held-open idle with a process still running counts
+    // toward the lifetime and one with nothing running does not, and either way the lifetime bounds
+    // the billable time the spend guard reserves. https://docs.styne.ai/pause-tiers
+    name: "styne",
+    adapter: "styne",
+    product: null,
+    lifetime: true,
+    pricingKey: "styne",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 51),
+        tooSmall: {},
+      },
+      default: { vcpu: 4, provisioned: size(4, 8, 51), tooSmall: {} },
     },
   },
 ];

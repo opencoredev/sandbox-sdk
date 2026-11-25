@@ -71,6 +71,14 @@ const assignments = (value: string[]): Record<string, string> =>
     }),
   );
 
+/**
+ * Providers with no disk size option, by the reason. A size with a disk is refused here, before
+ * anything runs, so it is reported as unsupported rather than recorded as failed creates.
+ */
+const noDiskSize: ReadonlyMap<string, string> = new Map([
+  ["archil", "Archil sandboxes have no disk size option (the root disk is fixed)"],
+]);
+
 const sizes = z
   .array(z.string())
   .default([])
@@ -78,8 +86,13 @@ const sizes = z
     Object.fromEntries(
       Object.entries(assignments(value)).map(([name, raw]) => {
         if (!raw) throw new Error("Expected provider=size");
+        const size = sizeSchema.parse(sizeInput(raw));
+        const noDisk = noDiskSize.get(name);
 
-        return [name, sizeSchema.parse(sizeInput(raw))];
+        if (noDisk && !isSizePreset(size) && size.diskGb !== undefined)
+          throw new Error(`${noDisk}; pass ${name}=cpu:memoryMb`);
+
+        return [name, size];
       }),
     ),
   );
@@ -194,6 +207,12 @@ export function parseV2(args: string[]) {
 
   if (config["survival-heartbeat-ms"] > config["survival-window-ms"])
     throw new Error("--survival-heartbeat-ms must not exceed --survival-window-ms");
+
+  // The window always ends with a heartbeat (`heartbeatOffsets`). With a remainder, that slot
+  // falls less than an interval after the one before it, so a reply on time to that one can
+  // leave the final slot busy and the member without a verdict.
+  if (config["survival-window-ms"] % config["survival-heartbeat-ms"] !== 0)
+    throw new Error("--survival-window-ms must be a whole multiple of --survival-heartbeat-ms");
 
   checkScenarioPlan(config.scenarios, config.bursts);
 

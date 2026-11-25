@@ -40,6 +40,18 @@ export async function main(load: typeof loadProvider = loadProvider) {
     return;
   }
 
+  if (args[0] === "fairness") {
+    await (await import("./fairness/cli.js")).fairnessCommand(args.slice(1));
+
+    return;
+  }
+
+  if (args[0] === "sustained-cpu") {
+    await (await import("./sustained-cpu.js")).sustainedCpuCommand(args.slice(1));
+
+    return;
+  }
+
   if (args[0] === "coverage") {
     await (await import("./cost/coverage-cli.js")).coverageCommand(args.slice(1));
 
@@ -70,7 +82,7 @@ export async function main(load: typeof loadProvider = loadProvider) {
 
   if (args.includes("--help")) {
     process.stdout.write(
-      "bun bench merge [result-directory ...] [--out results/publication-final] [--exclude run-id] [--seed 45] [--policy path.json] (offline)\nbun bench attempts results/publication-final-v2 (offline)\nbun bench modal-sweep [--terminate] [--stop-wait-ms 90000] (every Modal Environment; reports bench/SDK-owned running sandboxes, stops them with --terminate)\nbun bench site-data [--report results/publication-final] (--stress-report results/stress-final | --no-stress) [--track default|same-spec] [--out ../apps/bench-site/src/data/benchmark.json] (offline)\nbun bench [reap] --providers local,e2b,daytona,upstash,boat,boxd,freestyle,tenki --runs 2 --bursts 3\n--omit-network-download true --burst-cohorts 3 --workload-runs N --scenarios all (or comma names; stress suites cpu-sustained, cpu-burst and survival run only when named, in their own runs) --survival-window-ms 300000 --survival-heartbeat-ms 15000 --concurrency 4 --provider-concurrency 1 --seed 45 --timeout-ms 180000 --ownership-visibility-ms 120000\n--max-sandboxes 100 --max-dollars 5 --provider-max-sandboxes boat=50 --provider-max-dollars boat=2 --account-limits tenki=5 --lifetime-ms modal=7200000 --app-per-attempt modal\n--run RUN_ID --out results/v2 [--force: overwrite another run's journal in --out] | --v1 for legacy harness\n",
+      "bun bench merge [result-directory ...] [--out results/publication-final] [--exclude run-id] [--seed 45] [--policy path.json] (offline)\nbun bench attempts results/publication-final-v2 (offline)\nbun bench modal-sweep [--terminate] [--stop-wait-ms 90000] (every Modal Environment; reports bench/SDK-owned running sandboxes, stops them with --terminate)\nbun bench sustained-cpu [--providers a,b] [--segments 30] [--segment-seconds 30] [--concurrency 15] [--out results/sustained-cpu] [--run ID] [--merge-only] (15 minutes of all-core CPU per provider)\nbun bench site-data [--report results/publication-final] (--stress-report results/stress-final | --no-stress) [--track default|same-spec] [--out ../apps/bench-site/src/data/benchmark.json] (offline)\nbun bench [reap] --providers local,e2b,daytona,upstash,boat,boxd,freestyle,tenki --runs 2 --bursts 3\n--omit-network-download true --burst-cohorts 3 --workload-runs N --scenarios all (or comma names; stress suites cpu-sustained, cpu-burst and survival run only when named, in their own runs) --survival-window-ms 300000 --survival-heartbeat-ms 15000 --concurrency 4 --provider-concurrency 1 --seed 45 --timeout-ms 180000 --ownership-visibility-ms 120000\n--max-sandboxes 100 --max-dollars 5 --provider-max-sandboxes boat=50 --provider-max-dollars boat=2 --account-limits tenki=5 --lifetime-ms modal=7200000 --app-per-attempt modal\n--run RUN_ID --out results/v2 [--force: overwrite another run's journal in --out] | --v1 for legacy harness\n",
     );
 
     return;
@@ -115,8 +127,10 @@ export async function main(load: typeof loadProvider = loadProvider) {
 
   for (const p of report.providers) process.stdout.write(`${p.name}: ${p.kind} ${p.note}\n`);
 
+  // `report.providers`, not the loaded list: the run's fingerprint gate can skip a provider that
+  // loaded ready, and a run left with none created nothing.
   if (
-    !providers.some((p) => p.kind === "ready") ||
+    !report.providers.some((p) => p.kind === "ready") ||
     report.samples.some((s) => s.outcome.kind === "failure") ||
     (report.admissionStopped?.length ?? 0) > 0 ||
     (report.cleanupReview?.length ?? 0) > 0 ||

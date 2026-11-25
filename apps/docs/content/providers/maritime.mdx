@@ -1,0 +1,167 @@
+---
+title: Maritime
+seo:
+  title: Maritime Sandbox SDK in TypeScript
+description: Use Maritime virtual machines from TypeScript through Maritime's REST API and one portable API. Exact sizes billed per second, private previews by URL token, pause, named snapshots, and no extra package.
+---
+
+`maritime()` runs each sandbox as a [Maritime](https://maritime.sh) virtual machine by calling Maritime's Virtual machines API directly. There is no other package to install.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(maritime())` and then `box.run`, `box.files`, `box.preview`, `box.pause` and `box.snapshot`, and the same code runs on E2B or Daytona when you swap the factory. Maritime has no host allow lists and no terminal through this API. The [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) gives you an authenticated request to Maritime's API when you need the rest.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+</Tabs>
+
+Create an API key (`mk_...`) with the `sandboxes` scope in Maritime and set `MARITIME_API_KEY`, or pass `maritime({ apiKey })`.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { maritime } from "@opencoredev/sandbox-sdk/maritime";
+
+await using box = await createSandbox(maritime(), { timeoutMs: 30 * 60_000 });
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+`await using` ends the sandbox when the block ends. `timeoutMs` becomes Maritime's time limit, which ends the sandbox 30 minutes after it starts running, a backstop if your process dies first.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                          |
+| ------------------------------ | ----------- | -------------------------------------------------------------- |
+| Commands and streaming         | Yes         | Server-sent events; live output                                |
+| Files                          | Yes         | `/workspace` on the root disk                                  |
+| Background processes           | Yes         |                                                                |
+| Preview URLs                   | Yes         | Private: the URL carries the sandbox's `?token=`               |
+| Pause and resume               | Yes         | Any command or file call wakes a paused sandbox                |
+| Snapshots                      | Yes         | Named; kept until deleted; `deleteSnapshot` works              |
+| Templates                      | No          | Pass a template, snapshot or public image with `template`      |
+| Machine size                   | Yes         | Presets, or 1 to 16 vCPU, 1 to 64 GiB, 5 to 500 GiB of disk    |
+| Network policy                 | Partial     | `"none"` blocks all outbound traffic; no host allow lists      |
+| Hard lifetime (`timeoutMs`)    | Yes         | Time limit, 1 second to 24 hours, from create or last resume   |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Pauses the sandbox; 60 seconds to 24 hours (default 2 minutes) |
+| Keys                           | Best-effort | Stored as a metadata entry; concurrent creates can race        |
+| Terminal                       | No          |                                                                |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { maritime } from "@opencoredev/sandbox-sdk/maritime";
+
+await using box = await createSandbox(maritime());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+The default template, `base`, is Ubuntu 24.04 with Node.js 22, Python 3.12 and git. Commands run as `user` (uid 1000), who has passwordless `sudo`. Each command gets its own process group, and a timeout or abort kills that whole group before `run` returns, children included. Maritime runs one command for at most an hour; start longer jobs with `box.start`.
+
+## Background processes and previews
+
+`box.preview(port)` returns an `https://` URL for the port. Nothing needs to be declared at creation. The URL carries the sandbox's URL token as `?token=`, so treat it as a secret: anyone with the full URL can open the port. `box.preview(port, { path })` keeps the token on the new path.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { maritime } from "@opencoredev/sandbox-sdk/maritime";
+
+await using box = await createSandbox(maritime(), { timeoutMs: 30 * 60_000 });
+await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
+const preview = await box.preview(8000, { path: "/health" });
+console.log(preview.url);
+```
+
+`maritime({ public: true })` asks Maritime for public ports instead, with no token.
+
+## Pause, resume, and snapshots
+
+`box.pause()` pauses the sandbox. Maritime has no resume call: `box.resume()` runs a command, which wakes the sandbox in under a second. Any command or file call wakes a paused sandbox too, so code that reconnects to an idle sandbox needs no `resume()` first. An idle sandbox pauses by itself after `idleTimeoutMs`, 2 minutes by default; a background process alone does not count as activity. A paused sandbox bills $0.08 per GB-month of disk and no compute.
+
+`box.snapshot()` saves the sandbox's disk and memory under a name the SDK picks, and returns that name. Pass it as `from` to create a new sandbox from it, with any `size`. Snapshots are kept until you delete them with `deleteSnapshot(provider, id)`, so `expiresInMs` fails with `unsupported`.
+
+## Size, template, and lifetime
+
+| Preset   | vCPUs | Memory    | Disk    |
+| -------- | ----- | --------- | ------- |
+| `small`  | 2     | 4096 MiB  | 12 GiB  |
+| `medium` | 4     | 8192 MiB  | 50 GiB  |
+| `large`  | 8     | 16384 MiB | 125 GiB |
+
+Without `size`, a sandbox is `small`. An exact `size` takes 1 to 16 vCPUs, 1024 to 65536 MiB in whole GiB and, with `diskGb`, 5 to 500 GiB. An exact size that matches a preset and has no `diskGb`, such as `{ cpu: 4, memoryMb: 8192 }`, gets that preset's disk; `{ cpu: 16, memoryMb: 32768 }` is Maritime's `xlarge` with 250 GiB. Maritime bills $0.0055 per vCPU-hour plus $0.00275 per GiB-hour while a sandbox runs, per second, disk included.
+
+`maritime({ template })` picks what new sandboxes start from: a stock template (`base`, `python`, `code-interpreter`), a snapshot or a public OCI image.
+
+`timeoutMs` is Maritime's time limit: it ends the sandbox that long after it starts running, or after its last resume, from 1 second to 24 hours. Without it, the adapter asks for one hour. `idleTimeoutMs` pauses the sandbox after that long without activity, from 60 seconds to 24 hours.
+
+`network: "none"` blocks all outbound traffic. Allow lists fail with `unsupported`, except an empty one, which is the same as `"none"`.
+
+## Configuration
+
+| Option             | Type      | Default                   | Env var            |
+| ------------------ | --------- | ------------------------- | ------------------ |
+| `apiKey`           | `string`  |                           | `MARITIME_API_KEY` |
+| `baseUrl`          | `string`  | `https://api.maritime.sh` | `MARITIME_API_URL` |
+| `template`         | `string`  | `base`                    |                    |
+| `timeoutMs`        | `number`  | 1 hour                    |                    |
+| `public`           | `boolean` | `false`                   |                    |
+| `requestTimeoutMs` | `number`  | 60 seconds                |                    |
+
+## Limitations
+
+- No host allow lists; only `"all"` and `"none"`.
+- Keys are best-effort: two clients creating with one key at once can make two sandboxes.
+- No terminal or template builds.
+- One command runs for at most an hour.
+- Maritime sometimes has no room for a new sandbox and answers `503 out_of_capacity`. The adapter tries again for up to 3 minutes before it fails with `unavailable`.
+
+## How it works
+
+- Sandboxes are created, read, paused, snapshotted and ended on `https://api.maritime.sh/v1` with your key. Commands and files go to each sandbox's own data-plane URL with its secret in `X-Maritime-Token`; when Maritime rotates the secret, the adapter reads the new one and sends again.
+- A create carries an `Idempotency-Key` and an allocation marker in its metadata. When its answer is lost, the adapter replays it with the same key, then looks the sandbox up by the marker, and it only returns or ends a sandbox carrying this call's marker. A create Maritime refuses for capacity is tried again with a new key.
+- At create, `/workspace` is made writable for the command user. If that step fails, the adapter ends the sandbox before it throws.
+- Your `labels` become Maritime metadata, and a key is stored as the `sandbox-sdk-key` entry.
+- Commands stream over server-sent events and run under `setsid`, each in its own process group. Closing the stream does not stop a command, so a timeout or abort runs a second command that kills the group and confirms it gone; when that cannot be confirmed, `run` fails with `outcome_unknown`. A command is never sent twice once it may have run.
+- `box.native` calls Maritime's API on the planes `control`, `data` and `api`, and `box.native.sdk(() => import("maritime-sdk"))` returns a `maritime-sdk` client with your key and the sandbox from `sandboxes.get`.
+- Errors keep only Maritime's HTTP status, error code and request ID, and never the API key, a sandbox secret or a URL token.
+
+## Next steps
+
+- [Machine size and network](/guides/machine-size-and-network)
+- [Dev servers and previews](/guides/dev-servers-and-previews)

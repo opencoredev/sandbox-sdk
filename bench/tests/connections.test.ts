@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import { main } from "../src/cli.js";
 import { lookupSandbox } from "../src/existence.js";
 import { parseV2 } from "../src/v2-config.js";
 import { runV2 } from "../src/v2-runner.js";
@@ -266,6 +267,16 @@ const journalSchema = z.object({
 /** The run journal in `out`. */
 async function journalIn(out: string) {
   return journalSchema.parse(JSON.parse(await readFile(join(out, "ownership.json"), "utf8")));
+}
+
+const reportSchema = z.object({
+  providers: z.array(z.object({ name: z.string(), kind: z.enum(["ready", "skipped"]) })),
+  samples: z.array(z.unknown()),
+});
+
+/** The report the CLI wrote to `out`. */
+async function reportIn(out: string) {
+  return reportSchema.parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
 }
 
 /** Every file under `dir`, recursively, with its text. */
@@ -620,6 +631,165 @@ describe("bench reap acts only through the connection the run used", () => {
       );
       await expect(reap(out)).rejects.toThrow("endpoint text");
       expect(calls).toEqual([]);
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a run never creates on a provider whose fingerprint it cannot journal", () => {
+  it("skips local before its first create when Docker's /info fails, and still runs the others", async () => {
+    vi.stubEnv("DOCKER_HOST", "unix:///tmp/bench-no-such-docker.sock");
+    vi.spyOn(connectionProbes, "dockerDaemonId").mockRejectedValue(new Error("connect ENOENT"));
+    const local = bound({ ...memory(), name: "local" });
+    const create = vi.spyOn(local, "create");
+    const other = bound(memory());
+    const otherCreate = vi.spyOn(other, "create");
+    const out = await mkdtemp(join(tmpdir(), "bench-no-fingerprint-"));
+
+    try {
+      const report = await runV2(
+        [
+          { kind: "ready", name: "local", cloud: false, region: null, provider: local },
+          { kind: "ready", name: "memory", cloud: false, region: null, provider: other },
+        ],
+        parseV2([
+          "--providers",
+          "local,memory",
+          "--run",
+          "no-fingerprint",
+          "--runs",
+          "1",
+          "--scenarios",
+          "command",
+          "--bursts",
+          "",
+          "--out",
+          out,
+        ]),
+        (r) => writeV2(r, out),
+      );
+
+      expect(create).not.toHaveBeenCalled();
+      expect(otherCreate).toHaveBeenCalled();
+      expect(report.providers.find((p) => p.name === "local")).toMatchObject({
+        kind: "skipped",
+        note: expect.stringMatching(/No connection fingerprint .*Docker daemon did not answer/),
+      });
+      expect(report.samples.some((s) => s.provider === "local")).toBe(false);
+      expect((await journalIn(out)).connectionFingerprints).toEqual({
+        memory: expect.stringMatching(/^[0-9a-f]{16}$/),
+      });
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  });
+
+  it("the CLI exits 1 when the gate skips every provider, and runs on with one still ready", async () => {
+    vi.stubEnv("DOCKER_HOST", "unix:///tmp/bench-no-such-docker.sock");
+    vi.spyOn(connectionProbes, "dockerDaemonId").mockRejectedValue(new Error("connect ENOENT"));
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const argv = process.argv;
+    const exitCode = process.exitCode;
+    // Each CLI run makes the optional ipinfo.io metadata lookup: answer it 503, offline, and
+    // record every URL so nothing else leaves the process.
+    const requested: string[] = [];
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input: string | URL | Request) => {
+        requested.push(input instanceof Request ? input.url : String(input));
+
+        return new Response("fixture: unavailable", { status: 503 });
+      });
+
+    const loader: typeof loadProvider = async (name, env, sizes, config) =>
+      name === "memory"
+        ? { kind: "ready", name, cloud: false, region: null, provider: bound(memory()) }
+        : loadProvider(name, env, sizes, config);
+
+    async function cli(providers: string) {
+      const out = await mkdtemp(join(tmpdir(), "bench-cli-gate-"));
+
+      process.argv = [
+        "bun",
+        "cli.ts",
+        "--providers",
+        providers,
+        "--run",
+        `cli-gate-${providers.replace(",", "-")}`,
+        "--runs",
+        "1",
+        "--scenarios",
+        "command",
+        "--bursts",
+        "",
+        "--out",
+        out,
+      ];
+      process.exitCode = undefined;
+
+      try {
+        await main(loader);
+
+        return { exitCode: process.exitCode, report: await reportIn(out) };
+      } finally {
+        await rm(out, { recursive: true, force: true });
+      }
+    }
+
+    try {
+      // `local` loads ready, then the gate skips it: nothing ran, so the run failed.
+      const only = await cli("local");
+      expect(only.report.providers).toEqual([expect.objectContaining({ kind: "skipped" })]);
+      expect(only.report.samples).toEqual([]);
+      expect(only.exitCode).toBe(1);
+
+      const mixed = await cli("local,memory");
+      expect(mixed.report.providers.map((p) => [p.name, p.kind])).toEqual([
+        ["local", "skipped"],
+        ["memory", "ready"],
+      ]);
+      expect(mixed.report.samples.length).toBeGreaterThan(0);
+      expect(mixed.exitCode).toBeUndefined();
+      expect(requested).toEqual(["https://ipinfo.io/json", "https://ipinfo.io/json"]);
+    } finally {
+      fetchSpy.mockRestore();
+      process.argv = argv;
+      process.exitCode = exitCode;
+    }
+  });
+
+  it("skips an adapter instance that was never bound", async () => {
+    const unbound = memory();
+    const create = vi.spyOn(unbound, "create");
+    const out = await mkdtemp(join(tmpdir(), "bench-unbound-"));
+
+    try {
+      const report = await runV2(
+        [{ kind: "ready", name: "memory", cloud: false, region: null, provider: unbound }],
+        parseV2([
+          "--providers",
+          "memory",
+          "--run",
+          "unbound",
+          "--runs",
+          "1",
+          "--scenarios",
+          "command",
+          "--bursts",
+          "",
+          "--out",
+          out,
+        ]),
+        (r) => writeV2(r, out),
+      );
+
+      expect(create).not.toHaveBeenCalled();
+      expect(report.providers[0]).toMatchObject({
+        kind: "skipped",
+        note: expect.stringContaining("adapter instance not bound"),
+      });
     } finally {
       await rm(out, { recursive: true, force: true });
     }

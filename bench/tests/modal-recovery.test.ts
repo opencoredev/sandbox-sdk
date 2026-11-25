@@ -392,7 +392,7 @@ describe("Modal native existence", () => {
 
   it("looks a sandbox up exactly with poll: running, finished, genuinely missing or unknown", async () => {
     vi.stubEnv("MODAL_TOKEN_SECRET", "secret-value");
-    const provider = { ...memory(), name: "modal" };
+    const provider = bound({ ...memory(), name: "modal" });
 
     const closed = fakeModal(async (id) => {
       if (id === "sb-running") return null;
@@ -418,13 +418,15 @@ describe("Modal native existence", () => {
     // Every lookup closes its client.
     expect(closed).toHaveLength(5);
 
-    vi.stubEnv("MODAL_TOKEN_SECRET", "");
-    expect(await result("sb-running")).toBe("unavailable");
+    // The lookup reads through the bound connection, never the environment alone: an instance
+    // that was never bound is unavailable, whatever MODAL_TOKEN_SECRET holds.
+    const unbound = { ...memory(), name: "modal" };
+    expect((await lookupSandbox(unbound, "sb-running", 1000)).result).toBe("unavailable");
   });
 
   it("a stalled poll is cancelled at the deadline and its client closed", async () => {
     vi.stubEnv("MODAL_TOKEN_SECRET", "secret-value");
-    const provider = { ...memory(), name: "modal" };
+    const provider = bound({ ...memory(), name: "modal" });
     const cancelled: string[] = [];
 
     // Modal never answers: the RPC settles only when its call is cancelled.

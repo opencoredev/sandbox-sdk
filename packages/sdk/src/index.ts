@@ -1,4 +1,5 @@
 import type {
+  CreateInput,
   Provider,
   Capability,
   SandboxInfo,
@@ -19,6 +20,8 @@ import { SandboxError, Redactor, invalid, isNotFound } from "./errors.js";
 import { forgetKey, forgetSandbox, knownKey, rememberKey, withKeyLock } from "./keys.js";
 
 export { SandboxError } from "./errors.js";
+
+export { withRetry, type RetryOptions } from "./retry.js";
 
 export type { ErrorCode, ErrorOptions } from "./errors.js";
 
@@ -60,7 +63,13 @@ export type { NativeApi, NativeRequestOptions, HttpMethod } from "./native.js";
 
 export type { Files, FileDiff, FileEvent } from "./files.js";
 
-export type { ProcessHandle, ProcessInfo, StartOptions, Readiness } from "./processes.js";
+export type {
+  ProcessHandle,
+  ProcessInfo,
+  StartOptions,
+  Readiness,
+  WaitOptions,
+} from "./processes.js";
 
 export type { Git } from "./git.js";
 
@@ -77,20 +86,37 @@ export function hasCapability<B extends SandboxBase<unknown>, K extends Capabili
 
 const sdkLabel = { "sandbox-sdk": "1" };
 
+/** The optional provider methods each capability stands for. */
+const capabilityMethods = [
+  ["pause", ["pause", "resume"]],
+  ["snapshot", ["snapshot"]],
+  ["terminal", ["terminal"]],
+  ["snapshot-delete", ["deleteSnapshot"]],
+  ["templates", ["buildTemplate"]],
+] as const satisfies readonly (readonly [Capability, readonly (keyof Provider)[]])[];
+
+function isCallable<T>(value: T): value is NonNullable<T> {
+  return typeof value === "function";
+}
+
 function validate(provider: Provider, options: CreateOptions) {
   for (const name of Object.keys({ ...options.env, ...options.secrets }))
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) invalid("Invalid environment variable name");
 
-  for (const cap of provider.capabilities) {
-    if (
-      (cap === "pause" && (!provider.pause || !provider.resume)) ||
-      (cap === "snapshot" && !provider.snapshot) ||
-      (cap === "terminal" && !provider.terminal) ||
-      (cap === "snapshot-delete" && !provider.deleteSnapshot) ||
-      (cap === "templates" && !provider.buildTemplate)
-    )
+  // Both directions: a declared capability needs its methods, and a method needs its capability,
+  // because the handle only exposes a method whose capability is declared.
+  for (const [capability, methods] of capabilityMethods) {
+    const present = methods.filter((method) => isCallable(provider[method]));
+
+    if (provider.capabilities.has(capability) && present.length !== methods.length)
       throw new SandboxError(
-        "Invalid adapter capabilities. A declared method is missing. Fix the adapter contract.",
+        `Invalid adapter capabilities. ${provider.name} declares "${capability}" but does not implement ${methods.join(" and ")}. Fix the adapter contract.`,
+        { code: "provider" },
+      );
+
+    if (!provider.capabilities.has(capability) && present.length > 0)
+      throw new SandboxError(
+        `Invalid adapter capabilities. ${provider.name} implements ${present.join(" and ")} but does not declare "${capability}". Fix the adapter contract.`,
         { code: "provider" },
       );
   }
@@ -131,6 +157,31 @@ function validate(provider: Provider, options: CreateOptions) {
       invalid("Timeouts must be positive milliseconds");
 }
 
+/** Waits for a lookup, or rejects `aborted` as soon as `signal` fires. Only for calls that change nothing. */
+async function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  let abort = () => {};
+
+  const cancellation = new Promise<never>((_, reject) => {
+    abort = () =>
+      reject(
+        new SandboxError(
+          "Creation aborted. The signal was cancelled during the key lookup. Retry with a fresh signal.",
+          { code: "aborted" },
+        ),
+      );
+    signal.addEventListener("abort", abort, { once: true });
+
+    if (signal.aborted) abort();
+  });
+
+  try {
+    return await Promise.race([work, cancellation]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
 export function createSandbox<P extends Provider>(
   provider: P,
   options?: CreateOptions,
@@ -165,6 +216,14 @@ export async function createSandbox(
             if (!(error instanceof SandboxError) || error.code !== "not_found") throw error;
             forgetKey(provider, options.key);
           }
+
+          // The cached ID's key and labels can't be read while it sleeps: find wakes and verifies it.
+          if (
+            provider.readsMetadataOnlyWhenRunning &&
+            info !== undefined &&
+            info.state !== "running"
+          )
+            info = undefined;
         }
 
         // A stopped sandbox may never run again (an ended non-persistent Vercel session). The adapter's
@@ -174,7 +233,10 @@ export async function createSandbox(
           forgetKey(provider, options.key);
         }
 
-        info ??= await provider.find(options.key);
+        info ??= await untilAborted(
+          provider.find(options.key, { signal: options.signal }),
+          options.signal,
+        );
       }
 
       let created = !info;
@@ -188,26 +250,34 @@ export async function createSandbox(
           ...input
         } = options;
 
-        const pending = provider
-          .create({
-            ...input,
-            env: { ...options.env, ...secrets },
-            labels: { ...options.labels, ...sdkLabel },
-          })
-          .catch(async (error) => {
-            // A native unique-name conflict can race the initial lookup on another client.
-            if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) {
-              const existing = await provider.find(options.key);
+        const request: CreateInput = {
+          ...input,
+          env: { ...options.env, ...secrets },
+          labels: { ...options.labels, ...sdkLabel },
+        };
 
-              if (existing) {
-                created = false;
+        // Only an adapter that records secret names itself is told which env entries they are.
+        if (provider.recordsSecretNames) request.secretNames = Object.keys(secrets ?? {});
 
-                return existing;
-              }
+        const pending = provider.create(request).catch(async (error) => {
+          // A native unique-name conflict can race the initial lookup on another client.
+          if (options.key && provider.keyMode === "exact" && !options.signal?.aborted) {
+            // The create's own error (often outcome_unknown) says more than a failed follow-up lookup.
+            const existing = await provider
+              .find(options.key, { signal: options.signal })
+              .catch(() => {
+                throw error;
+              });
+
+            if (existing) {
+              created = false;
+
+              return existing;
             }
+          }
 
-            throw error;
-          });
+          throw error;
+        });
 
         if (options.signal) {
           const signal = options.signal;
@@ -299,6 +369,10 @@ export async function connectSandbox(
     const info = await provider.connect(id);
     const { makeHandle } = await import("./handle.js");
 
+    // A sleeping sandbox's key can't be read on such a provider, so it may be keyed: disposal closes
+    // the handle rather than destroy what may be someone's keyed sandbox.
+    const unread = provider.readsMetadataOnlyWhenRunning === true && info.state !== "running";
+
     return await makeHandle(
       provider,
       info,
@@ -306,6 +380,7 @@ export async function connectSandbox(
       { ...options, key: info.key },
       redactor,
       options.recoverSecrets ?? true,
+      unread,
     );
   } catch (error) {
     throw redactor.error(error, provider.name, id);
@@ -406,13 +481,14 @@ function hook<T>(
       { code: "unsupported", provider: provider.name },
     );
 
-  if (found === undefined)
+  if (!isCallable(found))
     throw new SandboxError(
       "Invalid adapter capabilities. A declared method is missing. Fix the adapter contract.",
       { code: "provider", provider: provider.name },
     );
 
-  return found;
+  // SAFETY: `isCallable` guarantees `found` is a callable function, so it cannot be undefined.
+  return found as T;
 }
 
 /**
@@ -493,6 +569,9 @@ async function sandboxActivity(provider: Provider, id: string): Promise<"idle" |
 
   try {
     const info = await provider.connect(id);
+
+    // Reading a sleeping sandbox would wake it; one that went to sleep since listing is left alone.
+    if (provider.readsMetadataOnlyWhenRunning && info.state !== "running") return "busy";
     const { makeHandle } = await import("./handle.js");
     box = await makeHandle(provider, info, false, {}, new Redactor(), false);
   } catch (error) {
@@ -502,11 +581,18 @@ async function sandboxActivity(provider: Provider, id: string): Promise<"idle" |
 
   try {
     // Markers still count on procActivity adapters: an older client may have written one.
-    const [processes, runs, scanned] = await Promise.all([
-      box.processes(),
-      runMarkers(box),
-      procScanBusy(provider, id),
-    ]);
+    const probes = Promise.all([box.processes(), runMarkers(box), procScanBusy(provider, id)]);
+    let found: Awaited<typeof probes>;
+
+    try {
+      found = await probes;
+    } catch (error) {
+      // A probe refused because the sandbox went to sleep mid-check proves nothing: leave it alone.
+      if (provider.readsMetadataOnlyWhenRunning) return "busy";
+      throw error;
+    }
+
+    const [processes, runs, scanned] = found;
 
     const live = processes.some(
       (process) => process.status === "running" || process.status === "starting",

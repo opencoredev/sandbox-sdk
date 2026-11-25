@@ -48,6 +48,9 @@ const fakes = {
   baseten: `{ apiKey: "smoke-key" }`,
   beam: `{ token: "smoke-token", workspaceId: "smoke-workspace", requestTimeoutMs: 5000 }`,
   instabox: `{ apiKey: "ibk_smoke", requestTimeoutMs: 5000 }`,
+  archil: `{ apiKey: "smoke-key", region: "aws-us-east-1" }`,
+  maritime: `{ apiKey: "mk_smoke", requestTimeoutMs: 5000 }`,
+  styne: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
 };
 
 // Beam's create probe gets a gateway port of its own, and counts only connections to it, so a late
@@ -157,6 +160,11 @@ const requireBanner = {
 // They must fail with a SandboxError that names the cause and the fix, not a generic provider error.
 const needsRequire = ["vercel", "modal", "tenki", "boxd", "boxd files", "beam create"];
 
+// Peers that load a dependency with a computed import() at run time, which a bundle that inlines
+// the peer may not resolve (disk loads undici this way). They must reach the network, or fail as
+// unavailable naming the fix, never as a generic provider error.
+const needsExternal = ["archil"];
+
 const formats: { label: string; options: BuildOptions; source: string; noBanner?: true }[] = [
   {
     label: "esm + splitting (Convex)",
@@ -258,6 +266,18 @@ try {
           `${label} ${row.name} names the cause and the fix`,
           ok,
           ok ? `${row.code}: ${/Dynamic require of "[^"]+"/.exec(row.text)?.[0] ?? ""}` : row.text,
+        );
+        continue;
+      }
+
+      if (needsExternal.includes(row.name)) {
+        const reached = row.attempts > 0 && row.sandboxError && !bad.test(row.text);
+        const named = row.code === "unavailable" && row.text.includes("Keep disk external");
+
+        check(
+          `${label} ${row.name} reaches the network or names the fix`,
+          reached || named,
+          `${row.attempts} connection attempt(s), ${row.code ?? "no error"}${reached || named ? "" : ` | ${row.text}`}`,
         );
         continue;
       }

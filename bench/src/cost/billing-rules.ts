@@ -111,6 +111,13 @@ const docs = {
   instaboxBilling: "https://instabox.sh/docs/account/billing.md",
   instaboxUsage: "https://api.instabox.sh/v1/machines/{id}/usage",
   beam: "https://www.beam.cloud/pricing",
+  archil: "https://docs.archil.com/administration/billing.md",
+  archilUsage:
+    "GET /api/sandboxes/{id}/usage on Archil's control plane (docs.archil.com/administration/billing.md)",
+  maritime: "https://maritime.sh/docs/billing",
+  maritimeUsage: "https://api.maritime.sh/v1/usage?sandbox={id} and /v1/sandboxes/{id}/info",
+  styne: "https://docs.styne.ai/billing",
+  styneTiers: "https://docs.styne.ai/pause-tiers",
   modal: "https://modal.com/pricing",
   modalResources: "https://modal.com/docs/guide/sandbox-resources",
   modalRegions: "https://modal.com/docs/guide/region-selection",
@@ -390,6 +397,45 @@ export const billingRules: readonly BillingRule[] = [
     ],
   },
   {
+    provider: "maritime",
+    product: null,
+    pricingKey: "maritime",
+    tariff: known({ kind: "per-unit", charges: "allocation" }, docs.maritime),
+    billingStarts: unknown(
+      "Billed per second while the virtual machine is awake; its first usage interval starts once it runs, a second or so after the create",
+    ),
+    billingStops: unknown(
+      "Running time stops when the sandbox ends or pauses; the interval ends a little before the end is confirmed",
+    ),
+    incrementSeconds: known(1, `${docs.maritime} (billed per second, no minimum)`),
+    minimumSeconds: known(0, `${docs.maritime} (no minimum)`),
+    perStartFeeUSD: unknown("No creation fee listed; absence is not confirmation"),
+    keepsCharging: known(
+      ["disk"],
+      `${docs.maritime} (a paused virtual machine is billed $0.08 per GB-month of disk, a 730-hour month, and no compute; an ended one nothing)`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known(
+      "not-charged",
+      // The billed time is running time, when disk is in the rate: adding disk at list price would count it
+      // twice. Paused disk is a real, separate charge outside the intervals: see `keepsCharging`.
+      `${docs.maritime} (disk is included in the running rate, so no storage fee accrues while awake; a paused sandbox's disk, $0.08/GB-month, is billed separately and is not in the usage intervals)`,
+    ),
+    settledChargeSource: known(
+      "Per-sandbox usage intervals with their cost, readable for 7 days after the sandbox ends",
+      docs.maritimeUsage,
+    ),
+    reportedKind: "metered",
+    attribution: "per-sandbox",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "The usage intervals are Maritime's meter of running time (compute, disk included while awake), not an invoice.",
+      "Paused-disk charges ($0.08/GB-month) are not in the usage intervals, so Maritime is left out of the held-open idle diagnostic until paused disk is accounted for separately.",
+      "Plan fee, its equal monthly usage credit and tax excluded.",
+    ],
+  },
+  {
     provider: "baseten",
     product: null,
     pricingKey: "baseten",
@@ -435,6 +481,76 @@ export const billingRules: readonly BillingRule[] = [
     notes: [
       "Published Sandboxes rates on the Performance tier, the default; credits excluded.",
       "Billed per millisecond while the sandbox runs (beam.cloud/pricing).",
+    ],
+  },
+  {
+    provider: "archil",
+    product: null,
+    pricingKey: "archil",
+    tariff: known({ kind: "per-unit", charges: "allocation" }, docs.archil),
+    billingStarts: unknown("Compute is billed while running; the starting event is not named"),
+    billingStops: unknown(
+      "Compute stops when the sandbox stops or pauses; the delete event is not named",
+    ),
+    incrementSeconds: unknown(
+      "Compute is sampled each minute; the billing increment is not stated, one second assumed in estimates",
+    ),
+    minimumSeconds: unknown("No minimum stated"),
+    perStartFeeUSD: unknown("No per-start fee stated; absence is not confirmation"),
+    keepsCharging: known(
+      ["disk"],
+      `${docs.archil} (stopped and paused: no compute; disk data is storage)`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known(
+      "excluded",
+      `${docs.archil} (disk data is billed as storage, $0.20/GiB-month active)`,
+    ),
+    settledChargeSource: known(
+      "Per-sandbox usage and cost, updated about once a minute, readable for 90 days",
+      docs.archilUsage,
+    ),
+    reportedKind: "billed",
+    attribution: "per-sandbox",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "$0.055/vCPU-hour and $0.020/GiB-hour while running; the usage endpoint's cost is before included allowances and prepaid credit.",
+      "Lifetime expiry and the idle timeout pause a sandbox rather than delete it, so a leaked sandbox stops accruing compute but keeps its storage.",
+      "Egress ($0.07/GB) and plan minimums (Developer $10/month, Team $500/month) excluded.",
+    ],
+  },
+  {
+    provider: "styne",
+    product: null,
+    pricingKey: "styne",
+    tariff: known(
+      { kind: "bundle", charges: "allocation" },
+      `${docs.styne} (one hourly rate per size)`,
+    ),
+    billingStarts: unknown(
+      "Metered per second while running; the event that starts it is not named",
+    ),
+    billingStops: unknown("Stops when the sandbox is killed, reaches its timeout or is paused"),
+    incrementSeconds: known(1, `${docs.styne} (metered per second while it runs)`),
+    minimumSeconds: unknown("No minimum stated"),
+    perStartFeeUSD: unknown("No creation fee listed; absence is not confirmation"),
+    keepsCharging: known(
+      [],
+      `${docs.styne} (a paused or sleeping VM costs $0; saved snapshots and volumes are billed at a stored-GiB rate that is $0 today) and ${docs.styneTiers}`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known("included", `${docs.styne} (the disk comes with each size)`),
+    settledChargeSource: unknown(
+      "No per-sandbox billing data; GET /v1/run/usage has daily account totals only",
+    ),
+    reportedKind: "estimate",
+    attribution: "none",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "Published per-size rates from 2026-11-20, after the plan's included VM hours; plan fees excluded.",
+      "Styne sleeps a running sandbox when nothing started in it runs, and stops metering it then; estimates price the whole running time, an upper bound.",
     ],
   },
   {

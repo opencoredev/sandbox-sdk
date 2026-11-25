@@ -1,7 +1,7 @@
 import type { ReportV2 } from "./v2-model.js";
 import { pricedResources } from "./billed-resources.js";
 import { estimateCost, pricing } from "./pricing.js";
-import { accountCap } from "./scenarios.js";
+import { accountCap, selectsScenario } from "./scenarios.js";
 
 /** Planning estimate only: extrapolates pilot durations, including failures, with no rate-limit prediction. */
 export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "samples">) {
@@ -155,28 +155,51 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
           ? ("skipped" as const)
           : perSandbox(lifetimes(new RegExp(`^${kind}-\\d+/sandbox-lifetime$`)), k * cohorts);
 
-      // A dedicated cpu-sustained iteration is one sandbox: create, fingerprint, probe, destroy,
-      // summed per iteration and priced per iteration.
+      // A dedicated cpu-sustained iteration is one sandbox, priced on its own recorded lifetime
+      // (`sandbox-lifetime`, create to destroy): that covers the probe's upload and first guest
+      // clock read, which run before the measured probe step. In a sustained run only the planned
+      // iterations (below `runs`) are priced, whichever row places them: each that recorded a
+      // lifetime is priced on it, even when its probe was blocked (the sandbox still ran), and an
+      // iteration past the runs is left out even when its probe was timed. An iteration whose
+      // probe ran but whose lifetime is missing (an older pilot) falls back to the sum of its
+      // create, fingerprint, probe and destroy steps.
       const sustainedParts = ["cold", "fingerprint", "cpu-sustained", "destroy"];
+      const timed = (s: (typeof rows)[number]) => ["sample", "failure"].includes(s.outcome.kind);
 
-      const sustainedLifetimes = [
+      const recordedLifetime = (iteration: number) =>
+        rows.find(
+          (s) =>
+            s.iteration === iteration &&
+            s.scenario === "sandbox-lifetime" &&
+            s.outcome.kind === "sample",
+        );
+
+      const sustainedRun = selectsScenario(report.config.scenarios, "cpu-sustained");
+      const planned = (iteration: number) => !sustainedRun || iteration < report.config.runs;
+
+      const sustainedIterations = [
         ...new Set(
           rows
             .filter(
               (s) =>
-                s.scenario === "cpu-sustained" && ["sample", "failure"].includes(s.outcome.kind),
+                planned(s.iteration) &&
+                ((s.scenario === "cpu-sustained" && timed(s)) ||
+                  (sustainedRun &&
+                    s.scenario === "sandbox-lifetime" &&
+                    s.outcome.kind === "sample")),
             )
             .map((s) => s.iteration),
         ),
-      ].map((iteration) =>
-        rows
-          .filter(
-            (s) =>
-              s.iteration === iteration &&
-              sustainedParts.includes(s.scenario) &&
-              ["sample", "failure"].includes(s.outcome.kind),
-          )
-          .reduce((ms, s) => ms + s.durationMs, 0),
+      ];
+
+      const sustainedLifetimes = sustainedIterations.map(
+        (iteration) =>
+          recordedLifetime(iteration)?.durationMs ??
+          rows
+            .filter(
+              (s) => s.iteration === iteration && sustainedParts.includes(s.scenario) && timed(s),
+            )
+            .reduce((ms, s) => ms + s.durationMs, 0),
       );
 
       const cpuSustained30 = perSandbox(sustainedLifetimes, 30);
@@ -210,7 +233,7 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
             ? null
             : lifecycle + workload + overlap + burst10 + burst25,
         /**
-         * CPU sustained (30 dedicated iterations: create, fingerprint, probe, destroy) and the
+         * CPU sustained (30 dedicated iterations, each priced on its recorded sandbox lifetime) and the
          * cpu-burst and survival cohorts at K=10 and 25 with the configured cohort count, each
          * sandbox priced on its own. Null where the pilot did not run that suite; "skipped" where
          * K exceeds the account cap. Not included in `total`.

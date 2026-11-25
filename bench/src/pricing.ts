@@ -75,6 +75,38 @@ export const pricing: PriceTable = {
     notes:
       "Published usage rates: $0.004/vCPU-hour and $0.00225/GiB-hour of memory, per second while running (not while starting, paused or stopped). Paid plans include disk (Builder 1 TiB across machines), beyond that $0.08/GiB-month; each machine's 20 GiB /data is counted as included. Plan fee and monthly credits ($20 Pro, $100 Builder) and egress ($0.02/GiB beyond the plan's) excluded. Default agent-browser template is 4 vCPU / 8 GiB.",
   },
+  maritime: {
+    ...base,
+    cpuSecond: 0.0055 / 3600,
+    memoryGiBSecond: 0.00275 / 3600,
+    diskGiBSecond: 0,
+    retrieved: "2026-11-23",
+    source: "https://maritime.sh/docs/billing",
+    offeredSizes: [
+      { cpu: 2, memoryGiB: 4 },
+      { cpu: 4, memoryGiB: 8 },
+      { cpu: 8, memoryGiB: 16 },
+      { cpu: 16, memoryGiB: 32 },
+    ],
+    notes:
+      "Published virtual machine rates: $0.0055/vCPU-hour and $0.00275/GiB-hour of memory, per second while running, no minimum, at any size from 1 to 16 vCPU and 1 to 64 GiB; disk is included while running (small 2/4 = $0.022/hour, medium 4/8 $0.044, large 8/16 $0.088, xlarge 16/32 $0.176). A paused (asleep) sandbox costs $0.08/GB-month of disk and no compute, which these estimates leave out. Plan fee and its equal monthly usage credit ($100 on Growth) excluded.",
+  },
+  styne: {
+    ...base,
+    cpuSecond: 0,
+    memoryGiBSecond: 0,
+    diskGiBSecond: 0,
+    tiers: [
+      { cpu: 2, memoryGiB: 4, hourly: 0.016 },
+      { cpu: 4, memoryGiB: 8, hourly: 0.032 },
+      { cpu: 8, memoryGiB: 16, hourly: 0.064 },
+      { cpu: 16, memoryGiB: 32, hourly: 0.128 },
+    ],
+    retrieved: "2026-11-23",
+    source: "https://docs.styne.ai/billing",
+    notes:
+      "Published per-size rates from 2026-11-20 after the plan's included VM hours: small (2 vCPU, 4 GB) $0.016/hour, default (4, 8) $0.032, large (8, 16) $0.064, xlarge (16, 32) $0.128, metered per second while running; disk comes with the size; paused or sleeping VMs cost $0 and snapshot storage is $0 today. Estimates only: Styne has no per-sandbox billing API (GET /v1/run/usage is daily account totals). Plan fees ($20, $99, $499 a month) and their included hours excluded.",
+  },
   superserve: {
     ...base,
     cpuSecond: 0.0504 / 3600,
@@ -195,6 +227,18 @@ export const pricing: PriceTable = {
     notes:
       "Published Sandboxes rates on the Performance tier, the default ($0.05/vCPU-hour, $0.01/GiB RAM-hour), priced on the allocation and billed per millisecond while running (2026-11-18). Shared ($0.011, $0.0055) and Spot ($0.0063, $0.00135) tiers are cheaper and not used. Disk not billed. The snapshot tests did not run: Beam has no API to delete a memory snapshot. Credits excluded.",
   },
+  archil: {
+    ...base,
+    // Compute bills the allocation while the sandbox runs, sampled each minute; stopped and paused
+    // sandboxes accrue none. Disk data is billed as storage ($0.20/GiB-month active), not here.
+    cpuSecond: 0.055 / 3600,
+    memoryGiBSecond: 0.02 / 3600,
+    diskGiBSecond: 0,
+    retrieved: "2026-11-21",
+    source: "https://docs.archil.com/administration/billing.md",
+    notes:
+      "Published sandbox rates ($0.055/vCPU-hour, $0.020/GiB RAM-hour), priced on the allocation while running (2026-11-21). Compute is sampled each minute; the billing increment and minimum are not stated, so this is a one-second estimate. Paused and stopped sandboxes accrue no compute. The root disk's data is billed as storage ($0.20/GiB-month active) and egress at $0.07/GB; neither is priced. No per-start fee stated. Plan minimums (Developer $10/month, Team $500/month) and credits excluded. The snapshot tests did not run: the adapter has no snapshot.",
+  },
   tenki: {
     ...base,
     cpuSecond: 0.000014,
@@ -306,8 +350,14 @@ export const defaultCompute: ComputeTable = {
   vercel: { cpu: 2, memoryGiB: 4 },
   baseten: { cpu: 2, memoryGiB: 4 },
   instabox: { cpu: 4, memoryGiB: 8 },
+  // Maritime's default size, small.
+  maritime: { cpu: 2, memoryGiB: 4 },
+  // Styne's base template: the default size, 4 vCPU / 8 GiB.
+  styne: { cpu: 4, memoryGiB: 8 },
   // Beam's TypeScript SDK default: 1 CPU, 128 MiB.
   beam: { cpu: 1, memoryGiB: 0.125 },
+  // Archil's default: 1 vCPU, 2048 MiB.
+  archil: { cpu: 1, memoryGiB: 2 },
 };
 
 export function estimateCost(

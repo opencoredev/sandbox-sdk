@@ -17,7 +17,10 @@ export const cloudProviders = [
   "vercel",
   "baseten",
   "instabox",
+  "maritime",
   "beam",
+  "archil",
+  "styne",
 ];
 
 export const mainTests = [
@@ -269,6 +272,7 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
   const removed = new Map<string, number>();
   const removedByTrack = new Map<string, Map<string, number>>();
   const stressRemoved = new Map<string, number>();
+  const stressRemovedByTrack = new Map<string, Map<string, number>>();
   const stressRemoval = stressRemovals(samples, policy);
 
   const drop = (reason: string, s: Pick<MergedSample, "track">) => {
@@ -294,7 +298,13 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
       if (isStressSample(s)) {
         const reason = stressRemoval(s);
 
-        if (reason) stressRemoved.set(reason, (stressRemoved.get(reason) ?? 0) + 1);
+        if (reason) {
+          stressRemoved.set(reason, (stressRemoved.get(reason) ?? 0) + 1);
+          const track = s.track ?? "default";
+          const byReason = stressRemovedByTrack.get(track) ?? new Map<string, number>();
+          byReason.set(reason, (byReason.get(reason) ?? 0) + 1);
+          stressRemovedByTrack.set(track, byReason);
+        }
 
         return reason === null;
       }
@@ -340,6 +350,10 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
     removed: Object.fromEntries(removed),
     /** Stress rows removed by whole unit, by reason; never counted in `removed`. */
     stressRemoved: Object.fromEntries(stressRemoved),
+    /** `stressRemoved` split by track, so each track's stress export discloses only its own. */
+    stressRemovedByTrack: Object.fromEntries(
+      [...stressRemovedByTrack].map(([track, byReason]) => [track, Object.fromEntries(byReason)]),
+    ),
     removedByTrack: Object.fromEntries(
       [...removedByTrack].map(([track, byReason]) => [track, Object.fromEntries(byReason)]),
     ),

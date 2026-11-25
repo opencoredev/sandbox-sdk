@@ -13,7 +13,13 @@ import type { Box } from "@upstash/box";
 import type { Sandbox, SnapshotListOpts, SnapshotPaginator } from "e2b";
 import type { Freestyle } from "freestyle";
 import type { Sandbox as VercelSandbox, Snapshot as VercelSnapshot } from "@vercel/sandbox";
-import { connectionOf, endpoint } from "./connections.js";
+import { archilControlUrl, archilSandboxBody } from "./archil.js";
+import {
+  connectionOf,
+  endpoint,
+  modalClientParams,
+  type ModalClientParams,
+} from "./connections.js";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -38,7 +44,9 @@ export const lookupSchema = z.object({
 
 export type LookupEvidence = z.infer<typeof lookupSchema>;
 
-const terminal = new Set(["deleted", "destroyed", "terminated"]);
+// Styne answers an ended sandbox with 410 until it forgets it; Maritime keeps one readable for
+// 7 days with `state: "ended"`.
+const terminal = new Set(["deleted", "destroyed", "terminated", "killed", "ended"]);
 
 function redact(value: string) {
   for (const [key, secret] of Object.entries(process.env))
@@ -139,9 +147,9 @@ export interface NativeModules {
       ...args: ConstructorParameters<typeof BasetenClient>
     ) => Pick<BasetenClient, "getInfo">;
   };
-  /** Modal's client: reads MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from the environment. */
+  /** Modal's client: params it is not given resolve from the environment, then ~/.modal.toml. */
   modal: {
-    ModalClient: new (params?: { grpcMiddleware?: GrpcMiddleware[] }) => {
+    ModalClient: new (params?: ModalClientParams & { grpcMiddleware?: GrpcMiddleware[] }) => {
       readonly images: {
         fromId(imageId: string): Promise<{ readonly imageId: string }>;
         delete(imageId: string): Promise<void>;
@@ -365,10 +373,16 @@ function isDaytonaSandboxApi(api: unknown): api is DaytonaSandboxApi {
  * Every native client below takes its endpoint, credentials and scope from the connection of the
  * adapter instance being read (`connectionOf`), never from the environment alone: a lookup sent to
  * another endpoint, account or team answers 404 for a sandbox that is running. Base URLs lose
- * their trailing slashes, as the adapters' own requests do. Modal's SDK resolves its connection
- * itself (environment, then ~/.modal.toml), as the adapter lets it.
+ * their trailing slashes, as the adapters' own requests do. Modal's client gets the token, secret
+ * and environment the adapter was bound with; only the ones it was not given resolve in the SDK
+ * (environment, then ~/.modal.toml), as they do for the adapter and its fingerprint.
  */
-const modalKey = "MODAL_TOKEN_SECRET";
+
+/** The fields of Styne's `GET /sandboxes/{id}` the lookup reads. */
+const styneSandbox = z.object({ sandboxID: z.string(), state: z.string() });
+
+/** Styne's error body: `{ error_code }`, such as `not_found` (https://docs.styne.ai/errors). */
+const styneErrorBody = z.object({ error_code: z.string() });
 
 /** Beam's gateway container listing, as the existence check reads it. */
 const beamContainers = z.object({
@@ -384,6 +398,9 @@ const nativeInfo = z.object({
 });
 
 const memoryNotFound = z.object({ code: z.literal("not_found") });
+
+/** Maritime's error body: `{ code }`, such as `sandbox_not_found`. */
+const maritimeErrorBody = z.object({ code: z.string() });
 
 /** The fields the bench reads from Docker's container inspect. */
 const dockerContainer = z.object({
@@ -404,9 +421,6 @@ export async function lookupSandbox(
     const info = await deadline(timeoutMs, async (signal) => {
       // Memory connect only reads its machine map.
       if (name === "memory") return nativeInfo.parse(await provider.connect(id));
-
-      if (name === "modal" && !process.env[modalKey])
-        throw new Error("Native lookup credentials unavailable");
 
       switch (name) {
         case "tenki": {
@@ -483,6 +497,24 @@ export async function lookupSandbox(
           return { id: found.containerId, status: found.status };
         }
 
+        case "archil": {
+          // A plain GET: it never wakes a paused sandbox, unlike a command. A deleted one reads
+          // "deleted" until Archil drops it, then 404.
+          const { apiKey, region } = connectionOf(provider, "archil");
+
+          const response = await fetch(
+            `${archilControlUrl(region)}/api/sandboxes/${encodeURIComponent(id)}`,
+            { headers: { Authorization: `Bearer ${apiKey}` }, signal },
+          );
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          const found = archilSandboxBody.parse(await response.json());
+
+          return { id: found.id, status: found.status };
+        }
+
         case "boxd": {
           const { Boxd } = await nativeModules.load("@boxd-sh/sdk");
           const boxd = new Boxd(connectionOf(provider, "boxd"));
@@ -512,6 +544,69 @@ export async function lookupSandbox(
           const response = await new BoatApi(config).get({ sandboxId: id });
 
           return nativeInfo.parse(response.sandbox);
+        }
+
+        case "styne": {
+          // GET only: Styne's POST /connect would wake a paused sandbox and move its deadline.
+          const { apiKey, baseUrl } = connectionOf(provider, "styne");
+
+          const response = await fetch(`${baseUrl}/sandboxes/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            signal,
+          });
+
+          // Every 410 is an ended sandbox (sandbox_ended, sandbox_timeout, node_loss, agent_exit),
+          // answered until Styne forgets it and answers 404.
+          if (response.status === 410) {
+            await response.body?.cancel();
+
+            return { sandboxId: id, state: "killed" };
+          }
+
+          // A forgotten sandbox answers 404 `not_found`; a route-level or undecodable 404 is unavailable.
+          if (response.status === 404) {
+            const answer = styneErrorBody.safeParse(await response.json().catch(() => null));
+
+            if (answer.success && answer.data.error_code === "not_found")
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+
+            throw new Error("Styne lookup answered a route or unknown error");
+          }
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+          const body = styneSandbox.parse(await response.json());
+
+          return { sandboxId: body.sandboxID, state: body.state };
+        }
+
+        case "maritime": {
+          // GET only: it never resumes a paused sandbox. An ended one reads `state: "ended"`.
+          const { apiKey, baseUrl } = connectionOf(provider, "maritime");
+
+          const response = await fetch(`${baseUrl}/v1/sandboxes/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            signal,
+          });
+
+          // Only Maritime's own codes decide: `404 sandbox_not_found` is absence and
+          // `410 sandbox_ended` an ended sandbox. A route-level 404 or any other answer is unavailable.
+          if (response.status === 404 || response.status === 410) {
+            const answer = maritimeErrorBody.safeParse(await response.json().catch(() => null));
+            const code = answer.success ? answer.data.code : undefined;
+
+            if (response.status === 404 && code === "sandbox_not_found")
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+
+            if (response.status === 410 && code === "sandbox_ended") return { id, state: "ended" };
+
+            throw new Error("Maritime lookup answered a route or unknown error");
+          }
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          return nativeInfo.parse(await response.json());
         }
 
         case "instabox": {
@@ -548,10 +643,16 @@ export async function lookupSandbox(
         case "modal": {
           const { ModalClient } = await nativeModules.load("modal");
           const { ClientError, Status } = await nativeModules.load("nice-grpc");
+
           // The deadline cancels the request in flight and closes the client, so a stalled poll
           // keeps no call or client open past it.
-          const client = new ModalClient({ grpcMiddleware: [cancelOn(signal)] });
+          const client = new ModalClient({
+            ...modalClientParams(connectionOf(provider, "modal")),
+            grpcMiddleware: [cancelOn(signal)],
+          });
+
           const close = () => client.close();
+
           signal.addEventListener("abort", close, { once: true });
 
           try {

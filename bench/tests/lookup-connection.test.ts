@@ -10,10 +10,12 @@ import { ConnectionConfig } from "e2b";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import type { ModalClientParams } from "../src/connections.js";
 import { lookupSandbox } from "../src/existence.js";
 import { loadProvider, type FactoryOptions } from "../src/providers.js";
 import { inspectSnapshot } from "../src/snapshots.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+import { bound, fakeNativeModules } from "./native-fakes.js";
 
 const id = "fixture";
 const budget = 10_000;
@@ -39,6 +41,11 @@ const providerEnv = [
   "FREESTYLE_API_KEY",
   "INSTABOX_API_KEY",
   "INSTABOX_API_URL",
+  "MODAL_TOKEN_ID",
+  "MODAL_TOKEN_SECRET",
+  "MODAL_ENVIRONMENT",
+  "MODAL_PROFILE",
+  "MODAL_CONFIG_PATH",
   "SUPERSERVE_API_KEY",
   "SUPERSERVE_BASE_URL",
   "TENKI_API_KEY",
@@ -78,6 +85,8 @@ async function load(name: string, factory: FactoryOptions): Promise<Provider> {
 /** The environment a conflicting case runs in: another key, endpoint and scope for everything. */
 function otherEnvironment() {
   const other = {
+    ARCHIL_API_KEY: "other-key",
+    ARCHIL_REGION: "aws-us-west-2",
     BASETEN_API_KEY: "other-key",
     BEAM_TOKEN: "other-token",
     BEAM_WORKSPACE_ID: "ws-other",
@@ -444,6 +453,30 @@ describe("lookups use the explicit options the adapter was built with, not the e
     expect(seen.every((row) => row.endsWith(" 200"))).toBe(true);
   });
 
+  it("Archil: explicit key and region pick the key and control plane of its reads", async () => {
+    otherEnvironment();
+
+    const seen = stubFetch((url, headers) => {
+      if (
+        headers.get("authorization") === "Bearer live-key" &&
+        url.href === `https://control.green.eu-west-1.aws.prod.archil.com/api/sandboxes/${id}`
+      )
+        return [200, { success: true, data: { sandbox_id: id, status: "running" } }];
+
+      return [404, {}];
+    });
+
+    const archil = await load("archil", { apiKey: " live-key ", region: "aws-eu-west-1" });
+
+    expect(await lookupSandbox(archil, id, budget)).toMatchObject({
+      result: "present",
+      nativeState: "running",
+    });
+    expect(seen).toEqual([
+      `https://control.green.eu-west-1.aws.prod.archil.com/api/sandboxes/${id} 200`,
+    ]);
+  });
+
   it("Beam: explicit gateway and token on its container listing", async () => {
     otherEnvironment();
 
@@ -468,5 +501,86 @@ describe("lookups use the explicit options the adapter was built with, not the e
       nativeState: "RUNNING",
     });
     expect(seen).toEqual(["https://live.invalid/beam/api/v1/gateway/containers 200"]);
+  });
+
+  describe("Modal: the bound token, secret and environment, never the ambient ones", () => {
+    const live = { tokenId: "ak-live", tokenSecret: "as-live", environment: "env-live" };
+
+    class ClientError extends Error {
+      constructor(readonly code: number) {
+        super("grpc");
+      }
+    }
+
+    const NotFoundError = class extends Error {};
+
+    /**
+     * A Modal account that holds the sandbox and image only in the live scope: a client built with
+     * any other token, secret or environment answers NOT_FOUND, as a wrong-scope read does.
+     */
+    function modalCloud() {
+      const params: ModalClientParams[] = [];
+
+      const ModalClient = vi.fn().mockImplementation(function (given: ModalClientParams = {}) {
+        params.push(given);
+
+        const scoped =
+          given.tokenId === live.tokenId &&
+          given.tokenSecret === live.tokenSecret &&
+          given.environment === live.environment;
+
+        return {
+          sandboxes: {
+            fromId: async (sandboxId: string) => ({
+              sandboxId,
+              poll: async () => {
+                if (!scoped) throw new ClientError(5);
+
+                return null;
+              },
+            }),
+            list: vi.fn(),
+          },
+          images: {
+            fromId: async (imageId: string) => {
+              if (!scoped) throw new NotFoundError("missing");
+
+              return { imageId };
+            },
+            delete: vi.fn(),
+          },
+          environments: {},
+          close: vi.fn(),
+        };
+      });
+
+      fakeNativeModules({
+        modal: { ModalClient, NotFoundError },
+        "nice-grpc": { ClientError, Status: { NOT_FOUND: 5 } },
+      });
+
+      return params;
+    }
+
+    it("reads through the adapter's explicit options while the environment names another account", async () => {
+      vi.stubEnv("MODAL_TOKEN_ID", "ak-other");
+      vi.stubEnv("MODAL_TOKEN_SECRET", "as-other");
+      vi.stubEnv("MODAL_ENVIRONMENT", "env-other");
+      const params = modalCloud();
+
+      const adapter = await load("modal", live);
+
+      expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
+      expect((await inspectSnapshot("modal", adapter, "source", id)).exists).toBe(true);
+      expect(params).toEqual([expect.objectContaining(live), live]);
+    });
+
+    it("reads through the bound connection when no Modal variable is set", async () => {
+      const params = modalCloud();
+      const adapter = bound({ ...memory(), name: "modal" }, live);
+
+      expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
+      expect(params).toEqual([expect.objectContaining(live)]);
+    });
   });
 });

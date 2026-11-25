@@ -89,6 +89,8 @@ const sourceSchema = z
     config: z
       .object({
         seed: z.number().int(),
+        /** Ordinary iterations planned; absent from runs collected before it was journaled. */
+        runs: z.number().int().positive().optional(),
         scenarios: z.array(z.string()),
         bursts: z.array(finite),
         track: trackSchema.optional(),
@@ -174,6 +176,18 @@ export function classifyFailure(
     stressCohort &&
     ["cold", "window"].includes(cohort.member) &&
     failureSignal(sample.outcome) === "quota"
+  )
+    return "provider-account-limit";
+
+  // Archil refuses a create over the plan's concurrent-sandbox cap; the adapter reports it as
+  // quota, before anything is allocated, so no sandbox is named. Stress cohorts keep the strict
+  // rule above: there an Archil quota with a non-429 HTTP status stays the provider's.
+  if (
+    !stressCohort &&
+    sample.provider === "archil" &&
+    /(^|\/)cold$/.test(sample.scenario) &&
+    sample.outcome.code === "quota" &&
+    sample.outcome.sandboxId === undefined
   )
     return "provider-account-limit";
 
@@ -406,7 +420,7 @@ export function mergeSources(
 
   const selection = attemptPolicy
     ? selectAttempts(samples, attemptPolicy)
-    : { samples, removed: {}, removedByTrack: {}, stressRemoved: {} };
+    : { samples, removed: {}, removedByTrack: {}, stressRemoved: {}, stressRemovedByTrack: {} };
 
   return {
     attemptPolicy,
@@ -415,6 +429,8 @@ export function mergeSources(
     selectionRemovedByTrack: selection.removedByTrack,
     /** Stress rows (cpu-sustained, cpu-burst, survival) removed by whole unit, kept apart from selectionRemoved. */
     stressSelectionRemoved: selection.stressRemoved,
+    /** stressSelectionRemoved split by track, so each track's stress export discloses its own. */
+    stressSelectionRemovedByTrack: selection.stressRemovedByTrack,
     schemaVersion: "publication-merge-v1" as const,
     runId: "publication-final",
     bootstrapSeed: seed,

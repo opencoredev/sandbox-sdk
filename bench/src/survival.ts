@@ -24,7 +24,9 @@ export function parseBootId(output: string) {
 
 /**
  * Offsets from the window start at which heartbeats are due: 0, interval, 2 x interval, ..., and
- * always the window's end, so a member survives only if it answered at the end.
+ * always the window's end, so a member survives only if it answered at the end. `parseV2` only
+ * accepts windows that are whole intervals, so every slot is an interval apart; an irregular plan
+ * (from older evidence) still gets its end slot, which can follow the one before it too closely.
  */
 export function heartbeatOffsets(plan: SurvivalPlan): number[] {
   const offsets = Array.from(

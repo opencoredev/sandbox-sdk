@@ -1,8 +1,8 @@
 # Agent instructions
 
-## 1.0 rewrite in progress
+## Project
 
-Sandbox SDK 1.0 is being rewritten from scratch on `leoplayz317/sbx-23-rewrite-sandbox-sdk-10-from-scratch`, which branches from `v2`. The full design lives in `docs/spec.md`. Read it before changing anything, and treat it as the source of truth.
+Sandbox SDK is released as `@opencoredev/sandbox-sdk` 1.x from `main`. The design lives in `docs/spec.md`; read it before changing the core or an adapter's contract. The published user docs are `apps/docs/content`, which CI checks against the code, so update them in the same change as the behavior they describe.
 
 - Layout:
   - `packages/sdk` is the library.
@@ -12,6 +12,7 @@ Sandbox SDK 1.0 is being rewritten from scratch on `leoplayz317/sbx-23-rewrite-s
   - `examples/` holds the examples.
 - Load `~/.agents/skills/typescript-best-practices/SKILL.md` before writing TypeScript.
 - Tests run with a timeout and at most 4 workers. Never run unbounded suites.
+- Every change to `packages/sdk` needs a changeset (`bun run changeset`; see `.changeset/README.md`).
 
 ## Checks
 
