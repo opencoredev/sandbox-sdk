@@ -1234,6 +1234,7 @@ describe("boxd failure evidence", () => {
   test("a multiline sandbox secret in boxd's message is redacted whole", async () => {
     const secret =
       "-----BEGIN KEY-----\nline-one-0123456789\nline-two-abcdefghij\n-----END KEY-----";
+
     const box = await createSandbox(factory(), { secrets: { PRIVATE_KEY: secret } });
     const machines = box.native.client.machines;
 
