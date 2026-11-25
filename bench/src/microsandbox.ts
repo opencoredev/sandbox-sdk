@@ -6,7 +6,7 @@
  * https://api.microsandbox.dev/docs/openapi.json (2026-11-24) and the official SDK's `CloudService`.
  */
 import { z } from "zod";
-import { microsandboxBase } from "./existence.js";
+import type { MicrosandboxConfig } from "./connections.js";
 
 /** The label the bench adds to a Microsandbox create so its attempt hook names the call. */
 export const attemptLabel = "sandbox-bench-attempt";
@@ -41,13 +41,17 @@ export class MicrosandboxHttpError extends Error {
   }
 }
 
-/** One control-plane request with the bench's key, bounded. */
-export function microsandboxFetch(path: string, init: RequestInit = {}) {
+/** One control-plane request through the run adapter's own connection, bounded. */
+export function microsandboxFetch(
+  connection: MicrosandboxConfig,
+  path: string,
+  init: RequestInit = {},
+) {
   const headers = new Headers(init.headers);
 
-  headers.set("Authorization", `Bearer ${process.env.MSB_API_KEY ?? ""}`);
+  headers.set("Authorization", `Bearer ${connection.apiKey}`);
 
-  return fetch(`${microsandboxBase()}${path}`, {
+  return fetch(`${connection.baseUrl}/v1${path}`, {
     ...init,
     headers,
     redirect: "error",
@@ -107,12 +111,17 @@ export type AttemptOutcome = { kind: "sandbox"; id: string } | { kind: "pending"
  * retired only by a confirmed sandbox here or by the adapter's definite refusal while it ran.
  */
 export async function settleAllocationAttempt(
+  connection: MicrosandboxConfig,
   entry: AllocationAttempt,
   tier: "standard" | "shared",
   now = Date.now(),
 ): Promise<AttemptOutcome> {
   if (entry.allocId === undefined) return { kind: "pending", reason: "Attempt has no marker" };
-  const response = await microsandboxFetch(`/sandboxes/by-name/${encodeURIComponent(entry.id)}`);
+
+  const response = await microsandboxFetch(
+    connection,
+    `/sandboxes/by-name/${encodeURIComponent(entry.id)}`,
+  );
 
   if (response.status === 404) {
     await response.body?.cancel();
@@ -232,10 +241,11 @@ export type ServiceProbeOutcome =
  * is kept until attachment can be checked.
  */
 export async function probePendingService(
+  connection: MicrosandboxConfig,
   slug: string,
   sandboxName: string,
 ): Promise<ServiceProbeOutcome> {
-  const read = await microsandboxFetch(`/services/${encodeURIComponent(slug)}`);
+  const read = await microsandboxFetch(connection, `/services/${encodeURIComponent(slug)}`);
 
   if (read.status === 404) {
     await read.body?.cancel();
@@ -272,9 +282,12 @@ export async function probePendingService(
  * adapter confirmed it made; `foreign` on 404 when the slug was superseded after a 409 conflict; a
  * 404 for an unsuperseded pending create stays `pending`, because the create may still land.
  */
-export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome> {
+export async function cleanService(
+  connection: MicrosandboxConfig,
+  entry: ServiceEntry,
+): Promise<ServiceOutcome> {
   const path = `/services/${encodeURIComponent(entry.id)}`;
-  const read = await microsandboxFetch(path);
+  const read = await microsandboxFetch(connection, path);
 
   if (read.status === 404) {
     await read.body?.cancel();
@@ -329,12 +342,12 @@ export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome>
     return { kind: "foreign" };
   }
 
-  const removed = await microsandboxFetch(path, { method: "DELETE" });
+  const removed = await microsandboxFetch(connection, path, { method: "DELETE" });
   await removed.body?.cancel();
 
   if (!removed.ok && removed.status !== 404)
     throw new MicrosandboxHttpError("Microsandbox Service delete failed", removed.status);
-  const check = await microsandboxFetch(path);
+  const check = await microsandboxFetch(connection, path);
   await check.body?.cancel();
 
   if (check.status !== 404)
@@ -348,13 +361,14 @@ export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome>
 
 /** A snapshot by managed ID (a UUID) or by name; undefined on a 404. */
 export async function readMicrosandboxSnapshot(
+  connection: MicrosandboxConfig,
   id: string,
 ): Promise<MicrosandboxSnapshot | undefined> {
   const path = uuidPattern.test(id)
     ? `/snapshots/${encodeURIComponent(id)}`
     : `/snapshots/by-name/${encodeURIComponent(id)}`;
 
-  const response = await microsandboxFetch(path);
+  const response = await microsandboxFetch(connection, path);
 
   if (response.status === 404) {
     await response.body?.cancel();
@@ -384,12 +398,12 @@ export const recordedSource = (snapshot: MicrosandboxSnapshot) =>
   snapshot.sandbox_id ?? snapshot.labels[sourceLabel];
 
 /** Deletes a snapshot by managed ID or by name; a 404 is already gone. */
-export async function deleteMicrosandboxSnapshot(id: string) {
+export async function deleteMicrosandboxSnapshot(connection: MicrosandboxConfig, id: string) {
   const path = uuidPattern.test(id)
     ? `/snapshots/${encodeURIComponent(id)}`
     : `/snapshots/by-name/${encodeURIComponent(id)}`;
 
-  const response = await microsandboxFetch(path, { method: "DELETE" });
+  const response = await microsandboxFetch(connection, path, { method: "DELETE" });
   await response.body?.cancel();
 
   if (!response.ok && response.status !== 404)
@@ -397,14 +411,14 @@ export async function deleteMicrosandboxSnapshot(id: string) {
 }
 
 /** The capture operation that made (or is making) `snapshotName`, from recent operations. */
-async function findOperation(snapshotName: string) {
+async function findOperation(connection: MicrosandboxConfig, snapshotName: string) {
   let cursor: string | undefined;
 
   for (let index = 0; index < 10; index++) {
     const query = new URLSearchParams({ limit: "100" });
 
     if (cursor !== undefined) query.set("cursor", cursor);
-    const response = await microsandboxFetch(`/snapshot-operations?${query}`);
+    const response = await microsandboxFetch(connection, `/snapshot-operations?${query}`);
 
     if (!response.ok) {
       await response.body?.cancel();
@@ -438,6 +452,7 @@ const managedIdOf = (snapshot: MicrosandboxSnapshot) =>
  * throws, so the entry stays for recovery: an unresolved 404 never clears it.
  */
 export async function settleMicrosandboxCapture(
+  connection: MicrosandboxConfig,
   snapshotName: string,
   timeoutMs: number,
 ): Promise<CaptureOutcome> {
@@ -445,7 +460,7 @@ export async function settleMicrosandboxCapture(
   let reason = "Capture unresolved";
 
   for (let attempt = 0; ; attempt++) {
-    const named = await readMicrosandboxSnapshot(snapshotName);
+    const named = await readMicrosandboxSnapshot(connection, snapshotName);
 
     if (named !== undefined) {
       const managedId = managedIdOf(named);
@@ -456,7 +471,7 @@ export async function settleMicrosandboxCapture(
       return { kind: "exists", managedId };
     }
 
-    const op = await findOperation(snapshotName);
+    const op = await findOperation(connection, snapshotName);
 
     if (op?.status === "failed") return { kind: "absent" };
 
@@ -464,7 +479,7 @@ export async function settleMicrosandboxCapture(
       const id = op.result === null || op.result === undefined ? undefined : managedIdOf(op.result);
 
       if (id !== undefined)
-        return (await readMicrosandboxSnapshot(id))
+        return (await readMicrosandboxSnapshot(connection, id))
           ? { kind: "exists", managedId: id }
           : { kind: "absent" };
       reason = "Capture succeeded but its result is unreadable";
@@ -485,6 +500,7 @@ export async function settleMicrosandboxCapture(
  * or name the journal holds. Others of the same source are never touched.
  */
 export async function microsandboxSnapshotsFromSource(
+  connection: MicrosandboxConfig,
   sourceId: string,
   journaled: ReadonlySet<string>,
 ) {
@@ -495,7 +511,7 @@ export async function microsandboxSnapshotsFromSource(
     const query = new URLSearchParams({ limit: "100" });
 
     if (cursor !== undefined) query.set("cursor", cursor);
-    const response = await microsandboxFetch(`/snapshots?${query}`);
+    const response = await microsandboxFetch(connection, `/snapshots?${query}`);
 
     if (!response.ok) {
       await response.body?.cancel();

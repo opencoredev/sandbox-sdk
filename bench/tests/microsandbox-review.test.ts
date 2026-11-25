@@ -212,9 +212,16 @@ describe("allocation attempts: settled by name, by marker and tier", () => {
     adapter();
     const attempt = { id: "sbx-never-made", allocId: "a-1", attemptedAt: new Date().toISOString() };
 
-    expect(await settleAllocationAttempt(attempt, "standard")).toMatchObject({ kind: "pending" });
     expect(
-      await settleAllocationAttempt(attempt, "standard", Date.now() + attemptSettlementMs + 1),
+      await settleAllocationAttempt({ apiKey: key, baseUrl: fake.url }, attempt, "standard"),
+    ).toMatchObject({ kind: "pending" });
+    expect(
+      await settleAllocationAttempt(
+        { apiKey: key, baseUrl: fake.url },
+        attempt,
+        "standard",
+        Date.now() + attemptSettlementMs + 1,
+      ),
     ).toMatchObject({ kind: "pending", reason: expect.stringMatching(/15 minutes/) });
   });
 
@@ -226,22 +233,38 @@ describe("allocation attempts: settled by name, by marker and tier", () => {
     const attempt = { id: seen.name, attemptedAt: new Date().toISOString() };
 
     expect(
-      await settleAllocationAttempt({ ...attempt, allocId: seen.allocId }, "standard"),
+      await settleAllocationAttempt(
+        { apiKey: key, baseUrl: fake.url },
+        { ...attempt, allocId: seen.allocId },
+        "standard",
+      ),
     ).toEqual({
       kind: "sandbox",
       id: info.id,
     });
     expect(
-      await settleAllocationAttempt({ ...attempt, allocId: "another" }, "standard"),
+      await settleAllocationAttempt(
+        { apiKey: key, baseUrl: fake.url },
+        { ...attempt, allocId: "another" },
+        "standard",
+      ),
     ).toMatchObject({
       kind: "pending",
     });
     expect(
-      await settleAllocationAttempt({ ...attempt, allocId: seen.allocId }, "shared"),
+      await settleAllocationAttempt(
+        { apiKey: key, baseUrl: fake.url },
+        { ...attempt, allocId: seen.allocId },
+        "shared",
+      ),
     ).toMatchObject({ kind: "pending" });
     fake.faults.specNull = 1;
     expect(
-      await settleAllocationAttempt({ ...attempt, allocId: seen.allocId }, "standard"),
+      await settleAllocationAttempt(
+        { apiKey: key, baseUrl: fake.url },
+        { ...attempt, allocId: seen.allocId },
+        "standard",
+      ),
     ).toMatchObject({ kind: "pending", reason: expect.stringContaining("spec") });
     await provider.destroy(info.id);
   });
@@ -417,11 +440,17 @@ describe("Services: cleaned independently of their sandbox, never another's", ()
       superseded: false,
     });
 
-    expect(await cleanService(entry("x-slug", "created"))).toEqual({ kind: "foreign" });
+    expect(
+      await cleanService({ apiKey: key, baseUrl: fake.url }, entry("x-slug", "created")),
+    ).toEqual({ kind: "foreign" });
     expect(fake.services.has("x-slug")).toBe(true);
-    expect(await cleanService(entry("absent-slug", "created"))).toEqual({ kind: "gone" });
+    expect(
+      await cleanService({ apiKey: key, baseUrl: fake.url }, entry("absent-slug", "created")),
+    ).toEqual({ kind: "gone" });
     // An unsettled create that reads 404 may still land: it stays pending, never gone.
-    expect(await cleanService(entry("absent-slug", "pending"))).toMatchObject({ kind: "pending" });
+    expect(
+      await cleanService({ apiKey: key, baseUrl: fake.url }, entry("absent-slug", "pending")),
+    ).toMatchObject({ kind: "pending" });
     fake.services.delete("x-slug");
   });
 });
@@ -429,9 +458,9 @@ describe("Services: cleaned independently of their sandbox, never another's", ()
 describe("captures journaled by name: settled, never cleared on an unresolved 404", () => {
   it("a name with no snapshot and no operation stays unresolved", async () => {
     adapter();
-    await expect(settleMicrosandboxCapture("sandbox-sdk-never", 1)).rejects.toThrow(
-      /journal entry kept/,
-    );
+    await expect(
+      settleMicrosandboxCapture({ apiKey: key, baseUrl: fake.url }, "sandbox-sdk-never", 1),
+    ).rejects.toThrow(/journal entry kept/);
   });
 
   it("a failed operation is absent; a finished one is found", async () => {
@@ -441,13 +470,19 @@ describe("captures journaled by name: settled, never cleared on an unresolved 40
     provider.setAttemptHooks({ snapshot: (a) => void (name = a.name) });
     fake.faults.operationFails = true;
     await expect(provider.snapshot!(box.id)).rejects.toMatchObject({ code: "provider" });
-    expect(await settleMicrosandboxCapture(name, 5000)).toEqual({ kind: "absent" });
+    expect(await settleMicrosandboxCapture({ apiKey: key, baseUrl: fake.url }, name, 5000)).toEqual(
+      { kind: "absent" },
+    );
 
     const { id } = await provider.snapshot!(box.id);
 
-    expect(await settleMicrosandboxCapture(name, 5000)).toEqual({ kind: "exists", managedId: id });
+    expect(await settleMicrosandboxCapture({ apiKey: key, baseUrl: fake.url }, name, 5000)).toEqual(
+      { kind: "exists", managedId: id },
+    );
     await provider.deleteSnapshot!(id);
-    expect(await settleMicrosandboxCapture(name, 5000)).toEqual({ kind: "absent" });
+    expect(await settleMicrosandboxCapture({ apiKey: key, baseUrl: fake.url }, name, 5000)).toEqual(
+      { kind: "absent" },
+    );
     await provider.destroy(box.id);
   });
 
@@ -986,6 +1021,7 @@ describe("independent review reproductions", () => {
     fake.faults.compute = "shared";
     await expect(
       createRawMicrosandbox({
+        connection: { apiKey: key, baseUrl: fake.url },
         computeType: "standard",
         labels: labels(),
         peer: {
@@ -1184,6 +1220,7 @@ describe("independent review reproductions", () => {
 
     await expect(
       createRawMicrosandbox({
+        connection: { apiKey: key, baseUrl: fake.url },
         computeType: "standard",
         labels: labels(),
         peer: {
@@ -3391,4 +3428,55 @@ describe("independent review reproductions", () => {
 
     expect(afterReap).toEqual([]);
   });
+});
+
+describe("PR88 merge review: recovery reads through the run adapter's connection", () => {
+  it("cleans a journaled Service through the bound connection when the environment has changed", async () => {
+    const provider = adapter();
+    const run = "msb-reap-connection";
+    const out = await directory("bench-msb-connection-");
+    const box = await provider.create({ labels: runLabels(run) });
+    const name = fake.sandboxes.get(box.id)?.name ?? "";
+    const { url } = await provider.previewUrl(box.id, 3000);
+    const slug = new URL(url).pathname.split("/").at(-1) ?? "";
+
+    await fetch(`${fake.url}/v1/sandboxes/${box.id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${key}` },
+    });
+
+    await writeFile(
+      join(out, "ownership.json"),
+      JSON.stringify({
+        runId: run,
+        connectionFingerprints: await fingerprints(provider),
+        resources: [
+          {
+            provider: "microsandbox",
+            id: slug,
+            kind: "service",
+            parent: box.id,
+            sandboxName: name,
+            serviceState: "created",
+            serviceCreatedAt: fake.services.get(slug)?.createdAt,
+          },
+        ],
+      }),
+    );
+
+    // The adapter was bound with the fake's endpoint and key; the environment now names another.
+    vi.stubEnv("MSB_API_URL", "http://127.0.0.1:9");
+    vi.stubEnv("MSB_API_KEY", "msb_other_key_0123456789");
+
+    await reapRun(
+      [{ kind: "ready", name: "microsandbox", cloud: true, region: null, provider }],
+      parseV2(["--providers", "microsandbox", "--run", run, "--out", out]),
+      (s) => s,
+    );
+
+    expect({
+      service: fake.services.has(slug),
+      journal: (await readJournal(out)).resources,
+    }).toEqual({ service: false, journal: [] });
+  }, 60_000);
 });

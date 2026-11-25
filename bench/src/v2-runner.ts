@@ -120,7 +120,7 @@ import {
 } from "./snapshots.js";
 import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
-import { journalFingerprint } from "./connections.js";
+import { connectionOf, journalFingerprint } from "./connections.js";
 import { captureVercelMeter } from "./billing/providers.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import { failureOutcome } from "./failure.js";
@@ -939,6 +939,7 @@ export async function runV2(
     if (tier === undefined) return "pending";
 
     const outcome = await settleAllocationAttempt(
+      connectionOf(p.provider, "microsandbox"),
       {
         id: entry.id,
         allocId: entry.allocId,
@@ -1175,9 +1176,14 @@ export async function runV2(
               !isServiceSuperseded(allServices, idx),
           );
 
+          // Each probe gets only what is left of the reserve, like the delete it gates.
           for (const svc of unprovenServices) {
-            const probed = await deadline(config["timeout-ms"], () =>
-              probePendingService(svc.id, svc.sandboxName!),
+            const probed = await deadline(stepMs(), () =>
+              probePendingService(
+                connectionOf(loaded.provider, "microsandbox"),
+                svc.id,
+                svc.sandboxName!,
+              ),
             );
 
             if (probed.kind === "not-found" && svc.serviceState !== "created")
@@ -1206,6 +1212,9 @@ export async function runV2(
               }
             }
           }
+
+          // A reserve spent on the probes sends no DELETE; the sandbox is left for the reap.
+          if (leftUntil(endBy) <= 0) throw new DeadlineError("Cleanup reserve spent before DELETE");
         }
 
         if (measurement) {
@@ -3925,7 +3934,7 @@ export async function runV2(
 
     for (const [idx, entry] of services.entries()) {
       try {
-        const outcome = await cleanService({
+        const outcome = await cleanService(connectionOf(p.provider, "microsandbox"), {
           id: entry.id,
           parent: entry.parent,
           sandboxName: entry.sandboxName,

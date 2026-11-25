@@ -172,7 +172,7 @@ function maritimeConfig(options: ConnectionOptions): MaritimeConfig {
 }
 
 /** As the Microsandbox adapter resolves it: options, then MSB_API_KEY and MSB_API_URL. */
-function microsandboxConfig(options: ConnectionOptions): MicrosandboxConfig {
+export function microsandboxConfig(options: ConnectionOptions = {}): MicrosandboxConfig {
   const apiKey = (options.apiKey ?? process.env.MSB_API_KEY)?.trim();
 
   if (!apiKey) throw Object.assign(new Error("Microsandbox API key is missing"), { code: "auth" });

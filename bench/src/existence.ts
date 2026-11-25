@@ -388,11 +388,6 @@ const microsandboxInfo = z.object({
   compute: z.object({ type: z.string() }).nullish(),
 });
 
-/** Microsandbox's control plane, as the adapter resolves it. */
-export function microsandboxBase() {
-  return `${(process.env.MSB_API_URL?.trim() || "https://api.microsandbox.dev").replace(/\/+$/, "")}/v1`;
-}
-
 /**
  * Every native client below takes its endpoint, credentials and scope from the connection of the
  * adapter instance being read (`connectionOf`), never from the environment alone: a lookup sent to

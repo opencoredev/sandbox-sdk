@@ -5,6 +5,7 @@
  * and cleanup only once an answer carries this create's own owner marker in `spec.labels`.
  */
 import { z } from "zod";
+import type { MicrosandboxConfig } from "./connections.js";
 import { microsandboxFetch } from "./microsandbox.js";
 
 /** The label the raw create stores its owner marker in. */
@@ -39,8 +40,11 @@ export interface RawMicrosandboxBox {
 }
 
 /** One sandbox read by name; undefined on a 404. */
-async function byName(name: string) {
-  const response = await microsandboxFetch(`/sandboxes/by-name/${encodeURIComponent(name)}`);
+async function byName(connection: MicrosandboxConfig, name: string) {
+  const response = await microsandboxFetch(
+    connection,
+    `/sandboxes/by-name/${encodeURIComponent(name)}`,
+  );
 
   if (response.status === 404) {
     await response.body?.cancel();
@@ -57,11 +61,13 @@ async function byName(name: string) {
 }
 
 export async function createRawMicrosandbox(input: {
+  connection: MicrosandboxConfig;
   computeType: "standard" | "shared";
   labels: Readonly<Record<string, string>>;
   peer: RawPeer;
   admit: (box: RawMicrosandboxBox) => void;
 }): Promise<RawMicrosandboxBox> {
+  const { connection } = input;
   const owner = crypto.randomUUID();
   const name = `sdk-overhead-${crypto.randomUUID()}`;
 
@@ -69,11 +75,8 @@ export async function createRawMicrosandbox(input: {
     id,
     exec: async () => {
       const context = new input.peer.RemoteContext({
-        url: (process.env.MSB_API_URL?.trim() || "https://api.microsandbox.dev").replace(
-          /\/+$/,
-          "",
-        ),
-        apiKey: process.env.MSB_API_KEY ?? "",
+        url: connection.baseUrl,
+        apiKey: connection.apiKey,
         computeType: input.computeType,
       });
 
@@ -82,7 +85,7 @@ export async function createRawMicrosandbox(input: {
       if (result.code !== 0) throw new Error(`exit ${result.code}`);
     },
     destroy: async () => {
-      const response = await microsandboxFetch(`/sandboxes/${encodeURIComponent(id)}`, {
+      const response = await microsandboxFetch(connection, `/sandboxes/${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
 
@@ -92,7 +95,7 @@ export async function createRawMicrosandbox(input: {
         throw new Error(`Microsandbox delete failed: HTTP ${response.status}`);
     },
     exists: async () => {
-      const response = await microsandboxFetch(`/sandboxes/${encodeURIComponent(id)}`);
+      const response = await microsandboxFetch(connection, `/sandboxes/${encodeURIComponent(id)}`);
       await response.body?.cancel();
 
       if (response.status === 404) return false;
@@ -107,7 +110,7 @@ export async function createRawMicrosandbox(input: {
   let created: z.infer<typeof sandboxRecord> | undefined;
 
   try {
-    const response = await microsandboxFetch(`/sandboxes?${query}`, {
+    const response = await microsandboxFetch(connection, `/sandboxes?${query}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -139,7 +142,7 @@ export async function createRawMicrosandbox(input: {
   let admitted: RawMicrosandboxBox | undefined;
 
   for (;;) {
-    const record = created ?? (await byName(name).catch(() => undefined));
+    const record = created ?? (await byName(connection, name).catch(() => undefined));
     created = undefined;
 
     if (record?.spec && record.spec.labels[rawOwnerLabel] === owner) {

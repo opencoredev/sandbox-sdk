@@ -368,7 +368,7 @@ export async function snapshotCleaner(
   if (microsandboxTier(name) !== undefined)
     // By managed ID, or by name for a capture journaled before it was answered; also after the source
     // sandbox is gone.
-    return deleteMicrosandboxSnapshot;
+    return (id) => deleteMicrosandboxSnapshot(connectionOf(provider, "microsandbox"), id);
 
   if (name === "maritime") {
     // Deleted by name, also after the source sandbox has ended. Only `404 snapshot_not_found`
@@ -532,7 +532,11 @@ export async function snapshotsFromSource(
     return snapshotsFromMaritimeSandbox(provider, sourceSandboxId, journaled);
 
   if (microsandboxTier(name) !== undefined)
-    return microsandboxSnapshotsFromSource(sourceSandboxId, journaled);
+    return microsandboxSnapshotsFromSource(
+      connectionOf(provider, "microsandbox"),
+      sourceSandboxId,
+      journaled,
+    );
 
   if (name !== "superserve") return snapshotsFromDaytonaSandbox(provider, sourceSandboxId);
 
@@ -566,7 +570,7 @@ export async function inspectSnapshot(
   // Microsandbox: by managed ID or name. The source is the snapshot's own `sandbox_id`, or the adapter's
   // source label; a snapshot that records neither is never attributed to anyone.
   if (microsandboxTier(name) !== undefined) {
-    const snapshot = await readMicrosandboxSnapshot(id);
+    const snapshot = await readMicrosandboxSnapshot(connectionOf(provider, "microsandbox"), id);
 
     // Only an exact managed-ID read proves absence. A by-name 404 means only that the name is not
     // indexed (an unresolved capture, or one whose name lookup lags its managed ID), so it keeps the entry.
@@ -798,7 +802,11 @@ export async function settleJournaledSnapshot(
   // Microsandbox: a capture journaled by name before its request, never confirmed. Settled through the
   // snapshot and its operation, keeping the managed ID it finds; an unresolved 404 throws and keeps the entry.
   if (microsandboxTier(name) !== undefined && entry.snapshotName === entry.id) {
-    const capture = await settleMicrosandboxCapture(entry.id, timeoutMs);
+    const capture = await settleMicrosandboxCapture(
+      connectionOf(provider, "microsandbox"),
+      entry.id,
+      timeoutMs,
+    );
 
     return capture.kind === "exists" ? { kind: "exists", id: capture.managedId } : capture;
   }

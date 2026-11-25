@@ -18,7 +18,7 @@ import {
   snapshotProvenanceSchema,
 } from "./ownership.js";
 import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
-import { fingerprintSchema, reapConnection } from "./connections.js";
+import { connectionOf, fingerprintSchema, reapConnection } from "./connections.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot, settleJournaledSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
@@ -507,6 +507,7 @@ export async function reapRun(
 
         const outcome = await deadline(config["timeout-ms"], () =>
           settleAllocationAttempt(
+            connectionOf(p.provider, "microsandbox"),
             {
               id: entry.id,
               allocId: entry.allocId,
@@ -625,7 +626,11 @@ export async function reapRun(
 
           for (const svc of unprovenServices) {
             const probed = await deadline(config["timeout-ms"], () =>
-              probePendingService(svc.id, svc.sandboxName!),
+              probePendingService(
+                connectionOf(p.provider, "microsandbox"),
+                svc.id,
+                svc.sandboxName!,
+              ),
             );
 
             if (probed.kind === "not-found" && svc.serviceState !== "created")
@@ -728,7 +733,7 @@ export async function reapRun(
         }
 
         const outcome = await deadline(config["timeout-ms"], () =>
-          cleanService({
+          cleanService(connectionOf(p.provider, "microsandbox"), {
             id: entry.id,
             parent: entry.parent,
             sandboxName: entry.sandboxName,
@@ -1000,11 +1005,16 @@ export async function reapRun(
 
           const absent =
             exactId !== undefined
-              ? (await deadline(config["timeout-ms"], () => readMicrosandboxSnapshot(exactId))) ===
-                undefined
+              ? (await deadline(config["timeout-ms"], () =>
+                  readMicrosandboxSnapshot(connectionOf(p.provider, "microsandbox"), exactId),
+                )) === undefined
               : (
                   await deadline(config["timeout-ms"], () =>
-                    settleMicrosandboxCapture(item.id, config["timeout-ms"]),
+                    settleMicrosandboxCapture(
+                      connectionOf(p.provider, "microsandbox"),
+                      item.id,
+                      config["timeout-ms"],
+                    ),
                   )
                 ).kind === "absent";
 

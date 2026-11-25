@@ -17,6 +17,7 @@ import {
   maritimeRun,
   rawRequestMs,
 } from "../src/maritime-raw.js";
+import { microsandboxConfig } from "../src/connections.js";
 import { createRawMicrosandbox, type RawPeer } from "../src/microsandbox-raw.js";
 import { adapterSpec } from "../src/providers.js";
 
@@ -1042,6 +1043,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
 
     // Admitted for use and cleanup only once an answer carries this create's own owner marker.
     return createRawMicrosandbox({
+      connection: microsandboxConfig(),
       computeType: name === "microsandbox" ? "standard" : "shared",
       labels: label,
       peer,
