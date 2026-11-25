@@ -79,6 +79,7 @@ import {
   cleanService,
   isDefiniteRefusal,
   isRetrySlug,
+  isServiceSuperseded,
   probePendingService,
   settleAllocationAttempt,
   tierLabel,
@@ -513,6 +514,37 @@ export async function runV2(
     return next;
   }
 
+  /**
+   * Computes the next `owned` map on a shallow copy, writes it to `ownership.json`, and commits it
+   * to `owned` only after the atomic rename succeeds. Prevents a failed pre-POST hook or settlement
+   * write from leaving uncommitted entries or mutations in memory.
+   */
+  function persistJournalUpdate(mutate: (nextOwned: Map<string, OwnedEntry>) => void) {
+    const next = journal.then(async () => {
+      const nextOwned = new Map<string, OwnedEntry>();
+
+      for (const [k, v] of owned) nextOwned.set(k, { ...v });
+      mutate(nextOwned);
+
+      await writeOwnership(
+        join(runDir, "ownership.json"),
+        JSON.stringify(
+          { runId: config.run, resources: [...nextOwned.values()], apps: [...apps.values()] },
+          null,
+          2,
+        ),
+      );
+
+      owned.clear();
+
+      for (const [k, v] of nextOwned) owned.set(k, v);
+    });
+
+    journal = next.catch(() => {});
+
+    return next;
+  }
+
   /** Microsandbox attempt names by the per-call label the tracked create adds. */
   const attemptNames = new Map<string, string>();
   /** The name of the latest Microsandbox capture journaled for each source sandbox. */
@@ -527,39 +559,56 @@ export async function runV2(
       create: async (attempt) => {
         const label = attempt.labels[attemptLabel];
 
-        if (label !== undefined) attemptNames.set(label, attempt.name);
-        owned.set(`${name}/allocation-attempt/${attempt.name}`, {
-          provider: name,
-          id: attempt.name,
-          kind: "allocation-attempt",
-          parent: attempt.from ?? null,
-          sourceId:
-            attempt.from === undefined
-              ? null
-              : (owned.get(`${name}/snapshot/${attempt.from}`)?.parent ?? null),
-          allocId: attempt.allocId,
-          attemptedAt: new Date().toISOString(),
+        await persistJournalUpdate((nextOwned) => {
+          nextOwned.set(`${name}/allocation-attempt/${attempt.name}`, {
+            provider: name,
+            id: attempt.name,
+            kind: "allocation-attempt",
+            parent: attempt.from ?? null,
+            sourceId:
+              attempt.from === undefined
+                ? null
+                : (nextOwned.get(`${name}/snapshot/${attempt.from}`)?.parent ?? null),
+            allocId: attempt.allocId,
+            attemptedAt: new Date().toISOString(),
+          });
         });
-        await persist();
+
+        if (label !== undefined) attemptNames.set(label, attempt.name);
       },
       service: async (attempt) => {
-        for (const other of owned.values())
-          if (
-            other.provider === name &&
-            other.kind === "service" &&
-            other.parent === attempt.sandboxId &&
-            isRetrySlug(attempt.slug, other.id)
-          )
-            other.serviceSuperseded = true;
-        owned.set(`${name}/service/${attempt.slug}`, {
-          provider: name,
-          id: attempt.slug,
-          kind: "service",
-          parent: attempt.sandboxId,
-          sandboxName: attempt.sandboxName,
-          serviceState: "pending",
+        const key = `${name}/service/${attempt.slug}`;
+
+        await persistJournalUpdate((nextOwned) => {
+          let hasOlderRetry = false;
+
+          for (const other of nextOwned.values()) {
+            if (
+              other.provider === name &&
+              other.kind === "service" &&
+              other.parent === attempt.sandboxId
+            ) {
+              if (isRetrySlug(attempt.slug, other.id)) other.serviceSuperseded = true;
+
+              if (isRetrySlug(other.id, attempt.slug)) hasOlderRetry = true;
+            }
+          }
+
+          // Delete before set so a re-attempted base slug always sits AFTER any older retry slug.
+          nextOwned.delete(key);
+
+          const entry: OwnedEntry = {
+            provider: name,
+            id: attempt.slug,
+            kind: "service",
+            parent: attempt.sandboxId,
+            sandboxName: attempt.sandboxName,
+            serviceState: "pending",
+          };
+
+          if (hasOlderRetry) entry.serviceSuperseded = false;
+          nextOwned.set(key, entry);
         });
-        await persist();
       },
       // A confirmed create marks the slug the run's; a 409 or other refusal drops it before any other
       // slug is tried, so a slug that was someone else's never stays journaled as the run's.
@@ -581,43 +630,43 @@ export async function runV2(
           return;
         }
 
-        const newlySuperseded: OwnedEntry[] = [];
+        await persistJournalUpdate((nextOwned) => {
+          const current = nextOwned.get(key);
 
-        for (const other of owned.values()) {
-          if (
-            other.provider === name &&
-            other.kind === "service" &&
-            other.parent === entry.parent &&
-            isRetrySlug(entry.id, other.id) &&
-            other.serviceSuperseded !== true
-          ) {
-            other.serviceSuperseded = true;
-            newlySuperseded.push(other);
+          if (current === undefined) return;
+          const entries = [...nextOwned.entries()];
+          const entryIndex = entries.findIndex(([k]) => k === key);
+
+          for (let i = 0; i < entryIndex; i++) {
+            const other = entries[i]![1];
+
+            if (
+              other.provider === name &&
+              other.kind === "service" &&
+              other.parent === current.parent &&
+              isRetrySlug(current.id, other.id) &&
+              other.serviceSuperseded === undefined
+            )
+              other.serviceSuperseded = true;
           }
-        }
 
-        owned.delete(key);
-
-        try {
-          await persist();
-        } catch (error) {
-          owned.set(key, entry);
-
-          for (const other of newlySuperseded) delete other.serviceSuperseded;
-          throw error;
-        }
+          nextOwned.delete(key);
+        });
       },
       snapshot: async (attempt) => {
-        captureNames.set(attempt.sandboxId, attempt.name);
-        owned.set(`${name}/snapshot/${attempt.name}`, {
-          provider: name,
-          id: attempt.name,
-          kind: "snapshot",
-          parent: attempt.sandboxId,
-          snapshotProof: owned.get(`${name}/snapshot-source/${attempt.sandboxId}`)?.snapshotProof,
-          snapshotName: attempt.name,
+        await persistJournalUpdate((nextOwned) => {
+          nextOwned.set(`${name}/snapshot/${attempt.name}`, {
+            provider: name,
+            id: attempt.name,
+            kind: "snapshot",
+            parent: attempt.sandboxId,
+            snapshotProof: nextOwned.get(`${name}/snapshot-source/${attempt.sandboxId}`)
+              ?.snapshotProof,
+            snapshotName: attempt.name,
+          });
         });
-        await persist();
+
+        captureNames.set(attempt.sandboxId, attempt.name);
       },
     };
   }
@@ -804,14 +853,11 @@ export async function runV2(
           );
 
           const unprovenServices = allServices.filter(
-            (r) =>
+            (r, idx) =>
               r.parent === id &&
               r.sandboxName !== undefined &&
-              r.serviceSuperseded !== true &&
               (r.serviceState !== "created" || r.serviceCreatedAt === undefined) &&
-              !allServices.some(
-                (other) => other.parent === r.parent && isRetrySlug(other.id, r.id),
-              ),
+              !isServiceSuperseded(allServices, idx),
           );
 
           for (const svc of unprovenServices) {
@@ -2936,7 +2982,7 @@ export async function runV2(
       (v) => v.provider === p.name && v.kind === "service",
     );
 
-    for (const entry of services) {
+    for (const [idx, entry] of services.entries()) {
       try {
         const outcome = await cleanService({
           id: entry.id,
@@ -2944,11 +2990,7 @@ export async function runV2(
           sandboxName: entry.sandboxName,
           state: entry.serviceState ?? "pending",
           createdAt: entry.serviceCreatedAt,
-          superseded:
-            entry.serviceSuperseded === true ||
-            services.some(
-              (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
-            ),
+          superseded: isServiceSuperseded(services, idx),
           onVerified: async (verifiedCreatedAt) => {
             const key = `${p.name}/service/${entry.id}`;
             const current = owned.get(key);
@@ -2971,16 +3013,30 @@ export async function runV2(
           continue;
         }
 
-        for (const other of owned.values())
-          if (
-            other.provider === p.name &&
-            other.kind === "service" &&
-            other.parent === entry.parent &&
-            isRetrySlug(entry.id, other.id)
-          )
-            other.serviceSuperseded = true;
-        owned.delete(`${p.name}/service/${entry.id}`);
-        await persist();
+        const key = `${p.name}/service/${entry.id}`;
+
+        await persistJournalUpdate((nextOwned) => {
+          const current = nextOwned.get(key);
+
+          if (current === undefined) return;
+          const entries = [...nextOwned.entries()];
+          const entryIndex = entries.findIndex(([k]) => k === key);
+
+          for (let i = 0; i < entryIndex; i++) {
+            const other = entries[i]![1];
+
+            if (
+              other.provider === p.name &&
+              other.kind === "service" &&
+              other.parent === current.parent &&
+              isRetrySlug(current.id, other.id) &&
+              other.serviceSuperseded === undefined
+            )
+              other.serviceSuperseded = true;
+          }
+
+          nextOwned.delete(key);
+        });
       } catch (e) {
         review(p.name, entry.id, errorNote(e), "service");
         errors.push(errorNote(e));

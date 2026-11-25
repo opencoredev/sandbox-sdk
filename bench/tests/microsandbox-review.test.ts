@@ -2900,4 +2900,203 @@ describe("independent review reproductions", () => {
     expect(fake.sandboxes.has(source.id)).toBe(false);
     expect(fake.services.has(retry.id)).toBe(false);
   });
+
+  test("R15-1 an older retry slug does not mask a newer pending base-slug attempt", async () => {
+    const provider = adapter();
+    const create = provider.create.bind(provider);
+    let boxId = "";
+    let slug = "";
+    let retrySlug = "";
+    let phase: "first" | "second" | "done" = "first";
+    let postAccepted = false;
+    let finalizePost: (() => Promise<void>) | undefined;
+
+    const wire = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (phase === "first" && method === "GET" && url.pathname === `/v1/services/${slug}`)
+        return Response.json({ error: { code: "service_not_found" } }, { status: 404 });
+
+      if (phase === "first" && method === "POST" && url.pathname === "/v1/services") {
+        const body = z.object({ slug: z.string() }).parse(JSON.parse(String(init?.body ?? "{}")));
+
+        if (body.slug.startsWith(`${slug}-`)) {
+          retrySlug = body.slug;
+
+          return Response.json({ error: { code: "internal_error" } }, { status: 503 });
+        }
+      }
+
+      if (phase === "second" && method === "POST" && url.pathname === "/v1/services") {
+        finalizePost = async () => {
+          const accepted = await realFetch(input, { ...init, signal: null });
+          await accepted.body?.cancel();
+          expect(accepted.status).toBe(201);
+          postAccepted = true;
+        };
+
+        throw new TypeError("connection lost while re-attempted base POST was in flight");
+      }
+
+      return realFetch(input, init);
+    });
+
+    provider.create = async (input) => {
+      const result = await create(input);
+      boxId = result.id;
+      slug = `sbx-${boxId.replaceAll("-", "").slice(0, 16)}-p3000`;
+      fake.services.set(slug, { slug, target: null, status: "detached" });
+
+      // First call hits 409 on base slug and journals a retry slug whose POST returns 503.
+      await expect(provider.previewUrl(boxId, 3000)).rejects.toThrow();
+      expect(retrySlug).toMatch(new RegExp(`^${slug}-[0-9a-f]{4}$`));
+
+      // Foreign owner deletes base slug, then a second call re-attempts base slug and loses its reply.
+      fake.services.delete(slug);
+      phase = "second";
+      await expect(provider.previewUrl(boxId, 3000)).rejects.toThrow();
+      phase = "done";
+
+      return result;
+    };
+
+    await runV2(
+      loaded(provider),
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--run",
+        run,
+        "--out",
+        out,
+        "--runs",
+        "1",
+        "--max-sandboxes",
+        "4",
+        "--bursts",
+        "",
+        "--ownership-visibility-ms",
+        "100",
+        "--timeout-ms",
+        "5000",
+        "--scenarios",
+        "cold",
+      ]),
+      async () => {},
+    );
+    wire.mockRestore();
+
+    // The older retry slug must NOT have masked the newer pending base slug, so sandbox stays alive.
+    expect(fake.sandboxes.has(boxId)).toBe(true);
+    expect(finalizePost).toBeDefined();
+
+    if (finalizePost && !postAccepted) await finalizePost();
+
+    // Simulate the older retry slug being already gone on server (confirming only base needs cleanup).
+    const parsed = z
+      .object({
+        runId: z.string(),
+        resources: z.array(
+          z.looseObject({
+            provider: z.string(),
+            id: z.string(),
+            kind: z.string(),
+          }),
+        ),
+      })
+      .parse(JSON.parse(await journalText()));
+
+    // Drop the old never-created retry entry as if its own sweep settled, keeping base + sandbox.
+    const withoutOldRetry = parsed.resources.filter((r) => r.id !== retrySlug);
+    await writeFile(
+      join(out, "ownership.json"),
+      JSON.stringify({ runId: parsed.runId, resources: withoutOldRetry }),
+    );
+
+    expect(await reap()).toBe(false);
+    expect(fake.sandboxes.has(boxId)).toBe(false);
+    expect(fake.services.has(slug)).toBe(false);
+  });
+
+  test("R15-2 a failed pre-POST Service journal write does not leave a phantom pending entry blocking cleanup", async () => {
+    const provider = adapter();
+    const create = provider.create.bind(provider);
+    let boxId = "";
+    let slug = "";
+    let servicePostCalls = 0;
+    let injectedJournalFailure = false;
+
+    const realRename = journalFiles.rename;
+
+    const renameSpy = vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (
+        !injectedJournalFailure &&
+        slug !== "" &&
+        String(to).endsWith("ownership.json") &&
+        (await readFile(from, "utf8")).includes(slug)
+      ) {
+        injectedJournalFailure = true;
+        throw new Error("simulated pre-POST Service journal write failure");
+      }
+
+      return realRename(from, to);
+    });
+
+    const wire = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+
+      if ((init?.method ?? "GET") === "POST" && url.pathname === "/v1/services") servicePostCalls++;
+
+      return realFetch(input, init);
+    });
+
+    provider.create = async (input) => {
+      const result = await create(input);
+      boxId = result.id;
+      slug = `sbx-${boxId.replaceAll("-", "").slice(0, 16)}-p3000`;
+      await expect(provider.previewUrl(boxId, 3000)).rejects.toThrow(
+        "simulated pre-POST Service journal write failure",
+      );
+
+      return result;
+    };
+
+    await runV2(
+      loaded(provider),
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--run",
+        run,
+        "--out",
+        out,
+        "--runs",
+        "1",
+        "--max-sandboxes",
+        "4",
+        "--bursts",
+        "",
+        "--ownership-visibility-ms",
+        "100",
+        "--timeout-ms",
+        "5000",
+        "--scenarios",
+        "cold",
+      ]),
+      async () => {},
+    );
+    renameSpy.mockRestore();
+    wire.mockRestore();
+
+    expect(injectedJournalFailure).toBe(true);
+    expect(servicePostCalls).toBe(0);
+    expect(fake.sandboxes.has(boxId)).toBe(false);
+
+    const resources = z
+      .object({ resources: z.array(z.looseObject({ id: z.string(), kind: z.string() })) })
+      .parse(JSON.parse(await journalText())).resources;
+
+    expect(resources).toEqual([]);
+  });
 });

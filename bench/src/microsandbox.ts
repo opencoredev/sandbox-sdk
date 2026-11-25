@@ -182,6 +182,38 @@ export interface ServiceEntry {
 export const isRetrySlug = (other: string, slug: string) =>
   other.startsWith(`${slug}-`) && /^-[0-9a-f]{4}$/.test(other.slice(slug.length));
 
+export interface ServiceOrderEntry {
+  readonly id: string;
+  readonly parent: string | null;
+  readonly serviceSuperseded?: boolean;
+}
+
+/**
+ * Whether `services[index]` is known to have hit a 409 conflict:
+ * - `serviceSuperseded === true`: durably recorded when a retry slug was journaled or retired.
+ * - `serviceSuperseded === false`: explicitly re-attempted after an older retry slug, so an older
+ *   retry slug cannot mask this newer attempt.
+ * - `serviceSuperseded === undefined` (older journals): superseded only by a retry slug
+ *   (`<id>-<4 hex>`) recorded AFTER `services[index]` in the journal.
+ */
+export function isServiceSuperseded(
+  services: readonly ServiceOrderEntry[],
+  index: number,
+): boolean {
+  const entry = services[index];
+
+  if (entry === undefined) return false;
+
+  if (entry.serviceSuperseded === true) return true;
+
+  if (entry.serviceSuperseded === false) return false;
+
+  return services.some(
+    (other, otherIndex) =>
+      otherIndex > index && other.parent === entry.parent && isRetrySlug(other.id, entry.id),
+  );
+}
+
 export type ServiceOutcome =
   | { kind: "gone" }
   | { kind: "foreign" }

@@ -24,6 +24,7 @@ import { isMissingFile } from "./files.js";
 import {
   cleanService,
   isRetrySlug,
+  isServiceSuperseded,
   probePendingService,
   readMicrosandboxSnapshot,
   settleAllocationAttempt,
@@ -332,26 +333,29 @@ export async function reapRun(
       );
 
       if (journal) {
-        const hadEntry = journal.resources.includes(entry);
+        const entryIndex = journal.resources.indexOf(entry);
+        const hadEntry = entryIndex >= 0;
         let addedSettled = false;
         const newlySuperseded: z.infer<typeof resource>[] = [];
 
-        if (hadEntry) journal.resources = journal.resources.filter((r) => r !== entry);
+        if (entry.kind === "service" && hadEntry) {
+          for (let i = 0; i < entryIndex; i++) {
+            const other = journal.resources[i]!;
 
-        if (entry.kind === "service") {
-          for (const other of journal.resources) {
             if (
               other.provider === entry.provider &&
               other.kind === "service" &&
               other.parent === entry.parent &&
               isRetrySlug(entry.id, other.id) &&
-              other.serviceSuperseded !== true
+              other.serviceSuperseded === undefined
             ) {
               other.serviceSuperseded = true;
               newlySuperseded.push(other);
             }
           }
         }
+
+        if (hadEntry) journal.resources = journal.resources.filter((r) => r !== entry);
 
         if (
           entry.kind === "service" &&
@@ -365,7 +369,8 @@ export async function reapRun(
         try {
           await persistJournal();
         } catch (error) {
-          if (hadEntry && !journal.resources.includes(entry)) journal.resources.push(entry);
+          if (hadEntry && !journal.resources.includes(entry))
+            journal.resources.splice(Math.min(entryIndex, journal.resources.length), 0, entry);
 
           for (const other of newlySuperseded) delete other.serviceSuperseded;
 
@@ -542,14 +547,11 @@ export async function reapRun(
           );
 
           const unprovenServices = allServices.filter(
-            (r) =>
+            (r, idx) =>
               r.parent === id &&
               r.sandboxName !== undefined &&
-              r.serviceSuperseded !== true &&
               (r.serviceState !== "created" || r.serviceCreatedAt === undefined) &&
-              !allServices.some(
-                (other) => other.parent === r.parent && isRetrySlug(other.id, r.id),
-              ),
+              !isServiceSuperseded(allServices, idx),
           );
 
           for (const svc of unprovenServices) {
@@ -649,7 +651,7 @@ export async function reapRun(
       (r) => r.provider === p.name && r.kind === "service",
     );
 
-    for (const entry of services) {
+    for (const [idx, entry] of services.entries()) {
       try {
         if (settledServicesInRun.has(entry.id)) {
           await forget(entry);
@@ -663,11 +665,7 @@ export async function reapRun(
             sandboxName: entry.sandboxName,
             state: entry.serviceState ?? "pending",
             createdAt: entry.serviceCreatedAt,
-            superseded:
-              entry.serviceSuperseded === true ||
-              services.some(
-                (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
-              ),
+            superseded: isServiceSuperseded(services, idx),
             onVerified: async (verifiedCreatedAt) => {
               await persistServicePromotion([entry], verifiedCreatedAt);
             },
