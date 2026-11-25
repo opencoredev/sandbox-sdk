@@ -1215,9 +1215,12 @@ describe("boxd failure evidence", () => {
 
   test("the adapter's own error keeps boxd's message scrubbed", () => {
     const error = boxdError(
-      Object.assign(new Error("rejected https://api.example/?token=abc\nAuthorization: Bearer zz9"), {
-        grpcCode: 3,
-      }),
+      Object.assign(
+        new Error("rejected https://api.example/?token=abc\nAuthorization: Bearer zz9"),
+        {
+          grpcCode: 3,
+        },
+      ),
       { call: "machines.list" },
     );
 
@@ -1229,7 +1232,8 @@ describe("boxd failure evidence", () => {
   });
 
   test("a multiline sandbox secret in boxd's message is redacted whole", async () => {
-    const secret = "-----BEGIN KEY-----\nline-one-0123456789\nline-two-abcdefghij\n-----END KEY-----";
+    const secret =
+      "-----BEGIN KEY-----\nline-one-0123456789\nline-two-abcdefghij\n-----END KEY-----";
     const box = await createSandbox(factory(), { secrets: { PRIVATE_KEY: secret } });
     const machines = box.native.client.machines;
 
