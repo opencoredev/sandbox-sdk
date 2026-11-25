@@ -123,9 +123,10 @@ killed (137) each record without an exit whose `spec.json` was last written in
 an earlier second than the kernel's boot time (`btime` in `/proc/stat`), and
 removes run markers older than that. Each record's check and write hold that
 record's lock (`bootRepairScript` in `shell/process-records.ts`), so a setup
-reusing the name cannot be marked between them. A lock it cannot take within
-about three seconds, such as one a stop left under a PID that is alive again,
-leaves that record as it is, so the connection is never held up. Nothing written since the boot
+reusing the name cannot be marked between them. Records that already exited or
+are not older than the boot are never locked. The repair only tries a lock: it
+never breaks or waits out one it does not hold, and after about a second of
+contention across the scan it leaves the contended records as they are. Nothing written since the boot
 is touched, and a record written in the boot's own second is left alone, so the
 repair is safe for any client at any time. `find()` and the restart
 after a snapshot connect right after their start, so the sandbox they hand out

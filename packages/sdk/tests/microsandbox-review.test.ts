@@ -468,6 +468,46 @@ test("PR88-4 a lock left by a stop under a PID that is alive again does not hold
   });
 }, 60_000);
 
+test("PR88-4 a repair never breaks a lock it does not hold, even one still empty", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+  expect((await exec(p, sandbox, staleRecord)).exitCode).toBe(0);
+
+  // A setup paused between its lock's mkdir and its entry, then checking it still holds the lock.
+  const setup = exec(
+    p,
+    sandbox,
+    "d=/tmp/.sandbox-sdk/procs/p1; mkdir $d/lock && sleep 2.5 && if [ -f $d/exit ]; then printf broken; else printf intact; fi; : > $d/lock/$$ && echo '{}' > $d/spec.json && rm $d/lock/$$; rmdir $d/lock",
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  const [, held] = await Promise.all([exec(adapter(), sandbox, "true"), setup]);
+
+  expect(held.stdout).toBe("intact");
+}, 15_000);
+
+test("PR88-4 records that already exited are never locked, so their abandoned locks cost nothing", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  // PID 1 is always alive, so a waiter would wait these locks out.
+  const exited = ["p4", "p5"]
+    .map(
+      (name) =>
+        `mkdir -p /tmp/.sandbox-sdk/procs/${name}/lock && echo '{}' > /tmp/.sandbox-sdk/procs/${name}/spec.json && printf 0 > /tmp/.sandbox-sdk/procs/${name}/exit && : > /tmp/.sandbox-sdk/procs/${name}/lock/1 && touch -d '1 hour ago' /tmp/.sandbox-sdk/procs/${name}/spec.json`,
+    )
+    .join(" && ");
+
+  expect((await exec(p, sandbox, exited)).exitCode).toBe(0);
+
+  const started = Date.now();
+  expect(await exec(adapter(), sandbox, "true", { timeoutMs: 5000 })).toMatchObject({
+    exitCode: 0,
+  });
+  expect(Date.now() - started).toBeLessThan(1000);
+});
+
 test("PR88-4 a repair that cannot read a record's timestamp leaves the record alone", async () => {
   const p = adapter();
   const { id: sandbox } = await p.create({ labels: labels() });
