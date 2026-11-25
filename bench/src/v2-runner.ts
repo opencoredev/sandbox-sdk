@@ -786,11 +786,6 @@ export async function runV2(
         restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
 
-        // The adapter's destroy removed the sandbox's Services before deleting it (Microsandbox).
-        for (const [key, entry] of owned)
-          if (entry.provider === loaded.name && entry.kind === "service" && entry.parent === id)
-            owned.delete(key);
-
         // A timed destroy row carries the confirmed stop in its phases; any other deletion
         // journals it, so billing can still settle the sandbox's App (Modal).
         if (!measurement)

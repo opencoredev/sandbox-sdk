@@ -27,7 +27,7 @@ import {
 import { collectProvider } from "../src/billing/providers.js";
 import { lookupSandbox } from "../src/existence.js";
 import { mergeSources, type MergeSource } from "../src/merge.js";
-import { createRawMicrosandbox } from "../src/microsandbox-raw.js";
+import { createRawMicrosandbox, type RawMicrosandboxBox } from "../src/microsandbox-raw.js";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
 import { siteData } from "../src/site-data.js";
 import { reapRun } from "../src/recovery.js";
@@ -357,6 +357,7 @@ describe("Services: cleaned independently of their sandbox, never another's", ()
             kind: "service",
             parent: box.id,
             sandboxName: name,
+            serviceState: "created",
           },
           {
             provider: "microsandbox",
@@ -364,6 +365,7 @@ describe("Services: cleaned independently of their sandbox, never another's", ()
             kind: "service",
             parent: box.id,
             sandboxName: name,
+            serviceState: "created",
           },
         ],
       }),
@@ -613,7 +615,11 @@ describe("independent review reproductions", () => {
       { provider: "microsandbox", id: slug, kind: "service", parent: id, sandboxName: "sbx-owner" },
     ]);
     await reap();
-    fake.services.set(slug, { slug, target: null, status: "detached" });
+    fake.services.set(slug, {
+      slug,
+      target: { sandbox: "sbx-owner", port: 3000 },
+      status: "enabled",
+    });
     await reap();
     expect(fake.services.has(slug)).toBe(false);
   });
@@ -896,5 +902,201 @@ describe("independent review reproductions", () => {
     await journal([{ provider: "microsandbox", id: other.id, kind: "sandbox", parent: null }]);
     await reap();
     expect(fake.sandboxes.has(other.id)).toBe(true);
+  });
+
+  test("R2-1 runV2 keeps a pending Service journaled when its sandbox is deleted before the Service appears", async () => {
+    const p = adapter();
+    const create = p.create.bind(p);
+    let slug = "";
+    let attempted = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (init?.method === "POST" && new URL(String(input)).pathname === "/v1/services") {
+        attempted = true;
+
+        return Response.json({ error: { code: "internal_error" } }, { status: 503 });
+      }
+
+      return realFetch(input, init);
+    });
+    p.create = async (input) => {
+      const result = await create(input);
+      slug = `sbx-${result.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+      await expect(p.previewUrl(result.id, 3000)).rejects.toThrow();
+
+      return result;
+    };
+
+    await runV2(
+      loaded(p),
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--run",
+        run,
+        "--out",
+        out,
+        "--runs",
+        "1",
+        "--max-sandboxes",
+        "4",
+        "--bursts",
+        "",
+        "--ownership-visibility-ms",
+        "100",
+        "--timeout-ms",
+        "3000",
+        "--scenarios",
+        "cold",
+      ]),
+      async () => {},
+    );
+    expect(attempted).toBe(true);
+    expect(fake.sandboxes.size).toBe(0);
+
+    const resources = z
+      .object({ resources: z.array(z.looseObject({ id: z.string(), kind: z.string() })) })
+      .parse(JSON.parse(await journalText())).resources;
+
+    expect(resources.some((item) => item.kind === "service" && item.id === slug)).toBe(true);
+  });
+
+  test("R2-2 does not delete a detached conflicting Service if the 409 settlement could not be persisted", async () => {
+    const p = adapter();
+    const { id: sandboxId } = await p.create({ labels: labels() });
+    const slug = `sbx-${sandboxId.replaceAll("-", "").slice(0, 16)}-p3000`;
+    fake.services.set(slug, { slug, target: null, status: "detached" });
+
+    const wire = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementationOnce(async () =>
+        Response.json({ error: { code: "service_not_found" } }, { status: 404 }),
+      );
+
+    let conflicts = 0;
+    p.setAttemptHooks({
+      service: (attempt) =>
+        journal([
+          {
+            provider: "microsandbox",
+            id: attempt.slug,
+            kind: "service",
+            parent: attempt.sandboxId,
+            sandboxName: attempt.sandboxName,
+            serviceState: "pending",
+          },
+        ]),
+      serviceSettled: ({ outcome }) => {
+        if (outcome !== "conflict") throw new Error("Fixture expected a collision");
+        conflicts++;
+        throw new Error("simulated failed journal write");
+      },
+    });
+
+    await expect(p.previewUrl(sandboxId, 3000)).rejects.toThrow("simulated failed journal write");
+    expect(conflicts).toBe(1);
+    wire.mockRestore();
+    await p.destroy(sandboxId);
+    expect(fake.services.has(slug)).toBe(true);
+    expect(await reap()).toBe(true);
+    expect(fake.services.has(slug)).toBe(true);
+  });
+
+  test("R2-3 clears the capture-name cleanupReview after recovery deletes its managed snapshot", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    let name = "";
+    p.setAttemptHooks({
+      snapshot: (attempt) => {
+        name = attempt.name;
+      },
+    });
+    const snapshot = await capture(p, source.id);
+    await p.destroy(source.id);
+
+    let visible = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+
+      if (path === `/v1/snapshots/by-name/${name}`)
+        return Response.json({ error: { code: "snapshot_not_found" } }, { status: 404 });
+
+      if (!visible && path === "/v1/snapshot-operations")
+        return Response.json({ data: [], next_cursor: null });
+
+      return realFetch(input, init);
+    });
+
+    await journal([
+      {
+        provider: "microsandbox",
+        id: name,
+        kind: "snapshot",
+        parent: source.id,
+        snapshotName: name,
+        snapshotProof: proof(source.id),
+      },
+    ]);
+    expect(await reap()).toBe(true);
+    expect(await readFile(join(out, "results.json"), "utf8")).toContain(name);
+
+    visible = true;
+    const stillNeedsReview = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
+
+    expect(fake.snapshots.has(snapshot.id)).toBe(false);
+    expect(
+      z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
+        .resources,
+    ).toEqual([]);
+    expect({
+      stillNeedsReview,
+      reviewedIds: results.cleanupReview.map((entry) => entry.id),
+    }).toEqual({
+      stillNeedsReview: false,
+      reviewedIds: [],
+    });
+  });
+
+  test("R2-4 gives the raw overhead cleanup the ID when the wrong-tier sandbox DELETE fails", async () => {
+    fake.faults.compute = "shared";
+    const admitted: RawMicrosandboxBox[] = [];
+    let refusedDeletes = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (
+        init?.method === "DELETE" &&
+        new URL(String(input)).pathname.startsWith("/v1/sandboxes/")
+      ) {
+        if (refusedDeletes === 0) {
+          refusedDeletes++;
+
+          return Response.json({ error: { code: "internal_error" } }, { status: 500 });
+        }
+      }
+
+      return realFetch(input, init);
+    });
+
+    await expect(
+      createRawMicrosandbox({
+        computeType: "standard",
+        labels: labels(),
+        peer: {
+          RemoteContext: class {
+            sandboxes = { get: async () => ({ exec: async () => ({ code: 0 }) }) };
+          },
+        },
+        admit: (box) => admitted.push(box),
+      }),
+    ).rejects.toThrow();
+    expect(refusedDeletes).toBe(1);
+
+    for (const box of admitted) await box.destroy();
+    expect({ admitted: admitted.length, remaining: fake.sandboxes.size }).toEqual({
+      admitted: 1,
+      remaining: 0,
+    });
   });
 });

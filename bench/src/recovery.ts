@@ -516,6 +516,8 @@ export async function reapRun(
     for (const entry of (journal?.resources ?? []).filter(
       (r) => r.provider === p.name && r.kind === "snapshot",
     )) {
+      let current = entry;
+
       try {
         if (restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
@@ -523,14 +525,12 @@ export async function reapRun(
         const settled = await settleJournaledSnapshot(p.name, entry, config["timeout-ms"]);
 
         if (settled.kind === "exists") {
-          let confirmed = entry;
-
           // A Maritime save's key goes once it settles; a Microsandbox capture's name gives way to the
           // managed ID settlement confirmed, journaled before the delete so a by-name 404 can never
           // drop the snapshot it found.
           if (entry.idempotencyKey !== undefined || settled.id !== entry.id) {
             const { idempotencyKey: _, ...withoutKey } = entry;
-            confirmed = { ...withoutKey, id: settled.id };
+            const confirmed = { ...withoutKey, id: settled.id };
 
             if (journal) {
               const previousResources = [...journal.resources];
@@ -543,26 +543,48 @@ export async function reapRun(
                 throw error;
               }
             }
+
+            if (settled.id !== entry.id) {
+              const hasSettledReview = reviews.some(
+                (r) =>
+                  r.provider === entry.provider && r.id === confirmed.id && r.kind === entry.kind,
+              );
+
+              for (let i = reviews.length - 1; i >= 0; i--) {
+                const item = reviews[i]!;
+
+                if (
+                  item.provider === entry.provider &&
+                  item.id === entry.id &&
+                  item.kind === entry.kind
+                ) {
+                  if (hasSettledReview) reviews.splice(i, 1);
+                  else item.id = confirmed.id;
+                }
+              }
+            }
+
+            current = confirmed;
           }
 
           await deleteProvenSnapshot(
             p.name,
             p.provider,
-            confirmed.id,
-            confirmed.parent,
-            confirmed.snapshotProof,
+            current.id,
+            current.parent,
+            current.snapshotProof,
             config.run,
             config["timeout-ms"],
           );
-          await forget(confirmed);
+          await forget(current);
         } else {
           await forget(entry);
         }
       } catch (error) {
         review(
           p.name,
-          entry.id,
-          entry.kind,
+          current.id,
+          current.kind,
           sanitize(error instanceof Error ? error.message : "Snapshot recovery failed"),
         );
       }

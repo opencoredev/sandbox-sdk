@@ -180,11 +180,13 @@ export type ServiceOutcome =
   | { kind: "pending"; reason: string };
 
 /**
- * Deletes a journaled Service when it is still the run's: it targets the journaled sandbox name, or it
- * is detached (its sandbox was deleted) and nothing says the slug was taken. One targeting anything
- * else, or a detached one at a superseded slug, is never touched. Runs whether or not the sandbox still
- * exists. `gone` once a read confirms 404 for a Service the adapter confirmed it made; a 404 for a
- * pending create stays `pending`, because the create may still land.
+ * Deletes a journaled Service when ownership is proven: it targets the journaled sandbox name, or it
+ * is detached after a confirmed create (`state === "created"`) and nothing says the slug was taken.
+ * A detached Service whose create is still `pending` cannot be distinguished from a pre-existing
+ * detached Service whose 409 settlement failed to persist, so it stays `pending` for review. One
+ * targeting anything else, or a detached one at a superseded slug, is never touched. Runs whether or
+ * not the sandbox still exists. `gone` once a read confirms 404 for a Service the adapter confirmed
+ * it made; a 404 for a pending create stays `pending`, because the create may still land.
  */
 export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome> {
   const path = `/services/${encodeURIComponent(entry.id)}`;
@@ -211,13 +213,21 @@ export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome>
 
   if (service.slug !== entry.id) throw new Error("Microsandbox Service read answered another slug");
 
-  const ours =
-    entry.sandboxName !== undefined &&
-    (service.target !== null && service.target !== undefined
-      ? service.target.sandbox === entry.sandboxName
-      : service.status === "detached" && !entry.superseded);
+  if (entry.sandboxName === undefined) return { kind: "foreign" };
 
-  if (!ours) return { kind: "foreign" };
+  if (service.target !== null && service.target !== undefined) {
+    if (service.target.sandbox !== entry.sandboxName) return { kind: "foreign" };
+  } else if (service.status === "detached" && !entry.superseded) {
+    if (entry.state !== "created")
+      return {
+        kind: "pending",
+        reason:
+          "Detached Service has an unsettled create; ownership cannot be proven, so it is kept for review",
+      };
+  } else {
+    return { kind: "foreign" };
+  }
+
   const removed = await microsandboxFetch(path, { method: "DELETE" });
   await removed.body?.cancel();
 
