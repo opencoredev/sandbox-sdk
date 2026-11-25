@@ -390,7 +390,7 @@ export function verifySegment(input: {
   const parsed = parseJsonLine(line);
 
   if (parsed === null)
-    return { kind: "invalid", reason: `Output is not JSON (${line.length} characters)` };
+    return { kind: "invalid", reason: `Output is not JSON: ${sanitize(line).slice(0, 200)}` };
 
   if (!parsed.success)
     return {

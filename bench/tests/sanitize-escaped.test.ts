@@ -18,7 +18,7 @@ describe("sanitize with JSON-escaped secrets", () => {
     );
   });
 
-  it("never quotes a sustained segment's malformed line", () => {
+  it("keeps a JSON-escaped secret out of a sustained segment's malformed-line excerpt", () => {
     vi.stubEnv("FAKE_SERVICE_PASSWORD", secret);
 
     const line = `{"segment":1,"password":${JSON.stringify(secret)}`;
@@ -34,8 +34,7 @@ describe("sanitize with JSON-escaped secrets", () => {
 
     expect(check).toEqual({
       kind: "invalid",
-      reason: `Output is not JSON (${line.length} characters)`,
+      reason: 'Output is not JSON: {"segment":1,"password":"[REDACTED]"',
     });
-    expect(JSON.stringify(check)).not.toContain("Vc2-Gs6");
   });
 });
