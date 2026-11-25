@@ -7,7 +7,7 @@
  * proofs catch a workload that silently did less or wrong work, not a malicious guest, so spawn
  * asks every child for its own pid, which only a real process can report.
  */
-import type { Sandbox } from "@opencoredev/sandbox-sdk";
+import type { RunResult, Sandbox } from "@opencoredev/sandbox-sdk";
 import { z } from "zod";
 import { command, quote } from "../workloads.js";
 import {
@@ -524,6 +524,34 @@ async function checkFiles(
   return `files:${binHash}:${textHash}`;
 }
 
+/**
+ * Prints `alive` while `pid` answers signal 0, `gone` once it neither answers nor has a /proc
+ * entry, and `unknown` otherwise, such as a process the shell may not signal or a guest without
+ * /proc.
+ */
+export function processProbe(pid: number): string {
+  return `if kill -0 ${pid} 2>/dev/null; then echo alive; elif [ -r /proc/self/stat ] && [ ! -e /proc/${pid} ]; then echo gone; else echo unknown; fi`;
+}
+
+/**
+ * The process check's result from the probe run after `stop()`. Only a probe that exited 0 and
+ * printed `gone` shows the process stopped; a timeout, error or any other output proves nothing.
+ */
+export function stoppedVerdict(
+  probe: Pick<RunResult, "ok" | "exitCode" | "timedOut" | "stdout">,
+  pid: number,
+): string {
+  const marker = probe.ok ? probe.stdout.trim() : "";
+
+  if (marker === "gone") return "process:stopped";
+
+  if (marker === "alive") throw new Error(`process: pid ${pid} survived stop`);
+
+  throw new Error(
+    `process: could not tell whether pid ${pid} stopped (exit ${probe.exitCode}, timed out ${probe.timedOut}, output ${JSON.stringify(probe.stdout.slice(0, 80))})`,
+  );
+}
+
 async function checkProcess(box: Sandbox, ctx: ExpandedContext, name: string) {
   const handle = await box.start("sleep 300", { name, cwd: envDir });
 
@@ -536,11 +564,9 @@ async function checkProcess(box: Sandbox, ctx: ExpandedContext, name: string) {
     // stop() always waits the full grace before SIGKILL; keep it short so the SDK's round trips
     // dominate, not a fixed sleep.
     await handle.stop({ graceMs: 100 });
-    const alive = await box.run(`kill -0 ${info.pid}`, { timeoutMs: ctx.timeoutMs });
+    const probe = await box.run(processProbe(info.pid), { timeoutMs: ctx.timeoutMs });
 
-    if (alive.ok) throw new Error(`process: pid ${info.pid} survived stop`);
-
-    return "process:stopped";
+    return stoppedVerdict(probe, info.pid);
   } finally {
     if (handle.status === "running" || handle.status === "starting")
       await handle.stop({ graceMs: 0 }).catch(() => undefined);

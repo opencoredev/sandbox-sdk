@@ -22,20 +22,29 @@
  * what is still there and looks again; any sandbox it cannot see gone is a cleanup error and stays
  * journaled for `reap`. SIGINT or SIGTERM stops the run and destroys its live sandboxes first; a
  * second signal exits at once, leaving any sandbox not yet confirmed gone in the journal.
+ *
+ * A run claims --out with `run.json` and gives it up only when it ends with nothing left to clean
+ * up; a run that died keeps the claim, so reap it and then pass --force or choose another --out.
  */
 import { randomInt, randomUUID } from "node:crypto";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
-import { createSandbox, type Sandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox, type CreateOptions, type Sandbox } from "@opencoredev/sandbox-sdk";
 import { z } from "zod";
-import { fingerprintOf } from "../connections.js";
 import { isAbsent, lookupSandbox, type LookupEvidence } from "../existence.js";
-import { assertJournalFree, hasRunOwnership, writeOwnership } from "../ownership.js";
+import { isMissingFile } from "../files.js";
+import {
+  assertJournalFree,
+  hasRunOwnership,
+  verifyRunOwnership,
+  writeOwnership,
+} from "../ownership.js";
 import { loadProvider, type LoadedProvider, type ReadyProvider } from "../providers.js";
-import { deadline } from "../timing.js";
-import { sanitize } from "../v2-runner.js";
+import { providerSetups } from "../realistic/setup.js";
+import { DeadlineError, DeletionWork, deadline } from "../timing.js";
+import { fingerprinted, sanitize } from "../v2-runner.js";
 import { expandedScenarios, exportExpandedSiteData } from "./registry.js";
 import {
   expandedCategories,
@@ -313,14 +322,17 @@ interface OwnedSandbox {
 /**
  * Sandboxes this run created and has not seen gone. Each is cleaned up by one attempt at a time:
  * a sample's own cleanup and an interrupt share it. An attempt deletes the sandbox, then looks it
- * up until it is gone; only then does the sandbox leave the journal.
+ * up until it is gone; only then does the sandbox leave the journal. A delete that has not
+ * settled stays in `deletions`, so a later attempt waits on it instead of sending another.
  */
 class LiveSandboxes {
   private readonly owned = new Map<string, OwnedSandbox>();
   private readonly attempts = new Map<string, Promise<boolean>>();
+  private readonly deletions = new DeletionWork();
 
   constructor(
     private readonly journal: OwnershipJournal,
+    private readonly runId: string,
     private readonly timeoutMs: number,
   ) {}
 
@@ -357,8 +369,8 @@ class LiveSandboxes {
   }
 
   /**
-   * Delete the sandbox and wait until it is seen gone; true once it is, and out of the journal.
-   * False leaves it journaled with the reason in `pending`, for the final sweep.
+   * Delete the sandbox and wait until it is seen gone, all within `waitMs`; true once it is, and
+   * out of the journal. False leaves it journaled with the reason in `pending`, for the final sweep.
    */
   clean(
     provider: ReadyProvider,
@@ -376,26 +388,45 @@ class LiveSandboxes {
     return attempt;
   }
 
+  /**
+   * The first delete goes through the handle the create returned. A delete by ID goes out only
+   * once the exact ID still lists with this run's labels; without that proof none is sent, and
+   * only an exact lookup that finds the sandbox gone takes it out of the journal. Deleting may use
+   * half of `waitMs`, so a delete that never settles still leaves the lookups their time.
+   */
   private async attempt(key: string, waitMs: number): Promise<boolean> {
     const entry = this.owned.get(key);
 
     if (!entry) return true;
 
+    const { provider, id, box } = entry;
+    const end = performance.now() + waitMs;
+    const deleteEnd = end - waitMs / 2;
+    const deleteLeft = () => Math.max(1, deleteEnd - performance.now());
     let deleteError: string | null = null;
 
     try {
-      if (entry.box && !entry.handleDeleted) {
+      if (box && !entry.handleDeleted) {
         entry.handleDeleted = true;
-        await entry.box.destroy();
-      } else await entry.provider.provider.destroy(entry.id);
+        await deadline(deleteLeft(), () =>
+          this.deletions.start(provider.name, id, () => box.destroy()),
+        );
+      } else if (await verifyRunOwnership(provider.provider, id, this.runId, deleteLeft()))
+        await deadline(deleteLeft(), () =>
+          this.deletions.start(provider.name, id, () => provider.provider.destroy(id)),
+        );
+      else deleteError = "no delete sent: the exact ID does not list with this run's labels";
     } catch (error) {
-      deleteError = errorText(error instanceof Error ? error : nonError);
+      deleteError =
+        error instanceof DeadlineError
+          ? "delete still unanswered at its deadline"
+          : `delete failed: ${errorText(error instanceof Error ? error : nonError)}`;
     }
 
     let evidence: LookupEvidence;
 
     try {
-      evidence = await waitUntilGone(entry.provider, entry.id, waitMs);
+      evidence = await waitUntilGone(provider, id, Math.max(1, end - performance.now()));
     } catch (error) {
       entry.pending = `existence lookup failed: ${errorText(error instanceof Error ? error : nonError)}`;
 
@@ -403,15 +434,13 @@ class LiveSandboxes {
     }
 
     if (!isAbsent(evidence)) {
-      entry.pending = deleteError
-        ? `delete failed: ${deleteError}; ${notGone(evidence)}`
-        : notGone(evidence);
+      entry.pending = deleteError ? `${deleteError}; ${notGone(evidence)}` : notGone(evidence);
 
       return false;
     }
 
     this.owned.delete(key);
-    await this.journal.release(entry.provider.name, entry.id);
+    await this.journal.release(provider.name, id);
 
     return true;
   }
@@ -494,6 +523,24 @@ interface RunState {
   stopSignal: NodeJS.Signals | null;
 }
 
+/**
+ * Adapters that write the run's labels into the guest after allocation: until that write, no label
+ * marks the sandbox as this run's, so a crash in between leaves nothing `reap` can find.
+ */
+const guestLabeled: ReadonlySet<string> = new Set(["boxd", "archil", "beam"]);
+
+/**
+ * The hard lifetime a sample's sandbox is created with (`timeoutMs`), so the provider deletes one
+ * the run lost track of: 10 minutes more than one command may take and at least 25 minutes, as
+ * `sustained-cpu.ts` sizes its own. Null for an adapter the realistic setup table does not list as
+ * accepting `timeoutMs`.
+ */
+export function sandboxLifetimeMs(adapter: string, timeoutMs: number): number | null {
+  return providerSetups.some((s) => s.adapter === adapter && s.lifetime)
+    ? Math.max(1_500_000, timeoutMs + 600_000)
+    : null;
+}
+
 /** One verified sample on a fresh sandbox; the sandbox is destroyed whatever happens. */
 async function runSample(
   provider: ReadyProvider,
@@ -507,9 +554,11 @@ async function runSample(
   let box: Sandbox | undefined;
 
   try {
-    box = await createSandbox(provider.provider, {
-      labels: { "sandbox-bench-run": state.runId },
-    });
+    const options: CreateOptions = { labels: { "sandbox-bench-run": state.runId } };
+    const lifetimeMs = sandboxLifetimeMs(provider.name, state.timeoutMs);
+
+    if (lifetimeMs !== null) options.timeoutMs = lifetimeMs;
+    box = await createSandbox(provider.provider, options);
     await state.live.add(provider, box, where);
 
     if (state.stopSignal) throw new Error("not started: the run was interrupted");
@@ -549,6 +598,40 @@ async function runSample(
         `CLEANUP ${provider.name} ${scenario.id} ${box.id}: not confirmed gone; the final sweep retries it\n`,
       );
   }
+}
+
+const claimFile = z.object({ runId: z.string() });
+
+/**
+ * Claim `out` for `runId` by creating run.json exclusively, as `v2-runner.ts` does: of two runs
+ * that both passed `assertJournalFree`, only one gets it. `force` takes the claim over.
+ */
+async function claimOutput(path: string, runId: string, force: boolean) {
+  try {
+    await writeFile(path, `${JSON.stringify({ runId })}\n`, { flag: force ? "w" : "wx" });
+  } catch (error) {
+    if (!z.object({ code: z.literal("EEXIST") }).safeParse(error).success) throw error;
+
+    throw new Error(
+      `${path} claims this --out for another run, which may still be running or may have died before its cleanup was confirmed. Reap that run (bun bench reap --run ID --out the same directory) and pass --force, or choose another --out.`,
+    );
+  }
+}
+
+/** Give up the claim, unless another run took it over with --force. */
+async function releaseClaim(path: string, runId: string) {
+  let text: string;
+
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingFile(error)) return;
+    throw error;
+  }
+
+  const claim = claimFile.safeParse(JSON.parse(text));
+
+  if (claim.success && claim.data.runId === runId) await rm(path, { force: true });
 }
 
 /** Replace `path` through a temporary file in the same directory, so no reader sees half a file. */
@@ -615,24 +698,46 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
   const startedAt = new Date();
   const runId = `expanded-${startedAt.toISOString().replace(/[:.]/g, "-")}`;
   const journalPath = join(out, "ownership.json");
+  const claimPath = join(out, "run.json");
 
-  // Before this run writes anything there: another run's journal must not be overwritten.
+  // Before this run writes anything there: another run's journal must not be overwritten. The
+  // claim stays until the run ends with nothing left to clean up, so the journal of a run that
+  // died, even one whose first create never returned an ID, is never overwritten without --force.
   await mkdir(out, { recursive: true });
   await assertJournalFree(journalPath, runId, args.force);
+  await claimOutput(claimPath, runId, args.force);
 
-  const loaded: LoadedProvider[] = [];
+  const candidates: LoadedProvider[] = [];
 
   for (const name of args.providers) {
     try {
-      loaded.push(await load(name));
+      candidates.push(await load(name));
     } catch (error) {
-      loaded.push({
+      candidates.push({
         kind: "skipped",
         name,
         note: errorText(error instanceof Error ? error : nonError),
       });
     }
   }
+
+  // Only providers whose connection fingerprint the journal records: `reap` refuses any other, so
+  // a sandbox created on one could never be cleaned up after a crash.
+  const { loaded: fingerprintedProviders, connectionFingerprints } =
+    await fingerprinted(candidates);
+
+  const loaded = fingerprintedProviders.map(
+    (p): LoadedProvider =>
+      p.kind === "ready" &&
+      guestLabeled.has(p.name) &&
+      sandboxLifetimeMs(p.name, args.timeoutMs) === null
+        ? {
+            kind: "skipped",
+            name: p.name,
+            note: "Labels are written in the guest after allocation and the adapter takes no hard lifetime, so a crash before the label lands would leave a sandbox nothing finds",
+          }
+        : p,
+  );
 
   const results: ExpandedResults = {
     version: 1,
@@ -657,17 +762,7 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
     if (p.kind === "skipped") process.stdout.write(`SKIP ${p.name}: ${p.note}\n`);
   const ready = loaded.filter((p): p is ReadyProvider => p.kind === "ready");
 
-  // Each adapter's connection fingerprint, never the connection itself; `reap` reads only through
-  // an adapter whose connection, rebuilt from its environment, has the same fingerprint.
-  const fingerprints: Record<string, string> = {};
-
-  for (const p of ready) {
-    const value = await fingerprintOf(p.provider);
-
-    if (value) fingerprints[p.name] = value;
-  }
-
-  const journal = new OwnershipJournal(journalPath, runId, fingerprints);
+  const journal = new OwnershipJournal(journalPath, runId, connectionFingerprints);
 
   // Before any create, so a run that dies before its first create returns still leaves the
   // fingerprints a reap needs.
@@ -677,7 +772,7 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
     runId,
     timeoutMs: args.timeoutMs,
     results,
-    live: new LiveSandboxes(journal, args.timeoutMs),
+    live: new LiveSandboxes(journal, runId, args.timeoutMs),
     stopSignal: null,
   };
 
@@ -724,6 +819,9 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
   results.interrupted = state.stopSignal;
   results.finishedAt = new Date().toISOString();
   await writeResults(out, results, scenarios);
+
+  if (state.live.size === 0 && results.cleanupErrors.length === 0)
+    await releaseClaim(claimPath, runId);
   process.stdout.write(
     `${results.samples.length} verified samples, ${results.failures.length} failures, ${results.cleanupErrors.length} cleanup errors${state.stopSignal ? `, interrupted by ${state.stopSignal}` : ""}; ${out}\n`,
   );

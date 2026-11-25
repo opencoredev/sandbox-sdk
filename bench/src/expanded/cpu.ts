@@ -690,22 +690,39 @@ function walkJson(hash: number, value: JsonValue): number {
   return h;
 }
 
+/** Iteration `i`'s salt, the first field of the document that iteration parses. */
+function jsonSalt(seed: number, iteration: number): string {
+  return createHash("sha256")
+    .update(`${seed >>> 0}:json:${iteration}`)
+    .digest("hex");
+}
+
+const jsonObject = z.record(z.string(), jsonValue);
+
 /**
- * The document size and checksum the guest must print for `seed`. Iteration `i` starts its walk
- * from a hash of `i`, so each of the 40 checksums needs its own walk; one walk reused fails.
+ * The document size and checksum the guest must print for `seed`. Iteration `i` parses the
+ * seeded document behind its own salt field and starts its walk from a hash of `i`, so each of
+ * the 40 walks needs its own parse. The checksum also folds SHA-256 of every iteration's
+ * re-serialized document, which is that iteration's salted text, so each needs its own stringify.
  */
 const jsonExpected = memo((seed: number) => {
   const text = jsonDocument(seed);
-  const doc = jsonValue.parse(JSON.parse(text));
+  const body = text.slice(1);
+  const doc = jsonObject.parse(JSON.parse(text));
+  const roundtrips = createHash("sha256");
   let acc = 0x811c9dc5;
 
-  for (let i = 0; i < jsonIterations; i++)
-    acc = mixHash(mixHash(acc, i), walkJson(mixHash(0x811c9dc5, i), doc));
+  for (let i = 0; i < jsonIterations; i++) {
+    const salt = jsonSalt(seed, i);
+    const walked = walkJson(mixHash(0x811c9dc5, i), { iteration: salt, ...doc });
+    acc = mixHash(mixHash(acc, i), walked);
+    roundtrips.update(createHash("sha256").update(`{"iteration":"${salt}",`).update(body).digest());
+  }
 
   return {
     bytes: text.length,
     checksum: createHash("sha256")
-      .update(`${seed >>> 0}:${jsonIterations}:${text.length}:${acc}`)
+      .update(`${seed >>> 0}:${jsonIterations}:${text.length}:${acc}:${roundtrips.digest("hex")}`)
       .digest("hex"),
   };
 });
@@ -778,19 +795,25 @@ function walk(h, v) {
   if (typeof v === "number") return mix(h, v | 0);
   return mix(h, v === null ? 3 : v ? 1 : 2);
 }
-const started = performance.now();
+const texts = Array.from({ length: ${jsonIterations} }, (_, i) =>
+  '{"iteration":"' + createHash("sha256").update(seed + ":json:" + i).digest("hex") + '",' + text.slice(1));
+const roundtrips = createHash("sha256");
+let seconds = 0;
 let acc = 0x811c9dc5;
 for (let i = 0; i < ${jsonIterations}; i++) {
-  const doc = JSON.parse(text);
+  const started = performance.now();
+  const doc = JSON.parse(texts[i]);
   const walked = walk(mix(0x811c9dc5, i), doc);
-  if (JSON.stringify(doc).length !== text.length) {
+  const out = JSON.stringify(doc);
+  seconds += (performance.now() - started) / 1000;
+  if (out.length !== texts[i].length) {
     console.error("stringify roundtrip mismatch");
     process.exit(1);
   }
+  roundtrips.update(createHash("sha256").update(out).digest());
   acc = mix(mix(acc, i), walked);
 }
-const seconds = (performance.now() - started) / 1000;
-const checksum = createHash("sha256").update(\`\${seed}:${jsonIterations}:\${text.length}:\${acc}\`).digest("hex");
+const checksum = createHash("sha256").update(seed + ":${jsonIterations}:" + text.length + ":" + acc + ":" + roundtrips.digest("hex")).digest("hex");
 console.log(JSON.stringify({ seed, iterations: ${jsonIterations}, bytes: text.length, seconds, checksum }));
 `;
 
@@ -841,7 +864,7 @@ const cpuJsonParse: ExpandedScenario = {
   category: "cpu",
   label: "JSON parse and walk",
   description:
-    "Parses, walks and re-serializes a seeded 1 MiB package-graph JSON document 40 times in Node.",
+    "Parses, walks and re-serializes a seeded 1 MiB package-graph JSON document 40 times in Node, each time behind its own seeded salt field, and checks every re-serialized document.",
   unit: "ops/s",
   better: "higher",
   async run(box, ctx) {

@@ -16,6 +16,7 @@ import { buildScenarios } from "../src/expanded/builds.js";
 import { filesystemScenarios } from "../src/expanded/filesystem.js";
 import { runtimeScenarios } from "../src/expanded/runtime.js";
 import type { LoadedProvider } from "../src/providers.js";
+import { bound } from "./native-fakes.js";
 import type { ExpandedScenario, VerifyResult } from "../src/expanded/types.js";
 
 const catalog = [...filesystemScenarios, ...buildScenarios, ...runtimeScenarios];
@@ -82,11 +83,14 @@ function readJson<T>(schema: z.ZodType<T>, path: string): T {
   return schema.parse(JSON.parse(readFileSync(path, "utf8")));
 }
 
-/** A `load` that hands out `provider` for "memory" and skips every other name. */
+/**
+ * A `load` that hands out `provider` for "memory" and skips every other name. It binds the
+ * provider's connection as `loadProvider` does, so the run can journal its fingerprint.
+ */
 function loadMemory(provider = memory()) {
   return async (name: string): Promise<LoadedProvider> =>
     name === "memory"
-      ? { kind: "ready", name, cloud: false, region: null, provider }
+      ? { kind: "ready", name, cloud: false, region: null, provider: bound(provider) }
       : { kind: "skipped", name, note: "no credentials" };
 }
 

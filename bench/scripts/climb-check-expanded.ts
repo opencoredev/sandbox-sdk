@@ -6,14 +6,15 @@
  * 2. Pure `verifyOutput` rejects empty, garbage, and wrong-seed payloads.
  * 3. Runs end-to-end inside a real local Podman/Docker sandbox and returns finite positive value
  *    plus a seed-bound proof (>= 8 chars).
- * 4. Cleans up its sandbox completely (zero leftover `sandbox-sdk=1` containers).
+ * 4. Cleans up its sandbox completely: the daemon the sandboxes ran on lists none carrying this
+ *    run's unique label, and a listing that fails scores 0.
  * 5. Exports cleanly in `exportExpandedSiteData()` with valid numeric stats.
  *
  * Prints diagnostic lines and finishes with the exact passing count on the last line.
  */
-import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createSandbox } from "@opencoredev/sandbox-sdk";
-import { local } from "@opencoredev/sandbox-sdk/local";
+import { local, type LocalProvider } from "@opencoredev/sandbox-sdk/local";
 import { expandedScenarios, exportExpandedSiteData } from "../src/expanded/registry.js";
 import {
   expandedCategories,
@@ -25,22 +26,26 @@ const CONCURRENCY = 4;
 const TIMEOUT_MS = 90_000;
 const ID_RE = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
-function listLabeledContainers(): string[] {
-  const bin = process.env.CONTAINER_CLI ?? "podman";
+/** Label every sandbox of one check run carries, with that run's id as its value. */
+export const runLabel = "sandbox-sdk-bench.climb-run";
 
+/**
+ * Why the run's cleanup fails, or null when it passes. It lists through the provider the run
+ * created its sandboxes with, so it asks the same daemon, and only for this run's label. A
+ * listing that fails is a failure: no answer is not zero leaks.
+ */
+export async function cleanupFailure(
+  provider: Pick<LocalProvider, "list">,
+  runId: string,
+): Promise<string | null> {
   try {
-    const out = execFileSync(
-      bin,
-      ["ps", "-a", "--filter", "label=sandbox-sdk=1", "--format", "{{.ID}}"],
-      { encoding: "utf8", timeout: 10_000 },
-    );
+    const listed = await provider.list({ [runLabel]: runId });
 
-    return out
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
+    if (listed.length === 0) return null;
+
+    return `leaked ${listed.length} sandbox(es): ${listed.map((info) => info.id).join(", ")}`;
+  } catch (error) {
+    return `could not list this run's sandboxes: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -69,11 +74,15 @@ function validateDefinition(s: ExpandedScenario, seen: Set<string>): string | nu
 async function runOne(
   scenario: ExpandedScenario,
   seed: number,
-  dockerHost: string,
+  provider: LocalProvider,
+  runId: string,
 ): Promise<{ ok: true; sample: ExpandedRunSample } | { ok: false; reason: string }> {
-  const provider = local({ image: "node:22-bookworm", dockerHost });
   const start = performance.now();
-  const box = await createSandbox(provider, { timeoutMs: TIMEOUT_MS });
+
+  const box = await createSandbox(provider, {
+    timeoutMs: TIMEOUT_MS,
+    labels: { [runLabel]: runId },
+  });
 
   try {
     const outcome = await scenario.run(box, { seed, timeoutMs: TIMEOUT_MS });
@@ -118,7 +127,8 @@ async function main() {
     return;
   }
 
-  const beforeContainers = new Set(listLabeledContainers());
+  const provider = local({ image: "node:22-bookworm", dockerHost });
+  const runId = randomUUID();
   const seen = new Set<string>();
   const valid: ExpandedScenario[] = [];
   const failures: string[] = [];
@@ -140,7 +150,7 @@ async function main() {
 
       if (!scenario) break;
       const seed = (0x9e3779b9 ^ ((idx + 1) * 2654435761)) >>> 0;
-      const res = await runOne(scenario, seed, dockerHost);
+      const res = await runOne(scenario, seed, provider, runId);
 
       if (res.ok) {
         samples.push(res.sample);
@@ -156,11 +166,11 @@ async function main() {
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, valid.length) }, () => worker()));
 
-  const afterContainers = listLabeledContainers().filter((id) => !beforeContainers.has(id));
+  const cleanup = await cleanupFailure(provider, runId);
 
-  if (afterContainers.length > 0) {
-    failures.push(`leaked containers: ${afterContainers.join(", ")}`);
-    process.stdout.write(`FAIL cleanup: leaked ${afterContainers.length} container(s)\n`);
+  if (cleanup !== null) {
+    failures.push(cleanup);
+    process.stdout.write(`FAIL cleanup: ${cleanup}\n`);
     process.stdout.write("0\n");
     process.exitCode = 1;
 
@@ -191,4 +201,4 @@ async function main() {
   process.stdout.write(`${passing}\n`);
 }
 
-await main();
+if (import.meta.main) await main();
