@@ -841,6 +841,8 @@ export const filesystemScenarios: readonly ExpandedScenario[] = [
       "Write 20 seeded files of 1 to 64 KiB through box.files.write, read each back byte-exact through a bounded guest read, and check the guest's copy.",
     unit: "files/s",
     better: "higher",
+    // 2: read-backs go through a bounded guest command, not `files.read`.
+    metricVersion: 2,
     verifyOutput: verifyTransfer,
     async run(box, ctx) {
       return outcomeOf(

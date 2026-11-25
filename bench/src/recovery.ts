@@ -769,8 +769,8 @@ export async function reapRun(
             .map((r) => r.id),
         );
 
-        for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, p.provider, entry.id, journaled),
+        for (const snapshot of await deadline(config["timeout-ms"], (signal) =>
+          snapshotsFromSource(p.name, p.provider, entry.id, journaled, signal),
         )) {
           // Entries already journaled for this snapshot, such as a Maritime save still pending with its
           // idempotency key, or a capture of this source journaled by its name. Replace them with the

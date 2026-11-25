@@ -74,17 +74,117 @@ async function withModal<T>(
   }
 }
 
+/** `@superserve/sdk` 0.11's transport: 3 attempts, 30 s each including the body, these statuses retried. */
+const superserveAttempts = 3;
+const superserveAttemptMs = 30_000;
+const superserveRetryable: ReadonlySet<number> = new Set([429, 502, 503, 504]);
+
+/** The SDK's backoff: 100 ms doubling per attempt, with ±20% jitter. */
+const superserveBackoffMs = (attempt: number) =>
+  100 * 2 ** (attempt - 1) * (0.8 + Math.random() * 0.4);
+
+function pause(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(resolve, ms);
+
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      },
+      { once: true },
+    );
+  });
+}
+
 /**
  * Superserve's control plane on the key's region, with redirects refused: `@superserve/sdk` follows them,
- * and would send `X-API-Key` wherever one points.
+ * and would send `X-API-Key` wherever one points. Otherwise it keeps the SDK's transport: each attempt,
+ * body included, ends after 30 s or when `signal` aborts, and a 429, 502, 503, 504 or network error is
+ * retried up to 3 attempts, after the SDK's backoff or a 429's `Retry-After` (at most 30 s).
  */
-function superserveFetch(provider: Provider, path: string, init: RequestInit = {}) {
+async function superserveFetch(
+  provider: Provider,
+  path: string,
+  { method = "GET", signal }: { method?: "GET" | "DELETE"; signal?: AbortSignal } = {},
+) {
   const { apiKey, baseUrl } = connectionOf(provider, "superserve");
-  const headers = new Headers(init.headers);
 
-  headers.set("X-API-Key", apiKey);
+  for (let attempt = 1; ; attempt++) {
+    const attemptSignal = AbortSignal.any([
+      AbortSignal.timeout(superserveAttemptMs),
+      ...(signal ? [signal] : []),
+    ]);
 
-  return fetch(`${endpoint(baseUrl)}${path}`, { ...init, headers, redirect: "error" });
+    let response: Response;
+
+    try {
+      response = await fetch(`${endpoint(baseUrl)}${path}`, {
+        method,
+        headers: { "X-API-Key": apiKey },
+        redirect: "error",
+        signal: attemptSignal,
+      });
+    } catch (error) {
+      if (attemptSignal.aborted || attempt >= superserveAttempts || !(error instanceof TypeError))
+        throw error;
+      await pause(superserveBackoffMs(attempt), signal);
+      continue;
+    }
+
+    if (!superserveRetryable.has(response.status) || attempt >= superserveAttempts) return response;
+    const retryAfter = Number(response.headers.get("Retry-After") ?? Number.NaN);
+
+    await response.body?.cancel();
+    await pause(
+      response.status === 429 && Number.isFinite(retryAfter) && retryAfter >= 0
+        ? Math.min(retryAfter * 1000, 30_000)
+        : superserveBackoffMs(attempt),
+      signal,
+    );
+  }
+}
+
+/**
+ * True when Superserve refused a snapshot delete because a sandbox still depends on it. Only the
+ * error's code and message are matched, from at most 64 KiB of the answer; neither is kept.
+ */
+async function isSuperserveInUse(response: Response) {
+  const reader = response.body?.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+
+  try {
+    while (reader && size <= 64 * 1024) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+      parts.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    await reader?.cancel().catch(() => {});
+  }
+
+  if (size > 64 * 1024) return false;
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(Buffer.concat(parts).toString("utf8"));
+  } catch {
+    return false;
+  }
+
+  const fields = z.object({ code: z.string().optional(), message: z.string().optional() });
+  const body = fields.extend({ error: fields.optional() }).safeParse(parsed);
+
+  if (!body.success) return false;
+
+  return [body.data.code, body.data.message, body.data.error?.code, body.data.error?.message].some(
+    (text) => text !== undefined && /in.use|running sandbox|dependent sandbox/i.test(text),
+  );
 }
 
 /**
@@ -385,7 +485,7 @@ export async function snapshotCleaner(
   name: string,
   provider: Provider,
   sandboxId: string,
-): Promise<(id: string) => Promise<void>> {
+): Promise<(id: string, signal?: AbortSignal) => Promise<void>> {
   if (name === "instabox") {
     // A fresh request: cleanup can run after the source machine is gone.
     return async (id) => {
@@ -410,12 +510,16 @@ export async function snapshotCleaner(
   }
 
   if (name === "superserve") {
-    return async (id) => {
+    return async (id, signal) => {
       const response = await superserveFetch(provider, `/snapshots/${encodeURIComponent(id)}`, {
         method: "DELETE",
+        signal,
       });
 
-      await response.body?.cancel();
+      if ([400, 409, 423].includes(response.status) && (await isSuperserveInUse(response)))
+        throw httpError("Superserve snapshot is in use by a dependent sandbox", response.status);
+
+      await response.body?.cancel().catch(() => {});
 
       if (!response.ok && response.status !== 404)
         throw httpError("Superserve snapshot delete failed", response.status);
@@ -752,6 +856,7 @@ export async function snapshotsFromSource(
   provider: Provider,
   sourceSandboxId: string,
   journaled: ReadonlySet<string> = new Set(),
+  signal?: AbortSignal,
 ) {
   if (name === "styne") return snapshotsFromStyneSandbox(provider, sourceSandboxId, journaled);
 
@@ -770,6 +875,7 @@ export async function snapshotsFromSource(
   const response = await superserveFetch(
     provider,
     `/sandboxes/${encodeURIComponent(sourceSandboxId)}/snapshots`,
+    { signal },
   );
 
   if (!response.ok) {
@@ -802,6 +908,7 @@ export async function inspectSnapshot(
   provider: Provider,
   sourceId: string,
   id: string,
+  signal?: AbortSignal,
 ): Promise<{ exists: boolean; sourceId?: string }> {
   // Microsandbox: by managed ID or name. The source is the snapshot's own `sandbox_id`, or the adapter's
   // source label; a snapshot that records neither is never attributed to anyone.
@@ -892,7 +999,9 @@ export async function inspectSnapshot(
       }
 
       case "superserve": {
-        const response = await superserveFetch(provider, `/snapshots/${encodeURIComponent(id)}`);
+        const response = await superserveFetch(provider, `/snapshots/${encodeURIComponent(id)}`, {
+          signal,
+        });
 
         if (!response.ok) {
           await response.body?.cancel();
@@ -1116,7 +1225,7 @@ export async function deleteProvenSnapshot(
   proof: SnapshotProvenance | undefined,
   run: string,
   timeoutMs: number,
-  cleaner?: (id: string) => Promise<void>,
+  cleaner?: (id: string, signal?: AbortSignal) => Promise<void>,
 ) {
   const valid = snapshotProvenanceSchema.safeParse(proof);
 
@@ -1130,8 +1239,8 @@ export async function deleteProvenSnapshot(
 
     if (remaining <= 0) throw new Error("Snapshot cleanup retry budget exhausted");
 
-    const live = await deadline(remaining, () =>
-      snapshotMetadata.inspect(name, provider, valid.data.sourceId, id),
+    const live = await deadline(remaining, (signal) =>
+      snapshotMetadata.inspect(name, provider, valid.data.sourceId, id, signal),
     );
 
     if (!live.exists) return;
@@ -1141,7 +1250,7 @@ export async function deleteProvenSnapshot(
     const remove = cleaner ?? (await snapshotCleaner(name, provider, valid.data.sourceId));
 
     try {
-      await deadline(Math.max(1, end - performance.now()), () => remove(id));
+      await deadline(Math.max(1, end - performance.now()), (signal) => remove(id, signal));
 
       return;
     } catch (error) {

@@ -18,6 +18,7 @@ import {
   verifySqlite,
   verifyTar,
 } from "../src/expanded/filesystem.js";
+import { exportExpandedSiteData } from "../src/expanded/registry.js";
 import {
   honestRounds,
   seedA,
@@ -301,5 +302,36 @@ describe("fs-sdk-transfer-batch read-back", () => {
     } finally {
       await box.destroy();
     }
+  });
+});
+
+describe("fs-sdk-transfer-batch metric version", () => {
+  it("is version 2, and site data never mixes in samples from the files.read version", () => {
+    const transfer = filesystemScenarios.find((s) => s.id === "fs-sdk-transfer-batch");
+
+    expect(transfer?.metricVersion).toBe(2);
+
+    const sample = {
+      scenarioId: "fs-sdk-transfer-batch",
+      provider: "memory",
+      seed: seedA,
+      unit: "files/s" as const,
+      better: "higher" as const,
+      proof: "fs-sdk-xfer:proof",
+      wallMs: 1,
+    };
+
+    const metric = exportExpandedSiteData(
+      [
+        { ...sample, value: 900 },
+        { ...sample, value: 40, metricVersion: 2 },
+      ],
+      filesystemScenarios,
+    ).metrics.find((m) => m.id === "fs-sdk-transfer-batch");
+
+    expect(metric).toMatchObject({
+      metricVersion: 2,
+      values: [{ provider: "memory", n: 1, median: 40 }],
+    });
   });
 });

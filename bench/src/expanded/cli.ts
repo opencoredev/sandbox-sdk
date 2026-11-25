@@ -723,6 +723,7 @@ async function runSample(
       proof: outcome.proof,
       wallMs: Math.round(performance.now() - started),
       details: outcome.details,
+      metricVersion: scenario.metricVersion ?? 1,
     };
 
     state.results.samples.push(sample);

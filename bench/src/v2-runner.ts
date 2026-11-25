@@ -3157,6 +3157,7 @@ export async function runV2(
                   p.provider,
                   source.id,
                   journaled,
+                  signal,
                 );
 
                 if (!snapshots.length) break;
@@ -3903,8 +3904,8 @@ export async function runV2(
         const sourceCleaner = await snapshotCleaner(p.name, p.provider, item.id);
         const journaled = journaledSnapshots(owned.values(), p.name, item.id);
 
-        for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, p.provider, item.id, journaled),
+        for (const snapshot of await deadline(config["timeout-ms"], (signal) =>
+          snapshotsFromSource(p.name, p.provider, item.id, journaled, signal),
         )) {
           await persistConfirmedSnapshot(`${p.name}/snapshot/${snapshot.id}`, {
             provider: p.name,
