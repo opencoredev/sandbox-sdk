@@ -113,15 +113,21 @@ tier count, so a standard client never sees a shared sandbox. `find()` skips
 `failed` sandboxes and prefers one whose status is `running`. Without one, a
 `starting` match is waited for, and a stopped one (its lifetime or idle
 timeout ended; `stopping` and `saving_state` are waited out first) is started
-again, unless the lookup was aborted. `isStopped(id)` is true only for
+again, unless the lookup was aborted; the signal also ends the waits. `isStopped(id)` is true only for
 `stopped` and `failed`, so idle-only reaping counts only those idle without a
-probe.
+probe, and skips any other non-running sandbox for that sweep.
 
 A stop ends every guest process but leaves its record on the disk, which a
-restart or restore keeps. Each guest handle, on its first use after a start,
-marks records without an exit and run markers older than the guest's boot
-(`date +%s` minus `/proc/uptime`) as exited and removed. Anything written since
-that boot is left alone, so every client can run it safely.
+restart or restore keeps. Right after the adapter boots a guest itself (a
+restore, the start in `find()`, the restart after a snapshot), it compares the
+kernel's `/proc/sys/kernel/random/boot_id` with `/tmp/.sandbox-sdk/boot-id`.
+On the first run in a boot it marks every record without an exit as killed
+(137), drops the run markers, and writes the new ID; later runs in that boot
+change nothing. A client that was already connected when another client
+restarted the sandbox can read the old records until that repair finishes, and
+a record it writes in that window is marked killed too. Closing that window
+needs a boot generation in the core's process records, which every adapter
+shares.
 
 ## Commands
 
@@ -137,8 +143,8 @@ stream ends first.
 The guest agent lookup (`sandboxes.get`, and the name read behind it) runs
 inside the command's timeout and abort: one that fires first reports
 `{ exitCode: null, timedOut: true }`, as nothing was started. The lookup itself
-has a `requestTimeoutMs` deadline, and a failed one is dropped so the next
-command connects again. Each read of the
+has a `requestTimeoutMs` deadline, as does loading the peer, and a failed or
+stalled one is dropped so the next command tries again. Each read of the
 stream races the stop with one removable abort listener, so a long stream never
 adds reactions to a shared promise.
 
@@ -183,7 +189,7 @@ deletes each (404 is gone), and then always runs
 Service that failed stays in memory and the call fails after the sandbox is
 deleted, so destroying again finishes it. A Service listing that fails, or a
 sandbox name that cannot be read (not a 404), is reported the same way, after
-the delete. The ID is remembered, and the next destroy reads the whole Service
+the delete. The ID is remembered before the DELETE is sent, and the next destroy reads the whole Service
 list for detached slugs of this ID's shape that memory cannot prove. It names
 them in its error and never deletes them. Microsandbox accepts a DELETE before it finishes, so an accepted
 delete is confirmed by reading `GET /v1/sandboxes/{id}` until it answers 404,

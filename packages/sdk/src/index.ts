@@ -574,7 +574,9 @@ async function sandboxActivity(provider: Provider, id: string): Promise<"idle" |
     if (provider.readsMetadataOnlyWhenRunning && info.state !== "running") return "busy";
 
     // A sandbox its adapter confirms fully stopped runs nothing, and probing it would fail or start it.
-    if (info.state === "stopped" && (await provider.isStopped?.(id))) return "idle";
+    // One the adapter cannot confirm (still stopping or saving) is left for a later sweep.
+    if (info.state === "stopped" && provider.isStopped)
+      return (await provider.isStopped(id)) ? "idle" : "busy";
     const { makeHandle } = await import("./handle.js");
     box = await makeHandle(provider, info, false, {}, new Redactor(), false);
   } catch (error) {

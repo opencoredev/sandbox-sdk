@@ -179,7 +179,7 @@ async function exec(
 
 /** A process record without an exit and a run marker, as a stop leaves them. */
 const staleRecord =
-  "mkdir -p /tmp/.sandbox-sdk/procs/p1 /tmp/.sandbox-sdk/runs && echo '{}' > /tmp/.sandbox-sdk/procs/p1/spec.json && touch -d '1 hour ago' /tmp/.sandbox-sdk/procs/p1/spec.json /tmp/.sandbox-sdk/runs/r1";
+  "mkdir -p /tmp/.sandbox-sdk/procs/p1 /tmp/.sandbox-sdk/runs && echo '{}' > /tmp/.sandbox-sdk/procs/p1/spec.json && touch /tmp/.sandbox-sdk/runs/r1";
 
 /** The record's exit code, or `none`, then whether the run marker is still there. */
 const recordState =
@@ -272,6 +272,35 @@ test("PR88-2 a failed Service listing fails the destroy, and the next destroy na
   await fresh.destroy(sandbox);
 });
 
+test("PR88-2 a failed listing is remembered even when the sandbox DELETE's answer is lost", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+  const { url } = await p.previewUrl(sandbox, 3000);
+  const slug = new URL(url).pathname.split("/").at(-1) ?? "";
+  let faulty = true;
+
+  const fresh = adapter({
+    fetch: async (input, init) => {
+      const path = new URL(input).pathname;
+
+      if (faulty && path === "/v1/services" && init.method === "GET")
+        return Response.json({ error: { code: "internal_error" } }, { status: 500 });
+
+      const response = await realFetch(input, init);
+
+      return faulty && path === `/v1/sandboxes/${sandbox}` && init.method === "DELETE"
+        ? Response.json({ error: { code: "internal_error" } }, { status: 500 })
+        : response;
+    },
+  });
+
+  await expect(fresh.destroy(sandbox)).rejects.toBeDefined();
+  expect(fake.sandboxes.has(sandbox)).toBe(false);
+
+  faulty = false;
+  await expect(fresh.destroy(sandbox)).rejects.toThrow(slug);
+});
+
 test("PR88-2 an unreadable sandbox name fails the destroy instead of reporting its Services removed", async () => {
   const p = adapter();
   const { id: sandbox } = await p.create({ labels: labels() });
@@ -329,22 +358,6 @@ test("PR88-4 a restore marks the processes its source's stop ended as exited", a
     restored: (await exec(p, restored.id, recordState)).stdout,
     source: (await exec(p, source.id, recordState)).stdout,
   }).toEqual({ restored: "137 gone", source: "137 gone" });
-
-  // A record written since the restart is this boot's: another client's first use leaves it alone.
-  const fresh =
-    "mkdir -p /tmp/.sandbox-sdk/procs/p2 && echo '{}' > /tmp/.sandbox-sdk/procs/p2/spec.json";
-
-  expect((await exec(p, source.id, fresh)).exitCode).toBe(0);
-
-  expect(
-    (
-      await exec(
-        adapter(),
-        source.id,
-        "cat /tmp/.sandbox-sdk/procs/p2/exit 2>/dev/null || printf none",
-      )
-    ).stdout,
-  ).toBe("none");
 });
 
 test("PR88-5 a guest agent lookup that never answers still ends at the command's timeout or abort", async () => {
@@ -369,6 +382,21 @@ test("PR88-5 a guest agent lookup that never answers still ends at the command's
   expect(
     await exec(stuck, sandbox, "true", { timeoutMs: 60_000, signal: controller.signal }),
   ).toMatchObject({ exitCode: null, timedOut: true });
+}, 10_000);
+
+test("PR88-5 a peer that stalls while loading is retried by the next command", async () => {
+  const { id: sandbox } = await adapter().create({ labels: labels() });
+  let loads = 0;
+
+  const stalled = adapter({
+    requestTimeoutMs: 300,
+    peer: () => (loads++ === 0 ? new Promise(() => {}) : Promise.resolve(fake.peer)),
+  });
+
+  await expect(exec(stalled, sandbox, "true", { timeoutMs: 5000 })).rejects.toMatchObject({
+    code: "timeout",
+  });
+  expect(await exec(stalled, sandbox, "printf ok")).toMatchObject({ exitCode: 0, stdout: "ok" });
 }, 10_000);
 
 test("PR88-5 a lookup that times out is dropped, so the next command connects again", async () => {
@@ -427,6 +455,24 @@ test("PR88-7 a key lookup prefers a running sandbox over one still starting", as
   expect((await p.find("project:8"))?.id).toBe(second.id);
 });
 
+test("PR88-7 an abort while a key lookup waits out a saving sandbox ends it, without a start", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels(), key: "project:10" });
+  const saving = fake.sandboxes.get(sandbox);
+
+  if (saving === undefined) throw new Error("no fake sandbox");
+  saving.status = "saving_state";
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 300);
+
+  await expect(p.find("project:10", { signal: controller.signal })).rejects.toMatchObject({
+    code: "aborted",
+  });
+  expect(fake.requests.some((r) => r.path.startsWith(`/v1/sandboxes/${sandbox}/start`))).toBe(
+    false,
+  );
+}, 5000);
+
 test("PR88-7 an aborted key lookup never starts a stopped sandbox", async () => {
   const p = adapter();
   const { id: sandbox } = await p.create({ labels: labels(), key: "project:9" });
@@ -469,17 +515,24 @@ test("PR88-9 idle-only reaping deletes a sandbox its lifetime stopped without pr
   });
 });
 
-test("PR88-9 idle-only reaping never deletes a sandbox that is still saving its state", async () => {
+test("PR88-9 idle-only reaping skips a sandbox still saving its state and reaps the stopped one", async () => {
   const p = adapter();
-  const { id: sandbox } = await p.create({ labels: labels() });
-  const saving = fake.sandboxes.get(sandbox);
+  const { id: busy } = await p.create({ labels: labels() });
+  const { id: stopped } = await p.create({ labels: labels() });
+  const saving = fake.sandboxes.get(busy);
 
   if (saving === undefined) throw new Error("no fake sandbox");
   saving.status = "saving_state";
+  expire(stopped);
 
-  await reapSandboxes(p, {
-    idleOnly: true,
-    labels: { "sandbox-bench-run": "independent-review" },
-  }).catch(() => undefined);
-  expect(fake.sandboxes.has(sandbox)).toBe(true);
+  expect(
+    await reapSandboxes(p, {
+      idleOnly: true,
+      labels: { "sandbox-bench-run": "independent-review" },
+    }),
+  ).toBe(1);
+  expect({ busy: fake.sandboxes.has(busy), stopped: fake.sandboxes.has(stopped) }).toEqual({
+    busy: true,
+    stopped: false,
+  });
 });

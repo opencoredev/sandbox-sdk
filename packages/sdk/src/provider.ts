@@ -308,7 +308,8 @@ export interface Provider<
   /**
    * True only when the provider confirms the sandbox has fully stopped: not starting, stopping or
    * saving, so no guest process can run. Idle-only reaping then counts a `stopped` sandbox idle
-   * without probing it, which would fail or start it. Without this, it is probed like any other.
+   * without probing it, which would fail or start it, and leaves one this denies for a later sweep.
+   * Without this, a stopped sandbox is probed like any other.
    */
   isStopped?(id: string): Promise<boolean>;
   snapshot?(id: string, options?: SnapshotOptions): Promise<{ id: string }>;

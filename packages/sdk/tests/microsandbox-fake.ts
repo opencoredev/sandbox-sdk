@@ -44,8 +44,8 @@ export interface FakeSandbox {
   reference: string | null;
   createdAt: string;
   children: Set<ChildProcess>;
-  /** When the guest last booted: create and each start. Commands read it as `/proc/uptime`. */
-  bootedAt: number;
+  /** The guest's boot ID, new at create and each start. Commands read it at `/proc/sys/kernel/random/boot_id`. */
+  bootId: string;
 }
 
 export interface FakeService {
@@ -191,8 +191,9 @@ export class FakePeerError extends Error {
 }
 
 const mapped = (sandbox: FakeSandbox, text: string) =>
-  text.replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare|\/proc\/uptime/g, (path) =>
-    join(sandbox.root, path),
+  text.replace(
+    /\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare|\/proc\/sys\/kernel\/random\/boot_id/g,
+    (path) => join(sandbox.root, path),
   );
 
 async function readBody(request: IncomingMessage): Promise<JsonValue | undefined> {
@@ -508,7 +509,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
       reference = null;
     }
 
-    for (const dir of ["workspace", "tmp/.sandbox-sdk", "tmp/sdk-bare", "proc"])
+    for (const dir of ["workspace", "tmp/.sandbox-sdk", "tmp/sdk-bare", "proc/sys/kernel/random"])
       await mkdir(join(root, dir), { recursive: true });
     const start = url.searchParams.get("start") === "true";
 
@@ -527,7 +528,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
       reference,
       createdAt: new Date().toISOString(),
       children: new Set(),
-      bootedAt: Date.now(),
+      bootId: crypto.randomUUID(),
     };
 
     if (sandbox.status === "running" && faults.startFails) sandbox.status = "failed";
@@ -656,7 +657,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
 
         if (sandbox.status === "running") return json(response, 200, view(sandbox));
         sandbox.status = faults.startFails ? "failed" : "running";
-        sandbox.bootedAt = Date.now();
+        sandbox.bootId = crypto.randomUUID();
 
         return json(response, 200, view(sandbox));
       }
@@ -892,8 +893,8 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
         });
         const cwd = mapped(sandbox, options.dir ?? "/");
         await writeFile(
-          join(sandbox.root, "proc/uptime"),
-          `${((Date.now() - sandbox.bootedAt) / 1000).toFixed(2)} 0.00\n`,
+          join(sandbox.root, "proc/sys/kernel/random/boot_id"),
+          `${sandbox.bootId}\n`,
         );
 
         const child = spawn(

@@ -350,10 +350,11 @@ const setupCommand = "mkdir -p /workspace";
 
 /**
  * A stop ends every guest process but leaves its record on the disk, which a restart or a restore
- * keeps. Records without an exit, and run markers, written before the guest last booted are marked
- * killed and removed; anything written since this boot is left alone, so it is safe to run again.
+ * keeps. Run right after the adapter boots a guest (create, restore, start): the first run in a boot,
+ * told apart by the kernel's boot ID, marks every record without an exit killed and drops the run
+ * markers; later runs in the same boot change nothing.
  */
-const invalidate = `boot=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )); for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && [ "$(stat -c %Y "$d/spec.json")" -lt "$boot" ] && printf 137 > "$d/exit"; done; for m in /tmp/.sandbox-sdk/runs/*; do [ -e "$m" ] && [ "$(stat -c %Y "$m")" -lt "$boot" ] && rm -rf "$m"; done; true`;
+const repair = `boot=$(cat /proc/sys/kernel/random/boot_id) && if [ "$(cat /tmp/.sandbox-sdk/boot-id 2>/dev/null)" != "$boot" ]; then for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/runs; mkdir -p /tmp/.sandbox-sdk && printf '%s' "$boot" > /tmp/.sandbox-sdk/boot-id; fi`;
 
 /** @internal The adapter behind `microsandbox()`. `load` imports `microsandbox`; tests pass a fixture. */
 export function createMicrosandboxProvider(
@@ -487,11 +488,17 @@ export function createMicrosandboxProvider(
       }
     })();
 
+    const pending = peerContext;
+
     try {
-      return await peerContext;
+      const loaded = await orStop(pending, createDeadline(requestTimeoutMs).signal);
+
+      if (loaded === "stop") throw fail("microsandbox did not load in time", "timeout");
+
+      return loaded;
     } catch (error) {
-      // A failed setup (no key, no peer) is retried on the next call.
-      peerContext = undefined;
+      // A failed or stalled setup (no key, no peer) is retried on the next call.
+      if (peerContext === pending) peerContext = undefined;
       throw error;
     }
   }
@@ -499,8 +506,6 @@ export function createMicrosandboxProvider(
   /**
    * The guest agent handle of sandbox `id`, through this adapter's own `RemoteContext`. The lookup has
    * its own `requestTimeoutMs` deadline, and a failed one is dropped so the next call connects again.
-   * Before a handle is used, the process records a stop left are cleared ({@link invalidate}): every
-   * client does this on its first use after a start, so none trusts a record of a process that died.
    */
   function handle(id: string): Promise<PeerSandbox> {
     let known = handles.get(id);
@@ -522,18 +527,6 @@ export function createMicrosandboxProvider(
 
         if (sandbox === "stop")
           throw fail("the guest agent did not answer in time", "timeout", { sandboxId: id });
-
-        const repaired = await execute({
-          sandbox: Promise.resolve(sandbox),
-          sandboxId: id,
-          redact,
-          exec: { command: invalidate, cwd: "/", env: {}, timeoutMs: 60_000, onChunk() {} },
-        });
-
-        if (repaired.timedOut || repaired.exitCode !== 0)
-          throw fail("the records of processes a stop ended could not be cleared", "provider", {
-            sandboxId: id,
-          });
 
         return sandbox;
       })();
@@ -636,7 +629,7 @@ export function createMicrosandboxProvider(
   async function untilRunning(id: string, deadline: Deadline, signal?: AbortSignal) {
     for (let attempt = 0; ; attempt++) {
       if (signal?.aborted) throw fail("creation aborted", "aborted", { sandboxId: id });
-      const sandbox = await readSandbox(id, { deadline });
+      const sandbox = await readSandbox(id, { deadline, signal });
 
       if (sandbox.status === "running") return sandbox;
 
@@ -650,9 +643,10 @@ export function createMicrosandboxProvider(
   }
 
   /** Polls until the sandbox is stopped. */
-  async function untilStopped(id: string, deadline: Deadline) {
+  async function untilStopped(id: string, deadline: Deadline, signal?: AbortSignal) {
     for (let attempt = 0; ; attempt++) {
-      const sandbox = await readSandbox(id, { deadline });
+      if (signal?.aborted) throw fail("the wait was aborted", "aborted", { sandboxId: id });
+      const sandbox = await readSandbox(id, { deadline, signal });
 
       if (sandbox.status === "stopped") return;
 
@@ -661,7 +655,7 @@ export function createMicrosandboxProvider(
 
       if (deadline.remaining() <= 0)
         throw fail("the sandbox did not stop in time", "timeout", { sandboxId: id });
-      await delay(Math.min(2000, 250 * 2 ** attempt));
+      await delay(Math.min(2000, 250 * 2 ** attempt), signal);
     }
   }
 
@@ -704,6 +698,14 @@ export function createMicrosandboxProvider(
     }
 
     return untilRunning(id, deadline, signal);
+  }
+
+  /** Starts a sandbox a stop ended, then marks the processes the stop killed exited ({@link repair}). */
+  async function revive(id: string, deadline: Deadline, signal?: AbortSignal) {
+    const sandbox = await start(id, deadline, signal);
+    await shell(id, repair, 60_000);
+
+    return sandbox;
   }
 
   /** Records Service `slug` of sandbox `id` as this adapter's, so a later destroy still finds it once detached. */
@@ -997,6 +999,8 @@ export function createMicrosandboxProvider(
         { sandboxId: id },
       );
 
+    // Recorded before the DELETE, whose answer may be lost after it took effect.
+    if (!listed) unlisted.add(id);
     let accepted = false;
 
     try {
@@ -1011,8 +1015,6 @@ export function createMicrosandboxProvider(
     } finally {
       forget(id);
     }
-
-    if (!listed) unlisted.add(id);
 
     if (accepted) await untilGone(id, createDeadline(budgetMs));
 
@@ -1279,7 +1281,13 @@ export function createMicrosandboxProvider(
         sandbox = await untilRunning(id, deadline, input.signal);
 
       const guest = await handle(id);
-      await shell(id, setupCommand, 60_000, guest);
+      // A restore's disk holds the records of processes its source's stop ended.
+      await shell(
+        id,
+        ref === undefined ? setupCommand : `${repair} && ${setupCommand}`,
+        60_000,
+        guest,
+      );
 
       if (input.signal?.aborted) throw fail("creation aborted", "aborted", { sandboxId: id });
     } catch (error) {
@@ -1476,7 +1484,7 @@ export function createMicrosandboxProvider(
   /** Restarts a source sandbox that was running before a snapshot; never throws. */
   async function restart(id: string): Promise<boolean> {
     try {
-      await start(id, createDeadline(readyMs));
+      await revive(id, createDeadline(readyMs));
 
       return true;
     } catch {
@@ -1803,11 +1811,11 @@ export function createMicrosandboxProvider(
           return toInfo(await untilRunning(match.id, deadline, signal));
 
         if (match.status === "stopping" || match.status === "saving_state")
-          await untilStopped(match.id, deadline);
+          await untilStopped(match.id, deadline, signal);
 
         if (signal?.aborted) throw fail("the key lookup was aborted", "aborted");
 
-        return toInfo(await start(match.id, deadline, signal));
+        return toInfo(await revive(match.id, deadline, signal));
       } catch (error) {
         if (isGone(error)) return undefined;
         throw error;
