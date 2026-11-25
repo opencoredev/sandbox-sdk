@@ -44,7 +44,7 @@ export interface FakeSandbox {
   reference: string | null;
   createdAt: string;
   children: Set<ChildProcess>;
-  /** When the guest last booted: create and each start. Commands read it as `btime` in `/proc/stat`. */
+  /** When the guest last booted: create and each start. Commands read it as `btime` in `/proc/stat`, and with the ID as the boot ID. */
   bootedAt: number;
 }
 
@@ -191,8 +191,9 @@ export class FakePeerError extends Error {
 }
 
 const mapped = (sandbox: FakeSandbox, text: string) =>
-  text.replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare|\/proc\/stat/g, (path) =>
-    join(sandbox.root, path),
+  text.replace(
+    /\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare|\/proc\/stat|\/proc\/sys\/kernel\/random\/boot_id/g,
+    (path) => join(sandbox.root, path),
   );
 
 async function readBody(request: IncomingMessage): Promise<JsonValue | undefined> {
@@ -894,6 +895,11 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
         await writeFile(
           join(sandbox.root, "proc/stat"),
           `btime ${Math.floor(sandbox.bootedAt / 1000)}\n`,
+        );
+        await mkdir(join(sandbox.root, "proc/sys/kernel/random"), { recursive: true });
+        await writeFile(
+          join(sandbox.root, "proc/sys/kernel/random/boot_id"),
+          `${sandbox.id}-${sandbox.bootedAt}\n`,
         );
 
         const child = spawn(

@@ -2,6 +2,8 @@
 // the adapter's own findings, kept verbatim as regressions. The bench's share is in
 // bench/tests/microsandbox-review.test.ts.
 import { createHook } from "node:async_hooks";
+import { readdir, rename, utimes } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createSandbox, reapSandboxes } from "../src/index.js";
 import { peerError } from "../src/providers/microsandbox/errors.js";
@@ -13,7 +15,7 @@ import {
 } from "../src/providers/microsandbox/exec.js";
 import { microsandbox, type MicrosandboxOptions } from "../src/providers/microsandbox/index.js";
 import { quote } from "../src/shared/shell.js";
-import { bootRepairScript } from "../src/shell/process-records.js";
+import { bootRepairScript, recordSetupScript } from "../src/shell/process-records.js";
 import { microsandboxFake, type MicrosandboxFake } from "./microsandbox-fake.js";
 
 const key = "msb_fake_key_0123456789";
@@ -434,21 +436,37 @@ test("PR88-4 a repair waits for the record's lock, so a setup reusing the name i
   expect(next.stdout).toBe("none");
 }, 10_000);
 
-test("PR88-4 a lock left by a process the stop ended does not block the repair, though its PID is alive again", async () => {
+test("PR88-4 a lock held when the sandbox stopped does not block the repair, though its PID is alive again", async () => {
   const p = adapter();
-  const { id: sandbox } = await p.create({ labels: labels() });
+  const source = await p.create({ labels: labels() });
+  const dir = "/tmp/.sandbox-sdk/procs/p3";
 
-  // PID 1 is always alive, as a reused PID would be after the restart.
-  const deadLock =
-    "mkdir -p /tmp/.sandbox-sdk/procs/p1/lock && : > /tmp/.sandbox-sdk/procs/p1/lock/1 && touch -d '1 hour ago' /tmp/.sandbox-sdk/procs/p1/lock/1 /tmp/.sandbox-sdk/procs/p1/lock";
+  // A real setup takes the record's lock, then waits on its stdin while the snapshot stops it.
+  const holder = `mkdir -p ${dir} && echo '{}' > ${dir}/spec.json && printf 0 > ${dir}/exit || exit 1; { sleep 30 | sh -c ${quote(recordSetupScript({ dir, cwd: "/" }))}; } >/dev/null 2>&1 & until ls -d ${dir}/lock* >/dev/null 2>&1; do sleep .05; done`;
 
-  expect((await exec(p, sandbox, `${staleRecord} && ${deadLock}`)).exitCode).toBe(0);
+  expect((await exec(p, source.id, holder, { timeoutMs: 5000 })).exitCode).toBe(0);
 
-  expect(await exec(adapter(), sandbox, recordState, { timeoutMs: 5000 })).toMatchObject({
+  if (!p.snapshot) throw new Error("the adapter takes snapshots");
+  const { id: snapshot } = await p.snapshot(source.id);
+  const saved = fake.snapshots.get(snapshot);
+
+  if (!saved) throw new Error("the snapshot is missing");
+
+  // In the saved disk the entry now names PID 1, which is alive, and is no older than any boot.
+  const lock = join(saved.root, dir, "lock");
+  const [entry] = await readdir(lock);
+  await rename(join(lock, entry ?? ""), join(lock, "1"));
+  const later = Math.floor(Date.now() / 1000) + 3600;
+  await utimes(join(lock, "1"), later, later);
+  await utimes(lock, later, later);
+
+  const restored = await p.create({ labels: labels(), from: snapshot });
+
+  expect(await exec(adapter(), restored.id, "true", { timeoutMs: 5000 })).toMatchObject({
     timedOut: false,
-    stdout: "137 gone",
+    exitCode: 0,
   });
-}, 10_000);
+}, 20_000);
 
 test("PR88-4 a repair that cannot read a record's timestamp leaves the record alone", async () => {
   const p = adapter();

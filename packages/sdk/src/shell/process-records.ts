@@ -33,14 +33,19 @@ function records(dir: string) {
 /** Take a record directory's lock: a directory holding one entry named for its owner's pid.
  * A waiter frees a lock whose owner has died, and one left empty for about a second by an
  * owner killed between its two steps, so a writer killed by stop() cannot wedge the log.
- * Breaking a dead owner's lock hinges on removing its entry, which only one waiter can do. */
+ * Breaking a dead owner's lock hinges on removing its entry, which only one waiter can do.
+ * The entry holds the kernel's boot ID, so a lock left by a process a stop ended never blocks
+ * the next boot, even when a live process holds that pid again; an empty entry falls back to the
+ * pid check. */
 function lockLines(lock: string): string[] {
   return [
+    `lock_boot=`,
+    `read -r lock_boot 2>/dev/null < /proc/sys/kernel/random/boot_id`,
     // $$ is the parent shell's pid inside a subshell; /proc/self names the subshell itself.
     `lock_me=$$`,
     `read -r lock_me _ 2>/dev/null < /proc/self/stat`,
     `lock_idle=0`,
-    `until mkdir ${lock} 2>/dev/null && : > ${lock}/"$lock_me"`,
+    `until mkdir ${lock} 2>/dev/null && printf '%s\\n' "$lock_boot" > ${lock}/"$lock_me"`,
     // A glob, not ls, so the wait loop forks nothing but sleep.
     `do lock_owner=`,
     `for lock_entry in ${lock}/*`,
@@ -48,8 +53,12 @@ function lockLines(lock: string): string[] {
     `done`,
     `if [ -n "$lock_owner" ]`,
     `then lock_idle=0`,
+    `lock_owner_boot=`,
+    `read -r lock_owner_boot 2>/dev/null < ${lock}/"$lock_owner"`,
+    `if [ -n "$lock_boot" ] && [ -n "$lock_owner_boot" ] && [ "$lock_owner_boot" != "$lock_boot" ]`,
+    `then lock_state=Z`,
     // A zombie still answers kill -0, so /proc's state field decides where it exists.
-    `if [ -r /proc/self/stat ]`,
+    `elif [ -r /proc/self/stat ]`,
     `then lock_state=Z`,
     `read -r _ _ lock_state _ 2>/dev/null < /proc/"$lock_owner"/stat`,
     `elif kill -0 "$lock_owner" 2>/dev/null`,
@@ -105,18 +114,12 @@ export function logPageScript(input: {
 /** After a stop and a start, mark as killed (137) each record that has no exit and was last
  * written in an earlier second than the guest's boot (`btime`), and remove run markers older than
  * the boot. Each check and write holds the record's lock, so a setup that reuses the name since
- * the boot is never marked killed, and any client can run this at any time. A lock entry older
- * than the boot names a process the stop ended, whose PID a live process may now hold, so it is
- * retired before the wait; a lock taken since the boot never holds one. A timestamp that
+ * the boot is never marked killed, and any client can run this at any time. A timestamp that
  * cannot be read proves nothing, so that record is left as it is. */
 export function bootRepairScript(): string {
   const lock = `"$d/lock"`;
 
   const mark = [
-    `for e in ${lock}/*`,
-    `do [ -e "$e" ] && t=$(stat -c %Y "$e") && [ "$t" -lt "$boot" ] && rm -f "$e"`,
-    `done`,
-    `rmdir ${lock} 2>/dev/null`,
     ...lockLines(lock),
     `trap ${quote(unlockCommand(lock))} EXIT`,
     `if [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && t=$(stat -c %Y "$d/spec.json") && [ "$t" -lt "$boot" ]`,
