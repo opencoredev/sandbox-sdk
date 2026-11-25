@@ -3099,4 +3099,130 @@ describe("independent review reproductions", () => {
 
     expect(resources).toEqual([]);
   });
+
+  test("R15-3 concurrent burst refusal is not restored when a sibling pre-POST journal rename completes", async () => {
+    const provider = adapter();
+    const create = provider.create.bind(provider);
+    let firstName = "";
+    let firstPost = true;
+    let gated = false;
+    let releaseRefusal = () => {};
+
+    const refusalReady = new Promise<void>((resolve) => {
+      releaseRefusal = resolve;
+    });
+
+    let releasePostSeen = () => {};
+
+    const postSeen = new Promise<void>((resolve) => {
+      releasePostSeen = resolve;
+    });
+
+    let releaseHandled = () => {};
+
+    const handled = new Promise<void>((resolve) => {
+      releaseHandled = resolve;
+    });
+
+    provider.create = async (input) => {
+      try {
+        return await create(input);
+      } catch (error) {
+        setImmediate(releaseHandled);
+        throw error;
+      }
+    };
+
+    const realRename = journalFiles.rename;
+
+    const wire = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+
+      if (firstPost && init?.method === "POST" && url.pathname === "/v1/sandboxes") {
+        firstPost = false;
+        firstName = z
+          .object({ spec: z.object({ name: z.string() }) })
+          .parse(JSON.parse(String(init.body))).spec.name;
+        releasePostSeen();
+        await refusalReady;
+
+        return Response.json(
+          { error: { code: "invalid_argument", message: "definite refusal" } },
+          { status: 400 },
+        );
+      }
+
+      return realFetch(input, init);
+    });
+
+    const renameSpy = vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      const candidate = z
+        .object({ resources: z.array(z.looseObject({ kind: z.string(), id: z.string() })) })
+        .parse(JSON.parse(await readFile(from, "utf8")));
+
+      if (
+        !gated &&
+        candidate.resources.filter((r) => r.kind === "allocation-attempt").length === 2
+      ) {
+        gated = true;
+        await postSeen;
+        releaseRefusal();
+        await handled;
+      }
+
+      return realRename(from, to);
+    });
+
+    try {
+      await runV2(
+        loaded(provider),
+        parseV2([
+          "--providers",
+          "microsandbox",
+          "--run",
+          run,
+          "--out",
+          out,
+          "--runs",
+          "1",
+          "--max-sandboxes",
+          "4",
+          "--bursts",
+          "2",
+          "--burst-cohorts",
+          "1",
+          "--concurrency",
+          "2",
+          "--scenarios",
+          "burst",
+          "--timeout-ms",
+          "5000",
+          "--ownership-visibility-ms",
+          "100",
+        ]),
+        async () => {},
+      );
+    } finally {
+      releaseRefusal();
+      renameSpy.mockRestore();
+      wire.mockRestore();
+    }
+
+    expect(firstName).not.toBe("");
+    expect(gated).toBe(true);
+    expect(fake.sandboxes.size).toBe(0);
+
+    const afterRun = z
+      .object({ resources: z.array(z.looseObject({ kind: z.string(), id: z.string() })) })
+      .parse(JSON.parse(await journalText())).resources;
+
+    expect(afterRun).toEqual([]);
+    expect(await reap()).toBe(false);
+
+    const afterReap = z
+      .object({ resources: z.array(z.looseObject({ kind: z.string(), id: z.string() })) })
+      .parse(JSON.parse(await journalText())).resources;
+
+    expect(afterReap).toEqual([]);
+  });
 });

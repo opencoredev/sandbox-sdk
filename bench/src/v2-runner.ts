@@ -515,11 +515,12 @@ export async function runV2(
   }
 
   /**
-   * Computes the next `owned` map on a shallow copy, writes it to `ownership.json`, and commits it
-   * to `owned` only after the atomic rename succeeds. Prevents a failed pre-POST hook or settlement
-   * write from leaving uncommitted entries or mutations in memory.
+   * Applies `mutate` to a shallow copy of `owned`, writes the candidate to `ownership.json`, and
+   * applies `mutate` to live `owned` only after the atomic rename succeeds. Applying `mutate(owned)`
+   * rather than replacing the whole map preserves concurrent mutations on other keys (such as a
+   * burst sibling retiring a refused allocation attempt while this rename was in flight).
    */
-  function persistJournalUpdate(mutate: (nextOwned: Map<string, OwnedEntry>) => void) {
+  function persistJournalUpdate(mutate: (target: Map<string, OwnedEntry>) => void) {
     const next = journal.then(async () => {
       const nextOwned = new Map<string, OwnedEntry>();
 
@@ -535,9 +536,7 @@ export async function runV2(
         ),
       );
 
-      owned.clear();
-
-      for (const [k, v] of nextOwned) owned.set(k, v);
+      mutate(owned);
     });
 
     journal = next.catch(() => {});
@@ -558,9 +557,10 @@ export async function runV2(
     return {
       create: async (attempt) => {
         const label = attempt.labels[attemptLabel];
+        const attemptedAt = new Date().toISOString();
 
-        await persistJournalUpdate((nextOwned) => {
-          nextOwned.set(`${name}/allocation-attempt/${attempt.name}`, {
+        await persistJournalUpdate((target) => {
+          target.set(`${name}/allocation-attempt/${attempt.name}`, {
             provider: name,
             id: attempt.name,
             kind: "allocation-attempt",
@@ -568,9 +568,9 @@ export async function runV2(
             sourceId:
               attempt.from === undefined
                 ? null
-                : (nextOwned.get(`${name}/snapshot/${attempt.from}`)?.parent ?? null),
+                : (target.get(`${name}/snapshot/${attempt.from}`)?.parent ?? null),
             allocId: attempt.allocId,
-            attemptedAt: new Date().toISOString(),
+            attemptedAt,
           });
         });
 
