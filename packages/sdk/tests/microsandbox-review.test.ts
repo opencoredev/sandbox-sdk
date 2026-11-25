@@ -716,17 +716,19 @@ test("PR88 merge review: a peer error's cause keeps the whole text, so the core 
     redact: (text) => text,
   });
 
+  const refusing: PeerSandbox = {
+    execStreamWith: () => Promise.reject(new Error(long)),
+    fs: () => {
+      throw new Error("not used");
+    },
+  };
+
   const fromExec = await execute({
-    sandbox: Promise.resolve({
-      execStreamWith: () => Promise.reject(new Error(long)),
-    } as unknown as PeerSandbox),
+    sandbox: Promise.resolve(refusing),
     sandboxId: "s",
     redact: (text) => text,
     exec: { command: "true", cwd: "/", env: {}, timeoutMs: 5000, onChunk() {} },
-  }).then(
-    () => undefined,
-    (error: unknown) => error,
-  );
+  }).catch((error: Error) => error);
 
   for (const cause of [
     redactor.error(fromPeer, "microsandbox").cause,
@@ -754,9 +756,12 @@ test("PR88 merge review: output keeps a leading byte order mark, so a secret sta
 });
 
 test("PR88 merge review: a snapshot reference shown in an error goes through the credential filter", async () => {
-  await expect(adapter().create({ labels: labels(), from: key })).rejects.toSatisfy(
-    (error: unknown) => error instanceof Error && !error.message.includes(key),
-  );
+  const error = await adapter()
+    .create({ labels: labels(), from: key })
+    .catch((failure: Error) => failure);
+
+  expect(error).toBeInstanceOf(Error);
+  expect(String(error)).not.toContain(key);
 });
 
 test("PR88 merge review: a secret under a name the guest shell sets is refused before any sandbox is made", async () => {
