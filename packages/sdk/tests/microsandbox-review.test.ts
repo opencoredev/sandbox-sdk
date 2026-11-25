@@ -434,6 +434,22 @@ test("PR88-4 a repair waits for the record's lock, so a setup reusing the name i
   expect(next.stdout).toBe("none");
 }, 10_000);
 
+test("PR88-4 a lock left by a process the stop ended does not block the repair, though its PID is alive again", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  // PID 1 is always alive, as a reused PID would be after the restart.
+  const deadLock =
+    "mkdir -p /tmp/.sandbox-sdk/procs/p1/lock && : > /tmp/.sandbox-sdk/procs/p1/lock/1 && touch -d '1 hour ago' /tmp/.sandbox-sdk/procs/p1/lock/1 /tmp/.sandbox-sdk/procs/p1/lock";
+
+  expect((await exec(p, sandbox, `${staleRecord} && ${deadLock}`)).exitCode).toBe(0);
+
+  expect(await exec(adapter(), sandbox, recordState, { timeoutMs: 5000 })).toMatchObject({
+    timedOut: false,
+    stdout: "137 gone",
+  });
+}, 10_000);
+
 test("PR88-4 a repair that cannot read a record's timestamp leaves the record alone", async () => {
   const p = adapter();
   const { id: sandbox } = await p.create({ labels: labels() });
