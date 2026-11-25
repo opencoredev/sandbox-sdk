@@ -810,14 +810,17 @@ async function readClaim(
 }
 
 /**
- * This process's PID namespace (`/proc/self/ns/pid`), or `none` where there is none to read: a pid
- * in a claim names the same process only inside the same namespace.
+ * This process's PID namespace (`/proc/self/ns/pid`): a pid in a claim names the same process only
+ * inside the same namespace. `none` off Linux, which has no PID namespaces; `unknown` on Linux when
+ * the link cannot be read, since two such namespaces would look the same.
  */
-export function pidNamespace(): string {
+export function pidNamespace(read: (path: string) => string = readlinkSync): string {
+  if (process.platform !== "linux") return "none";
+
   try {
-    return readlinkSync("/proc/self/ns/pid");
+    return read("/proc/self/ns/pid");
   } catch {
-    return "none";
+    return "unknown";
   }
 }
 
@@ -825,10 +828,15 @@ export function pidNamespace(): string {
  * Whether the run holding `claim` has provably stopped: the claim names this host, this PID
  * namespace and a pid, and that pid no longer exists (ESRCH). A claim without all three
  * (`v2-runner.ts` writes only `runId`), or from another host or namespace, cannot be checked, so it
- * is never taken as stopped.
+ * is never taken as stopped. Neither can any claim while this process cannot read its own namespace.
  */
-function claimHolderGone(claim: Claim): boolean {
-  if (claim.pid === undefined || claim.host !== hostname() || claim.pidns !== pidNamespace())
+function claimHolderGone(claim: Claim, namespace: string): boolean {
+  if (
+    claim.pid === undefined ||
+    claim.host !== hostname() ||
+    namespace === "unknown" ||
+    claim.pidns !== namespace
+  )
     return false;
 
   try {
@@ -845,9 +853,9 @@ function claimHolderGone(claim: Claim): boolean {
  * `assertJournalFree`, only one gets it. `force` takes over only a claim whose run provably
  * stopped, so two live runs never write one --out.
  */
-async function claimOutput(out: string, runId: string, force: boolean) {
+async function claimOutput(out: string, runId: string, force: boolean, namespace: string) {
   const path = join(out, "run.json");
-  const mine = `${JSON.stringify({ runId, pid: process.pid, host: hostname(), pidns: pidNamespace() })}\n`;
+  const mine = `${JSON.stringify({ runId, pid: process.pid, host: hostname(), pidns: namespace })}\n`;
 
   await withClaimLock(out, async () => {
     const current = await readClaim(path);
@@ -859,7 +867,7 @@ async function claimOutput(out: string, runId: string, force: boolean) {
         `${path} claims this --out for another run, which may still be running or may have died before its cleanup was confirmed. Reap that run (bun bench reap --run ID --out the same directory) and pass --force, or choose another --out.`,
       );
 
-    if (current.kind !== "claim" || !claimHolderGone(current.claim))
+    if (current.kind !== "claim" || !claimHolderGone(current.claim, namespace))
       throw new Error(
         `${path} belongs to a run that may be still alive: its process is still alive, or the claim names no pid on this host and PID namespace to check. --force takes over only a claim whose process is gone. Stop that run, remove run.json yourself once you know it is gone, or choose another --out.`,
       );
@@ -869,7 +877,7 @@ async function claimOutput(out: string, runId: string, force: boolean) {
 }
 
 /** Give up the claim, only while it still names this run and this process. */
-async function releaseClaim(out: string, runId: string) {
+async function releaseClaim(out: string, runId: string, namespace: string) {
   const path = join(out, "run.json");
 
   await withClaimLock(out, async () => {
@@ -879,7 +887,7 @@ async function releaseClaim(out: string, runId: string) {
       current.kind === "claim" &&
       current.claim.runId === runId &&
       current.claim.pid === process.pid &&
-      current.claim.pidns === pidNamespace()
+      current.claim.pidns === namespace
     )
       await rm(path, { force: true });
   });
@@ -923,11 +931,20 @@ export interface ExpandedDependencies {
   readonly load?: typeof loadProvider;
   readonly catalog?: readonly ExpandedScenario[];
   readonly signals?: SignalSource;
+  readonly namespace?: () => string;
 }
 
-/** Run the expanded catalog. Tests pass `load`, `catalog` and `signals` to avoid real adapters. */
+/**
+ * Run the expanded catalog. Tests pass `load`, `catalog`, `signals` and `namespace` to avoid real
+ * adapters and the host's own PID namespace.
+ */
 export async function expandedCommand(argv: string[], dependencies: ExpandedDependencies = {}) {
-  const { load = loadProvider, catalog = expandedScenarios, signals = process } = dependencies;
+  const {
+    load = loadProvider,
+    catalog = expandedScenarios,
+    signals = process,
+    namespace = pidNamespace,
+  } = dependencies;
 
   const parsed = parseExpandedArgs(argv);
 
@@ -956,7 +973,8 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
   // died, even one whose first create never returned an ID, is never overwritten without --force.
   await mkdir(out, { recursive: true });
   await assertJournalFree(journalPath, runId, args.force);
-  await claimOutput(out, runId, args.force);
+  const pidns = namespace();
+  await claimOutput(out, runId, args.force, pidns);
 
   const candidates: LoadedProvider[] = [];
 
@@ -1065,7 +1083,8 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
   results.finishedAt = new Date().toISOString();
   await writeResults(out, results, scenarios);
 
-  if (state.live.size === 0 && results.cleanupErrors.length === 0) await releaseClaim(out, runId);
+  if (state.live.size === 0 && results.cleanupErrors.length === 0)
+    await releaseClaim(out, runId, pidns);
   process.stdout.write(
     `${results.samples.length} verified samples, ${results.failures.length} failures, ${results.cleanupErrors.length} cleanup errors${state.stopSignal ? `, interrupted by ${state.stopSignal}` : ""}; ${out}\n`,
   );

@@ -248,6 +248,32 @@ describe("expanded run lifecycle, round 3", () => {
       expect(readFileSync(join(out, "run.json"), "utf8")).toBe(text);
     });
 
+    it("names an unreadable Linux PID namespace unknown, never none", () => {
+      const unreadable = () => {
+        throw new Error("ENOENT: no such file or directory");
+      };
+
+      expect(pidNamespace(unreadable)).toBe(process.platform === "linux" ? "unknown" : "none");
+    });
+
+    it("refuses every claim while this process cannot read its own PID namespace", async () => {
+      freshOut();
+
+      const text = JSON.stringify({
+        runId: "x",
+        pid: exited(),
+        host: hostname(),
+        pidns: "unknown",
+      });
+
+      writeFileSync(join(out, "run.json"), text);
+
+      await expect(
+        expandedCommand(forced(), { ...dependencies(), namespace: () => "unknown" }),
+      ).rejects.toThrow(/still alive/);
+      expect(readFileSync(join(out, "run.json"), "utf8")).toBe(text);
+    });
+
     it("takes over a complete same-host claim whose pid is gone", async () => {
       freshOut();
       writeFileSync(
