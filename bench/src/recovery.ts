@@ -749,11 +749,15 @@ export async function reapRun(
           };
 
           // Entries already journaled for this snapshot, such as a Maritime save still pending with its
-          // idempotency key. Replace them with the confirmed snapshot entry BEFORE deleting: if the
-          // delete succeeds on the server and drops its response, a later step must inspect/delete the
-          // snapshot rather than replaying the save POST.
+          // idempotency key, or a capture of this source journaled by its name. Replace them with the
+          // confirmed snapshot entry BEFORE deleting: if the delete succeeds on the server and drops its
+          // response, a later step must inspect/delete the snapshot rather than replaying the save POST.
           const earlier = (journal?.resources ?? []).filter(
-            (r) => r.provider === p.name && r.kind === "snapshot" && r.id === snapshot.id,
+            (r) =>
+              r.provider === p.name &&
+              r.kind === "snapshot" &&
+              (r.id === snapshot.id ||
+                (snapshot.name !== undefined && r.parent === entry.id && r.id === snapshot.name)),
           );
 
           const previousResources = journal ? [...journal.resources] : null;

@@ -396,6 +396,8 @@ export function createMicrosandboxProvider(
         createdAt?: string | undefined;
         confirmed?: boolean | undefined;
         confirmedAt?: string | undefined;
+        /** When a create of this slug lost its answer; a 404 proves nothing until missingGraceMs later. */
+        lostAt?: number | undefined;
       }
     >
   >();
@@ -762,6 +764,7 @@ export function createMicrosandboxProvider(
           createdAt?: string | undefined;
           confirmed?: boolean | undefined;
           confirmedAt?: string | undefined;
+          lostAt?: number | undefined;
         }
       >();
 
@@ -773,6 +776,7 @@ export function createMicrosandboxProvider(
       createdAt: nextCreatedAt,
       confirmed: nextConfirmed,
       confirmedAt: confirmed === true ? nextCreatedAt : (existing?.confirmedAt ?? undefined),
+      lostAt: nextCreatedAt === undefined ? existing?.lostAt : undefined,
     });
     ownedServices.set(id, owned);
 
@@ -829,6 +833,7 @@ export function createMicrosandboxProvider(
     const failed: string[] = [];
     const unpersistedIdentity: string[] = [];
     const unproven: string[] = [];
+    const unsettled: string[] = [];
 
     /** Visits each Service over every page of `GET /services`; false when the list failed or ran past its page cap. */
     const listServices = async (
@@ -886,6 +891,7 @@ export function createMicrosandboxProvider(
           createdAt?: string | undefined;
           confirmed?: boolean | undefined;
           confirmedAt?: string | undefined;
+          lostAt?: number | undefined;
         }
       >()) {
       if (!isOwnedSlug(slug, id)) continue;
@@ -934,6 +940,12 @@ export function createMicrosandboxProvider(
           );
         } catch (error) {
           if (isGone(error)) {
+            // A create whose answer was lost may still land; until the grace ends, keep it and the sandbox.
+            if (entry.lostAt !== undefined && Date.now() - entry.lostAt < missingGraceMs) {
+              unsettled.push(slug);
+              continue;
+            }
+
             ownedServices.get(id)?.delete(slug);
             continue;
           }
@@ -989,7 +1001,7 @@ export function createMicrosandboxProvider(
 
     if (ownedServices.get(id)?.size === 0) ownedServices.delete(id);
 
-    return { failed, unpersistedIdentity, unproven, listed };
+    return { failed, unpersistedIdentity, unproven, unsettled, listed };
   }
 
   /**
@@ -1017,6 +1029,7 @@ export function createMicrosandboxProvider(
     let failedServices: string[] = [];
     let unpersistedIdentity: string[] = [];
     let unproven: string[] = [];
+    let unsettled: string[] = [];
     let listed = !unreadable;
 
     try {
@@ -1024,6 +1037,7 @@ export function createMicrosandboxProvider(
       failedServices = outcome.failed;
       unpersistedIdentity = outcome.unpersistedIdentity;
       unproven = outcome.unproven;
+      unsettled = outcome.unsettled;
       listed &&= outcome.listed;
     } catch {
       failedServices = [...(ownedServices.get(id)?.keys() ?? [])];
@@ -1034,6 +1048,13 @@ export function createMicrosandboxProvider(
         `verified Service identity could not be persisted (${unpersistedIdentity.join(", ")}); sandbox retained so attached ownership proof is not lost`,
         "provider",
         { sandboxId: id },
+      );
+
+    if (unsettled.length > 0)
+      throw fail(
+        `a Service create whose answer was lost may still finish (${unsettled.join(", ")}); the sandbox was kept so that Service cannot be left detached. Destroy again in a few seconds`,
+        "unavailable",
+        { sandboxId: id, retryable: true },
       );
 
     // Recorded before the DELETE, whose answer may be lost after it took effect.
@@ -1475,7 +1496,13 @@ export function createMicrosandboxProvider(
 
       const found = await readService(slug).catch(() => undefined);
 
-      if (found === undefined) throw error;
+      if (found === undefined) {
+        const lost = owned.get(slug);
+
+        if (lost !== undefined) lost.lostAt = Date.now();
+        throw error;
+      }
+
       created = found;
     }
 
@@ -1646,7 +1673,23 @@ export function createMicrosandboxProvider(
     return { kind: "pending", operationId };
   }
 
+  /** Captures under way in this client, per sandbox ID: the stop they made is not idleness. */
+  const capturing = new Map<string, number>();
+
   async function snapshot(id: string, snapshotOptions?: { expiresInMs?: number }) {
+    capturing.set(id, (capturing.get(id) ?? 0) + 1);
+
+    try {
+      return await capture(id, snapshotOptions);
+    } finally {
+      const left = (capturing.get(id) ?? 1) - 1;
+
+      if (left > 0) capturing.set(id, left);
+      else capturing.delete(id);
+    }
+  }
+
+  async function capture(id: string, snapshotOptions?: { expiresInMs?: number }) {
     if (snapshotOptions?.expiresInMs)
       throw fail("snapshots are kept until deleted; omit expiresInMs", "unsupported", {
         sandboxId: id,
@@ -1870,6 +1913,7 @@ export function createMicrosandboxProvider(
     },
 
     async isStopped(id) {
+      if (capturing.has(id)) return false;
       const { status } = await readSandbox(id);
 
       return status === "stopped" || status === "failed";

@@ -6,7 +6,7 @@ import { readdir, rename, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createSandbox, reapSandboxes } from "../src/index.js";
-import { Redactor } from "../src/errors.js";
+import { Redactor, type SandboxError } from "../src/errors.js";
 import { parseSandbox, tokenPattern } from "../src/providers/microsandbox/api.js";
 import { peerError } from "../src/providers/microsandbox/errors.js";
 import {
@@ -815,4 +815,90 @@ test("PR88 merge review: a sandbox ID that holds a token is refused at the API b
   expect(() => parseSandbox({ id: "sbx-msb_abc123", name: "sbx-1", status: "running" })).toThrow(
     /unexpected sandbox object/,
   );
+});
+
+test("PR88 merge review: idle-only reaping leaves a sandbox this client stopped to capture", async () => {
+  let release = () => {};
+
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  let capturing = () => {};
+
+  const stopped = new Promise<void>((resolve) => {
+    capturing = resolve;
+  });
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      if (new URL(input).pathname === "/v1/snapshots" && init.method === "POST") {
+        capturing();
+        await held;
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+
+  if (!p.snapshot) throw new Error("the adapter takes snapshots");
+  const snapshot = p.snapshot(id);
+  await stopped;
+
+  const reaped = await reapSandboxes(p, {
+    idleOnly: true,
+    labels: { "sandbox-bench-run": "independent-review" },
+  });
+
+  release();
+  await snapshot;
+
+  expect({ reaped, kept: fake.sandboxes.has(id) }).toEqual({ reaped: 0, kept: true });
+});
+
+test("PR88 merge review: a Service create whose answer was lost keeps its sandbox until it can settle", async () => {
+  let sandbox = "";
+  let held: (() => Promise<Response>) | undefined;
+  let replayed = false;
+
+  const replay = async () => {
+    if (held === undefined || replayed) return;
+    replayed = true;
+    await held();
+  };
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const path = new URL(input).pathname;
+
+      if (path === "/v1/services" && init.method === "POST" && held === undefined) {
+        held = () => realFetch(input, init);
+        throw new TypeError("fetch failed");
+      }
+
+      // The lost create lands after destroy read its slug, just before the sandbox DELETE.
+      if (path === `/v1/sandboxes/${sandbox}` && init.method === "DELETE") await replay();
+
+      return realFetch(input, init);
+    },
+  });
+
+  sandbox = (await p.create({ labels: labels() })).id;
+  await expect(p.previewUrl(sandbox, 3000)).rejects.toBeDefined();
+
+  const first = await p.destroy(sandbox).then(
+    () => "deleted",
+    (error: SandboxError) => error.code,
+  );
+
+  await replay();
+
+  if (fake.sandboxes.has(sandbox)) await p.destroy(sandbox);
+
+  expect({
+    first,
+    detached: [...fake.services.values()].filter((service) => service.target === null).length,
+  }).toEqual({ first: "unavailable", detached: 0 });
 });
