@@ -39,8 +39,8 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  * use, from the SDK's `resolveConfig`. The harness reads, snapshots and cleans up through the
  * connection of the exact adapter instance that created the sandboxes. A read sent to another
  * endpoint, account, team or project answers 404 for a sandbox that is running, which would be
- * recorded as absence. Archil, Local, Modal and Railway have no `resolveConfig`; their connection
- * is read here from the same options and variables their adapters read.
+ * recorded as absence. Archil, Local, Maritime, Modal and Railway have no `resolveConfig`; their
+ * connection is read here from the same options and variables their adapters read.
  */
 export interface Connections {
   archil: ArchilConfig;
@@ -53,6 +53,7 @@ export interface Connections {
   freestyle: FreestyleConfig;
   instabox: InstaboxConfig;
   local: LocalConfig;
+  maritime: MaritimeConfig;
   modal: ModalConfig;
   railway: RailwayConfig;
   superserve: SuperserveConfig;
@@ -69,6 +70,15 @@ export interface Connections {
 export interface ArchilConfig {
   readonly apiKey: string;
   readonly region: string;
+}
+
+/**
+ * What `maritime()` sends its requests with (`createMaritimeProvider`): the key, trimmed, and the
+ * API host without trailing slashes. The control plane is `${baseUrl}/v1`.
+ */
+export interface MaritimeConfig {
+  readonly apiKey: string;
+  readonly baseUrl: string;
 }
 
 /** The Docker socket `local()` talks to (`new Docker(options.dockerHost)` in the local adapter). */
@@ -137,6 +147,18 @@ function archilConfig(options: ConnectionOptions): ArchilConfig {
   return { apiKey, region: options.region ?? process.env.ARCHIL_REGION ?? "aws-us-east-1" };
 }
 
+/** As the Maritime adapter resolves it: options, then MARITIME_API_KEY and MARITIME_API_URL. */
+function maritimeConfig(options: ConnectionOptions): MaritimeConfig {
+  const apiKey = (options.apiKey ?? process.env.MARITIME_API_KEY)?.trim();
+
+  if (!apiKey) throw Object.assign(new Error("Maritime API key is missing"), { code: "auth" });
+
+  return {
+    apiKey,
+    baseUrl: endpoint(options.baseUrl ?? process.env.MARITIME_API_URL ?? "https://api.maritime.sh"),
+  };
+}
+
 /** The local adapter's socket: `dockerHost`, then DOCKER_HOST, then Docker's default socket. */
 function localConfig(options: ConnectionOptions): LocalConfig {
   const host = options.dockerHost ?? process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock";
@@ -186,6 +208,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
       return { name, config: instaboxConfig(options) };
     case "local":
       return { name, config: localConfig(options) };
+    case "maritime":
+      return { name, config: maritimeConfig(options) };
     case "modal":
       return {
         name,
@@ -242,6 +266,8 @@ function byName(connection: Connection): Partial<Connections> {
       return { instabox: connection.config };
     case "local":
       return { local: connection.config };
+    case "maritime":
+      return { maritime: connection.config };
     case "modal":
       return { modal: connection.config };
     case "railway":

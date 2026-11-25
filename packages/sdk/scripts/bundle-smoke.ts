@@ -49,6 +49,7 @@ const fakes = {
   beam: `{ token: "smoke-token", workspaceId: "smoke-workspace", requestTimeoutMs: 5000 }`,
   instabox: `{ apiKey: "ibk_smoke", requestTimeoutMs: 5000 }`,
   archil: `{ apiKey: "smoke-key", region: "aws-us-east-1" }`,
+  maritime: `{ apiKey: "mk_smoke", requestTimeoutMs: 5000 }`,
 };
 
 // Beam's create probe gets a gateway port of its own, and counts only connections to it, so a late

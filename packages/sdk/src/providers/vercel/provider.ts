@@ -781,14 +781,6 @@ export function createVercelProvider<N extends NativeSandbox>(
       boxes.delete(id);
       prepared.delete(id);
     },
-    pause: (id) =>
-      safe(id, async () => {
-        await (await get(id)).stop();
-      }),
-    resume: (id) =>
-      safe(id, async () => {
-        await attach(id, true);
-      }),
     snapshot: (id, settings = {}) =>
       safe(id, async () => {
         const expiresInMs = expiration(settings.expiresInMs, "expiresInMs");
@@ -803,6 +795,18 @@ export function createVercelProvider<N extends NativeSandbox>(
         return { id: snapshotId };
       }),
   };
+
+  // A non-persistent sandbox cannot pause, so the methods are absent with the capability.
+  if (persistent) {
+    provider.pause = (id) =>
+      safe(id, async () => {
+        await (await get(id)).stop();
+      });
+    provider.resume = (id) =>
+      safe(id, async () => {
+        await attach(id, true);
+      });
+  }
 
   return provider;
 }

@@ -24,6 +24,12 @@ const templates: TemplateAllocations = {
     base: { cpu: 2, memoryGiB: 0.5 },
   },
   daytona: { "daytona-large": { cpu: 4, memoryGiB: 8, diskGiB: 10 } },
+  // Maritime's stock templates start at its default size, small (https://maritime.sh/docs/limits).
+  maritime: {
+    base: { cpu: 2, memoryGiB: 4, diskGiB: 12 },
+    python: { cpu: 2, memoryGiB: 4, diskGiB: 12 },
+    "code-interpreter": { cpu: 2, memoryGiB: 4, diskGiB: 12 },
+  },
   superserve: {
     "sandbox-bench-node22-py311-1x1": { cpu: 1, memoryGiB: 1, diskGiB: 4 },
     "sandbox-bench-node22-py311-1x1-pinned": { cpu: 1, memoryGiB: 1, diskGiB: 4 },
@@ -66,6 +72,8 @@ const defaults: DefaultAllocations = {
   // Archil's default, 1 vCPU and 2048 MiB. The root disk (about 1 TB, not configurable) bills
   // stored data as storage, not a provisioned size, so none is counted.
   archil: { cpu: 1, memoryGiB: 2, diskGiB: 0 },
+  // Maritime's default size, small: 2 vCPU / 4 GiB with a 12 GiB root disk (nproc, df, 2026-11-23).
+  maritime: { cpu: 2, memoryGiB: 4, diskGiB: 12 },
 };
 
 export function provisionedAllocation(provider: string, template: string | null) {

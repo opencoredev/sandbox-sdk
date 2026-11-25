@@ -39,7 +39,7 @@ export interface BoxdOptions {
   apiKey?: string;
   /** Defaults to BOXD_BASE_URL, then BOXD_API_URL, then https://boxd.sh:9443. */
   baseUrl?: string;
-  /** @deprecated Use baseUrl. Removed in 1.0.0. */
+  /** @deprecated Use baseUrl. Deprecated; will be removed in 2.0.0. */
   baseURL?: string;
   /** Container image. Defaults to the boxd service image. */
   image?: string;

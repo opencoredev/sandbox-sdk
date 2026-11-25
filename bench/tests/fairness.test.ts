@@ -580,12 +580,17 @@ it.each(["native-failure", "unsupported", "setup-failure"])(
       return async () => {};
     });
 
-    const provider = fake({
-      capabilities: new Set(mode === "unsupported" ? [] : ["snapshot"]),
-      snapshot: async () => {
-        throw new Error("native snapshot failed");
-      },
-    });
+    // An adapter without the capability has no snapshot method; createSandbox rejects one that does.
+    const provider = fake(
+      mode === "unsupported"
+        ? { capabilities: new Set([]) }
+        : {
+            capabilities: new Set(["snapshot"]),
+            snapshot: async () => {
+              throw new Error("native snapshot failed");
+            },
+          },
+    );
 
     const report = await runV2(
       [ready("fixture", provider)],

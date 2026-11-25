@@ -202,6 +202,37 @@ try:
     if n>=mx:sys.exit(0)
 except Exception:sys.exit(70)`;
 
+const gitObjectId = /^[0-9a-f]{40,64}$/;
+
+/** A Node system error, such as `ENOENT` from `fs` or `child_process`. */
+function hasErrno(error: unknown, ...codes: string[]): error is { code: string } {
+  return isObject(error) && "code" in error && isString(error.code) && codes.includes(error.code);
+}
+
+/**
+ * Runs a host filesystem call for upload or download. A missing path becomes `file_not_found`
+ * and a permission failure becomes `auth`, instead of a raw Node error the core reports as `provider`.
+ */
+async function onHost<T>(path: string, action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    if (hasErrno(error, "ENOENT", "ENOTDIR"))
+      throw new SandboxError(`Local path not found. ${path} does not exist on this machine.`, {
+        code: "file_not_found",
+        hint: "Check the local path. Relative local paths resolve against the current directory.",
+      });
+
+    if (hasErrno(error, "EACCES", "EPERM"))
+      throw new SandboxError(`Local path access denied. This process cannot use ${path}.`, {
+        code: "auth",
+        hint: "Check the local path's permissions for the user running this process.",
+      });
+
+    throw error;
+  }
+}
+
 // Text the guest compares as UTF-8 bytes must decode to itself: no lone surrogates, BOM or replacement character.
 const byteExact = (text: string) => !/\p{Cs}|[\uFEFF\uFFFD]/u.test(text);
 
@@ -280,7 +311,47 @@ export function makeFiles(
 ): Files & Disposable {
   const fs = provider.files;
   const watchers = new Set<() => void>();
-  const hostExec = promisify(execFile);
+  const execHost = promisify(execFile);
+
+  // Directory transfers shell out to the host's tar; a missing binary or local permission denial
+  // is a host problem, not a provider failure.
+  const hostExec = async (
+    file: string,
+    args: readonly string[],
+    options?: { timeout?: number },
+  ) => {
+    try {
+      return await execHost(file, args, {
+        ...options,
+        env: { ...process.env, LC_ALL: "C" },
+      });
+    } catch (error) {
+      if (hasErrno(error, "ENOENT"))
+        throw new SandboxError(
+          `Directory transfer failed. ${file} is not installed on this machine.`,
+          {
+            code: "unsupported",
+            hint: `Install ${file} on the host, or transfer single files.`,
+          },
+        );
+
+      const stderr = isObject(error) && "stderr" in error ? String(error.stderr) : "";
+
+      if (
+        hasErrno(error, "EACCES", "EPERM") ||
+        /permission denied|operation not permitted/i.test(stderr)
+      )
+        throw new SandboxError(
+          `Directory transfer failed. Local permission denied while running ${file}.`,
+          {
+            code: "auth",
+            hint: "Check local permissions on the source and target paths.",
+          },
+        );
+
+      throw error;
+    }
+  };
 
   async function remote(command: string) {
     const result = await provider.exec(id, {
@@ -393,8 +464,10 @@ export function makeFiles(
   async function read(path: string, options?: { as: "bytes" }): Promise<string | Uint8Array> {
     const bytes = await safe(() => fs.read(id, pathOf(path)));
 
-    // File reads are data, not output logs. Preserve exact contents (including binary).
-    return options?.as === "bytes" ? bytes : new TextDecoder().decode(bytes);
+    // File reads are data, not output logs. Keep a leading BOM so edit and write round-trip it.
+    return options?.as === "bytes"
+      ? bytes
+      : new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
   }
 
   async function write(
@@ -709,7 +782,9 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
       safe(async () => {
         const root = resolve(source);
 
-        if (fs.transfer !== "files" && (await local.lstat(root)).isDirectory()) {
+        const rootStat = await onHost(root, () => local.lstat(root));
+
+        if (fs.transfer !== "files" && rootStat.isDirectory()) {
           const temporary = await local.mkdtemp(resolve(tmpdir(), "sandbox-sdk-upload-"));
           const archive = `/tmp/.sandbox-sdk/upload-${crypto.randomUUID()}.tar`;
 
@@ -740,14 +815,14 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
         }
 
         async function visit(src: string, dest: string) {
-          const stat = await local.lstat(src);
+          const stat = await onHost(src, () => local.lstat(src));
 
           if (stat.isSymbolicLink()) invalid("Uploading symlinks is unsupported");
 
           if (stat.isDirectory()) {
             await fs.mkdir(id, pathOf(dest));
 
-            for (const entry of await local.readdir(src))
+            for (const entry of await onHost(src, () => local.readdir(src)))
               if (
                 !options?.ignore?.some(
                   (pattern) =>
@@ -755,7 +830,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
                 )
               )
                 await visit(resolve(src, entry), posix.join(dest, entry));
-          } else await write(dest, new Uint8Array(await local.readFile(src)));
+          } else await write(dest, new Uint8Array(await onHost(src, () => local.readFile(src))));
         }
 
         await visit(root, target);
@@ -773,7 +848,7 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
             );
             const localArchive = resolve(temporary, "files.tar");
             await local.writeFile(localArchive, await fs.read(id, archive));
-            await local.mkdir(resolve(target), { recursive: true });
+            await onHost(target, () => local.mkdir(resolve(target), { recursive: true }));
             await hostExec(
               "tar",
               [
@@ -801,13 +876,17 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
           if (stat.type === "symlink") invalid("Downloading symlinks is unsupported");
 
           if (stat.type === "directory") {
-            await local.mkdir(dest, { recursive: true });
+            await onHost(dest, () => local.mkdir(dest, { recursive: true }));
 
             for (const entry of await fs.list(id, src))
               await visit(entry.path, resolve(dest, posix.basename(entry.path)));
           } else {
-            await local.mkdir(resolve(dest, ".."), { recursive: true });
-            await local.writeFile(dest, await fs.read(id, src));
+            const data = await fs.read(id, src);
+
+            await onHost(dest, async () => {
+              await local.mkdir(resolve(dest, ".."), { recursive: true });
+              await local.writeFile(dest, data);
+            });
           }
         }
 
@@ -874,7 +953,8 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
 
         for (const entry of await list(options.path, { recursive: true, glob: options.glob }))
           if (entry.type === "file") {
-            const lines = (await read(entry.path)).split("\n");
+            // Strip a leading UTF-8 BOM from line 1 so matching behaves consistently on BOM files.
+            const lines = (await read(entry.path)).replace(/^\uFEFF/, "").split("\n");
 
             for (const [index, text] of lines.entries())
               if (text.includes(query)) {
@@ -995,7 +1075,9 @@ ${mark ? `mkdir -p ${quote(posix.dirname(mark))} && printf '%s' "$tree" > ${quot
           const before = (await baseline(options.since)).trim(),
             after = await tree();
 
-          if (!/^[0-9a-f]{40,64}$/.test(before)) invalid("Invalid git checkpoint");
+          // Both IDs come from guest stdout and go into a shell command, so both must be object IDs.
+          if (!gitObjectId.test(before) || !gitObjectId.test(after))
+            invalid("Invalid git checkpoint");
 
           const names = (await git(`diff --no-renames --name-status -z ${before} ${after}`)).split(
             "\0",

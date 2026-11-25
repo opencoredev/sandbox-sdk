@@ -23,8 +23,17 @@ export interface LinePosition {
   pending: { stdout: string; stderr: string };
 }
 
+/** Parses record JSON, so a corrupt record is `invalid_argument` with `message` instead of a raw SyntaxError. */
+function parseJson(text: string, message: string): JsonValue {
+  try {
+    return JSON.parse(text);
+  } catch {
+    invalid(message);
+  }
+}
+
 export function parseProcessRecord(text: string): ProcessRecord {
-  const raw: JsonValue = JSON.parse(text);
+  const raw = parseJson(text, "Invalid process record");
 
   if (!isJsonObject(raw)) invalid("Invalid process record");
   const { command, startedAt, port } = raw;
@@ -36,7 +45,7 @@ export function parseProcessRecord(text: string): ProcessRecord {
 
 /** Fields of the wrong type are dropped, so a record from an older SDK still restarts. */
 export function parseRestartRecord(text: string, name: string): RestartRecord {
-  const raw: JsonValue = JSON.parse(text);
+  const raw = parseJson(text, "Invalid process restart record");
 
   if (!isJsonObject(raw)) invalid("Invalid process restart record");
   const { command, cwd, env, readyTimeoutMs, readiness } = raw;
@@ -56,8 +65,13 @@ export function parseRestartRecord(text: string, name: string): RestartRecord {
   if (isJsonObject(readiness)) {
     const { log, flags, port, http } = readiness;
 
-    if (isString(log)) options.ready = { log: new RegExp(log, isString(flags) ? flags : "") };
-    else if (isNumber(port)) options.ready = { port };
+    if (isString(log)) {
+      try {
+        options.ready = { log: new RegExp(log, isString(flags) ? flags : "") };
+      } catch {
+        invalid("Invalid process restart record");
+      }
+    } else if (isNumber(port)) options.ready = { port };
     else if (isJsonObject(http) && isNumber(http.port))
       options.ready = {
         http: { port: http.port, path: isString(http.path) ? http.path : undefined },

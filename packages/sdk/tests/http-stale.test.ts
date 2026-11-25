@@ -141,3 +141,26 @@ test("a waiter whose signal fires stops waiting on a shared refresh; the others 
   release();
   expect(await kept).toEqual({ ok: 1 });
 });
+
+test("httpStatus still reads the status when the client has a cause hook", async () => {
+  server.on("GET /files", {
+    status: 409,
+    json: { error: { code: "busy_conflict", message: "nope" } },
+  });
+
+  const http = createHttpClient({
+    provider: "acme",
+    label: "Acme",
+    defaultPlane: "data",
+    backoffMs: 1,
+    timeoutMs: 2_000,
+    planes: { data: { baseUrl: server.url, auth: () => ({ "x-access-token": "token-123456" }) } },
+    mapError: (failed) => (failed.kind === "status" && failed.status === 409 ? "quota" : undefined),
+    cause: () => new Error("native evidence"),
+  });
+
+  const error = await http.json({ method: "GET", path: "/files" }).catch((cause: unknown) => cause);
+
+  expect(error).toMatchObject({ code: "quota", cause: new Error("native evidence") });
+  expect(httpStatus(error)).toEqual({ status: 409, code: "busy_conflict" });
+});

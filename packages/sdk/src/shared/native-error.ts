@@ -97,10 +97,45 @@ export function decodeNative(cause: unknown): NativeError {
     );
   }
 
-  if ("metadata" in cause && cause.metadata instanceof Headers)
-    error.metadata = new Map(cause.metadata);
+  // gRPC metadata comes as a fetch Headers (Connect), an iterable of [key, values] (nice-grpc), an
+  // object with getMap() (grpc-js), or a plain object. Binary values are dropped and repeated
+  // string values are joined with a comma, as gRPC does.
+  if ("metadata" in cause && isObject(cause.metadata)) {
+    const metadata = cause.metadata;
+
+    try {
+      const entries: unknown[] =
+        metadata instanceof Headers || isIterable(metadata)
+          ? [...metadata]
+          : Object.entries(hasGetMap(metadata) ? metadata.getMap() : metadata);
+
+      const result = new Map<string, string>();
+
+      for (const entry of entries) {
+        if (!Array.isArray(entry) || !isString(entry[0])) continue;
+        const values: unknown[] = Array.isArray(entry[1]) ? entry[1] : [entry[1]];
+        const text = values.filter(isString);
+
+        if (text.length > 0) result.set(entry[0], text.join(","));
+      }
+
+      error.metadata = result;
+    } catch {
+      // A native object whose accessors throw has no metadata worth reporting.
+    }
+  }
 
   if ("cause" in cause) error.cause = cause.cause;
 
   return error;
+}
+
+function isIterable(value: unknown): value is Iterable<unknown> {
+  return (
+    isObject(value) && Symbol.iterator in value && typeof value[Symbol.iterator] === "function"
+  );
+}
+
+function hasGetMap(value: unknown): value is { getMap(): object } {
+  return isObject(value) && "getMap" in value && typeof value.getMap === "function";
 }

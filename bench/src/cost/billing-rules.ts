@@ -114,6 +114,8 @@ const docs = {
   archil: "https://docs.archil.com/administration/billing.md",
   archilUsage:
     "GET /api/sandboxes/{id}/usage on Archil's control plane (docs.archil.com/administration/billing.md)",
+  maritime: "https://maritime.sh/docs/billing",
+  maritimeUsage: "https://api.maritime.sh/v1/usage?sandbox={id} and /v1/sandboxes/{id}/info",
   modal: "https://modal.com/pricing",
   modalResources: "https://modal.com/docs/guide/sandbox-resources",
   modalRegions: "https://modal.com/docs/guide/region-selection",
@@ -390,6 +392,45 @@ export const billingRules: readonly BillingRule[] = [
     notes: [
       "The usage API is a meter (running seconds at published rates), not an invoice; the account ledger is rated hourly and is not split per machine.",
       "Plan fee, monthly credits and egress within the plan's allowance excluded.",
+    ],
+  },
+  {
+    provider: "maritime",
+    product: null,
+    pricingKey: "maritime",
+    tariff: known({ kind: "per-unit", charges: "allocation" }, docs.maritime),
+    billingStarts: unknown(
+      "Billed per second while the virtual machine is awake; its first usage interval starts once it runs, a second or so after the create",
+    ),
+    billingStops: unknown(
+      "Running time stops when the sandbox ends or pauses; the interval ends a little before the end is confirmed",
+    ),
+    incrementSeconds: known(1, `${docs.maritime} (billed per second, no minimum)`),
+    minimumSeconds: known(0, `${docs.maritime} (no minimum)`),
+    perStartFeeUSD: unknown("No creation fee listed; absence is not confirmation"),
+    keepsCharging: known(
+      ["disk"],
+      `${docs.maritime} (a paused virtual machine is billed $0.08 per GB-month of disk, a 730-hour month, and no compute; an ended one nothing)`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known(
+      "not-charged",
+      // The billed time is running time, when disk is in the rate: adding disk at list price would count it
+      // twice. Paused disk is a real, separate charge outside the intervals: see `keepsCharging`.
+      `${docs.maritime} (disk is included in the running rate, so no storage fee accrues while awake; a paused sandbox's disk, $0.08/GB-month, is billed separately and is not in the usage intervals)`,
+    ),
+    settledChargeSource: known(
+      "Per-sandbox usage intervals with their cost, readable for 7 days after the sandbox ends",
+      docs.maritimeUsage,
+    ),
+    reportedKind: "metered",
+    attribution: "per-sandbox",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "The usage intervals are Maritime's meter of running time (compute, disk included while awake), not an invoice.",
+      "Paused-disk charges ($0.08/GB-month) are not in the usage intervals, so Maritime is left out of the held-open idle diagnostic until paused disk is accounted for separately.",
+      "Plan fee, its equal monthly usage credit and tax excluded.",
     ],
   },
   {

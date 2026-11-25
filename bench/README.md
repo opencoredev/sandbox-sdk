@@ -378,6 +378,14 @@ Archil's default sandbox is 1 vCPU / 2048 MiB on `node:24-bookworm`; the presets
 
 Plans cap concurrent sandboxes: Free 5, Developer 20, Team 250 (https://docs.archil.com/administration/billing.md). The burst default is 20; raise it with `--account-limits archil=<n>` only on a Team account. A create refused for the cap is recorded as an account limit, not a provider failure. Free-plan sandboxes get deny-all egress, so the network scenarios need a paid plan. Lifetimes take 60 seconds to 24 hours, and both the lifetime and the idle timeout (default 1800 s) pause a sandbox instead of deleting it.
 
+### Maritime
+
+Maritime refuses about one create in three with `503 out_of_capacity` (2026-11-23), sometimes several in a row; the adapter tries again with a new idempotency key for up to 3 minutes, so a cold create under pressure includes that wait. The account's plan caps machines awake at once (25 on Growth), and the runner's burst admission assumes that limit unless `--account-limits maritime=<n>` says otherwise.
+
+Maritime's billing source is per sandbox: `GET /v1/sandboxes/{id}/info` and every page of `GET /v1/usage?sandbox={id}`. A cost is final only when the sandbox has ended and has running intervals, every one with an end; the info's `costSoFarUsd`, which can be null once a sandbox ends, is not part of that, and a total that disagrees with the intervals is only noted. A sandbox with no interval is $0 only when the info says it ran 0 seconds at $0. The intervals are compute while awake (disk included); a paused sandbox's disk ($0.08/GB-month) is not in them, so Maritime stays out of the held-open idle diagnostic.
+
+Snapshots are named by the run (`bench-<run>-<8 hex>`) and journaled with their source and the save's `Idempotency-Key` before `POST /v1/sandboxes/{id}/save`. A save whose answer was lost is settled by sending it again with that key and reading the snapshot, so a first 404 never drops the journal entry; an unsettled save keeps the entry, and its source, for `bench reap`.
+
 ## Measure SDK overhead
 
 `scripts/sdk-overhead.ts` measures what Sandbox SDK adds over the adapter and the provider's official SDK. It is separate from the published benchmark.

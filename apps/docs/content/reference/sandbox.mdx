@@ -162,7 +162,7 @@ Starts a background process and resolves when it is ready. Guide: [Processes and
 | `logs({ after?, maxBytes? })`    | One page: `{ text, nextCursor, truncated }`. `maxBytes` defaults to 16 KB, at most 1 MB. |
 | `stop({ graceMs? })`             | SIGTERM, then SIGKILL. Idempotent.                                                       |
 | `restart()`                      | Stops and starts the same command                                                        |
-| `wait()`                         | Resolves `{ exitCode, signal }` on exit                                                  |
+| `wait({ timeoutMs?, signal? })`  | Resolves `{ exitCode, signal }` on exit. Throws `timeout` after 30 minutes by default.   |
 
 ### `process(name)`, `processes()`
 

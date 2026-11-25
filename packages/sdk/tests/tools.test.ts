@@ -10,6 +10,7 @@ import { sandboxTools as aiTools } from "../src/ai.js";
 import { sandboxTools as mastraTools } from "../src/mastra.js";
 import { sandboxTools as openaiTools } from "../src/openai.js";
 import type { JsonValue } from "../src/shared/json.js";
+import { redactToolText } from "../src/tool-security.js";
 
 const names = Object.keys(toolSchemas).filter((name): name is ToolName => name in toolSchemas);
 
@@ -618,4 +619,15 @@ describe("pagination security", () => {
     expect(page.text).toContain("cursor=0");
     expect((await invoke(tools, "process_logs", { name, cursor: "0" })).text).toContain("AAAA");
   });
+});
+
+it("a handle the SDK did not create fails closed with a SandboxError", async () => {
+  await using box = await createSandbox(memory());
+  const foreign = { ...box };
+
+  expect(() => redactToolText(foreign, "text")).toThrow(SandboxError);
+  expect(() => redactToolText(foreign, "text")).toThrow(
+    expect.objectContaining({ code: "invalid_argument" }),
+  );
+  expect(redactToolText(box, "text")).toBe("text");
 });

@@ -16,4 +16,4 @@ The offline Daytona tests send every request to a local HTTP mock backed by real
 
 API mappings were checked against Daytona SDK 0.225.0 and the official [client](https://www.daytona.io/docs/en/typescript-sdk/daytona/), [sandbox](https://www.daytona.io/docs/en/typescript-sdk/sandbox/), [process](https://www.daytona.io/docs/en/typescript-sdk/process/), [filesystem](https://www.daytona.io/docs/en/typescript-sdk/file-system/), and [snapshot](https://www.daytona.io/docs/en/typescript-sdk/snapshot/) references.
 
-`apiUrl` remains a deprecated alias for `baseUrl` until 1.0.0. If both are set, `baseUrl` wins.
+`apiUrl` remains a deprecated alias for `baseUrl` until 2.0.0. If both are set, `baseUrl` wins.

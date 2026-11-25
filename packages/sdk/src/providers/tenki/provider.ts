@@ -33,7 +33,7 @@ import {
 export interface TenkiOptions {
   /** Defaults to TENKI_AUTH_TOKEN, then TENKI_API_KEY; required on first use. */
   apiKey?: string;
-  /** @deprecated Use apiKey. Removed in 1.0.0. */
+  /** @deprecated Use apiKey. Will be removed in 2.0.0. */
   authToken?: string;
   /** Defaults to TENKI_API_ENDPOINT, then TENKI_API_URL, then https://api.tenki.cloud. */
   baseUrl?: string;

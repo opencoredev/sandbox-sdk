@@ -7,7 +7,7 @@ import type {
   TerminalOptions,
 } from "./provider.js";
 import type { CreateOptions, SandboxBase } from "./types.js";
-import { Redactor, SandboxError, invalid, type ErrorCode } from "./errors.js";
+import { Redactor, SandboxError, invalid, scrubCredentials, withheldErrors } from "./errors.js";
 import { attachHandle, detachHandle, forgetSandbox, withKeyLock } from "./keys.js";
 import { makeRun, chunkRedactor, defaults, pathOf, secretRecoveryCommand } from "./run.js";
 import { quote } from "./shared/shell.js";
@@ -15,7 +15,13 @@ import { isString } from "./shared/narrow.js";
 import { makeFiles, removeIfPresent } from "./files.js";
 import { makeGit } from "./git.js";
 import { registerToolRedactor } from "./tool-security.js";
-import { makeProcesses, type ProcessHandle } from "./processes.js";
+import {
+  defaultWaitTimeoutMs,
+  makeProcesses,
+  waitDeadlineErrors,
+  type ProcessHandle,
+} from "./processes.js";
+import { setLongTimeout } from "./retry.js";
 
 /** Whether a parsed secret-names record is a list of environment variable names. */
 function isNameList(value: unknown): value is string[] {
@@ -96,13 +102,40 @@ export async function makeHandle<N>(
       throw error;
     }));
 
+  const makeWithheld = (
+    message: string,
+    source?: SandboxError,
+    hideIdentity = false,
+  ): SandboxError => {
+    const wrapped = new SandboxError(message, {
+      code: source?.code ?? "provider",
+      retryable: source?.retryable ?? false,
+      retryAfterMs: source?.retryAfterMs,
+      provider: hideIdentity ? "unknown" : scrubCredentials(redactor.text(provider.name)),
+      sandboxId: hideIdentity || !recovered ? undefined : scrubCredentials(redactor.text(info.id)),
+    });
+
+    withheldErrors.add(wrapped);
+
+    return wrapped;
+  };
+
   // The names record and the environment, or undefined when there is no record. Providers
   // that offer the hook answer directly; otherwise one exec prints both.
   async function readSecretEnvironment(): Promise<
     { record: string; environment: ReadonlyMap<string, string> } | undefined
   > {
     if (provider.readSecretEnvironment) {
-      const found = await provider.readSecretEnvironment(info.id);
+      let found: { record: string; environment: Record<string, string> } | undefined;
+
+      try {
+        found = await provider.readSecretEnvironment(info.id);
+      } catch (error) {
+        throw makeWithheld(
+          "Secret recovery failed. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or connect with recoverSecrets: false.",
+          error instanceof SandboxError ? error : undefined,
+        );
+      }
 
       if (!found) return undefined;
 
@@ -110,21 +143,28 @@ export async function makeHandle<N>(
     }
 
     let wire = "";
+    let result: { exitCode: number | null; timedOut: boolean };
 
-    const result = await provider.exec(info.id, {
-      command: secretRecoveryCommand,
-      cwd: "/",
-      env: {},
-      timeoutMs: 10_000,
-      onChunk(chunk) {
-        if (chunk.stream === "stdout") wire += chunk.text;
-      },
-    });
+    try {
+      result = await provider.exec(info.id, {
+        command: secretRecoveryCommand,
+        cwd: "/",
+        env: {},
+        timeoutMs: 10_000,
+        onChunk(chunk) {
+          if (chunk.stream === "stdout") wire += chunk.text;
+        },
+      });
+    } catch (error) {
+      throw makeWithheld(
+        "Secret recovery failed. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or connect with recoverSecrets: false.",
+        error instanceof SandboxError ? error : undefined,
+      );
+    }
 
     if (result.timedOut || result.exitCode !== 0)
-      throw new SandboxError(
-        "Secret recovery failed. Could not read the sandbox environment. Retry, or connect with recoverSecrets: false.",
-        { code: "provider", provider: provider.name, sandboxId: info.id },
+      throw makeWithheld(
+        "Secret recovery failed. Could not read the sandbox environment. Connect with recoverSecrets: false to bypass recovery.",
       );
 
     if (!wire) return undefined;
@@ -291,10 +331,96 @@ export async function makeHandle<N>(
 
         return handle.restart();
       },
-      wait: async () => {
-        await direct(guard);
+      wait: async (options = {}) => {
+        const timeoutMs = options.timeoutMs ?? defaultWaitTimeoutMs;
 
-        return handle.wait();
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+          invalid("wait timeoutMs must be a positive, finite number");
+
+        const signal = options.signal;
+        const startedAt = Date.now();
+
+        const makeAborted = () => {
+          const message = recovered
+            ? `Process wait aborted. ${handle.name} may still be running. Call wait() again with a fresh signal, or stop() it.`
+            : "Process wait aborted while recovering sandbox secrets. Stopped waiting; call wait() again with a fresh signal, or stop() the process.";
+
+          return redactor.error(
+            new SandboxError(message, { code: "aborted" }),
+            recovered ? provider.name : "unknown",
+            recovered ? info.id : undefined,
+          );
+        };
+
+        const makeTimeout = () => {
+          const message = recovered
+            ? `Process wait timed out. ${handle.name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`
+            : `Process wait timed out after ${timeoutMs} ms while recovering sandbox secrets. Stopped waiting; call wait() again with a larger timeoutMs, or stop() the process.`;
+
+          return redactor.error(
+            new SandboxError(message, { code: "timeout", retryable: true }),
+            recovered ? provider.name : "unknown",
+            recovered ? info.id : undefined,
+          );
+        };
+
+        if (signal?.aborted) throw makeAborted();
+
+        await new Promise<void>((resolve, reject) => {
+          let settled = false;
+          let cancelTimer: (() => void) | undefined;
+
+          const finish = (cb: () => void) => {
+            if (settled) return;
+            settled = true;
+
+            cancelTimer?.();
+            signal?.removeEventListener("abort", onAbort);
+            cb();
+          };
+
+          const onAbort = () => finish(() => reject(makeAborted()));
+
+          signal?.addEventListener("abort", onAbort, { once: true });
+          cancelTimer = setLongTimeout(() => finish(() => reject(makeTimeout())), timeoutMs);
+
+          void (async () => {
+            try {
+              await direct(guard);
+              finish(resolve);
+            } catch (error) {
+              const isClosed =
+                (closed || destroyed) &&
+                error instanceof SandboxError &&
+                error.code === "not_found";
+
+              finish(() =>
+                reject(
+                  recovered || isClosed
+                    ? error
+                    : makeWithheld(
+                        "Process wait failed while recovering sandbox secrets. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or stop() the process.",
+                        error instanceof SandboxError ? error : undefined,
+                        true,
+                      ),
+                ),
+              );
+            }
+          })();
+        });
+
+        if (signal?.aborted) throw makeAborted();
+
+        const remainingMs = timeoutMs - (Date.now() - startedAt);
+
+        if (remainingMs <= 0) throw makeTimeout();
+
+        try {
+          return await handle.wait({ ...options, timeoutMs: remainingMs });
+        } catch (error) {
+          if (error instanceof SandboxError && waitDeadlineErrors.has(error)) throw makeTimeout();
+          throw error;
+        }
       },
     };
 
@@ -308,10 +434,10 @@ export async function makeHandle<N>(
   // usage(); a failure recovers first so its error is redacted, and is withheld when that is impossible.
   const ext: Record<string, ExtensionMethods> = {};
 
-  const withheld = (name: string, code: ErrorCode) =>
-    new SandboxError(
-      `Extension ${name} failed. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or connect with recoverSecrets enabled.`,
-      { code, provider: provider.name, sandboxId: info.id },
+  const withheld = (name: string, source?: SandboxError) =>
+    makeWithheld(
+      `Extension ${name} failed. Its error was withheld because the sandbox's secrets could not be read to redact it. Retry, or connect with recoverSecrets: false.`,
+      source,
     );
 
   const factories: Readonly<
@@ -339,7 +465,7 @@ export async function makeHandle<N>(
           // A getter cannot wait for recovery.
           throw recovered
             ? redactor.error(error, provider.name, info.id)
-            : withheld(name, error instanceof SandboxError ? error.code : "provider");
+            : withheld(name, error instanceof SandboxError ? error : undefined);
         }
 
         // Each method keeps its object as `this`, so methods may call one another.
@@ -356,7 +482,7 @@ export async function makeHandle<N>(
 
                 throw recovered
                   ? redactor.error(error, provider.name, info.id)
-                  : withheld(name, error instanceof SandboxError ? error.code : "provider");
+                  : withheld(name, error instanceof SandboxError ? error : undefined);
               }
             },
           ]),

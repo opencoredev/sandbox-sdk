@@ -12,7 +12,7 @@
   <a href="./packages/sdk/CHANGELOG.md">Changelog</a>
 </p>
 
-Sandbox SDK gives your server-side TypeScript one API for creating sandboxes, running commands, editing files and serving previews. The same code runs on 11 cloud providers, including E2B, Daytona, Vercel Sandbox and Upstash Box, or in Docker on your own machine. Switching providers means changing one import.
+Sandbox SDK gives your server-side TypeScript one API for creating sandboxes, running commands, editing files and serving previews. The same code runs on 15 cloud providers, including E2B, Daytona, Vercel Sandbox and Upstash Box, in Docker on your own machine, or in agentOS inside your Node.js process. Switching providers means changing one import.
 
 > [!NOTE]
 > Coming from 0.2? 1.0 changes the API. [Upgrade from 0.2](https://sandbox-sdk.app/docs/upgrade-from-0-2) walks through each change.
@@ -23,7 +23,7 @@ Sandbox SDK gives your server-side TypeScript one API for creating sandboxes, ru
 npm install @opencoredev/sandbox-sdk
 ```
 
-It needs Node.js 22+ or Bun 1.3+. Each provider's own SDK is an optional peer, so you install only the ones you use, such as `npm install e2b`.
+It needs Node.js 22+ or Bun 1.3+ on a server; edge runtimes such as Cloudflare Workers are not supported. E2B, Daytona, Freestyle, Superserve, Instabox, Boat and Sandboxer call their HTTP API directly and need nothing else. The other providers load their own SDK as an optional peer, so you install only the ones you use, such as `npm install @vercel/sandbox`.
 
 ## Quickstart
 
@@ -105,20 +105,22 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 
 | Provider                                                               | Import                                | Install                       |
 | ---------------------------------------------------------------------- | ------------------------------------- | ----------------------------- |
-| [E2B](https://sandbox-sdk.app/docs/providers/e2b)                      | `@opencoredev/sandbox-sdk/e2b`        | `e2b`                         |
-| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)              | `@opencoredev/sandbox-sdk/daytona`    | `@daytonaio/sdk`              |
+| [E2B](https://sandbox-sdk.app/docs/providers/e2b)                      | `@opencoredev/sandbox-sdk/e2b`        | nothing                       |
+| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)              | `@opencoredev/sandbox-sdk/daytona`    | nothing                       |
 | [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel)        | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`             |
 | [Modal](https://sandbox-sdk.app/docs/providers/modal)                  | `@opencoredev/sandbox-sdk/modal`      | `modal`                       |
 | [Baseten](https://sandbox-sdk.app/docs/providers/baseten)              | `@opencoredev/sandbox-sdk/baseten`    | `@basetenlabs/sandbox`        |
 | [Instabox](https://sandbox-sdk.app/docs/providers/instabox)            | `@opencoredev/sandbox-sdk/instabox`   | nothing                       |
+| [Maritime](https://sandbox-sdk.app/docs/providers/maritime)            | `@opencoredev/sandbox-sdk/maritime`   | nothing                       |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)          | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`                |
 | [Railway](https://sandbox-sdk.app/docs/providers/railway)              | `@opencoredev/sandbox-sdk/railway`    | `railway`                     |
 | [Luxor](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`         |
-| boxd                                                                   | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`                |
-| Freestyle                                                              | `@opencoredev/sandbox-sdk/freestyle`  | `freestyle`                   |
-| Superserve                                                             | `@opencoredev/sandbox-sdk/superserve` | `@superserve/sdk`             |
-| Boat                                                                   | `@opencoredev/sandbox-sdk/boat`       | `@boatdev/sdk`                |
-| Sandboxer                                                              | `@opencoredev/sandbox-sdk/sandboxer`  | `@boatdev/sdk`                |
+| [boxd](https://sandbox-sdk.app/docs/providers/boxd)                    | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`                |
+| [Freestyle](https://sandbox-sdk.app/docs/providers/freestyle)          | `@opencoredev/sandbox-sdk/freestyle`  | nothing                       |
+| [Superserve](https://sandbox-sdk.app/docs/providers/superserve)        | `@opencoredev/sandbox-sdk/superserve` | nothing                       |
+| [Boat](https://sandbox-sdk.app/docs/providers/boat)                    | `@opencoredev/sandbox-sdk/boat`       | nothing                       |
+| [Sandboxer](https://sandbox-sdk.app/docs/providers/sandboxer)          | `@opencoredev/sandbox-sdk/sandboxer`  | nothing                       |
+| Beam                                                                   | `@opencoredev/sandbox-sdk/beam`       | `@beamcloud/beam-js`          |
 | [Docker on your machine](https://sandbox-sdk.app/docs/providers/local) | `@opencoredev/sandbox-sdk/local`      | nothing; needs Docker running |
 | [agentOS](https://sandbox-sdk.app/docs/providers/agentos)              | `@opencoredev/sandbox-sdk/agentos`    | `@rivet-dev/agentos-core`     |
 | Memory, for tests                                                      | `@opencoredev/sandbox-sdk/memory`     | nothing                       |
@@ -132,6 +134,7 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 - [E2B SDK and API in TypeScript, with examples](https://sandbox-sdk.app/blog/e2b-sdk-api-typescript): the `e2b` package, E2B's REST API, and the same task on Daytona.
 - [Daytona SDK and API in TypeScript, with examples](https://sandbox-sdk.app/blog/daytona-sdk-api-typescript): `@daytona/sdk`, Daytona's REST and toolbox APIs, and moving code from E2B.
 - [OpenAI Agents SDK sandbox in TypeScript](https://sandbox-sdk.app/blog/openai-agents-sdk-sandbox-typescript): OpenAI's `SandboxAgent` and its sandbox clients next to `sandboxTools` on a regular `Agent`, and when to use which.
+- [Node.js sandbox: vm, isolated-vm, Docker or a microVM](https://sandbox-sdk.app/blog/nodejs-sandbox): which ways to run untrusted code from Node.js hold up, with tested code for each.
 
 More on the [blog](https://sandbox-sdk.app/blog).
 
@@ -144,9 +147,9 @@ More on the [blog](https://sandbox-sdk.app/blog).
 | [`bench`](./bench)               | The provider benchmark harness                                                           |
 | [`apps/docs`](./apps/docs)       | The documentation site                                                                   |
 | [`apps/web`](./apps/web)         | The landing page, and the logo and social images in [`apps/web/brand`](./apps/web/brand) |
-| [`docs`](./docs)                 | The 1.0 design spec and provider reference notes                                         |
+| [`docs`](./docs)                 | The design spec and adapter notes for contributors; user docs live in `apps/docs`        |
 
-[EARLY_ACCESS.md](./EARLY_ACCESS.md) has per-provider setup and known limits. Release steps are in [RELEASING.md](./RELEASING.md). Report bugs in [issues](https://github.com/opencoredev/sandbox-sdk/issues).
+[EARLY_ACCESS.md](./EARLY_ACCESS.md) has per-provider setup notes and known limits. Release steps are in [RELEASING.md](./RELEASING.md). Report bugs in [issues](https://github.com/opencoredev/sandbox-sdk/issues).
 
 ## License
 

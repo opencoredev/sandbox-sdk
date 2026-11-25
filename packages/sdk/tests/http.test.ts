@@ -359,6 +359,40 @@ describe("credentials stay on their origin", () => {
     expect(server.calls("PUT /v1/y")[0]?.headers.authorization).toBe(`Bearer ${key}`);
   });
 
+  test.each([
+    ["POST", 307],
+    ["POST", 308],
+    ["PATCH", 301],
+    ["PATCH", 302],
+  ] as const)(
+    "on a default plane, an unkeyed %s answered %i is outcome_unknown and never resent",
+    async (method, status) => {
+      server
+        .on(`${method} /v1/x`, { status, headers: { location: "/v1/y" } })
+        .on(`${method} /v1/y`, { status: 200 });
+
+      const error = await rejection(client().request({ method, path: "/x", body: "payload" }));
+
+      expect(error).toMatchObject({ code: "outcome_unknown" });
+      expect(server.calls(`${method} /v1/x`)).toHaveLength(1);
+      expect(server.calls(`${method} /v1/y`)).toEqual([]);
+    },
+  );
+
+  test("on a default plane, a keyed POST answered 307 and an unkeyed POST answered 302 still follow", async () => {
+    server
+      .on("POST /v1/keyed", { status: 307, headers: { location: "/v1/keyed-2" } })
+      .on("POST /v1/keyed-2", { status: 200 })
+      .on("POST /v1/plain", { status: 302, headers: { location: "/v1/plain-2" } })
+      .on("GET /v1/plain-2", { status: 200 });
+
+    await client().request({ method: "POST", path: "/keyed", body: "k", idempotencyKey: "key-1" });
+    await client().request({ method: "POST", path: "/plain", body: "p" });
+
+    expect(server.calls("POST /v1/keyed-2")[0]?.body.toString()).toBe("k");
+    expect(server.calls("GET /v1/plain-2")).toHaveLength(1);
+  });
+
   test("a 401 refreshes credentials once, shared by concurrent requests", async () => {
     let token = "old";
     let refreshes = 0;

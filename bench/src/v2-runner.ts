@@ -109,6 +109,10 @@ import {
   snapshotCleaner,
   undeletableSnapshots,
   createNamedDaytonaSnapshot,
+  createNamedMaritimeSnapshot,
+  maritimeSnapshotName,
+  settleJournaledSnapshot,
+  settleMaritimeSave,
   snapshotsFromSource,
   deleteProvenSnapshot,
 } from "./snapshots.js";
@@ -237,8 +241,30 @@ function burstOutcome(burst: {
   return { kind: "failure", note, stage: `burst-${k}/all-ready`, elapsedMs: burst.durationMs };
 }
 
+/** The snapshot IDs the ownership journal holds for one source sandbox of one provider. */
+export function journaledSnapshots(
+  entries: Iterable<{ provider: string; id: string; kind: string; parent: string | null }>,
+  provider: string,
+  sourceId: string,
+): ReadonlySet<string> {
+  return new Set(
+    Array.from(entries)
+      .filter((e) => e.provider === provider && e.kind === "snapshot" && e.parent === sourceId)
+      .map((e) => e.id),
+  );
+}
+
 const errorNote = (cause: unknown) =>
   sanitize(cause instanceof Error ? cause.message : "Unknown failure");
+
+/**
+ * Credential shapes no environment variable names: Maritime's account and server keys (`mk_`, `mlk_`),
+ * sandbox secrets (`mst_`) and URL tokens (`mut_`), and any `token=` query value, such as a preview URL's.
+ */
+const leakPatterns: [RegExp, string][] = [
+  [/(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
+  [/([?&;]token=)[^&#\s"'<>]+/gi, "$1[REDACTED]"],
+];
 
 export function sanitize(text: string) {
   let result = text;
@@ -246,6 +272,8 @@ export function sanitize(text: string) {
   for (const [name, value] of Object.entries(process.env))
     if (/KEY|TOKEN|SECRET|PASSWORD/.test(name) && value && value.length > 5)
       result = result.replaceAll(value, "[REDACTED]");
+
+  for (const [pattern, replacement] of leakPatterns) result = result.replace(pattern, replacement);
 
   return result;
 }
@@ -613,16 +641,17 @@ export async function runV2(
   const runStart = performance.now();
   const restores = new RestoreCleanup();
 
-  const owned = new Map<
-    string,
-    {
-      provider: string;
-      id: string;
-      kind: "sandbox" | "snapshot" | "snapshot-source";
-      parent: string | null;
-      snapshotProof?: SnapshotProvenance;
-    }
-  >();
+  interface OwnedEntry {
+    provider: string;
+    id: string;
+    kind: "sandbox" | "snapshot" | "snapshot-source";
+    parent: string | null;
+    snapshotProof?: SnapshotProvenance;
+    /** The save's idempotency key, journaled before a Maritime save so an unanswered one can be settled. */
+    idempotencyKey?: string;
+  }
+
+  const owned = new Map<string, OwnedEntry>();
 
   // Per-attempt Apps (--app-per-attempt): journaled before any sandbox is allocated in them and
   // never removed, so recovery can list their sandboxes and billing can attribute their charges.
@@ -636,21 +665,45 @@ export async function runV2(
   // fingerprints a reap needs for label recovery: reap refuses a connection the journal lacks.
   if (loaded.some((p) => p.kind === "ready")) await persist();
 
-  function persist() {
-    const data = JSON.stringify(
-      {
-        runId: config.run,
-        connectionFingerprints,
-        resources: [...owned.values()],
-        apps: [...apps.values()],
-      },
+  function serializeJournal(override?: { key: string; value: OwnedEntry }) {
+    const resources = [...owned.entries()].map(([k, v]) =>
+      override && k === override.key ? override.value : v,
+    );
+
+    if (override && !owned.has(override.key)) resources.push(override.value);
+
+    return JSON.stringify(
+      { runId: config.run, connectionFingerprints, resources, apps: [...apps.values()] },
       null,
       2,
     );
+  }
 
-    journal = journal.then(() => writeOwnership(join(runDir, "ownership.json"), data));
+  function persist() {
+    const next = journal.then(() =>
+      writeOwnership(join(runDir, "ownership.json"), serializeJournal()),
+    );
 
-    return journal;
+    journal = next.catch(() => {});
+
+    return next;
+  }
+
+  /**
+   * Persist a confirmed snapshot entry (without `idempotencyKey`) to disk BEFORE mutating `owned`.
+   * If a concurrent timeout or rename failure interrupts the write, `owned` keeps the pending
+   * `idempotencyKey` entry intact so neither cleanup nor recovery can skip persisting or send DELETE
+   * while `ownership.json` on disk still carries the save key.
+   */
+  function persistConfirmedSnapshot(key: string, value: OwnedEntry) {
+    const next = journal.then(async () => {
+      await writeOwnership(join(runDir, "ownership.json"), serializeJournal({ key, value }));
+      owned.set(key, value);
+    });
+
+    journal = next.catch(() => {});
+
+    return next;
   }
 
   function review(
@@ -1863,13 +1916,23 @@ export async function runV2(
           });
 
           if (!targets.slice(1).some(selected)) continue;
-          const preview = await measure("preview-provisioning", () => active.preview(3000));
+          // The preview's URL and headers can carry its credentials (Maritime's `?token=`, Styne's and
+          // Boat's auth headers), so they stay in this variable: the measured result, which the runner
+          // writes to samples.ndjson and the merged output, is nothing.
+          let access: { url: string; headers?: Record<string, string> } | undefined;
+
+          const preview = await measure("preview-provisioning", async () => {
+            access = await active.preview(3000);
+
+            return null;
+          });
+
           await measure("dev-server", async () => {
-            if (preview.kind !== "success")
+            if (preview.kind !== "success" || !access)
               throw new Error("Preview provisioning did not return a URL");
 
             const h = await active.start("npm run dev", {
-              env: { BENCH_PREVIEW_HOST: new URL(preview.result.url).hostname },
+              env: { BENCH_PREVIEW_HOST: new URL(access.url).hostname },
               name: "bench-vite",
               cwd: "/workspace/bench-app",
               ready: { log: /Local:/ },
@@ -1886,8 +1949,8 @@ export async function runV2(
               const result = await measure(
                 "preview-first-byte",
                 async (signal) => {
-                  if (preview.kind !== "success") throw new Error("Preview unavailable");
-                  await firstByteAttempt(preview.result, signal, clock, (work) => {
+                  if (preview.kind !== "success" || !access) throw new Error("Preview unavailable");
+                  await firstByteAttempt(access, signal, clock, (work) => {
                     void pending.track(work);
                   });
 
@@ -1934,6 +1997,9 @@ export async function runV2(
 
           let snapshotId: string | undefined;
           let snapshotReady = false;
+          // A Maritime save's idempotency key, journaled with its name before the request.
+          let saveKey: string | undefined;
+          let pendingKeylessWrite: Promise<void> | undefined;
           let clean: ((id: string) => Promise<void>) | undefined;
           let snapshotProof: SnapshotProvenance | undefined;
 
@@ -1982,7 +2048,7 @@ export async function runV2(
                 );
               };
 
-              if (["daytona", "superserve"].includes(p.name)) {
+              if (["daytona", "superserve", "maritime"].includes(p.name)) {
                 owned.set(`${p.name}/snapshot-source/${active.id}`, {
                   provider: p.name,
                   id: active.id,
@@ -1991,6 +2057,7 @@ export async function runV2(
                   snapshotProof,
                 });
 
+                // Named and journaled before the request, so a lost answer still names it for cleanup.
                 if (p.name === "daytona") {
                   snapshotId = `bench-${config.run.slice(0, 25)}-${crypto.randomUUID().slice(0, 8)}`;
                   owned.set(`${p.name}/snapshot/${snapshotId}`, {
@@ -1999,6 +2066,21 @@ export async function runV2(
                     kind: "snapshot",
                     parent: active.id,
                     snapshotProof,
+                  });
+                }
+
+                // Maritime: the name, the source and the save's idempotency key, so a save whose answer is
+                // lost is settled by replaying it, never forgotten on a first 404.
+                if (p.name === "maritime") {
+                  snapshotId = maritimeSnapshotName(config.run);
+                  saveKey = crypto.randomUUID();
+                  owned.set(`${p.name}/snapshot/${snapshotId}`, {
+                    provider: p.name,
+                    id: snapshotId,
+                    kind: "snapshot",
+                    parent: active.id,
+                    snapshotProof,
+                    idempotencyKey: saveKey,
                   });
                 }
 
@@ -2036,23 +2118,43 @@ export async function runV2(
               let snap: { id: string };
 
               try {
-                snap = snapshotId
-                  ? await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId)
-                  : await p.provider.snapshot(active.id);
+                snap = !snapshotId
+                  ? await p.provider.snapshot(active.id)
+                  : p.name === "maritime" && saveKey
+                    ? await createNamedMaritimeSnapshot(p.provider, active.id, snapshotId, saveKey)
+                    : await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId);
               } finally {
                 snapshotClock.finish();
               }
 
               snapshotId = snap.id;
-              snapshotReady = true;
-              owned.set(`${p.name}/snapshot/${snap.id}`, {
+
+              const snapKey = `${p.name}/snapshot/${snap.id}`;
+
+              const confirmed: OwnedEntry = {
                 provider: p.name,
                 id: snap.id,
                 kind: "snapshot",
                 parent: active.id,
                 snapshotProof,
-              });
-              await persist();
+              };
+
+              if (owned.get(snapKey)?.idempotencyKey !== undefined) {
+                // A journaled save key (Maritime): disk drops the key before memory does, so a failed
+                // write keeps the key for settling and never lets cleanup DELETE behind it.
+                const write = persistConfirmedSnapshot(snapKey, confirmed);
+
+                pendingKeylessWrite = write;
+                await write;
+              } else {
+                // No save key, and the ID learned only now (E2B and most others): in memory first, so
+                // cleanup and the final sweep find the snapshot even when the journal write fails.
+                owned.set(snapKey, confirmed);
+                await persist();
+              }
+
+              snapshotReady = true;
+              saveKey = undefined;
 
               if (signal.aborted) {
                 await clean?.(snap.id);
@@ -2250,6 +2352,45 @@ export async function runV2(
                 if (pendingRestore) await removeOwn(pendingRestore);
 
                 if (restoredId && owned.has(`${p.name}/${restoredId}`)) await removeOwn(restoredId);
+
+                if (pendingKeylessWrite) {
+                  await pendingKeylessWrite;
+                  snapshotReady = true;
+                  saveKey = undefined;
+                }
+
+                // A Maritime save that never confirmed may still land: settle it first. Only a refused
+                // save, or a source gone with no snapshot, drops the journal entry without a delete; an
+                // unsettled one throws and stays journaled for recovery.
+                if (p.name === "maritime" && !snapshotReady && saveKey) {
+                  const settled = await settleMaritimeSave({
+                    provider: p.provider,
+                    sandboxId: active.id,
+                    name: id,
+                    idempotencyKey: saveKey,
+                    timeoutMs: timeout,
+                  });
+
+                  if (settled === "absent") {
+                    owned.delete(`${p.name}/snapshot/${id}`);
+                    await persist();
+
+                    return;
+                  }
+
+                  // Confirmed on the server: persist the keyless entry BEFORE deleting so a
+                  // dropped delete response cannot replay POST /save later.
+                  const current = owned.get(`${p.name}/snapshot/${id}`);
+
+                  if (current?.idempotencyKey !== undefined) {
+                    const { idempotencyKey: _, ...withoutKey } = current;
+                    await persistConfirmedSnapshot(`${p.name}/snapshot/${id}`, withoutKey);
+                  }
+
+                  snapshotReady = true;
+                  saveKey = undefined;
+                }
+
                 await clean?.(id);
                 report.cleanupReview = report.cleanupReview?.filter(
                   (r) => !(r.provider === p.name && r.id === id && r.kind === "snapshot"),
@@ -2552,10 +2693,17 @@ export async function runV2(
               .parse(source.snapshotProof);
 
             const sourceCleaner = await snapshotCleaner(p.name, p.provider, source.id);
+            const journaled = journaledSnapshots(owned.values(), p.name, source.id);
             await deadline(timeout, async (signal) => {
               for (;;) {
                 if (signal.aborted) throw new Error("Snapshot source recovery deadline expired");
-                const snapshots = await snapshotsFromSource(p.name, p.provider, source.id);
+
+                const snapshots = await snapshotsFromSource(
+                  p.name,
+                  p.provider,
+                  source.id,
+                  journaled,
+                );
 
                 if (!snapshots.length) break;
 
@@ -3197,16 +3345,31 @@ export async function runV2(
       try {
         if (restores.blocksSnapshot(p.name, item.id) || restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
-        await deleteProvenSnapshot(
-          p.name,
-          p.provider,
-          item.id,
-          item.parent,
-          item.snapshotProof,
-          config.run,
-          config["timeout-ms"],
-          await snapshotCleaner(p.name, p.provider, item.parent ?? ""),
-        );
+
+        if (
+          (await settleJournaledSnapshot(p.name, p.provider, item, config["timeout-ms"])) ===
+          "exists"
+        ) {
+          let confirmed = item;
+
+          if (item.idempotencyKey !== undefined) {
+            const { idempotencyKey: _, ...withoutKey } = item;
+            confirmed = withoutKey;
+            await persistConfirmedSnapshot(`${p.name}/snapshot/${item.id}`, confirmed);
+          }
+
+          await deleteProvenSnapshot(
+            p.name,
+            p.provider,
+            confirmed.id,
+            confirmed.parent,
+            confirmed.snapshotProof,
+            config.run,
+            config["timeout-ms"],
+            await snapshotCleaner(p.name, p.provider, confirmed.parent ?? ""),
+          );
+        }
+
         owned.delete(`${p.name}/snapshot/${item.id}`);
         report.cleanupReview = report.cleanupReview?.filter(
           (r) => !(r.provider === p.name && r.id === item.id && r.kind === "snapshot"),
@@ -3231,16 +3394,21 @@ export async function runV2(
         const sourceCleaner = await snapshotCleaner(p.name, p.provider, item.id);
 
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, p.provider, item.id),
+          snapshotsFromSource(
+            p.name,
+            p.provider,
+            item.id,
+            journaledSnapshots(owned.values(), p.name, item.id),
+          ),
         )) {
-          owned.set(`${p.name}/snapshot/${snapshot.id}`, {
+          await persistConfirmedSnapshot(`${p.name}/snapshot/${snapshot.id}`, {
             provider: p.name,
             id: snapshot.id,
             kind: "snapshot",
             parent: item.id,
             snapshotProof: proof,
           });
-          await persist();
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,

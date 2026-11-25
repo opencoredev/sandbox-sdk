@@ -13,7 +13,11 @@
  * - Deadlines: `timeoutMs` (or a shared {@link Deadline}) covers credentials, every attempt, backoff and the
  *   body. Streams have a startup timeout (until headers) and an idle timeout (between chunks) instead.
  * - Redaction: credential header values (the adapter's and the caller's, with and without a `Bearer` scheme),
- *   `secrets()` and credential-shaped text never reach a SandboxError.
+ *   `secrets()`, the provider's `credentialPatterns` and credential-shaped text never reach a SandboxError.
+ *   A provider error code or request ID is shown only when it is a plain token that holds none of those.
+ * - Redirects: a POST or PATCH that may not be sent twice (no idempotency key, not `readOnly`) never follows
+ *   one that would send it again (307, 308, or 301/302 for a PATCH); it is `outcome_unknown`, since the
+ *   server saw it. A plane with `redirectWrites: false` follows no redirect at all for such a write.
  *   Response text is kept only for native calls (`detail: "message"`), scrubbed; adapter calls keep the
  *   status and the provider's error code.
  */
@@ -60,6 +64,11 @@ export interface HttpPlane {
    */
   refresh?: (context: PlaneContext) => Promise<void>;
   /**
+   * Which 401 answers mean stale credentials, from the error body. Default: every 401. A 401 this returns
+   * false for (a bodyless one, say) refreshes nothing, is never sent again and fails `auth`.
+   */
+  unauthorized?: (body: ErrorBody) => boolean;
+  /**
    * Which failed responses besides a 401 mean stale credentials or a stale route, such as a 404 whose error
    * code says the route moved. Either verdict refreshes once. `"refused"` resends any request, like a 401;
    * `"unsure"` resends only a request that may be retried, and an unconfirmed write is `outcome_unknown`.
@@ -71,6 +80,11 @@ export interface HttpPlane {
   ) => StaleVerdict | undefined;
   /** Headers for every request to this plane that are not credentials (`Accept`, API version pins). */
   headers?: Record<string, string>;
+  /**
+   * `false`: a POST or PATCH that may not be sent twice follows no redirect, not even a 303 to a GET, and
+   * is `outcome_unknown`. For APIs that never redirect a write. Default: only a resend is refused.
+   */
+  redirectWrites?: false;
 }
 
 /**
@@ -126,6 +140,8 @@ export interface HttpClientOptions<Plane extends string> {
   backoffMs?: number;
   /** Values to redact besides the credential headers, read on each error (API keys, tokens). */
   secrets?: () => Iterable<string | undefined>;
+  /** The provider's credential shapes, redacted from every error whether or not the client saw them (`mst_...`). Use the `g` flag. */
+  credentialPatterns?: readonly RegExp[];
   /** Header that carries `idempotencyKey`. Leave it out when the key travels in the body. */
   idempotencyHeader?: string;
   /** Next step for `auth` errors: `"Set DAYTONA_API_KEY to a valid Daytona API key."` */
@@ -539,8 +555,20 @@ export function createHttpClient<Plane extends string>(
     if (bare) remember(bare);
   };
 
-  const redact = (text: string) =>
-    scrub(redacting([...sent, ...(options.secrets?.() ?? [])])(text));
+  const redact = (text: string) => {
+    let redacted = redacting([...sent, ...(options.secrets?.() ?? [])])(text);
+
+    for (const pattern of options.credentialPatterns ?? [])
+      redacted = redacted.replace(pattern, "[REDACTED]");
+
+    return scrub(redacted);
+  };
+
+  /** A provider error code or request ID worth showing: a plain token that redaction leaves as it is. */
+  const shown = (value: string | null | undefined, allowed: RegExp) =>
+    value !== null && value !== undefined && allowed.test(value) && redact(value) === value
+      ? value
+      : undefined;
 
   // Header names each plane's `auth` returned, lowercase: credentials even when the shared pattern misses them.
   const authNames = new Map<string, Set<string>>();
@@ -661,6 +689,7 @@ export function createHttpClient<Plane extends string>(
     what: string,
     cause?: string,
     retryable = code === "unavailable" || code === "quota",
+    retryAfterMs?: number,
   ) {
     const hint = code === "auth" ? options.authHint : undefined;
 
@@ -669,6 +698,7 @@ export function createHttpClient<Plane extends string>(
       provider,
       sandboxId: request.sandboxId,
       retryable,
+      retryAfterMs: retryable ? retryAfterMs : undefined,
       hint,
       cause: cause === undefined ? undefined : redact(cause),
     });
@@ -698,9 +728,15 @@ export function createHttpClient<Plane extends string>(
             provider,
             sandboxId: mapped.sandboxId,
             retryable: mapped.retryable,
+            retryAfterMs: mapped.retryAfterMs,
             hint: mapped.hint,
             cause,
           });
+
+    // The status lives on the error mapDefault built; carry it to the one that replaces it.
+    const status = statuses.get(mapped);
+
+    if (status && error !== mapped) statuses.set(error, status);
 
     if (failed.kind === "network" && !failed.sent) unsentFailures.add(error);
 
@@ -729,14 +765,12 @@ export function createHttpClient<Plane extends string>(
 
         if (unsafe && (code === "timeout" || unconfirmed)) code = "outcome_unknown";
 
-        const apiCode =
-          failed.body.code !== undefined && safeCode.test(failed.body.code)
-            ? ` ${failed.body.code}`
-            : "";
+        const safe = shown(failed.body.code, safeCode);
+        const apiCode = safe === undefined ? "" : ` ${safe}`;
 
         const id = ["x-request-id", "request-id", "x-amzn-requestid", "cf-ray"]
-          .map((name) => failed.headers.get(name))
-          .find((value) => value !== null && safeRequestId.test(value));
+          .map((name) => shown(failed.headers.get(name), safeRequestId))
+          .find((value) => value !== undefined);
 
         const status = `HTTP ${failed.status}${apiCode}`;
 
@@ -753,6 +787,7 @@ export function createHttpClient<Plane extends string>(
           ` (${status})${message}.${code === "outcome_unknown" ? " The request may or may not have taken effect; check before repeating it." : ""}`,
           cause,
           code === "unavailable" || code === "quota" || code === "timeout",
+          retryAfter(failed.headers),
         );
 
         statuses.set(
@@ -839,6 +874,8 @@ export function createHttpClient<Plane extends string>(
     const { body, contentType, replayable } = serialize(request);
     const unsafe = !idempotentMethods.has(request.method);
     const canRetry = replayable && (!unsafe || request.idempotencyKey !== undefined);
+    // A write that may not be sent twice: it never follows a redirect, which would send it again.
+    const once = unsafe && !request.readOnly && request.idempotencyKey === undefined;
     const { signal } = deadline;
 
     const context: PlaneContext = { signal };
@@ -1010,6 +1047,22 @@ export function createHttpClient<Plane extends string>(
         if (!redirectStatuses.has(response.status) || location === null) break;
         await response.body?.cancel().catch(() => {});
 
+        // Whether following would send this write again: 307 and 308 keep the method and body, and so do
+        // 301 and 302 for anything but a POST.
+        const resends =
+          response.status === 307 ||
+          response.status === 308 ||
+          ((response.status === 301 || response.status === 302) && method !== "POST");
+
+        if (once && method === request.method && (resends || plane.redirectWrites === false))
+          throw failure(
+            "outcome_unknown",
+            request,
+            ` (HTTP ${response.status}): the server redirected a write, which is not sent twice. It may or may not have taken effect; check before repeating it.`,
+            `HTTP ${response.status}`,
+            false,
+          );
+
         if (hop >= maxRedirects)
           throw failure(
             "provider",
@@ -1069,10 +1122,9 @@ export function createHttpClient<Plane extends string>(
 
       if (
         refreshable &&
-        plane.stale &&
         response &&
         response.status >= 400 &&
-        response.status !== 401
+        (response.status === 401 ? plane.unauthorized !== undefined : plane.stale !== undefined)
       )
         errorBody = parseErrorBody(await errorText(response));
 
@@ -1080,7 +1132,9 @@ export function createHttpClient<Plane extends string>(
         !refreshable || !response
           ? undefined
           : response.status === 401
-            ? "refused"
+            ? errorBody === undefined || plane.unauthorized?.(errorBody) !== false
+              ? "refused"
+              : undefined
             : errorBody !== undefined
               ? plane.stale?.({ status: response.status, body: errorBody, credentials }, context)
               : undefined;
