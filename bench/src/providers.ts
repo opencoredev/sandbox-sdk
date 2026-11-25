@@ -19,6 +19,8 @@ const templateKeys = new Map([
   ["baseten", "image"],
   ["beam", "image"],
   ["archil", "image"],
+  ["microsandbox", "image"],
+  ["microsandbox-shared", "image"],
   ["local", "image"],
 ]);
 
@@ -87,7 +89,44 @@ const credentials = new Map([
   ["baseten", ["BASETEN_API_KEY"]],
   ["beam", ["BEAM_TOKEN", "BEAM_WORKSPACE_ID"]],
   ["archil", ["ARCHIL_API_KEY"]],
+  ["microsandbox", ["MSB_API_KEY"]],
+  ["microsandbox-shared", ["MSB_API_KEY"]],
 ]);
+
+/**
+ * Where a bench provider name's adapter lives: the SDK subpath, its factory export, and factory
+ * options pinned for that name, which no configuration overrides. Microsandbox's two compute tiers
+ * are separate bench providers on one adapter, each pinned to its tier, so a run, its pricing and its
+ * sweeps never mix them.
+ */
+export interface AdapterSpec {
+  subpath: string;
+  factory: string;
+  pinned: Readonly<Record<string, string>>;
+}
+
+const adapterSpecs: ReadonlyMap<string, AdapterSpec> = new Map([
+  [
+    "microsandbox",
+    { subpath: "microsandbox", factory: "microsandbox", pinned: { computeType: "standard" } },
+  ],
+  [
+    "microsandbox-shared",
+    { subpath: "microsandbox", factory: "microsandbox", pinned: { computeType: "shared" } },
+  ],
+]);
+
+/** The adapter entry point for a bench provider name; most names are their own subpath and factory. */
+export function adapterSpec(name: string): AdapterSpec {
+  return adapterSpecs.get(name) ?? { subpath: name, factory: name, pinned: {} };
+}
+
+/** The Microsandbox compute tier a bench provider name is pinned to, or undefined for other providers. */
+export function microsandboxTier(name: string): "standard" | "shared" | undefined {
+  const tier = adapterSpecs.get(name)?.pinned.computeType;
+
+  return tier === "standard" || tier === "shared" ? tier : undefined;
+}
 
 /**
  * Every provider `loadProvider` builds: the cloud ones with a credential policy, the local Docker
@@ -268,10 +307,11 @@ export async function loadProvider(
 
   if (missing.length)
     return { kind: "skipped", name, note: `Missing credentials: ${missing.join(", ")}` };
+  const spec = adapterSpec(name);
   let module: object;
 
   try {
-    module = await importer(`@opencoredev/sandbox-sdk/${name}`);
+    module = await importer(`@opencoredev/sandbox-sdk/${spec.subpath}`);
   } catch {
     return {
       kind: "skipped",
@@ -281,10 +321,10 @@ export async function loadProvider(
   }
 
   const exports = z.record(z.string(), z.unknown()).parse(module);
-  const factory = providerFactory.safeParse(exports[name]);
+  const factory = providerFactory.safeParse(exports[spec.factory]);
 
   if (!factory.success)
-    return { kind: "skipped", name, note: `Entry point does not export ${name}()` };
+    return { kind: "skipped", name, note: `Entry point does not export ${spec.factory}()` };
 
   const options = {
     ...providerDefaults(name),
@@ -295,6 +335,8 @@ export async function loadProvider(
     ...appOptions(name),
     ...regionOptions(name, region),
     ...config?.factory,
+    // Last: a pinned option, such as Microsandbox's compute tier, is never overridden.
+    ...spec.pinned,
   };
 
   // Factory failures are real configuration errors, not missing-provider skips.
@@ -355,6 +397,7 @@ const providerMembers = {
   usage: (target) => target.usage?.bind(target),
   pause: (target) => target.pause?.bind(target),
   resume: (target) => target.resume?.bind(target),
+  isStopped: (target) => target.isStopped?.bind(target),
   snapshot: (target) => target.snapshot?.bind(target),
   terminal: (target) => target.terminal?.bind(target),
   deleteSnapshot: (target) => target.deleteSnapshot?.bind(target),

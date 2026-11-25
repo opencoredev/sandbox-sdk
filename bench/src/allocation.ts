@@ -47,6 +47,17 @@ const presets: SizePresets = {
     medium: { cpu: 4, memoryGiB: 8 },
     large: { cpu: 8, memoryGiB: 16 },
   },
+  // The Microsandbox adapter's presets, the same on both compute tiers.
+  microsandbox: {
+    small: { cpu: 1, memoryGiB: 1 },
+    medium: { cpu: 2, memoryGiB: 4 },
+    large: { cpu: 4, memoryGiB: 8 },
+  },
+  "microsandbox-shared": {
+    small: { cpu: 1, memoryGiB: 1 },
+    medium: { cpu: 2, memoryGiB: 4 },
+    large: { cpu: 4, memoryGiB: 8 },
+  },
   // The Maritime adapter's presets: Maritime's small, medium and large.
   maritime: {
     small: { cpu: 2, memoryGiB: 4 },

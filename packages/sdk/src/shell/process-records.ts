@@ -102,6 +102,51 @@ export function logPageScript(input: {
   ].join("; ");
 }
 
+/** After a stop and a start, mark as killed (137) each record that has no exit and was last
+ * written in an earlier second than the guest's boot (`btime`), and remove run markers older than
+ * the boot. A record is checked again and written only while this script holds its lock, so a
+ * setup that reuses the name since the boot is never marked killed, and any client can run this at
+ * any time. The lock is only tried: this script never breaks or waits out a lock it does not hold,
+ * and the whole scan gives up on contended records after about a second, leaving them as they
+ * are. A timestamp that cannot be read proves nothing, so that record is left as it is too. /tmp is
+ * writable by anything in the guest, so the repair works only below directories that are this user's
+ * own, no symlink, and writable by no other user, so nobody can swap a path between its check and its
+ * use; it follows no symlink, and the exit is created only where no file or link stands. */
+export function bootRepairScript(): string {
+  const owned = (path: string) =>
+    `[ -d "${path}" ] && [ ! -L "${path}" ] && [ -O "${path}" ] && case "$(stat -c %A "${path}")" in d????-??-?) true ;; *) false ;; esac`;
+
+  const stale = `${owned("$d")} && [ -f "$d/spec.json" ] && [ ! -L "$d/spec.json" ] && [ ! -e "$d/exit" ] && [ ! -L "$d/exit" ] && t=$(stat -c %Y "$d/spec.json") && [ "$t" -lt "$boot" ]`;
+
+  const root = "/tmp/.sandbox-sdk";
+
+  return [
+    `boot=$(sed -n 's/^btime //p' /proc/stat)`,
+    `[ -n "$boot" ] || exit 1`,
+    `${owned(root)} || exit 0`,
+    `tries=0`,
+    `${owned(`${root}/procs`)} && for d in ${root}/procs/*`,
+    `do ${stale} || continue`,
+    `until mkdir "$d/lock" 2>/dev/null`,
+    `do tries=$((tries+1))`,
+    `[ "$tries" -lt 100 ] || continue 2`,
+    `sleep .01`,
+    `done`,
+    // An entry for this shell, so a waiter sees a live owner rather than an abandoned lock.
+    `marked=0`,
+    `if : > "$d/lock/$$" && ${stale}`,
+    `then (set -C; printf 137 > "$d/exit") || marked=1`,
+    `fi`,
+    `rm "$d/lock/$$" 2>/dev/null && rmdir "$d/lock"`,
+    `[ "$marked" -eq 0 ] || exit 1`,
+    `done`,
+    `${owned(`${root}/runs`)} && for m in ${root}/runs/*`,
+    `do [ -e "$m" ] && [ ! -L "$m" ] && [ -O "$m" ] && [ "$(stat -c %Y "$m")" -lt "$boot" ] && rm -rf "$m"`,
+    `done`,
+    `true`,
+  ].join("; ");
+}
+
 /** Prepare a process directory in one exec. stdin carries spec.json and restart.json as two
  * base64 lines, which keeps exact UTF-8 bytes through transports that normalize input.
  * A missing working directory becomes the process's own failed exit and log. */

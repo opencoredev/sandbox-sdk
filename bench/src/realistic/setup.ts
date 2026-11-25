@@ -87,7 +87,39 @@ const fit = {
   install1g: "FIT.md: 1 vCPU / 1 GiB is OOM-killed during install",
   tenkiBuild: "FIT.md: 2 vCPU / 3.8 GiB is OOM-killed in the build",
   beam128m: "FIT.md: 1 vCPU / 1 GiB is OOM-killed during install; Beam's default is 128 MiB",
+  msb512m: "FIT.md: 1 vCPU / 1 GiB is OOM-killed during install; Microsandbox's default is 512 MiB",
 } as const;
+
+/**
+ * Microsandbox Cloud (openapi.json and the adapter, 2026-11-24), one setup per compute tier on the
+ * same adapter, each pinned to its tier (bench/src/providers.ts). Any whole vCPU count, MiB of memory
+ * and MiB of writable root disk per OCI create; the default is 1 vCPU / 512 MiB, which cannot run
+ * either profile. The adapter's image is node:22-bookworm (glibc). `timeoutMs` is the sandbox's
+ * maximum lifetime, after which it stops (its disk bills until deleted). Same-machine asks for 4/8
+ * with a 64 GiB disk, the size the tiers' headline prices are quoted at.
+ */
+function microsandboxSetup(name: "microsandbox" | "microsandbox-shared"): ProviderSetup {
+  return {
+    name,
+    adapter: name,
+    product: null,
+    lifetime: true,
+    pricingKey: name,
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192, diskGb: 64 },
+        vcpu: 4,
+        provisioned: size(4, 8, 64),
+        tooSmall: {},
+      },
+      default: {
+        vcpu: 1,
+        provisioned: size(1, 0.5, 0),
+        tooSmall: { "fix-and-test": fit.msb512m, build: fit.msb512m },
+      },
+    },
+  };
+}
 
 export const providerSetups: readonly ProviderSetup[] = [
   {
@@ -392,6 +424,8 @@ export const providerSetups: readonly ProviderSetup[] = [
       default: { vcpu: 1, provisioned: size(1, 2, 0), tooSmall: {} },
     },
   },
+  microsandboxSetup("microsandbox"),
+  microsandboxSetup("microsandbox-shared"),
   {
     // Styne (2026-11-23): the base template is Styne's default size, 4 vCPU / 8 GiB with a 51 GiB
     // root disk (df on /workspace), Debian 12 with glibc, Node.js, Python 3 and git, so both tracks

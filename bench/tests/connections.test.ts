@@ -190,6 +190,20 @@ describe("a connection fingerprint names the whole connection without holding an
     expect(await fingerprintOf(other)).not.toBe(await fingerprintOf(run));
   });
 
+  it("is one Microsandbox connection for both tiers, and changes with MSB_API_URL", async () => {
+    vi.stubEnv("MSB_API_KEY", "live-key");
+    vi.stubEnv("MSB_API_URL", "https://api.microsandbox.dev/");
+    const standard = await fingerprintOf(bound({ ...memory(), name: "microsandbox" }));
+    const shared = await fingerprintOf(bound({ ...memory(), name: "microsandbox-shared" }));
+
+    vi.stubEnv("MSB_API_URL", "https://elsewhere.invalid");
+    const other = await fingerprintOf(bound({ ...memory(), name: "microsandbox" }));
+
+    expect(standard).toMatch(/^[0-9a-f]{16}$/);
+    expect(shared).toBe(standard);
+    expect(other).not.toBe(standard);
+  });
+
   it("is a constant of its name for an in-process adapter, which has no connection to choose", async () => {
     const fingerprint = await fingerprintOf(bound(memory()));
 

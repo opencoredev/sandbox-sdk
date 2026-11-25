@@ -116,6 +116,9 @@ const docs = {
     "GET /api/sandboxes/{id}/usage on Archil's control plane (docs.archil.com/administration/billing.md)",
   maritime: "https://maritime.sh/docs/billing",
   maritimeUsage: "https://api.maritime.sh/v1/usage?sandbox={id} and /v1/sandboxes/{id}/info",
+  microsandbox: "https://microsandbox.dev/pricing",
+  microsandboxUsage:
+    "https://api.microsandbox.dev/v1/billing/usage/sandbox (per-sandbox daily rows) and /v1/billing/usage (costs.workloads)",
   styne: "https://docs.styne.ai/billing",
   styneTiers: "https://docs.styne.ai/pause-tiers",
   modal: "https://modal.com/pricing",
@@ -126,6 +129,55 @@ const docs = {
   vercelSdk:
     "@vercel/sandbox Sandbox.get (totalActiveCpuDurationMs, totalDurationMs, memory, totalIngressBytes, totalEgressBytes)",
 } as const;
+
+/**
+ * Microsandbox Cloud's rule for one compute tier. Both tiers bill the same way at their own rates, and
+ * both stay provisional: the usage rows meter running intervals only, deletion is asynchronous, and no
+ * field says a sandbox's charge is final. Neither tier is in the held-open idle diagnostic.
+ */
+function microsandboxRule(
+  provider: "microsandbox" | "microsandbox-shared",
+  tier: string,
+): BillingRule {
+  return {
+    provider,
+    product: null,
+    pricingKey: provider,
+    tariff: known({ kind: "per-unit", charges: "allocation" }, docs.microsandbox),
+    billingStarts: unknown(
+      "Usage rows meter running time; when a created sandbox's first billed second falls is not documented",
+    ),
+    billingStops: unknown(
+      "CPU and memory stop when the sandbox stops; its root disk keeps billing until the delete completes, which is asynchronous",
+    ),
+    incrementSeconds: unknown("Rows are in seconds of running time; rounding is not documented"),
+    minimumSeconds: unknown("No minimum listed; absence is not confirmation"),
+    perStartFeeUSD: unknown("No creation fee listed; absence is not confirmation"),
+    keepsCharging: known(
+      ["disk", "snapshots"],
+      `${docs.microsandbox} (a stopped persistent sandbox keeps billing its root disk until deleted; managed snapshots bill $0.08/GiB-month)`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known(
+      "included",
+      `${docs.microsandbox} (provisioned root disk is a per-GiB-hour line, $0.0000625, in the running usage rows as disk_mib_seconds)`,
+    ),
+    settledChargeSource: known(
+      "Per-sandbox daily usage rows (vCPU-, memory- and disk-seconds) rated at the row's compute type, cross-checked against costs.workloads",
+      docs.microsandboxUsage,
+    ),
+    reportedKind: "metered",
+    attribution: "per-sandbox",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      `${tier} tier, pinned by the bench's adapter options and checked on every create.`,
+      "Always provisional: the usage rows cover running intervals only (a stopped sandbox's retained disk is missing), deletion is asynchronous, and costs.incomplete only flags older events, so no cost is marked complete.",
+      "A sandbox with no usage row and no workloads entry is unavailable, never $0.",
+      "Plan fees, credits, volumes ($0.15/GiB-month) and tax excluded.",
+    ],
+  };
+}
 
 export const billingRules: readonly BillingRule[] = [
   {
@@ -435,6 +487,8 @@ export const billingRules: readonly BillingRule[] = [
       "Plan fee, its equal monthly usage credit and tax excluded.",
     ],
   },
+  microsandboxRule("microsandbox", "Standard (dedicated CPU)"),
+  microsandboxRule("microsandbox-shared", "Shared (shared CPU, dedicated memory and disk)"),
   {
     provider: "baseten",
     product: null,

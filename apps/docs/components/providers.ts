@@ -9,6 +9,7 @@ export const PROVIDERS = {
   baseten: { name: "Baseten", logo: "/integrations/baseten.svg" },
   instabox: { name: "Instabox", logo: "/integrations/instabox.svg" },
   maritime: { name: "Maritime", logo: "/integrations/maritime.svg" },
+  microsandbox: { name: "Microsandbox", logo: "/integrations/microsandbox.svg" },
   styne: { name: "Styne", logo: "/integrations/styne.svg" },
   daytona: { name: "Daytona", logo: "/integrations/daytona.svg" },
   upstash: { name: "Upstash Box", logo: "/integrations/upstash.svg" },

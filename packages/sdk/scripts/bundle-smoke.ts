@@ -50,6 +50,7 @@ const fakes = {
   instabox: `{ apiKey: "ibk_smoke", requestTimeoutMs: 5000 }`,
   archil: `{ apiKey: "smoke-key", region: "aws-us-east-1" }`,
   maritime: `{ apiKey: "mk_smoke", requestTimeoutMs: 5000 }`,
+  microsandbox: `{ apiKey: "msb_smoke_key", requestTimeoutMs: 5000 }`,
   styne: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
 };
 
@@ -57,6 +58,11 @@ const fakes = {
 // request from an earlier provider's probe cannot pass for beam-js reaching the network.
 const beamCreatePort = 45931;
 const beamCreate = `{ token: "smoke-token", workspaceId: "smoke-workspace", requestTimeoutMs: 5000, gatewayUrl: "https://127.0.0.1:${beamCreatePort}" }`;
+
+// Microsandbox lists over fetch and creates only after its peer's RemoteContext starts: the create probe
+// reaches the peer's native addon, on a port of its own so only its own requests count.
+const microsandboxCreatePort = 45932;
+const microsandboxCreate = `{ apiKey: "msb_smoke_key", requestTimeoutMs: 5000, baseUrl: "https://127.0.0.1:${microsandboxCreatePort}" }`;
 
 // Providers without an optional peer SDK, or whose peer never touches the network.
 const skipped = {
@@ -144,9 +150,10 @@ const probes = [
   ),
   `await transferProbe("boxd files", boxd(${fakes.boxd}));`,
   `await createProbe("beam create", beam(${beamCreate}), ${beamCreatePort});`,
+  `await createProbe("microsandbox create", microsandbox(${microsandboxCreate}), ${microsandboxCreatePort});`,
 ];
 
-const rowNames = [...Object.keys(fakes), "boxd files", "beam create"];
+const rowNames = [...Object.keys(fakes), "boxd files", "beam create", "microsandbox create"];
 const esm = [imports, blocker, ...probes].join("\n");
 
 // cjs output has no top-level await, so the same probes run in an async IIFE.
@@ -160,10 +167,13 @@ const requireBanner = {
 // They must fail with a SandboxError that names the cause and the fix, not a generic provider error.
 const needsRequire = ["vercel", "modal", "tenki", "boxd", "boxd files", "beam create"];
 
-// Peers that load a dependency with a computed import() at run time, which a bundle that inlines
-// the peer may not resolve (disk loads undici this way). They must reach the network, or fail as
-// unavailable naming the fix, never as a generic provider error.
-const needsExternal = ["archil"];
+// Peers a bundle that inlines them may not be able to run, each with the fix its adapter names: disk
+// loads undici with a computed import(), and microsandbox loads a native addon next to its own files.
+// They must reach the network, or fail as unavailable naming the fix, never as a generic provider error.
+const needsExternal = new Map([
+  ["archil", "Keep disk external"],
+  ["microsandbox create", "Keep microsandbox external"],
+]);
 
 const formats: { label: string; options: BuildOptions; source: string; noBanner?: true }[] = [
   {
@@ -270,9 +280,11 @@ try {
         continue;
       }
 
-      if (needsExternal.includes(row.name)) {
+      const fix = needsExternal.get(row.name);
+
+      if (fix !== undefined) {
         const reached = row.attempts > 0 && row.sandboxError && !bad.test(row.text);
-        const named = row.code === "unavailable" && row.text.includes("Keep disk external");
+        const named = row.code === "unavailable" && row.text.includes(fix);
 
         check(
           `${label} ${row.name} reaches the network or names the fix`,

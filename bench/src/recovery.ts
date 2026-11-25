@@ -1,6 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import type { MicrosandboxHooks } from "@opencoredev/sandbox-sdk/microsandbox";
 import type { ConfigV2 } from "./v2-config.js";
 import type { LoadedProvider } from "./providers.js";
 import { sleepingUnchecked } from "./sleeping.js";
@@ -16,10 +18,21 @@ import {
   snapshotProvenanceSchema,
 } from "./ownership.js";
 import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
-import { fingerprintSchema, reapConnection } from "./connections.js";
+import { connectionOf, fingerprintSchema, reapConnection } from "./connections.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot, settleJournaledSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
+import {
+  cleanService,
+  isRetrySlug,
+  isServiceSuperseded,
+  probePendingService,
+  readMicrosandboxSnapshot,
+  settleAllocationAttempt,
+  settleMicrosandboxCapture,
+  tierLabel,
+} from "./microsandbox.js";
+import { microsandboxTier } from "./providers.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import {
   ambiguousAllocations,
@@ -36,16 +49,47 @@ const resultsSchema = z.record(z.string(), z.json());
 const resource = z.object({
   provider: z.string(),
   id: z.string(),
-  kind: z.enum(["sandbox", "snapshot", "snapshot-source"]),
+  kind: z.enum(["sandbox", "snapshot", "snapshot-source", "allocation-attempt", "service"]),
   parent: z.string().nullable(),
   snapshotProof: snapshotProvenanceSchema.optional(),
   /** A Maritime save's idempotency key: present only while that save is unsettled. */
   idempotencyKey: z.string().optional(),
+  /** A Microsandbox create's allocation marker, its restore source and when it was journaled. */
+  allocId: z.string().optional(),
+  sourceId: z.string().nullable().optional(),
+  attemptedAt: z.string().optional(),
+  /** The sandbox name a Microsandbox Service targets. */
+  sandboxName: z.string().optional(),
+  /** A Microsandbox Service's create: `created` once confirmed; absent (older journals) is `pending`. */
+  serviceState: z.enum(["pending", "created"]).optional(),
+  /** Server `created_at` from a confirmed Microsandbox Service create. */
+  serviceCreatedAt: z.string().optional(),
+  /** True once a retry slug proved this base slug hit a foreign 409 conflict. */
+  serviceSuperseded: z.boolean().optional(),
+  /** A Microsandbox capture's name; equal to `id` while unconfirmed. */
+  snapshotName: z.string().optional(),
+});
+
+const settledSnapshotSchema = z.object({
+  provider: z.string(),
+  name: z.string(),
+  id: z.string(),
+});
+
+const settledServiceSchema = z.object({
+  provider: z.string(),
+  id: z.string(),
 });
 
 const reviewSchema = resource
-  .omit({ parent: true, snapshotProof: true, idempotencyKey: true })
+  .pick({ provider: true, id: true, kind: true })
   .extend({ reason: z.string(), status: z.enum(["checking", "unresolved"]).optional() });
+
+function takesAttemptHooks(
+  provider: Provider,
+): provider is Provider & { setAttemptHooks(hooks: MicrosandboxHooks): void } {
+  return "setAttemptHooks" in provider && typeof provider.setAttemptHooks === "function";
+}
 
 /** A journal from before connection fingerprints: it kept each connection's endpoints as text. */
 const legacyConnections = z.object({ connections: z.record(z.string(), z.unknown()) });
@@ -66,6 +110,9 @@ export async function reapRun(
     connectionFingerprints: Record<string, string>;
     resources: z.infer<typeof resource>[];
     apps: JournalApp[];
+    settledSnapshots: z.infer<typeof settledSnapshotSchema>[];
+    settledServices: z.infer<typeof settledServiceSchema>[];
+    settledAttempts: z.infer<typeof settledServiceSchema>[];
   } | null = null;
 
   try {
@@ -84,6 +131,12 @@ export async function reapRun(
         resources: z.array(resource),
         // Older journals have no Apps: every sandbox is in the adapter's default App.
         apps: z.array(journalAppSchema).default([]),
+        // Settled Microsandbox capture-name -> managed UUID aliases kept until results.json clears.
+        settledSnapshots: z.array(settledSnapshotSchema).default([]),
+        // Settled Microsandbox Service reviews kept until results.json clears.
+        settledServices: z.array(settledServiceSchema).default([]),
+        // Microsandbox allocation attempts promoted to sandboxes, kept until results.json clears.
+        settledAttempts: z.array(settledServiceSchema).default([]),
       })
       .parse(raw);
   } catch (error) {
@@ -124,6 +177,78 @@ export async function reapRun(
 
   let failed = false;
   const deletions = new DeletionWork();
+
+  // Single serialized writer for ownership.json so a timed-out cleanup hook can never publish a
+  // stale copy over newer journal state.
+  let journalWriteChain = Promise.resolve();
+
+  const persistJournal = () => {
+    const next = journalWriteChain.then(() =>
+      writeOwnership(path, JSON.stringify(journal, null, 2) + "\n"),
+    );
+
+    journalWriteChain = next.catch(() => {});
+
+    return next;
+  };
+
+  /**
+   * Durably promotes Service entries in `ownership.json` before publishing the promoted fields to
+   * in-memory `journal.resources`, so a concurrent fallback sweep never observes an unpersisted
+   * promotion while the rename is still in flight or after it rejects.
+   */
+  const persistServicePromotion = (
+    targets: z.infer<typeof resource>[],
+    createdAt: string | undefined,
+  ) => {
+    // Because in-memory promotion is only published after writeOwnership succeeds, entries that
+    // already carry this state and timestamp are already durable on disk and need not wait behind
+    // an unrelated in-flight write.
+    const needsWrite = targets.some((entry) => {
+      if (!journal || !journal.resources.includes(entry)) return false;
+      const nextCreatedAt = entry.serviceCreatedAt ?? createdAt;
+
+      return entry.serviceState !== "created" || entry.serviceCreatedAt !== nextCreatedAt;
+    });
+
+    if (!needsWrite) return Promise.resolve();
+
+    const next = journalWriteChain.then(async () => {
+      if (!journal) return;
+      const updates = new Map<z.infer<typeof resource>, z.infer<typeof resource>>();
+
+      for (const entry of targets) {
+        if (!journal.resources.includes(entry)) continue;
+        const nextCreatedAt = entry.serviceCreatedAt ?? createdAt;
+
+        if (entry.serviceState === "created" && entry.serviceCreatedAt === nextCreatedAt) continue;
+        const promoted: z.infer<typeof resource> = { ...entry, serviceState: "created" };
+
+        if (nextCreatedAt !== undefined) promoted.serviceCreatedAt = nextCreatedAt;
+        updates.set(entry, promoted);
+      }
+
+      if (updates.size === 0) return;
+
+      const candidate = {
+        ...journal,
+        resources: journal.resources.map((r) => updates.get(r) ?? r),
+      };
+
+      await writeOwnership(path, JSON.stringify(candidate, null, 2) + "\n");
+
+      for (const [entry, promoted] of updates) {
+        entry.serviceState = "created";
+
+        if (promoted.serviceCreatedAt !== undefined)
+          entry.serviceCreatedAt = promoted.serviceCreatedAt;
+      }
+    });
+
+    journalWriteChain = next.catch(() => {});
+
+    return next;
+  };
 
   for (const p of providers) {
     if (p.kind === "skipped") {
@@ -172,14 +297,60 @@ export async function reapRun(
         journal.resources = journal.resources.filter(
           (r) => !(r.provider === p.name && r.id === id && r.kind === "sandbox"),
         );
-        await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+        await persistJournal();
       }
 
       return true;
     };
 
+    /** Polls the exact lookup until it reads absent, within the run's timeout; false if it never does. */
+    const confirmGone = async (id: string) => {
+      const end = performance.now() + config["timeout-ms"];
+
+      for (let backoffMs = 100; ; backoffMs = Math.min(backoffMs * 2, 2000)) {
+        if (isAbsent(await lookupSandbox(p.provider, id, config["timeout-ms"]))) return true;
+        const left = end - performance.now();
+
+        if (left <= 0) return false;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(backoffMs, left)));
+      }
+    };
+
     // Restores still tagged pending: owned by the exact tag read that listed them (Modal).
     const pendingOwned = new Set<string>();
+
+    // A Microsandbox tier sweeps only its own tier's sandboxes: the adapter checks compute.type, and
+    // the bench's tier label must match too, in every listing and in each exact ownership check.
+    const tier = microsandboxTier(p.name);
+
+    // Service slugs already verified and deleted/conflicted by the adapter during this reap, so a
+    // transient rename failure in the settlement hook still retires the entry in the Service sweep.
+    const settledServicesInRun = new Set<string>();
+
+    // Retire Service entries as soon as the adapter confirms deletion or foreign conflict during
+    // destroy(), and persist verified attached identity before DELETE can fail and detach it.
+    if (tier !== undefined && takesAttemptHooks(p.provider)) {
+      p.provider.setAttemptHooks({
+        serviceSettled: async ({ slug, outcome, createdAt }) => {
+          if (!journal) return;
+
+          const matching = journal.resources.filter(
+            (r) => r.provider === p.name && r.kind === "service" && r.id === slug,
+          );
+
+          if (outcome === "created") {
+            await persistServicePromotion(matching, createdAt);
+
+            return;
+          }
+
+          if (outcome !== "deleted" && outcome !== "conflict") return;
+          settledServicesInRun.add(slug);
+
+          for (const entry of matching) await forget(entry);
+        },
+      });
+    }
 
     const owned = async (id: string) =>
       pendingOwned.has(id) ||
@@ -189,18 +360,72 @@ export async function reapRun(
         config.run,
         config["timeout-ms"],
         config["ownership-visibility-ms"],
+        { tier },
       );
 
     const forget = async (entry: z.infer<typeof resource>) => {
+      const matchingReviews = reviews.filter(
+        (r) =>
+          r.provider === entry.provider &&
+          r.kind === entry.kind &&
+          (r.id === entry.id || (entry.snapshotName !== undefined && r.id === entry.snapshotName)),
+      );
+
       if (journal) {
-        journal.resources = journal.resources.filter((r) => r !== entry);
-        await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+        const entryIndex = journal.resources.indexOf(entry);
+        const hadEntry = entryIndex >= 0;
+        let addedSettled = false;
+        const newlySuperseded: z.infer<typeof resource>[] = [];
+
+        if (entry.kind === "service" && hadEntry) {
+          for (let i = 0; i < entryIndex; i++) {
+            const other = journal.resources[i]!;
+
+            if (
+              other.provider === entry.provider &&
+              other.kind === "service" &&
+              other.parent === entry.parent &&
+              isRetrySlug(entry.id, other.id) &&
+              other.serviceSuperseded === undefined
+            ) {
+              other.serviceSuperseded = true;
+              newlySuperseded.push(other);
+            }
+          }
+        }
+
+        if (hadEntry) journal.resources = journal.resources.filter((r) => r !== entry);
+
+        if (
+          entry.kind === "service" &&
+          matchingReviews.length > 0 &&
+          !journal.settledServices.some((s) => s.provider === entry.provider && s.id === entry.id)
+        ) {
+          journal.settledServices.push({ provider: entry.provider, id: entry.id });
+          addedSettled = true;
+        }
+
+        try {
+          await persistJournal();
+        } catch (error) {
+          if (hadEntry && !journal.resources.includes(entry))
+            journal.resources.splice(Math.min(entryIndex, journal.resources.length), 0, entry);
+
+          for (const other of newlySuperseded) delete other.serviceSuperseded;
+
+          if (addedSettled)
+            journal.settledServices = journal.settledServices.filter(
+              (s) => !(s.provider === entry.provider && s.id === entry.id),
+            );
+          throw error;
+        }
       }
 
-      for (const item of reviews.filter(
-        (r) => r.provider === entry.provider && r.id === entry.id && r.kind === entry.kind,
-      ))
-        reviews.splice(reviews.indexOf(item), 1);
+      for (const item of matchingReviews) {
+        const index = reviews.indexOf(item);
+
+        if (index >= 0) reviews.splice(index, 1);
+      }
     };
 
     const candidates = new Set(
@@ -222,11 +447,13 @@ export async function reapRun(
     const journaled = (journal?.apps ?? []).filter((app) => app.provider === p.name);
     let reconciled = false;
 
+    const runLabels = { "sandbox-bench-run": config.run, "sandbox-sdk": "1" };
+
+    const sweepLabels = tier === undefined ? runLabels : { ...runLabels, [tierLabel]: tier };
+
     try {
-      for (const info of await deadline(config["timeout-ms"], () =>
-        p.provider.list({ "sandbox-bench-run": config.run, "sandbox-sdk": "1" }),
-      ))
-        if (hasRunOwnership(info, config.run)) {
+      for (const info of await deadline(config["timeout-ms"], () => p.provider.list(sweepLabels)))
+        if (hasRunOwnership(info, config.run, tier)) {
           candidates.add(info.id);
           // A sandbox whose create response was lost joins its App's journal entry.
           reconciled = reconcileDiscovered(journaled, p.name, info) || reconciled;
@@ -244,7 +471,15 @@ export async function reapRun(
         pendingOwned.add(item.id);
         candidates.add(item.id);
         reconciled = reconcileDiscovered(journaled, p.name, item) || reconciled;
-        journal ??= { runId: config.run, connectionFingerprints: {}, resources: [], apps: [] };
+        journal ??= {
+          runId: config.run,
+          connectionFingerprints: {},
+          resources: [],
+          apps: [],
+          settledSnapshots: [],
+          settledServices: [],
+          settledAttempts: [],
+        };
 
         if (
           !journal.resources.some(
@@ -259,7 +494,87 @@ export async function reapRun(
       errors.push(sanitize(error instanceof Error ? error.message : "Pending listing failed"));
     }
 
-    if (journal && reconciled) await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+    // Microsandbox creates journaled before they were sent: a sandbox carrying the attempt's marker
+    // becomes a candidate, and anything else (a 404 however old, an unresolved spec, another marker)
+    // stays under review, keeping a restore's snapshot and source.
+    let attemptsUnresolved = false;
+
+    for (const entry of (journal?.resources ?? []).filter(
+      (r) => r.provider === p.name && r.kind === "allocation-attempt",
+    )) {
+      try {
+        if (tier === undefined) throw new Error("Allocation attempt for a provider without them");
+
+        const outcome = await deadline(config["timeout-ms"], () =>
+          settleAllocationAttempt(
+            connectionOf(p.provider, "microsandbox"),
+            {
+              id: entry.id,
+              allocId: entry.allocId,
+              attemptedAt: entry.attemptedAt,
+            },
+            tier,
+          ),
+        );
+
+        if (outcome.kind === "pending") {
+          review(p.name, entry.id, "allocation-attempt", outcome.reason);
+
+          if (entry.parent !== null) attemptsUnresolved = true;
+          continue;
+        }
+
+        candidates.add(outcome.id);
+
+        // A review an earlier reap left under the attempt's name is settled: the sandbox entry,
+        // keyed by ID, carries the cleanup from here. The marker outlives a failed results.json write.
+        const settled = reviews.filter(
+          (r) => r.provider === p.name && r.kind === "allocation-attempt" && r.id === entry.id,
+        );
+
+        for (const item of settled) reviews.splice(reviews.indexOf(item), 1);
+
+        if (journal) {
+          journal.resources = journal.resources.filter((r) => r !== entry);
+          journal.resources.push({
+            provider: p.name,
+            id: outcome.id,
+            kind: "sandbox",
+            parent: null,
+          });
+
+          if (
+            settled.length > 0 &&
+            !journal.settledAttempts.some((s) => s.provider === p.name && s.id === entry.id)
+          )
+            journal.settledAttempts.push({ provider: p.name, id: entry.id });
+          reconciled = true;
+        }
+      } catch (error) {
+        review(
+          p.name,
+          entry.id,
+          "allocation-attempt",
+          sanitize(error instanceof Error ? error.message : "Allocation attempt lookup failed"),
+        );
+
+        if (entry.parent !== null) attemptsUnresolved = true;
+      }
+    }
+
+    if (journal && reconciled) await persistJournal();
+
+    // An attempt an earlier reap promoted, whose review results.json kept because its write failed.
+    for (const item of Array.from(reviews))
+      if (
+        item.provider === p.name &&
+        item.kind === "allocation-attempt" &&
+        journal?.settledAttempts.some((s) => s.provider === p.name && s.id === item.id) &&
+        !journal.resources.some(
+          (r) => r.provider === p.name && r.kind === "allocation-attempt" && r.id === item.id,
+        )
+      )
+        reviews.splice(reviews.indexOf(item), 1);
 
     const deleteCandidate = async (id: string) => {
       if (!(await owned(id))) {
@@ -276,7 +591,15 @@ export async function reapRun(
 
       try {
         if (reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
-          journal ??= { runId: config.run, connectionFingerprints: {}, resources: [], apps: [] };
+          journal ??= {
+            runId: config.run,
+            connectionFingerprints: {},
+            resources: [],
+            apps: [],
+            settledSnapshots: [],
+            settledServices: [],
+            settledAttempts: [],
+          };
 
           if (
             !journal.resources.some(
@@ -284,13 +607,55 @@ export async function reapRun(
             )
           )
             journal.resources.push({ provider: p.name, id, kind: "sandbox", parent: null });
-          await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+          await persistJournal();
           recordVerifiedRelease(reviews, releases, p.name, id);
+        }
+
+        if (tier !== undefined) {
+          const allServices = (journal?.resources ?? []).filter(
+            (r) => r.provider === p.name && r.kind === "service",
+          );
+
+          const unprovenServices = allServices.filter(
+            (r, idx) =>
+              r.parent === id &&
+              r.sandboxName !== undefined &&
+              (r.serviceState !== "created" || r.serviceCreatedAt === undefined) &&
+              !isServiceSuperseded(allServices, idx),
+          );
+
+          for (const svc of unprovenServices) {
+            const probed = await deadline(config["timeout-ms"], () =>
+              probePendingService(
+                connectionOf(p.provider, "microsandbox"),
+                svc.id,
+                svc.sandboxName!,
+              ),
+            );
+
+            if (probed.kind === "not-found" && svc.serviceState !== "created")
+              throw new Error(
+                `Pending Service ${svc.id} is still unresolved (404); retaining sandbox ${id} so a late create cannot detach without proof`,
+              );
+          }
         }
 
         await deadline(config["timeout-ms"], () =>
           deletions.start(p.name, id, () => p.provider.destroy(id)),
         );
+
+        // Microsandbox finishes a DELETE asynchronously: the sandbox, and so a restore's hold on its
+        // snapshot and source, stays journaled until an exact read confirms it is gone.
+        if (tier !== undefined && !(await confirmGone(id))) {
+          review(
+            p.name,
+            id,
+            "sandbox",
+            "Deletion accepted, but the sandbox still reads; kept until an exact read confirms it is gone",
+          );
+
+          return;
+        }
 
         // Billing settles a Modal App only after its sandbox's confirmed stop.
         await recordStop({
@@ -299,9 +664,11 @@ export async function reapRun(
           sandboxId: id,
         }).catch(() => {});
 
-        for (const entry of journal?.resources ?? [])
-          if (entry.provider === p.name && entry.kind === "sandbox" && entry.id === id)
-            await forget(entry);
+        const retired = (journal?.resources ?? []).filter(
+          (entry) => entry.provider === p.name && entry.kind === "sandbox" && entry.id === id,
+        );
+
+        for (const entry of retired) await forget(entry);
       } catch (error) {
         if (error instanceof DeadlineError && (await resolveAbsent(id))) return;
         review(
@@ -316,20 +683,73 @@ export async function reapRun(
 
     const sources = new Set(
       (journal?.resources ?? [])
-        .filter((r) => r.provider === p.name && r.kind !== "sandbox")
+        .filter(
+          (r) => r.provider === p.name && (r.kind === "snapshot" || r.kind === "snapshot-source"),
+        )
         .flatMap((r) => (r.kind === "snapshot-source" ? [r.id] : r.parent ? [r.parent] : [])),
     );
 
+    // An unresolved restore attempt keeps its source sandbox too.
+    for (const r of journal?.resources ?? [])
+      if (r.provider === p.name && r.kind === "allocation-attempt" && r.sourceId)
+        sources.add(r.sourceId);
+
     for (const id of candidates) if (!sources.has(id)) await deleteCandidate(id);
 
-    const restoresUnresolved = [...candidates].some(
-      (id) =>
-        !sources.has(id) &&
-        ((journal?.resources ?? []).some(
-          (r) => r.provider === p.name && r.id === id && r.kind === "sandbox",
-        ) ||
-          reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")),
+    const restoresUnresolved =
+      attemptsUnresolved ||
+      [...candidates].some(
+        (id) =>
+          !sources.has(id) &&
+          ((journal?.resources ?? []).some(
+            (r) => r.provider === p.name && r.id === id && r.kind === "sandbox",
+          ) ||
+            reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")),
+      );
+
+    // Drain any in-flight promotion/settlement writes from destroy() before the fallback Service
+    // sweep inspects journaled Service entries.
+    await journalWriteChain;
+
+    // Microsandbox Services journaled before they were made, deleted whether or not their sandbox is
+    // gone, and only while they target that sandbox or nothing; others are never touched.
+    const services = (journal?.resources ?? []).filter(
+      (r) => r.provider === p.name && r.kind === "service",
     );
+
+    for (const [idx, entry] of services.entries()) {
+      try {
+        if (settledServicesInRun.has(entry.id)) {
+          await forget(entry);
+          continue;
+        }
+
+        const outcome = await deadline(config["timeout-ms"], () =>
+          cleanService(connectionOf(p.provider, "microsandbox"), {
+            id: entry.id,
+            parent: entry.parent,
+            sandboxName: entry.sandboxName,
+            state: entry.serviceState ?? "pending",
+            createdAt: entry.serviceCreatedAt,
+            superseded: isServiceSuperseded(services, idx),
+          }),
+        );
+
+        if (outcome.kind === "pending") {
+          review(p.name, entry.id, entry.kind, outcome.reason);
+          continue;
+        }
+
+        await forget(entry);
+      } catch (error) {
+        review(
+          p.name,
+          entry.id,
+          entry.kind,
+          sanitize(error instanceof Error ? error.message : "Service cleanup failed"),
+        );
+      }
+    }
 
     // Source-scoped discovery uses durable proof, even when the source no longer exists.
     for (const entry of journal?.resources ?? []) {
@@ -352,33 +772,57 @@ export async function reapRun(
         for (const snapshot of await deadline(config["timeout-ms"], () =>
           snapshotsFromSource(p.name, p.provider, entry.id, journaled),
         )) {
-          const item = {
+          // Entries already journaled for this snapshot, such as a Maritime save still pending with its
+          // idempotency key, or a capture of this source journaled by its name. Replace them with the
+          // confirmed snapshot entry BEFORE deleting: if the delete succeeds on the server and drops its
+          // response, a later step must inspect/delete the snapshot rather than replaying the save POST.
+          const earlier = (journal?.resources ?? []).filter(
+            (r) =>
+              r.provider === p.name &&
+              r.kind === "snapshot" &&
+              (r.id === snapshot.id ||
+                (snapshot.name !== undefined && r.parent === entry.id && r.id === snapshot.name)),
+          );
+
+          // A capture journaled by name keeps that name on its ID entry, and as a name->ID alias, so
+          // reviews keyed by the name settle with the ID once it is deleted.
+          const alias =
+            snapshot.name !== undefined && earlier.some((r) => r.id === snapshot.name)
+              ? snapshot.name
+              : undefined;
+
+          const item: z.infer<typeof resource> = {
             provider: p.name,
             id: snapshot.id,
-            kind: "snapshot" as const,
+            kind: "snapshot",
             parent: entry.id,
             snapshotProof: proof,
           };
 
-          // Entries already journaled for this snapshot, such as a Maritime save still pending with its
-          // idempotency key. Replace them with the confirmed snapshot entry BEFORE deleting: if the
-          // delete succeeds on the server and drops its response, a later step must inspect/delete the
-          // snapshot rather than replaying the save POST.
-          const earlier = (journal?.resources ?? []).filter(
-            (r) => r.provider === p.name && r.kind === "snapshot" && r.id === snapshot.id,
-          );
+          if (alias !== undefined) item.snapshotName = alias;
 
           const previousResources = journal ? [...journal.resources] : null;
+          const previousSettled = journal ? [...journal.settledSnapshots] : null;
 
           if (journal) {
             journal.resources = journal.resources.filter((r) => !earlier.includes(r));
             journal.resources.push(item);
+
+            if (tier !== undefined && alias !== undefined)
+              journal.settledSnapshots = [
+                ...journal.settledSnapshots.filter(
+                  (s) => !(s.provider === p.name && s.name === alias),
+                ),
+                { provider: p.name, name: alias, id: snapshot.id },
+              ];
           }
 
           try {
-            await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+            if (journal) await persistJournal();
           } catch (error) {
             if (journal && previousResources) journal.resources = previousResources;
+
+            if (journal && previousSettled) journal.settledSnapshots = previousSettled;
             throw error;
           }
 
@@ -409,29 +853,96 @@ export async function reapRun(
     for (const entry of (journal?.resources ?? []).filter(
       (r) => r.provider === p.name && r.kind === "snapshot",
     )) {
+      let current = entry;
+
       try {
         if (restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
 
-        if (
-          (await settleJournaledSnapshot(p.name, p.provider, entry, config["timeout-ms"])) ===
-          "exists"
-        ) {
-          let confirmed = entry;
+        const settled = await settleJournaledSnapshot(
+          p.name,
+          p.provider,
+          entry,
+          config["timeout-ms"],
+        );
 
-          if (entry.idempotencyKey !== undefined) {
+        if (settled.kind === "exists") {
+          // A Maritime save's key goes once it settles; a Microsandbox capture's name gives way to the
+          // managed ID settlement confirmed, journaled before the delete so a by-name 404 can never
+          // drop the snapshot it found. Also keep the name->UUID alias until results.json clears.
+          const aliasMissing =
+            tier !== undefined &&
+            entry.snapshotName !== undefined &&
+            !(journal?.settledSnapshots ?? []).some(
+              (s) => s.provider === p.name && s.name === entry.snapshotName && s.id === settled.id,
+            );
+
+          if (entry.idempotencyKey !== undefined || settled.id !== entry.id || aliasMissing) {
             const { idempotencyKey: _, ...withoutKey } = entry;
-            confirmed = withoutKey;
+            const confirmed = { ...withoutKey, id: settled.id };
 
             if (journal) {
               const previousResources = [...journal.resources];
+              const previousSettled = [...journal.settledSnapshots];
               journal.resources = journal.resources.map((r) => (r === entry ? confirmed : r));
 
+              if (tier !== undefined && entry.snapshotName !== undefined) {
+                journal.settledSnapshots = [
+                  ...journal.settledSnapshots.filter(
+                    (s) => !(s.provider === p.name && s.name === entry.snapshotName),
+                  ),
+                  { provider: p.name, name: entry.snapshotName, id: settled.id },
+                ];
+              }
+
               try {
-                await writeOwnership(path, JSON.stringify(journal, null, 2) + "\n");
+                await persistJournal();
               } catch (error) {
                 journal.resources = previousResources;
+                journal.settledSnapshots = previousSettled;
                 throw error;
+              }
+            }
+
+            if (settled.id !== entry.id) {
+              const hasSettledReview = reviews.some(
+                (r) =>
+                  r.provider === entry.provider && r.id === confirmed.id && r.kind === entry.kind,
+              );
+
+              for (let i = reviews.length - 1; i >= 0; i--) {
+                const item = reviews[i]!;
+
+                if (
+                  item.provider === entry.provider &&
+                  item.id === entry.id &&
+                  item.kind === entry.kind
+                ) {
+                  if (hasSettledReview) reviews.splice(i, 1);
+                  else item.id = confirmed.id;
+                }
+              }
+            }
+
+            current = confirmed;
+          }
+
+          if (current.snapshotName !== undefined && current.snapshotName !== current.id) {
+            const hasSettledReview = reviews.some(
+              (r) =>
+                r.provider === current.provider && r.id === current.id && r.kind === current.kind,
+            );
+
+            for (let i = reviews.length - 1; i >= 0; i--) {
+              const item = reviews[i]!;
+
+              if (
+                item.provider === current.provider &&
+                item.id === current.snapshotName &&
+                item.kind === current.kind
+              ) {
+                if (hasSettledReview) reviews.splice(i, 1);
+                else item.id = current.id;
               }
             }
           }
@@ -439,30 +950,96 @@ export async function reapRun(
           await deleteProvenSnapshot(
             p.name,
             p.provider,
-            confirmed.id,
-            confirmed.parent,
-            confirmed.snapshotProof,
+            current.id,
+            current.parent,
+            current.snapshotProof,
             config.run,
             config["timeout-ms"],
           );
-          await forget(confirmed);
+          await forget(current);
         } else {
           await forget(entry);
         }
       } catch (error) {
         review(
           p.name,
-          entry.id,
-          entry.kind,
+          current.id,
+          current.kind,
           sanitize(error instanceof Error ? error.message : "Snapshot recovery failed"),
         );
+      }
+    }
+
+    // A prior reap may have deleted a Microsandbox snapshot and emptied the journal before failing
+    // to write results.json. Settle any orphaned snapshot review by proving it absent on the API.
+    if (tier !== undefined) {
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      for (const item of reviews.filter((r) => r.provider === p.name && r.kind === "snapshot")) {
+        const stillJournaled = (journal?.resources ?? []).some(
+          (r) =>
+            r.provider === p.name &&
+            r.kind === "snapshot" &&
+            (r.id === item.id || r.snapshotName === item.id),
+        );
+
+        if (stillJournaled) continue;
+
+        try {
+          const settledAlias = journal?.settledSnapshots.find(
+            (s) => s.provider === p.name && s.name === item.id,
+          );
+
+          const exactId = settledAlias?.id ?? (uuidPattern.test(item.id) ? item.id : undefined);
+
+          const absent =
+            exactId !== undefined
+              ? (await deadline(config["timeout-ms"], () =>
+                  readMicrosandboxSnapshot(connectionOf(p.provider, "microsandbox"), exactId),
+                )) === undefined
+              : (
+                  await deadline(config["timeout-ms"], () =>
+                    settleMicrosandboxCapture(
+                      connectionOf(p.provider, "microsandbox"),
+                      item.id,
+                      config["timeout-ms"],
+                    ),
+                  )
+                ).kind === "absent";
+
+          if (absent) {
+            const index = reviews.indexOf(item);
+
+            if (index >= 0) reviews.splice(index, 1);
+          }
+        } catch {
+          // Keep the review until absence can be proven.
+        }
+      }
+
+      for (const item of reviews.filter((r) => r.provider === p.name && r.kind === "service")) {
+        const stillJournaled = (journal?.resources ?? []).some(
+          (r) => r.provider === p.name && r.kind === "service" && r.id === item.id,
+        );
+
+        if (stillJournaled) continue;
+
+        if (journal?.settledServices.some((s) => s.provider === p.name && s.id === item.id)) {
+          const index = reviews.indexOf(item);
+
+          if (index >= 0) reviews.splice(index, 1);
+        }
       }
     }
 
     for (const id of candidates)
       if (sources.has(id)) {
         const held = (journal?.resources ?? []).some(
-          (r) => r.provider === p.name && r.kind !== "sandbox" && (r.parent === id || r.id === id),
+          (r) =>
+            r.provider === p.name &&
+            (((r.kind === "snapshot" || r.kind === "snapshot-source") &&
+              (r.parent === id || r.id === id)) ||
+              (r.kind === "allocation-attempt" && r.sourceId === id)),
         );
 
         if (!held) await deleteCandidate(id);
@@ -486,12 +1063,13 @@ export async function reapRun(
           if (signal.aborted) return;
 
           const [listed, pending] = await Promise.all([
-            p.provider.list({ "sandbox-bench-run": config.run, "sandbox-sdk": "1" }),
+            p.provider.list(sweepLabels),
             pendingForRun(p.provider, config.run),
           ]);
 
           // A pending restore still running is a leftover like any other.
-          const left = [...listed.filter((s) => hasRunOwnership(s, config.run)), ...pending];
+          const left = [...listed.filter((s) => hasRunOwnership(s, config.run, tier)), ...pending];
+
           count = left.length;
 
           if (
@@ -552,6 +1130,10 @@ export async function reapRun(
   for (const entry of resolutions)
     process.stdout.write(`cleanupResolved: ${JSON.stringify(entry)}\n`);
 
+  // Drain any in-flight serialized ownership.json writes (e.g. from a timed-out cleanup hook) before
+  // publishing results.json or returning.
+  await journalWriteChain;
+
   if (results || reviews.length || releases.length || resolutions.length) {
     const record = {
       ...(results ?? { runId: config.run }),
@@ -563,13 +1145,58 @@ export async function reapRun(
     await writeOwnership(join(config.out, "results.json"), JSON.stringify(record, null, 2) + "\n");
   }
 
+  // Once results.json is durably written, drop settled markers whose reviews cleared.
+  if (
+    journal &&
+    (journal.settledSnapshots.length > 0 ||
+      journal.settledServices.length > 0 ||
+      journal.settledAttempts.length > 0)
+  ) {
+    const retainedSnapshots = journal.settledSnapshots.filter((alias) =>
+      reviews.some(
+        (r) =>
+          r.provider === alias.provider &&
+          r.kind === "snapshot" &&
+          (r.id === alias.name || r.id === alias.id),
+      ),
+    );
+
+    const retainedServices = journal.settledServices.filter((settled) =>
+      reviews.some(
+        (r) => r.provider === settled.provider && r.kind === "service" && r.id === settled.id,
+      ),
+    );
+
+    const retainedAttempts = journal.settledAttempts.filter((settled) =>
+      reviews.some(
+        (r) =>
+          r.provider === settled.provider && r.kind === "allocation-attempt" && r.id === settled.id,
+      ),
+    );
+
+    if (
+      retainedSnapshots.length !== journal.settledSnapshots.length ||
+      retainedServices.length !== journal.settledServices.length ||
+      retainedAttempts.length !== journal.settledAttempts.length
+    ) {
+      journal.settledSnapshots = retainedSnapshots;
+      journal.settledServices = retainedServices;
+      journal.settledAttempts = retainedAttempts;
+      await persistJournal();
+    }
+  }
+
+  const mdPath = join(config.out, "results.md");
+  const md = await readFile(mdPath, "utf8").catch(() => null);
+
   if (reviews.length || releases.length || resolutions.length) {
-    const md = await readFile(join(config.out, "results.md"), "utf8").catch(() => "");
     await writeFile(
-      join(config.out, "results.md"),
-      md.replace(/^cleanup(?:Review|Released|Resolved):.*\n/gm, "") +
+      mdPath,
+      (md ?? "").replace(/^cleanup(?:Review|Released|Resolved):.*\n/gm, "") +
         `\ncleanupReview: ${JSON.stringify(reviews)}\ncleanupReleased: ${JSON.stringify(releases)}\ncleanupResolved: ${JSON.stringify(resolutions)}\n`,
     );
+  } else if (md !== null && /^cleanup(?:Review|Released|Resolved):/m.test(md)) {
+    await writeFile(mdPath, md.replace(/^cleanup(?:Review|Released|Resolved):.*\n/gm, ""));
   }
 
   return failed || reviews.length > 0;

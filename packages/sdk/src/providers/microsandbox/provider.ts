@@ -1,0 +1,2185 @@
+/**
+ * Microsandbox Cloud (https://microsandbox.dev) microVM sandboxes. Sources, retrieved 2026-11-24:
+ * https://api.microsandbox.dev/docs/openapi.json, https://docs.microsandbox.dev/llms-full.txt, and the
+ * official SDK's cloud client and wire types (github.com/superradcompany/microsandbox,
+ * `sdk/rust/lib/context/cloud/*.rs`, `packages/microsandbox-types/rust/lib/cloud/services.rs`).
+ *
+ * Two paths. The control plane (`https://api.microsandbox.dev/v1`, `Authorization: Bearer <key>`) creates,
+ * reads, lists, starts, stops, snapshots and deletes sandboxes and owns Services (public port URLs), all
+ * over `fetch`. Commands and files go through the guest agent, whose protocol only the optional peer
+ * `microsandbox` speaks (a native addon): the adapter reaches it through a `RemoteContext` it builds with
+ * its own key and URL, never the peer's process-wide defaults.
+ */
+import { randomUUID } from "node:crypto";
+import { redacting, SandboxError } from "../../errors.js";
+import {
+  createDeadline,
+  createHttpClient,
+  httpStatus,
+  neverSent,
+  type Deadline,
+  type Fetch,
+  type HttpClient,
+  type HttpRequest,
+} from "../../http.js";
+import {
+  createNativeApi,
+  sdkCall,
+  sdkConstruct,
+  sdkObject,
+  type NativeApi,
+  type NativeSdkBinding,
+} from "../../native.js";
+import { loadPeer } from "../../peer.js";
+import type { CreateInput, ExecInput, Labels, Provider, SandboxInfo } from "../../provider.js";
+import { files as guestFiles, type Guest } from "../../shared/guest.js";
+import type { JsonObject, JsonValue } from "../../shared/json.js";
+import { isString } from "../../shared/narrow.js";
+import { bootRepairScript } from "../../shell/process-records.js";
+import {
+  allocLabel,
+  capturedFrom,
+  keyLabel,
+  leakPatterns,
+  nestedTokens,
+  parseOperation,
+  parseOperationPage,
+  parseSandbox,
+  parseSandboxAnswer,
+  parseSandboxPage,
+  parseService,
+  parseServicePage,
+  parseSnapshot,
+  serviceUrl,
+  sourceLabel,
+  toInfo,
+  tokensIn,
+  type MicrosandboxComputeType,
+  type MicrosandboxSandbox,
+  type MicrosandboxService,
+  type MicrosandboxSnapshot,
+  type SandboxAnswer,
+} from "./api.js";
+import { fail, mapError, nativeHint, peerCause, peerError, provider as name } from "./errors.js";
+import {
+  execute,
+  orStop,
+  type MicrosandboxModule,
+  type PeerContext,
+  type PeerContextOptions,
+  type PeerSandbox,
+} from "./exec.js";
+
+export type { MicrosandboxComputeType } from "./api.js";
+
+export type {
+  MicrosandboxModule,
+  PeerContext as MicrosandboxPeerContext,
+  PeerContextOptions as MicrosandboxPeerContextOptions,
+  PeerExecEvent as MicrosandboxPeerExecEvent,
+  PeerExecHandle as MicrosandboxPeerExecHandle,
+  PeerExecOptions as MicrosandboxPeerExecOptions,
+  PeerFs as MicrosandboxPeerFs,
+  PeerSandbox as MicrosandboxPeerSandbox,
+} from "./exec.js";
+
+/** Microsandbox's API surface on `box.native` and `provider.api`: the control plane, `/v1` on the API host. */
+export type MicrosandboxPlane = "control";
+
+export type MicrosandboxCapability = "size" | "snapshot" | "snapshot-delete" | "network-policy";
+
+/**
+ * Called before the adapter sends a request that may allocate something billable, with what that request
+ * will carry, so a harness can journal it first. The adapter awaits each hook; a rejection stops the call
+ * before anything is sent. The hooks never see credentials.
+ */
+export interface MicrosandboxHooks {
+  /** Before `POST /v1/sandboxes`: the sandbox name and allocation marker this create sends, and its labels. */
+  create?(attempt: {
+    name: string;
+    allocId: string;
+    from: string | undefined;
+    labels: Labels;
+  }): void | Promise<void>;
+  /** Before the source is stopped for a snapshot: the snapshot name the capture will use. */
+  snapshot?(attempt: { sandboxId: string; name: string }): void | Promise<void>;
+  /**
+   * After a capture journaled through `snapshot` failed before its `POST /v1/snapshots` was sent,
+   * or that request was refused: nothing was captured under `name`. Not called when the capture's
+   * outcome is unknown, so its journal entry stays.
+   */
+  snapshotSettled?(outcome: {
+    sandboxId: string;
+    name: string;
+    outcome: "not-started";
+  }): void | Promise<void>;
+  /** Before `POST /v1/services`: the Service slug the adapter will create for this sandbox port. */
+  service?(attempt: {
+    sandboxId: string;
+    sandboxName: string;
+    slug: string;
+    port: number;
+  }): void | Promise<void>;
+  /**
+   * After a Service's create or delete settles. `created`: the Service at `slug` was made for this
+   * sandbox. `refused`: a 4xx (or never sent) made nothing. `conflict`: a 409 (or a live Service now
+   * targeting another sandbox), so the slug is someone else's and must never be deleted as this
+   * sandbox's. `deleted`: the adapter deleted the Service and released its slug. Not called when a
+   * create outcome stays unknown, so a journal entry for it stays pending.
+   */
+  serviceSettled?(outcome: {
+    sandboxId: string;
+    slug: string;
+    outcome: "created" | "refused" | "conflict" | "deleted";
+    createdAt?: string | undefined;
+  }): void | Promise<void>;
+}
+
+export interface MicrosandboxOptions {
+  /** Defaults to MSB_API_KEY. */
+  apiKey?: string;
+  /** The API host. Default: MSB_API_URL, else https://api.microsandbox.dev. */
+  baseUrl?: string;
+  /**
+   * Compute tier of new sandboxes and snapshot restores: `"standard"` (dedicated CPU) or `"shared"`. When
+   * set, a create whose sandbox comes back on another tier is deleted and refused, and `list()` and
+   * `find()` see only sandboxes on this tier. Default: the account's default (standard on paid plans).
+   */
+  computeType?: MicrosandboxComputeType;
+  /** OCI image of fresh sandboxes. Default: `node:22-bookworm`. */
+  image?: string;
+  /** Hard lifetime of a sandbox created without `timeoutMs` (`max_duration_secs`). Default: 1 hour. */
+  timeoutMs?: number;
+  /** Deadline for each control-plane request, retries included. Default: 60 seconds. */
+  requestTimeoutMs?: number;
+  /** See {@link MicrosandboxHooks}. Also settable later with `provider.setAttemptHooks`. */
+  hooks?: MicrosandboxHooks;
+  /**
+   * How to load the `microsandbox` package. Default: `() => import("microsandbox")`. Pass your own
+   * import when a bundler needs it spelled out, or a stand-in for tests.
+   */
+  peer?: () => Promise<MicrosandboxModule>;
+  /** For tests. */
+  fetch?: Fetch;
+}
+
+/** The npm package the adapter loads for commands and files, and that `native.sdk()` binds. */
+const sdkPackage = "microsandbox";
+
+/** What `native.sdk()` needs from `microsandbox`: its `RemoteContext`. */
+export interface MicrosandboxSdkModule {
+  RemoteContext: new (options: PeerContextOptions) => {
+    readonly sandboxes: { get(name: string): Promise<object> };
+  };
+}
+
+/** `box.native.sdk(() => import("microsandbox"))`: a `RemoteContext` with this adapter's key, and the sandbox from `context.sandboxes.get`. */
+export type MicrosandboxSandboxSdk = <M extends MicrosandboxSdkModule>(
+  load: () => Promise<M>,
+) => Promise<{
+  context: InstanceType<M["RemoteContext"]>;
+  sandbox: Awaited<ReturnType<InstanceType<M["RemoteContext"]>["sandboxes"]["get"]>>;
+}>;
+
+/** `provider.api.sdk(() => import("microsandbox"))`: a `RemoteContext` with this adapter's key. */
+export type MicrosandboxClientSdk = <M extends MicrosandboxSdkModule>(
+  load: () => Promise<M>,
+) => Promise<InstanceType<M["RemoteContext"]>>;
+
+/** `box.native`: Microsandbox's control plane with this adapter's key, `{id}` bound to the sandbox. */
+export type MicrosandboxNative = NativeApi<MicrosandboxPlane, MicrosandboxSandboxSdk>;
+
+export type MicrosandboxProvider = Provider<MicrosandboxNative, MicrosandboxCapability> & {
+  /** Account-level calls, such as `api.request("GET", "/snapshots")`. */
+  readonly api: NativeApi<MicrosandboxPlane, MicrosandboxClientSdk>;
+  /** The {@link MicrosandboxOptions.computeType} this adapter creates and lists on; undefined for the account default. */
+  readonly computeType: MicrosandboxComputeType | undefined;
+  /** Replaces the {@link MicrosandboxHooks}. For harnesses that journal allocations before they are made. */
+  setAttemptHooks(hooks: MicrosandboxHooks | undefined): void;
+};
+
+/** Size presets: vCPUs and MiB of memory. Disk is the cloud's default. */
+const presets = {
+  small: { vcpus: 1, memory_mib: 1024 },
+  medium: { vcpus: 2, memory_mib: 4096 },
+  large: { vcpus: 4, memory_mib: 8192 },
+} as const;
+
+const defaultImage = "node:22-bookworm";
+const defaultLifetimeMs = 3_600_000;
+
+/** How long cleanup and reconciliation after a failed, lost or aborted call may take, on its own deadline. */
+const cleanupMs = 60_000;
+
+/** How long a create waits for its sandbox to run, server wait and polling together. */
+const readyMs = 180_000;
+
+/** The server-side wait a create asks for (`wait_timeout`), in seconds. */
+const serverWaitSeconds = 60;
+
+/** How long a reconciliation keeps reading a name that answers 404: a create can be slow to appear. */
+const missingGraceMs = 15_000;
+
+/** How long a snapshot capture may take, from the request to a terminal operation. */
+const captureMs = 600_000;
+
+/**
+ * Names `sh -c` sets or resets on start in dash, bash or BusyBox, so the `env` a reconnect reads back
+ * no longer holds the value a secret under one of them had.
+ */
+const shellOwnedEnv: ReadonlySet<string> = new Set([
+  "PWD",
+  "OLDPWD",
+  "SHLVL",
+  "_",
+  "IFS",
+  "PPID",
+  "OPTIND",
+  "LINENO",
+  "PS1",
+  "PS2",
+  "SHELLOPTS",
+  "BASHOPTS",
+]);
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The largest value of an OpenAPI `int32` field, such as `CloudSandboxResources.vcpus`. */
+const int32Max = 2_147_483_647;
+
+/** The deterministic slug prefix of every Service the adapter makes for sandbox `id`. */
+const slugBase = (id: string) => `sbx-${id.replaceAll("-", "").slice(0, 16).toLowerCase()}`;
+
+/** Whether `slug` is one the adapter would make for sandbox `id`: `sbx-<16 hex>-p<port>`, optionally `-<4 hex>`. */
+export function isOwnedSlug(slug: string, id: string): boolean {
+  const base = slugBase(id);
+
+  return (
+    slug.startsWith(`${base}-p`) && /^-p[0-9]{1,5}(?:-[0-9a-f]{4})?$/.test(slug.slice(base.length))
+  );
+}
+
+function delay(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(done, ms);
+
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
+const statusOf = (cause: unknown) => httpStatus(cause)?.status;
+
+const isGone = (cause: unknown) => statusOf(cause) === 404;
+
+/** A failed write the server answered with a 4xx: refused before anything took effect. */
+const refused = (cause: unknown) => {
+  const status = statusOf(cause);
+
+  return status !== undefined && status >= 400 && status < 500;
+};
+
+/** Size fields of a create body (`CloudSandboxResources` or, for a restore, `CloudSandboxComputeResources`). */
+function resourcesOf(size: CreateInput["size"], restore: boolean): JsonObject | undefined {
+  if (size === undefined) return undefined;
+
+  if (isString(size)) return { ...presets[size] };
+
+  if (!Number.isSafeInteger(size.cpu) || size.cpu < 1 || size.cpu > int32Max)
+    throw fail(
+      `cpu must be a whole number from 1 to ${int32Max}, not ${size.cpu}`,
+      "invalid_argument",
+    );
+
+  if (!Number.isSafeInteger(size.memoryMb) || size.memoryMb < 128 || size.memoryMb > int32Max)
+    throw fail(
+      `memoryMb must be a whole number from 128 to ${int32Max}, not ${size.memoryMb}`,
+      "invalid_argument",
+    );
+  const resources: JsonObject = { vcpus: size.cpu, memory_mib: size.memoryMb };
+
+  if (size.diskGb !== undefined) {
+    // A disk snapshot restore takes CPU and memory only (`CloudSandboxComputeResources`).
+    if (restore)
+      throw fail(
+        "a snapshot restore keeps the snapshot's disk; omit diskGb when creating from a snapshot",
+        "unsupported",
+      );
+
+    const diskMib = Math.round(size.diskGb * 1024);
+
+    if (!Number.isFinite(size.diskGb) || size.diskGb <= 0 || diskMib < 1 || diskMib > int32Max)
+      throw fail(
+        `diskGb must be a positive number of at most ${int32Max} MiB, not ${size.diskGb}`,
+        "invalid_argument",
+      );
+    resources.disk_size_mib = diskMib;
+  }
+
+  return resources;
+}
+
+/** A host allow-list entry as a `Destination`: an IP or CIDR, `*.domain` as a suffix, else an exact domain. */
+function destinationOf(entry: string): JsonObject {
+  const host = entry.trim().toLowerCase();
+
+  if (/^[0-9.]+(?:\/[0-9]{1,2})?$/.test(host) || (host.includes(":") && /^[0-9a-f:/]+$/.test(host)))
+    return { cidr: host };
+
+  if (host.startsWith("*.") && /^[a-z0-9.-]+$/.test(host.slice(2)))
+    return { domain_suffix: host.slice(2) };
+
+  if (/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(host))
+    return { domain: host };
+
+  throw fail(
+    `the network allow list entry ${JSON.stringify(entry.slice(0, 80))} is not a host name, *.domain, IP or CIDR`,
+    "unsupported",
+  );
+}
+
+/** `CloudNetworkSpec` for a create's `network`. */
+function networkOf(network: CreateInput["network"]): JsonObject {
+  if (network === undefined || network === "all") return { enabled: true };
+
+  if (network === "none" || network.allow.length === 0) return { enabled: false };
+
+  // Deny by default: only the listed destinations, whose names also resolve (a domain rule permits its
+  // own lookups). Ingress stays open so the sandbox's Services keep working.
+  return {
+    enabled: true,
+    policy: {
+      default_egress: "deny",
+      default_ingress: "allow",
+      rules: network.allow.map((entry) => ({
+        direction: "egress",
+        destination: destinationOf(entry),
+        action: "allow",
+      })),
+    },
+  };
+}
+
+/** Whole seconds, at least `min`, rounded up; otherwise `invalid_argument` naming the option. */
+function seconds(ms: number, option: string, min: number) {
+  const value = Math.ceil(ms / 1000);
+
+  if (!Number.isFinite(value) || value < min)
+    throw fail(`${option} must be at least ${min} second(s)`, "invalid_argument");
+
+  return value;
+}
+
+/** Run once in a new sandbox, also one restored from a snapshot: the SDK works in /workspace. */
+const setupCommand = "mkdir -p /workspace";
+
+/** @internal The adapter behind `microsandbox()`. `load` imports `microsandbox`; tests pass a fixture. */
+export function createMicrosandboxProvider(
+  options: MicrosandboxOptions,
+  load: () => Promise<MicrosandboxModule>,
+): MicrosandboxProvider {
+  const root = (options.baseUrl ?? process.env.MSB_API_URL ?? "https://api.microsandbox.dev")
+    .trim()
+    .replace(/\/+$/, "");
+
+  const requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
+  const computeType = options.computeType;
+  let hooks: MicrosandboxHooks = options.hooks ?? {};
+
+  /** Sandbox ID to name: names route the guest agent and Services; IDs never change. */
+  const names = new Map<string, string>();
+  /** Guest agent handles per sandbox ID, made once and dropped when the sandbox stops or goes. */
+  const handles = new Map<string, Promise<PeerSandbox>>();
+
+  /** Service slugs this adapter made or was about to make, per sandbox ID, with target name and creation timestamp. */
+  const ownedServices = new Map<
+    string,
+    Map<
+      string,
+      {
+        target: string;
+        createdAt?: string | undefined;
+        confirmed?: boolean | undefined;
+        confirmedAt?: string | undefined;
+        /** When a create of this slug lost its answer; a 404 proves nothing until missingGraceMs later. */
+        lostAt?: number | undefined;
+        inFlight?: boolean | undefined;
+      }
+    >
+  >();
+
+  /**
+   * Sandboxes whose Services could not be listed during a destroy that still deleted them. Their
+   * Services may now be detached, which the sandbox-filtered list no longer shows and nothing proves
+   * were this adapter's, so the next destroy names any detached slug of this ID's shape instead.
+   */
+  const unlisted = new Set<string>();
+
+  /** Public Service URLs per sandbox ID and port. */
+  const previews = new Map<string, string>();
+  /** Tokens seen in answers, for redaction. Kept for the client's life. */
+  const tokens = new Set<string>();
+
+  if (computeType !== undefined && computeType !== "standard" && computeType !== "shared")
+    throw fail(`computeType must be "standard" or "shared"`, "invalid_argument");
+
+  function apiKey() {
+    const key = (options.apiKey ?? process.env.MSB_API_KEY)?.trim();
+
+    if (!key)
+      throw fail(
+        "the API key is missing. Authentication is required. Set MSB_API_KEY or pass apiKey",
+        "auth",
+      );
+
+    return key;
+  }
+
+  const secrets = () => [options.apiKey, process.env.MSB_API_KEY, ...tokens];
+
+  const http = createHttpClient<MicrosandboxPlane>({
+    provider: name,
+    label: "Microsandbox",
+    planes: {
+      // The cloud never redirects a write; following one could send it twice.
+      control: {
+        baseUrl: `${root}/v1`,
+        auth: () => ({ Authorization: `Bearer ${apiKey()}` }),
+        redirectWrites: false,
+      },
+    },
+    defaultPlane: "control",
+    fetch: options.fetch,
+    timeoutMs: requestTimeoutMs,
+    secrets,
+    credentialPatterns: leakPatterns,
+    authHint: "Set MSB_API_KEY to a valid Microsandbox organization API key.",
+    mapError,
+  });
+
+  /** The HTTP client's redaction without its scrub, for peer text the core redacts again before scrubbing. */
+  const peerRedact = (text: string) =>
+    leakPatterns.reduce(
+      (redacted, pattern) => redacted.replace(pattern, "[REDACTED]"),
+      redacting(secrets())(text),
+    );
+
+  // ---------------------------------------------------------------- the peer
+
+  /** The `RemoteContext` options: this adapter's key, URL, timeout and tier, never the process's defaults. */
+  function peerSettings(): PeerContextOptions {
+    const settings: PeerContextOptions = { url: root, apiKey: apiKey(), requestTimeoutMs };
+
+    if (computeType !== undefined) settings.computeType = computeType;
+
+    return settings;
+  }
+
+  let peerContext: Promise<PeerContext> | undefined;
+
+  /**
+   * The `microsandbox` `RemoteContext` for this adapter's key, URL and tier, built once. A missing peer, or
+   * one whose native addon cannot load (a bundle that inlined it, optional dependencies omitted), fails
+   * here with `unavailable` naming the fix. `create` calls this before sending anything.
+   */
+  async function context(): Promise<PeerContext> {
+    peerContext ??= (async () => {
+      const settings = peerSettings();
+      let module: MicrosandboxModule;
+
+      try {
+        module = await loadPeer(sdkPackage, name, load);
+      } catch (error) {
+        // A missing package or a bundle without require is already named; anything else is the peer
+        // failing to load where it was put (a CommonJS bundle that inlined it has no import.meta.url).
+        if (error instanceof SandboxError) throw error;
+
+        throw fail(`microsandbox could not load. ${nativeHint}`, "unavailable", {
+          hint: nativeHint,
+          cause: peerCause(error, peerRedact),
+        });
+      }
+
+      try {
+        return new module.RemoteContext(settings);
+      } catch (error) {
+        if (error instanceof SandboxError) throw error;
+
+        throw fail(
+          `microsandbox loaded, but its RemoteContext could not start. ${nativeHint}`,
+          "unavailable",
+          { hint: nativeHint, cause: peerCause(error, peerRedact) },
+        );
+      }
+    })();
+
+    const pending = peerContext;
+
+    try {
+      const loaded = await orStop(pending, createDeadline(requestTimeoutMs).signal);
+
+      if (loaded === "stop") throw fail("microsandbox did not load in time", "timeout");
+
+      return loaded;
+    } catch (error) {
+      // A failed or stalled setup (no key, no peer) is retried on the next call.
+      if (peerContext === pending) peerContext = undefined;
+      throw error;
+    }
+  }
+
+  /**
+   * The guest agent handle of sandbox `id`, through this adapter's own `RemoteContext`. The lookup has
+   * its own `requestTimeoutMs` deadline, and a failed one is dropped so the next call connects again.
+   * Each handle runs {@link bootRepairScript} before its first use, so this client never trusts the record of a
+   * process a stop ended, whoever restarted or restored the sandbox.
+   */
+  function handle(id: string): Promise<PeerSandbox> {
+    let known = handles.get(id);
+
+    if (!known) {
+      known = (async () => {
+        const sandboxName = await nameOf(id);
+        const peer = await context();
+        let sandbox: PeerSandbox | "stop";
+
+        try {
+          sandbox = await orStop(
+            peer.sandboxes.get(sandboxName),
+            createDeadline(requestTimeoutMs).signal,
+          );
+        } catch (error) {
+          throw peerError(error, "connecting to the sandbox", {
+            sandboxId: id,
+            redact: peerRedact,
+          });
+        }
+
+        if (sandbox === "stop")
+          throw fail("the guest agent did not answer in time", "timeout", { sandboxId: id });
+
+        const repaired = await execute({
+          sandbox: Promise.resolve(sandbox),
+          sandboxId: id,
+          redact: peerRedact,
+          exec: { command: bootRepairScript(), cwd: "/", env: {}, timeoutMs: 60_000, onChunk() {} },
+        });
+
+        if (repaired.timedOut || repaired.exitCode !== 0)
+          throw fail("the records of processes a stop ended could not be cleared", "provider", {
+            sandboxId: id,
+          });
+
+        return sandbox;
+      })();
+      handles.set(id, known);
+      known.catch(() => {
+        if (handles.get(id) === known) handles.delete(id);
+      });
+    }
+
+    return known;
+  }
+
+  // ---------------------------------------------------------------- control plane
+
+  const sandboxPath = (id: string, route = "") => ({
+    path: `/sandboxes/{id}${route}`,
+    params: { id },
+    sandboxId: id,
+  });
+
+  /** Reads one sandbox by its immutable ID and remembers its name. */
+  async function readSandbox(
+    id: string,
+    request: Partial<HttpRequest<MicrosandboxPlane>> = {},
+  ): Promise<MicrosandboxSandbox> {
+    const sandbox = parseSandbox(
+      await http.json({ method: "GET", ...sandboxPath(id), ...request }),
+    );
+
+    if (sandbox.id !== id)
+      throw fail("the API answered with another sandbox", "provider", { sandboxId: id });
+    names.set(id, sandbox.name);
+
+    return sandbox;
+  }
+
+  /** Reads one sandbox by name: a create's sandbox before its ID is known. */
+  async function readByName(sandboxName: string, request: Partial<HttpRequest<MicrosandboxPlane>>) {
+    return parseSandbox(
+      await http.json({
+        method: "GET",
+        path: "/sandboxes/by-name/{name}",
+        params: { name: sandboxName },
+        ...request,
+      }),
+    );
+  }
+
+  async function nameOf(id: string): Promise<string> {
+    return names.get(id) ?? (await readSandbox(id)).name;
+  }
+
+  const ownsLabels = (sandbox: MicrosandboxSandbox, labels: Labels) => {
+    const own = sandbox.spec?.labels;
+
+    return own !== undefined && Object.entries(labels).every(([k, v]) => own[k] === v);
+  };
+
+  const onTier = (sandbox: MicrosandboxSandbox) =>
+    computeType === undefined || sandbox.compute === computeType;
+
+  /** Sandboxes whose labels include every one of `labels`, on this adapter's tier, across all pages. */
+  async function listSandboxes(
+    labels: Labels,
+    signal?: AbortSignal,
+  ): Promise<MicrosandboxSandbox[]> {
+    const found: MicrosandboxSandbox[] = [];
+    let cursor: string | undefined;
+
+    for (let page = 0; page < 1000; page++) {
+      const query = {
+        limit: 100,
+        labels: Object.keys(labels).length > 0 ? JSON.stringify(labels) : undefined,
+        cursor,
+      };
+
+      const answer = parseSandboxPage(
+        await http.json({ method: "GET", path: "/sandboxes", query, signal }),
+      );
+
+      for (const sandbox of answer.data) names.set(sandbox.id, sandbox.name);
+      found.push(...answer.data);
+      cursor = answer.nextCursor;
+
+      if (cursor === undefined) break;
+    }
+
+    // The server's filter is checked again: a looser match, or another tier, is never reported.
+    return found.filter((s) => onTier(s) && ownsLabels(s, labels));
+  }
+
+  function forget(id: string) {
+    names.delete(id);
+    handles.delete(id);
+
+    for (const key of previews.keys()) if (key.startsWith(`${id}:`)) previews.delete(key);
+  }
+
+  /** Polls until the sandbox runs; `failed` and other end states throw. Never past `deadline`. */
+  async function untilRunning(id: string, deadline: Deadline, signal?: AbortSignal) {
+    for (let attempt = 0; ; attempt++) {
+      if (signal?.aborted) throw fail("creation aborted", "aborted", { sandboxId: id });
+      const sandbox = await readSandbox(id, { deadline, signal });
+
+      if (sandbox.status === "running") return sandbox;
+
+      if (!["created", "starting", "temporarily_unavailable"].includes(sandbox.status))
+        throw fail(`the sandbox is ${sandbox.status}, not running`, "provider", { sandboxId: id });
+
+      if (deadline.remaining() <= 0)
+        throw fail("the sandbox did not start in time", "timeout", { sandboxId: id });
+      await delay(Math.min(2000, 250 * 2 ** attempt), signal);
+    }
+  }
+
+  /** Polls until the sandbox is stopped. */
+  async function untilStopped(id: string, deadline: Deadline, signal?: AbortSignal) {
+    for (let attempt = 0; ; attempt++) {
+      if (signal?.aborted) throw fail("the wait was aborted", "aborted", { sandboxId: id });
+      const sandbox = await readSandbox(id, { deadline, signal });
+
+      if (sandbox.status === "stopped") return;
+
+      if (sandbox.status === "failed")
+        throw fail("the sandbox failed while stopping", "provider", { sandboxId: id });
+
+      if (deadline.remaining() <= 0)
+        throw fail("the sandbox did not stop in time", "timeout", { sandboxId: id });
+      await delay(Math.min(2000, 250 * 2 ** attempt), signal);
+    }
+  }
+
+  /**
+   * Reads sandbox `id` until it answers 404: Microsandbox accepts a DELETE before it finishes, and the
+   * sandbox stays readable, and findable by key, until then. `outcome_unknown` when it still reads at
+   * `deadline`.
+   */
+  async function untilGone(id: string, deadline: Deadline) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await http.json({ method: "GET", ...sandboxPath(id), deadline });
+      } catch (error) {
+        if (isGone(error)) return;
+      }
+
+      if (deadline.remaining() <= 0)
+        throw fail(
+          "the delete was accepted, but the sandbox still exists; destroy it again to confirm it is gone",
+          "outcome_unknown",
+          { sandboxId: id },
+        );
+      await delay(Math.min(2000, 250 * 2 ** attempt, deadline.remaining()));
+    }
+  }
+
+  /** Starts a stopped or created sandbox and waits for it to run. A 409 (already starting) is waited out. */
+  async function start(id: string, deadline: Deadline, signal?: AbortSignal) {
+    handles.delete(id);
+
+    try {
+      await http.request({
+        method: "POST",
+        ...sandboxPath(id, "/start"),
+        query: { wait_for: "running", wait_timeout: String(serverWaitSeconds) },
+        deadline,
+      });
+    } catch (error) {
+      if (statusOf(error) !== 409) throw error;
+    }
+
+    return untilRunning(id, deadline, signal);
+  }
+
+  /**
+   * Starts a sandbox a stop ended and connects to it, which runs {@link bootRepairScript}, before it is handed
+   * out. An abort after the start leaves the repair to the next connection.
+   */
+  async function revive(id: string, deadline: Deadline, signal?: AbortSignal) {
+    const sandbox = await start(id, deadline, signal);
+    await handle(id);
+
+    return sandbox;
+  }
+
+  /** Records Service `slug` of sandbox `id` as this adapter's, so a later destroy still finds it once detached. */
+  function ownService(
+    id: string,
+    slug: string,
+    sandboxName: string,
+    createdAt?: string,
+    confirmed?: boolean,
+  ) {
+    const owned =
+      ownedServices.get(id) ??
+      new Map<
+        string,
+        {
+          target: string;
+          createdAt?: string | undefined;
+          confirmed?: boolean | undefined;
+          confirmedAt?: string | undefined;
+          lostAt?: number | undefined;
+          inFlight?: boolean | undefined;
+        }
+      >();
+
+    const existing = owned.get(slug);
+    const nextCreatedAt = createdAt ?? existing?.createdAt;
+    const nextConfirmed = confirmed ?? existing?.confirmed;
+    owned.set(slug, {
+      target: sandboxName,
+      createdAt: nextCreatedAt,
+      confirmed: nextConfirmed,
+      confirmedAt: confirmed === true ? nextCreatedAt : (existing?.confirmedAt ?? undefined),
+      lostAt: nextCreatedAt === undefined ? existing?.lostAt : undefined,
+      inFlight: existing?.inFlight,
+    });
+    ownedServices.set(id, owned);
+
+    return owned;
+  }
+
+  /**
+   * Notifies `serviceSettled` during cleanup with a tight bound so a stalled hook never holds up
+   * sandbox deletion. Returns true only when the hook settled without error before the bound.
+   */
+  async function notifyServiceCleanup(
+    outcome: {
+      sandboxId: string;
+      slug: string;
+      outcome: "created" | "conflict" | "deleted";
+      createdAt?: string | undefined;
+    },
+    deadline: Deadline,
+  ): Promise<boolean> {
+    const callback = hooks.serviceSettled;
+
+    if (callback === undefined) return true;
+    const waitMs = Math.min(200, Math.max(1, deadline.remaining()));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      return await Promise.race([
+        Promise.resolve()
+          .then(() => callback(outcome))
+          .then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), waitMs);
+          timer.unref?.();
+        }),
+      ]);
+    } catch {
+      return false;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Deletes the Services this client made for sandbox `id`. Only memory (which survives a detached
+   * sandbox) names them, and each is deleted only while it still targets this sandbox (or nothing) and
+   * carries the creation timestamp this client saw. The cloud's list filtered by the sandbox's name, and
+   * after a destroy whose listing failed (see {@link unlisted}) the whole list for this ID's detached
+   * slugs, name the Services at this ID's slugs that memory cannot prove, which are never deleted. Returns the slugs whose deletion failed, those unproven slugs, and whether every
+   * listing answered.
+   */
+  async function removeServices(id: string, sandboxName: string | undefined, deadline: Deadline) {
+    const failed: string[] = [];
+    const unpersistedIdentity: string[] = [];
+    const unproven: string[] = [];
+    const unsettled: string[] = [];
+
+    /** Visits each Service over every page of `GET /services`; false when the list failed or ran past its page cap. */
+    const listServices = async (
+      sandbox: string | undefined,
+      visit: (service: MicrosandboxService) => void,
+    ) => {
+      try {
+        let cursor: string | undefined;
+
+        for (let page = 0; page < 100; page++) {
+          const query = { sandbox, limit: 100, cursor };
+
+          const answer = parseServicePage(
+            await http.json({ method: "GET", path: "/services", query, deadline }),
+          );
+
+          answer.data.forEach(visit);
+          cursor = answer.nextCursor;
+
+          if (cursor === undefined) return true;
+        }
+
+        return false;
+      } catch {
+        return false;
+      }
+    };
+
+    // Only memory names what this client made: one the filtered list shows at this ID's slugs and
+    // nothing proves is named and left alone, however it is attached.
+    let listed =
+      sandboxName === undefined ||
+      (await listServices(sandboxName, (service) => {
+        if (
+          isOwnedSlug(service.slug, id) &&
+          service.target?.sandbox === sandboxName &&
+          !ownedServices.get(id)?.has(service.slug)
+        )
+          unproven.push(service.slug);
+      }));
+
+    if (unlisted.has(id)) {
+      const proven = ownedServices.get(id);
+
+      const scanned = await listServices(undefined, (service) => {
+        if (isOwnedSlug(service.slug, id) && service.target === null && !proven?.has(service.slug))
+          unproven.push(service.slug);
+      });
+
+      if (!scanned) listed = false;
+      else if (unproven.length === 0) unlisted.delete(id);
+    }
+
+    // Deleting the entry being visited is safe while iterating a Map.
+    for (const [slug, entry] of ownedServices.get(id) ??
+      new Map<
+        string,
+        {
+          target: string;
+          createdAt?: string | undefined;
+          confirmed?: boolean | undefined;
+          confirmedAt?: string | undefined;
+          lostAt?: number | undefined;
+          inFlight?: boolean | undefined;
+        }
+      >()) {
+      if (!isOwnedSlug(slug, id)) continue;
+
+      if (entry.inFlight) {
+        unsettled.push(slug);
+        continue;
+      }
+
+      const syncIdentity = async () => {
+        const needsSync =
+          !entry.confirmed ||
+          (entry.createdAt !== undefined && entry.confirmedAt !== entry.createdAt);
+
+        if (!needsSync) return true;
+
+        const persisted = await notifyServiceCleanup(
+          { sandboxId: id, slug, outcome: "created", createdAt: entry.createdAt },
+          deadline,
+        );
+
+        if (!persisted) {
+          failed.push(slug);
+          unpersistedIdentity.push(slug);
+
+          return false;
+        }
+
+        entry.confirmed = true;
+        entry.confirmedAt = entry.createdAt;
+
+        return true;
+      };
+
+      // If we already know this Service's creation timestamp (from create, reuse, or filtered list),
+      // persist it before the exact GET so a transient GET 500 or an already-detached read cannot
+      // proceed to DELETE without durable proof on disk.
+      if (entry.createdAt !== undefined && !(await syncIdentity())) continue;
+
+      try {
+        let service: MicrosandboxService;
+
+        try {
+          service = parseService(
+            await http.json({
+              method: "GET",
+              path: "/services/{slug}",
+              params: { slug },
+              deadline,
+            }),
+          );
+        } catch (error) {
+          // A create whose answer was lost may still land: until its grace ends, neither a 404 nor a failed
+          // read proves it won't, so it and its sandbox are kept.
+          if (entry.lostAt !== undefined && Date.now() - entry.lostAt < missingGraceMs) {
+            unsettled.push(slug);
+            continue;
+          }
+
+          if (isGone(error)) {
+            ownedServices.get(id)?.delete(slug);
+            continue;
+          }
+
+          throw error;
+        }
+
+        if (service.slug !== slug) throw fail("the Service read answered another slug", "provider");
+
+        // Never a Service that now targets another sandbox, or one, attached or detached, whose
+        // creation timestamp does not prove it is the same Service instance this adapter owned.
+        if (service.target !== null) {
+          if (
+            service.target.sandbox !== entry.target ||
+            (entry.createdAt !== undefined &&
+              service.createdAt !== undefined &&
+              service.createdAt !== entry.createdAt)
+          ) {
+            ownedServices.get(id)?.delete(slug);
+            await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
+            continue;
+          }
+
+          // Without the creation timestamp this client saw, matched by the live one, nothing is proven.
+          if (entry.createdAt === undefined || service.createdAt !== entry.createdAt) {
+            ownedServices.get(id)?.delete(slug);
+            unproven.push(slug);
+            continue;
+          }
+
+          if (!(await syncIdentity())) continue;
+        } else if (
+          entry.createdAt !== undefined &&
+          service.createdAt !== undefined &&
+          service.createdAt !== entry.createdAt
+        ) {
+          ownedServices.get(id)?.delete(slug);
+          await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
+          continue;
+        } else if (entry.createdAt === undefined || service.createdAt === undefined) {
+          failed.push(slug);
+          continue;
+        } else if (!(await syncIdentity())) {
+          continue;
+        }
+
+        try {
+          await http.request({
+            method: "DELETE",
+            path: "/services/{slug}",
+            params: { slug },
+            deadline,
+          });
+        } catch (error) {
+          if (!isGone(error)) throw error;
+        }
+
+        ownedServices.get(id)?.delete(slug);
+        await notifyServiceCleanup({ sandboxId: id, slug, outcome: "deleted" }, deadline);
+      } catch {
+        failed.push(slug);
+      }
+    }
+
+    if (ownedServices.get(id)?.size === 0) ownedServices.delete(id);
+
+    return { failed, unpersistedIdentity, unproven, unsettled, listed };
+  }
+
+  /** Destroys under way in this client, per sandbox ID: no new Service is sent for one. */
+  const destroying = new Map<string, number>();
+
+  /**
+   * Deletes a sandbox: its adapter-owned Services first, then the sandbox itself, which always runs even
+   * when a Service could not be removed. A 404 is gone. A failed Service is kept in memory for the next
+   * try and reported after the sandbox is deleted. The name lookup, the Services and the sandbox delete
+   * each get their own `budgetMs` deadline, started when that step starts: a Service step that uses up
+   * its time never stops the sandbox delete from being sent. An accepted delete is confirmed by reading
+   * the ID until it answers 404, on a deadline of its own. A Service listing that failed is reported
+   * after the sandbox is deleted, never as success.
+   */
+  async function destroy(id: string, budgetMs = cleanupMs) {
+    destroying.set(id, (destroying.get(id) ?? 0) + 1);
+
+    try {
+      return await destroyOnce(id, budgetMs);
+    } finally {
+      const left = (destroying.get(id) ?? 1) - 1;
+
+      if (left > 0) destroying.set(id, left);
+      else destroying.delete(id);
+    }
+  }
+
+  async function destroyOnce(id: string, budgetMs: number) {
+    let sandboxName = names.get(id);
+    // An unreadable name leaves the sandbox's Services unlisted, unlike a 404: it is already gone.
+    let unreadable = false;
+
+    if (sandboxName === undefined)
+      try {
+        sandboxName = (await readSandbox(id, { deadline: createDeadline(budgetMs) })).name;
+      } catch (error) {
+        // The Services in memory are still removed, and the delete still runs.
+        unreadable = !isGone(error);
+      }
+
+    let failedServices: string[] = [];
+    let unpersistedIdentity: string[] = [];
+    let unproven: string[] = [];
+    let unsettled: string[] = [];
+    let listed = !unreadable;
+
+    try {
+      const outcome = await removeServices(id, sandboxName, createDeadline(budgetMs));
+      failedServices = outcome.failed;
+      unpersistedIdentity = outcome.unpersistedIdentity;
+      unproven = outcome.unproven;
+      unsettled = outcome.unsettled;
+      listed &&= outcome.listed;
+    } catch {
+      failedServices = [...(ownedServices.get(id)?.keys() ?? [])];
+    }
+
+    if (unpersistedIdentity.length > 0)
+      throw fail(
+        `verified Service identity could not be persisted (${unpersistedIdentity.join(", ")}); sandbox retained so attached ownership proof is not lost`,
+        "provider",
+        { sandboxId: id },
+      );
+
+    if (unsettled.length > 0)
+      throw fail(
+        `a Service create still in flight, or whose answer was lost, may still finish (${unsettled.join(", ")}); the sandbox was kept so that Service cannot be left detached. Destroy again in a few seconds`,
+        "unavailable",
+        { sandboxId: id, retryable: true },
+      );
+
+    // Recorded before the DELETE, whose answer may be lost after it took effect.
+    if (!listed) unlisted.add(id);
+    let accepted = false;
+
+    try {
+      await http.request({
+        method: "DELETE",
+        ...sandboxPath(id),
+        deadline: createDeadline(budgetMs),
+      });
+      accepted = true;
+    } catch (error) {
+      if (!isGone(error)) throw error;
+    } finally {
+      forget(id);
+    }
+
+    if (accepted) await untilGone(id, createDeadline(budgetMs));
+
+    if (failedServices.length > 0)
+      throw fail(
+        `the sandbox was deleted, but ${failedServices.length} of its Services (${failedServices.join(", ")}) could not be removed; destroy again to retry`,
+        "provider",
+        { sandboxId: id },
+      );
+
+    if (unproven.length > 0)
+      throw fail(
+        `the sandbox was deleted; Services with its slugs (${unproven.join(", ")}) were left alone, as nothing proves this client made them. Delete them yourself if it did`,
+        "provider",
+        { sandboxId: id },
+      );
+
+    if (!listed)
+      throw fail(
+        "the sandbox was deleted, but its Services could not be listed, so some may be left detached; destroy again to look for them",
+        "provider",
+        { sandboxId: id },
+      );
+  }
+
+  /** Deletes a sandbox this call made, on a fresh deadline, then reports `cause`. */
+  async function abandon(id: string, cause: unknown): Promise<never> {
+    try {
+      await destroy(id);
+    } catch {
+      throw fail(
+        `the sandbox was created but did not finish setting up, and it could not be confirmed deleted. Delete it before retrying`,
+        "outcome_unknown",
+        { sandboxId: id },
+      );
+    }
+
+    if (cause instanceof SandboxError) throw cause;
+    throw fail("the sandbox did not finish setting up", "provider", { sandboxId: id });
+  }
+
+  /**
+   * After a create whose answer was lost, unreadable, ambiguous or aborted: reads the chosen name on a
+   * fresh deadline until a sandbox carrying this call's allocation marker appears. A 404 is read again
+   * for {@link missingGraceMs} (a create can take a moment to appear), and a sandbox whose spec is not
+   * resolved yet while it is created or starting is read again too. Never returns a sandbox without this
+   * call's marker; `unknown` is thrown when nothing settles it.
+   */
+  async function reconcile(sandboxName: string, alloc: string, unknown: SandboxError) {
+    const deadline = createDeadline(cleanupMs);
+    const firstMissing = Date.now();
+
+    for (let attempt = 0; deadline.remaining() > 0; attempt++) {
+      let sandbox: MicrosandboxSandbox | undefined;
+
+      try {
+        sandbox = await readByName(sandboxName, { deadline });
+      } catch (error) {
+        // Still missing after the grace period: whatever happened, it cannot be found to settle it.
+        if (isGone(error) && Date.now() - firstMissing >= missingGraceMs) break;
+      }
+
+      if (sandbox !== undefined) {
+        const marker = sandbox.spec?.labels[allocLabel];
+
+        if (marker === alloc) {
+          names.set(sandbox.id, sandbox.name);
+
+          return sandbox;
+        }
+
+        // Another call's sandbox under this name: never this call's to return or delete.
+        if (sandbox.spec !== null)
+          throw fail(
+            `the sandbox named ${sandboxName} carries another allocation marker; it was left alone`,
+            "outcome_unknown",
+            { sandboxId: sandbox.id },
+          );
+      }
+
+      await delay(Math.min(2000, 250 * 2 ** attempt));
+    }
+
+    throw unknown;
+  }
+
+  /** The managed snapshot ID a restore names: a UUID as is, else a snapshot name looked up. */
+  async function snapshotRef(from: string): Promise<string> {
+    if (uuidPattern.test(from)) return from;
+    let snapshot: MicrosandboxSnapshot;
+
+    try {
+      snapshot = parseSnapshot(
+        await http.json({
+          method: "GET",
+          path: "/snapshots/by-name/{name}",
+          params: { name: from },
+        }),
+      );
+    } catch (error) {
+      if (isGone(error)) throw fail("the snapshot was not found", "not_found");
+      throw error;
+    }
+
+    if (snapshot.location.type !== "managed")
+      throw fail("the snapshot is not in managed storage", "unsupported");
+
+    return snapshot.location.id;
+  }
+
+  function createBody(
+    input: CreateInput,
+    sandboxName: string,
+    alloc: string,
+    ref: string | undefined,
+  ) {
+    const labels: Labels = { ...input.labels, [allocLabel]: alloc };
+
+    if (input.key !== undefined) labels[keyLabel] = input.key;
+
+    const lifecycle: JsonObject = {
+      ephemeral: false,
+      max_duration_secs: seconds(
+        input.timeoutMs ?? options.timeoutMs ?? defaultLifetimeMs,
+        "timeoutMs",
+        1,
+      ),
+    };
+
+    if (input.idleTimeoutMs !== undefined)
+      lifecycle.idle_timeout_secs = seconds(input.idleTimeoutMs, "idleTimeoutMs", 1);
+
+    const spec: JsonObject = {
+      name: sandboxName,
+      labels,
+      lifecycle,
+      network: networkOf(input.network),
+      env: Object.entries(input.env ?? {}).map(([key, value]) => ({ key, value })),
+    };
+
+    const resources = resourcesOf(input.size, ref !== undefined);
+
+    if (ref === undefined) {
+      spec.source = "oci";
+      spec.reference = options.image ?? defaultImage;
+    } else {
+      spec.source = "disk_snapshot";
+      spec.disk_snapshot_ref = { type: "managed", id: ref };
+    }
+
+    if (resources !== undefined) spec.resources = resources;
+    const body: JsonObject = { spec };
+
+    // Kept in the nested envelope: an API that ignored a flat `compute` could pick the wrong tier.
+    if (computeType !== undefined) body.compute = { type: computeType };
+
+    return body;
+  }
+
+  async function createSandbox(input: CreateInput): Promise<SandboxInfo> {
+    // Everything that can be refused locally is checked before anything is sent.
+    if (
+      input.from !== undefined &&
+      input.size !== undefined &&
+      !isString(input.size) &&
+      input.size.diskGb !== undefined
+    )
+      throw fail(
+        "a snapshot restore keeps the snapshot's disk; omit diskGb when creating from a snapshot",
+        "unsupported",
+      );
+    networkOf(input.network);
+    resourcesOf(input.size, input.from !== undefined);
+
+    const unkept = input.secretNames?.find((secret) => shellOwnedEnv.has(secret));
+
+    if (unkept !== undefined)
+      throw fail(
+        `secret ${unkept} uses a name the guest shell sets itself, so a reconnect could not recover it. Rename the secret`,
+        "invalid_argument",
+      );
+
+    // The peer gate: no billable sandbox is made for a client that could never run a command in it.
+    await context();
+
+    const ref = input.from === undefined ? undefined : await snapshotRef(input.from);
+    const sandboxName = `sbx-${randomUUID()}`;
+    const alloc = randomUUID();
+    const body = createBody(input, sandboxName, alloc, ref);
+
+    await hooks.create?.({
+      name: sandboxName,
+      allocId: alloc,
+      from: input.from,
+      labels: { ...input.labels },
+    });
+
+    if (input.signal?.aborted) throw fail("creation aborted", "aborted");
+
+    let answer: SandboxAnswer;
+
+    try {
+      answer = parseSandboxAnswer(
+        await http.json({
+          method: "POST",
+          path: "/sandboxes",
+          query: {
+            start: "true",
+            wait_for: "running",
+            wait_timeout: String(serverWaitSeconds),
+          },
+          body,
+          signal: input.signal,
+          timeoutMs: requestTimeoutMs + serverWaitSeconds * 1000,
+        }),
+      );
+    } catch (error) {
+      // Refused before anything was made: never left this process, or a 4xx.
+      if (neverSent(error) || refused(error)) throw error;
+
+      const unknown = fail(
+        `the create of sandbox ${sandboxName} may or may not have taken effect; it was not found in time. Look it up by name before retrying`,
+        "outcome_unknown",
+        { cause: error instanceof SandboxError ? error.message : undefined },
+      );
+
+      answer = { kind: "sandbox", sandbox: await reconcile(sandboxName, alloc, unknown) };
+    }
+
+    let sandbox: MicrosandboxSandbox;
+
+    if (answer.kind === "unreadable" || answer.sandbox.spec?.labels[allocLabel] !== alloc) {
+      // An unreadable answer, or one whose spec is not resolved yet, may still be this call's sandbox.
+      if (
+        answer.kind === "sandbox" &&
+        answer.sandbox.spec !== null &&
+        answer.sandbox.name === sandboxName
+      )
+        throw fail(
+          "the create answered with another sandbox, which carries another allocation marker; it was left alone",
+          "outcome_unknown",
+          { sandboxId: answer.sandbox.id },
+        );
+      sandbox = await reconcile(
+        sandboxName,
+        alloc,
+        fail(
+          `the create of sandbox ${sandboxName} was answered, but the answer did not show this call's marker; look it up by name before retrying`,
+          "outcome_unknown",
+        ),
+      );
+    } else sandbox = answer.sandbox;
+
+    const id = sandbox.id;
+    names.set(id, sandbox.name);
+
+    try {
+      if (input.signal?.aborted) throw fail("creation aborted", "aborted", { sandboxId: id });
+
+      // The tier the cloud chose must be the one asked for.
+      if (computeType !== undefined && sandbox.compute !== computeType)
+        throw fail(
+          `the sandbox runs on ${sandbox.compute ?? "an unknown"} compute, not ${computeType}`,
+          "provider",
+          { sandboxId: id },
+        );
+
+      const deadline = createDeadline(readyMs);
+
+      if (sandbox.status === "created") sandbox = await start(id, deadline, input.signal);
+      else if (sandbox.status !== "running")
+        sandbox = await untilRunning(id, deadline, input.signal);
+
+      const guest = await handle(id);
+      await shell(id, setupCommand, 60_000, guest);
+
+      if (input.signal?.aborted) throw fail("creation aborted", "aborted", { sandboxId: id });
+    } catch (error) {
+      return abandon(id, error);
+    }
+
+    return {
+      id,
+      key: input.key,
+      labels: { ...input.labels },
+      state: "running",
+      createdAt: sandbox.createdAt || Date.now(),
+    };
+  }
+
+  // ---------------------------------------------------------------- commands and files
+
+  async function exec(id: string, input: ExecInput) {
+    if (input.signal?.aborted) return { exitCode: null, timedOut: true };
+
+    return execute({ sandbox: handle(id), exec: input, sandboxId: id, redact: peerRedact });
+  }
+
+  /** A short command for the adapter itself: its stdout, or a failure on a non-zero exit. */
+  async function shell(id: string, command: string, timeoutMs = 120_000, known?: PeerSandbox) {
+    let stdout = "";
+
+    const result = await execute({
+      sandbox: known === undefined ? handle(id) : Promise.resolve(known),
+      sandboxId: id,
+      redact: peerRedact,
+      exec: {
+        command,
+        cwd: "/",
+        env: {},
+        timeoutMs,
+        onChunk: (chunk) => {
+          if (chunk.stream === "stdout") stdout += chunk.text;
+        },
+      },
+    });
+
+    if (result.timedOut) throw fail("a guest command timed out", "timeout", { sandboxId: id });
+
+    if (result.exitCode !== 0)
+      throw fail(`a guest command failed (exit ${result.exitCode})`, "provider", { sandboxId: id });
+
+    return stdout;
+  }
+
+  const guest = (id: string): Guest => ({
+    name,
+    raw: (command) => shell(id, command),
+    upload: async (path, bytes) => {
+      const sandbox = await handle(id);
+
+      try {
+        await sandbox.fs().write(path, bytes);
+      } catch (error) {
+        throw peerError(error, "writing a file", {
+          sandboxId: id,
+          redact: peerRedact,
+          files: true,
+        });
+      }
+    },
+    read: async (path, range) => {
+      const sandbox = await handle(id);
+      let bytes: Uint8Array;
+
+      try {
+        bytes = await sandbox.fs().read(path);
+      } catch (error) {
+        throw peerError(error, "reading a file", {
+          sandboxId: id,
+          redact: peerRedact,
+          files: true,
+        });
+      }
+
+      return range ? bytes.subarray(range.offset, range.offset + range.length) : bytes;
+    },
+  });
+
+  const files = guestFiles(
+    async (id) => guest(id),
+    async (_id, action) => action(),
+  );
+
+  // ---------------------------------------------------------------- previews
+
+  /** The Service at `slug` when it routes `port` of the sandbox named `sandboxName`; undefined when absent. */
+  async function readService(slug: string): Promise<MicrosandboxService | undefined> {
+    try {
+      return parseService(
+        await http.json({ method: "GET", path: "/services/{slug}", params: { slug } }),
+      );
+    } catch (error) {
+      if (isGone(error)) return undefined;
+      throw error;
+    }
+  }
+
+  const routes = (service: MicrosandboxService, sandboxName: string, port: number) =>
+    service.target?.sandbox === sandboxName &&
+    service.target.port === port &&
+    service.status === "enabled";
+
+  /** {@link postService}, marked in flight meanwhile, so a destroy keeps the sandbox until it settles. */
+  async function createService(id: string, sandboxName: string, slug: string, port: number) {
+    try {
+      return await postService(id, sandboxName, slug, port);
+    } finally {
+      const entry = ownedServices.get(id)?.get(slug);
+
+      if (entry !== undefined) entry.inFlight = false;
+    }
+  }
+
+  async function postService(id: string, sandboxName: string, slug: string, port: number) {
+    const refuseDuringDestroy = () =>
+      fail("the sandbox is being destroyed", "invalid_argument", { sandboxId: id });
+
+    // A destroy that started first may already be past this slug, so nothing is sent or journaled.
+    if (destroying.has(id)) throw refuseDuringDestroy();
+
+    // A create of this slug that lost its answer may still land, so a second one is never sent while
+    // it can: a retry's Service, deleted by a destroy, could otherwise be remade by the first.
+    const lostAt = ownedServices.get(id)?.get(slug)?.lostAt;
+
+    if (lostAt !== undefined && Date.now() - lostAt < missingGraceMs)
+      throw fail(
+        "an earlier Service create for this port may still land; try again shortly",
+        "unavailable",
+        { sandboxId: id, retryable: true },
+      );
+
+    // Journaled before the request: a lost answer may still have made it.
+    await hooks.service?.({ sandboxId: id, sandboxName, slug, port });
+
+    // An earlier create of this slug that lost its answer stays tracked, in memory and in the journal,
+    // whatever becomes of this one: it may still land.
+    const earlierLost = ownedServices.get(id)?.get(slug)?.lostAt !== undefined;
+    const owned = ownService(id, slug, sandboxName);
+    const sending = owned.get(slug);
+
+    if (sending !== undefined) sending.inFlight = true;
+
+    /** Forgets this attempt and tells the journal, unless an earlier lost create still holds the slug. */
+    const release = async (outcome: "refused" | "conflict") => {
+      if (earlierLost) return;
+      owned.delete(slug);
+      await hooks.serviceSettled?.({ sandboxId: id, slug, outcome });
+    };
+
+    // A destroy may have started while the journal was written.
+    if (destroying.has(id)) {
+      await release("refused").catch(() => {});
+      throw refuseDuringDestroy();
+    }
+
+    let created: MicrosandboxService;
+    // Only a 201 is this client's own create. A 200 answers with a Service that was already there,
+    // and a lost answer read back proves nothing about who made what it finds.
+    let answer: "made" | "existing" | "lost";
+
+    try {
+      const response = await http.request({
+        method: "POST",
+        path: "/services",
+        body: { slug, target: { sandbox: sandboxName, port } },
+      });
+
+      created = parseService(response.json());
+      answer = response.status === 201 ? "made" : "existing";
+    } catch (error) {
+      if (neverSent(error) || (refused(error) && statusOf(error) !== 409)) {
+        // The refusal is what the caller sees; a journal that could not record it keeps the entry
+        // pending, which recovery settles.
+        await release("refused").catch(() => {});
+
+        throw error;
+      }
+
+      // A 409: the slug belongs to someone else, never touched, and the journal is told before any
+      // other slug is tried. Anything else: read what was made.
+      if (statusOf(error) === 409) {
+        await release("conflict");
+
+        return "taken" as const;
+      }
+
+      const found = await readService(slug).catch(() => undefined);
+
+      if (found === undefined) {
+        const lost = owned.get(slug);
+
+        if (lost !== undefined) lost.lostAt = Date.now();
+        throw error;
+      }
+
+      created = found;
+      answer = "lost";
+    }
+
+    if (answer === "existing" || created.slug !== slug) {
+      await release("conflict");
+
+      return created;
+    }
+
+    // Unproven: the journal keeps its entry pending for review, and memory never claims it.
+    if (answer === "lost") {
+      if (!earlierLost) owned.delete(slug);
+
+      return created;
+    }
+
+    if (created.target?.sandbox === sandboxName) {
+      ownService(id, slug, sandboxName, created.createdAt, false);
+      await hooks.serviceSettled?.({
+        sandboxId: id,
+        slug,
+        outcome: "created",
+        createdAt: created.createdAt,
+      });
+
+      if (created.createdAt !== undefined)
+        ownService(id, slug, sandboxName, created.createdAt, true);
+    }
+
+    return created;
+  }
+
+  /** Preview lookups under way per sandbox ID and port, so concurrent calls make one Service. */
+  const previewing = new Map<string, Promise<{ url: string }>>();
+
+  function previewUrl(id: string, port: number) {
+    const key = `${id}:${port}`;
+    let pending = previewing.get(key);
+
+    if (pending === undefined) {
+      pending = makePreview(id, port).finally(() => previewing.delete(key));
+      previewing.set(key, pending);
+    }
+
+    return pending;
+  }
+
+  async function makePreview(id: string, port: number) {
+    const cached = previews.get(`${id}:${port}`);
+
+    if (cached) return { url: cached };
+
+    if (!Number.isInteger(port) || port < 1 || port > 65535)
+      throw fail(`port must be a whole number from 1 to 65535, not ${port}`, "invalid_argument");
+    const sandboxName = await nameOf(id);
+    const slug = `${slugBase(id)}-p${port}`;
+    let service: MicrosandboxService | "taken" | undefined = await readService(slug);
+
+    // An existing Service at the adapter's slug is reused only when it routes exactly this port.
+    if (service !== undefined && !routes(service, sandboxName, port)) service = "taken";
+    else if (service === undefined) service = await createService(id, sandboxName, slug, port);
+
+    if (service === "taken") {
+      const suffix = randomUUID().replaceAll("-", "").slice(0, 4);
+      service = await createService(id, sandboxName, `${slug}-${suffix}`, port);
+    }
+
+    if (service === "taken" || !routes(service, sandboxName, port))
+      throw fail(`no Service could be made for port ${port}`, "provider", { sandboxId: id });
+    const url = serviceUrl(service);
+
+    for (const token of tokensIn(url)) tokens.add(token);
+    previews.set(`${id}:${port}`, url);
+
+    return { url };
+  }
+
+  // ---------------------------------------------------------------- snapshots
+
+  /** Restarts a source sandbox that was running before a snapshot; never throws. */
+  async function restart(id: string): Promise<boolean> {
+    try {
+      await revive(id, createDeadline(readyMs));
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The operation that captures `snapshotName`, from the list of recent operations, or undefined. */
+  async function findOperation(snapshotName: string, id: string, deadline: Deadline) {
+    let cursor: string | undefined;
+
+    for (let page = 0; page < 5; page++) {
+      const query = { limit: 100, cursor };
+
+      const answer = parseOperationPage(
+        await http.json({ method: "GET", path: "/snapshot-operations", query, deadline }),
+      );
+
+      const match = answer.data.find(
+        (op) =>
+          op.snapshotName === snapshotName && (op.sandboxId === undefined || op.sandboxId === id),
+      );
+
+      if (match) return match;
+      cursor = answer.nextCursor;
+
+      if (cursor === undefined) return undefined;
+    }
+
+    return undefined;
+  }
+
+  /** The snapshot named `snapshotName`, or undefined on a 404. */
+  async function snapshotByName(snapshotName: string, deadline: Deadline) {
+    try {
+      return parseSnapshot(
+        await http.json({
+          method: "GET",
+          path: "/snapshots/by-name/{name}",
+          params: { name: snapshotName },
+          deadline,
+        }),
+      );
+    } catch (error) {
+      if (isGone(error)) return undefined;
+      throw error;
+    }
+  }
+
+  type Settled =
+    | { kind: "succeeded"; snapshot: MicrosandboxSnapshot | undefined }
+    | { kind: "failed" }
+    | { kind: "pending"; operationId: string | undefined };
+
+  /**
+   * After a capture whose answer was lost: looks the capture up by its name, in the operations list and
+   * as a snapshot, on a fresh deadline, until one of them shows a terminal outcome.
+   */
+  async function settleLostCapture(snapshotName: string, id: string): Promise<Settled> {
+    const deadline = createDeadline(captureMs);
+    let operationId: string | undefined;
+
+    for (let attempt = 0; deadline.remaining() > 0; attempt++) {
+      try {
+        const snapshot = await snapshotByName(snapshotName, deadline);
+
+        if (snapshot !== undefined) return { kind: "succeeded", snapshot };
+        const op = await findOperation(snapshotName, id, deadline);
+
+        if (op !== undefined) {
+          operationId = op.id;
+
+          if (op.status === "failed") return { kind: "failed" };
+
+          if (op.status === "succeeded") return { kind: "succeeded", snapshot: op.result };
+        }
+      } catch {
+        // Read again until the deadline.
+      }
+
+      await delay(Math.min(5000, 500 * 2 ** attempt));
+    }
+
+    return { kind: "pending", operationId };
+  }
+
+  /** Polls one capture operation until it is terminal. */
+  async function settleOperation(operationId: string): Promise<Settled> {
+    const deadline = createDeadline(captureMs);
+
+    for (let attempt = 0; deadline.remaining() > 0; attempt++) {
+      try {
+        const op = parseOperation(
+          await http.json({
+            method: "GET",
+            path: "/snapshot-operations/{op}",
+            params: { op: operationId },
+            deadline,
+          }),
+        );
+
+        if (op.status === "failed") return { kind: "failed" };
+
+        if (op.status === "succeeded") return { kind: "succeeded", snapshot: op.result };
+      } catch {
+        // Read again until the deadline.
+      }
+
+      await delay(Math.min(5000, 500 * 2 ** attempt));
+    }
+
+    return { kind: "pending", operationId };
+  }
+
+  /**
+   * Captures under way in this client, per sandbox ID, each as a promise that settles with it: the
+   * stop they made is not idleness, and nothing else starts the source until they finish.
+   */
+  const capturing = new Map<string, Set<Promise<void>>>();
+
+  async function snapshot(id: string, snapshotOptions?: { expiresInMs?: number }) {
+    const pending = capturing.get(id) ?? new Set<Promise<void>>();
+
+    // Captures of one sandbox run one at a time: each restarts the source it stopped, which would
+    // leave a capture still under way facing a running sandbox.
+    const run = Promise.all(pending).then(() => capture(id, snapshotOptions));
+
+    const settled = run.then(
+      () => {},
+      () => {},
+    );
+
+    pending.add(settled);
+    capturing.set(id, pending);
+
+    try {
+      return await run;
+    } finally {
+      pending.delete(settled);
+
+      if (pending.size === 0 && capturing.get(id) === pending) capturing.delete(id);
+    }
+  }
+
+  /**
+   * Waits until no capture of this client holds sandbox `id`, within its deadline and
+   * signal; giving up leaves the captures running.
+   */
+  async function capturesDone(id: string, deadline: Deadline, signal?: AbortSignal) {
+    for (let pending = capturing.get(id); pending; pending = capturing.get(id)) {
+      const stops = signal === undefined ? [deadline.timeout] : [deadline.timeout, signal];
+      let stop = () => {};
+
+      const stopped = new Promise<never>((_resolve, reject) => {
+        stop = () =>
+          reject(
+            signal?.aborted
+              ? fail("the key lookup was aborted", "aborted", { sandboxId: id })
+              : fail("a snapshot of the sandbox did not finish in time", "timeout", {
+                  sandboxId: id,
+                }),
+          );
+      });
+
+      if (stops.some((s) => s.aborted)) stop();
+
+      for (const s of stops) s.addEventListener("abort", stop, { once: true });
+
+      try {
+        await Promise.race([Promise.all(pending), stopped]);
+      } finally {
+        for (const s of stops) s.removeEventListener("abort", stop);
+      }
+    }
+  }
+
+  async function capture(id: string, snapshotOptions?: { expiresInMs?: number }) {
+    if (snapshotOptions?.expiresInMs)
+      throw fail("snapshots are kept until deleted; omit expiresInMs", "unsupported", {
+        sandboxId: id,
+      });
+    const snapshotName = `sandbox-sdk-${randomUUID()}`;
+
+    // Journaled before the source is touched, so a capture that outlives this call is still found.
+    await hooks.snapshot?.({ sandboxId: id, name: snapshotName });
+
+    /** Reports `cause` once the journal hears that no capture request went out under this name. */
+    const notStarted = async (cause: unknown): Promise<never> => {
+      try {
+        await hooks.snapshotSettled?.({
+          sandboxId: id,
+          name: snapshotName,
+          outcome: "not-started",
+        });
+      } catch {
+        // The capture's failure is what the caller sees; an unrecorded entry is settled by recovery.
+      }
+
+      throw cause;
+    };
+
+    let wasRunning: boolean;
+
+    try {
+      const before = await readSandbox(id);
+      wasRunning = before.status === "running" || before.status === "starting";
+
+      if (wasRunning) {
+        handles.delete(id);
+        const deadline = createDeadline(readyMs);
+
+        try {
+          await http.request({ method: "POST", ...sandboxPath(id, "/stop"), deadline });
+        } catch (error) {
+          // A 409 is a stop already under way; an unknown outcome is settled by reading the status.
+          if (refused(error) && statusOf(error) !== 409) throw error;
+        }
+
+        try {
+          await untilStopped(id, deadline);
+        } catch (error) {
+          await restart(id);
+          throw error;
+        }
+      }
+    } catch (error) {
+      return notStarted(error);
+    }
+
+    /** Reports `cause` after restarting a source that was running; the restart never hides it. */
+    const afterRestart = async (cause: unknown): Promise<never> => {
+      if (wasRunning) await restart(id);
+      throw cause;
+    };
+
+    let settled: Settled;
+
+    try {
+      const op = parseOperation(
+        await http.json({
+          method: "POST",
+          path: "/snapshots",
+          body: {
+            kind: "disk",
+            sandbox_id: id,
+            name: snapshotName,
+            labels: { [sourceLabel]: id },
+          },
+          timeoutMs: requestTimeoutMs,
+        }),
+      );
+
+      settled =
+        op.status === "succeeded"
+          ? { kind: "succeeded", snapshot: op.result }
+          : op.status === "failed"
+            ? { kind: "failed" }
+            : await settleOperation(op.id);
+    } catch (error) {
+      // Refused before an operation started (400, 403, 404, 409, 422): nothing was captured.
+      if (neverSent(error) || refused(error)) {
+        if (wasRunning) await restart(id);
+
+        return notStarted(error);
+      }
+
+      settled = await settleLostCapture(snapshotName, id);
+    }
+
+    if (settled.kind === "failed")
+      return afterRestart(fail("the snapshot capture failed", "provider", { sandboxId: id }));
+
+    if (settled.kind === "pending")
+      return afterRestart(
+        fail(
+          `the snapshot capture did not finish in time; it may still complete as ${snapshotName}. Delete it by name once it appears`,
+          "outcome_unknown",
+          { sandboxId: id },
+        ),
+      );
+
+    let result = settled.snapshot;
+
+    if (result === undefined)
+      result = await snapshotByName(snapshotName, createDeadline(cleanupMs)).catch(() => undefined);
+
+    if (
+      result === undefined ||
+      result.name !== snapshotName ||
+      !capturedFrom(result, id) ||
+      result.location.type !== "managed"
+    )
+      return afterRestart(
+        fail(
+          `the capture finished, but no managed snapshot of this sandbox named ${snapshotName} could be read`,
+          "outcome_unknown",
+          { sandboxId: id },
+        ),
+      );
+
+    const confirmedId = result.location.id;
+
+    // The snapshot exists whatever happens next; a failed restart names it so it is never lost.
+    if (wasRunning && !(await restart(id)))
+      throw fail(
+        `snapshot ${uuidPattern.test(confirmedId) ? `${confirmedId} (${snapshotName})` : snapshotName} was taken, but the sandbox could not be restarted`,
+        "provider",
+        { sandboxId: id },
+      );
+
+    return { id: confirmedId };
+  }
+
+  async function deleteSnapshot(snapshotId: string) {
+    const remove = async (path: string, params: Record<string, string>) => {
+      try {
+        await http.request({ method: "DELETE", path, params });
+
+        return true;
+      } catch (error) {
+        if (isGone(error)) return false;
+        throw error;
+      }
+    };
+
+    // A managed ID that is gone is never retried as a name: another snapshot may carry that name.
+    if (uuidPattern.test(snapshotId)) return remove("/snapshots/{id}", { id: snapshotId });
+
+    return remove("/snapshots/by-name/{name}", { name: snapshotId });
+  }
+
+  // ---------------------------------------------------------------- native
+
+  const binding: NativeSdkBinding = {
+    package: sdkPackage,
+    async connect(module, sandboxId) {
+      const peer = sdkConstruct(module, "RemoteContext", [peerSettings()], sdkPackage);
+
+      if (sandboxId === undefined) return peer;
+
+      const sandboxes = sdkObject(peer.sandboxes, "RemoteContext.sandboxes", sdkPackage);
+
+      const sandbox = sdkObject(
+        await sdkCall(sandboxes, "get", [await nameOf(sandboxId)], sdkPackage),
+        "the sandbox",
+        sdkPackage,
+      );
+
+      return { context: peer, sandbox };
+    },
+  };
+
+  /** `provider.api` and `box.native` register any token in the JSON they read, so a later error never echoes one. */
+  const nativeHttp: HttpClient<MicrosandboxPlane> = {
+    ...http,
+    async json(request) {
+      const value: JsonValue | undefined = await http.json(request);
+
+      for (const token of nestedTokens(value)) tokens.add(token);
+
+      return value;
+    },
+  };
+
+  const api = createNativeApi<MicrosandboxPlane, MicrosandboxClientSdk>({
+    http: nativeHttp,
+    placeholder: "id",
+    sdk: binding,
+  });
+
+  const natives = new Map<string, MicrosandboxNative>();
+
+  const provider: MicrosandboxProvider = {
+    name,
+    keyMode: "best-effort",
+    capabilities: new Set<MicrosandboxCapability>([
+      "size",
+      "snapshot",
+      "snapshot-delete",
+      "network-policy",
+    ]),
+    api,
+    computeType,
+
+    setAttemptHooks(next) {
+      hooks = next ?? {};
+    },
+
+    create: createSandbox,
+
+    async find(key, findOptions) {
+      const signal = findOptions?.signal;
+
+      // A failed sandbox never runs again: a key that names only those makes a new sandbox.
+      const usable = (await listSandboxes({ [keyLabel]: key }, signal)).filter(
+        (s) => s.status !== "failed",
+      );
+
+      const running = usable.find((s) => s.status === "running");
+
+      if (running !== undefined) return toInfo(running);
+
+      // A starting one is waited for. One its lifetime or idle timeout stopped, keeping its disk, is
+      // started again, so the key's sandbox runs commands. One deleted meanwhile makes a new sandbox.
+      const match = usable.find((s) => toInfo(s).state === "running") ?? usable[0];
+
+      if (match === undefined) return undefined;
+      const deadline = createDeadline(readyMs);
+
+      try {
+        let current = match;
+
+        // A capture of this client stops the source on purpose and restarts it itself, so the state
+        // to wait out is the one it leaves.
+        if (capturing.has(match.id)) {
+          await capturesDone(match.id, deadline, signal);
+          current = await readSandbox(match.id, { deadline, signal });
+        }
+
+        if (toInfo(current).state === "running")
+          return toInfo(await untilRunning(match.id, deadline, signal));
+
+        if (current.status === "stopping" || current.status === "saving_state")
+          await untilStopped(match.id, deadline, signal);
+
+        // A capture can start during the waits above: never revive while one holds the source.
+        while (capturing.has(match.id)) {
+          await capturesDone(match.id, deadline, signal);
+
+          if (toInfo(await readSandbox(match.id, { deadline, signal })).state === "running")
+            return toInfo(await untilRunning(match.id, deadline, signal));
+        }
+
+        if (signal?.aborted) throw fail("the key lookup was aborted", "aborted");
+
+        return toInfo(await revive(match.id, deadline, signal));
+      } catch (error) {
+        if (isGone(error)) return undefined;
+        throw error;
+      }
+    },
+
+    async isStopped(id) {
+      if (capturing.has(id)) return false;
+      const { status } = await readSandbox(id);
+
+      // A capture may have started while the read was out.
+      if (capturing.has(id)) return false;
+
+      return status === "stopped" || status === "failed";
+    },
+
+    async connect(id) {
+      try {
+        return toInfo(await readSandbox(id));
+      } catch (error) {
+        if (isGone(error)) {
+          forget(id);
+          throw fail("the sandbox does not exist", "not_found", { sandboxId: id });
+        }
+
+        throw error;
+      }
+    },
+
+    async list(labels) {
+      return (await listSandboxes(labels)).map(toInfo);
+    },
+
+    destroy: (id) => destroy(id),
+
+    async close(id) {
+      handles.delete(id);
+    },
+
+    exec,
+    files,
+    previewUrl,
+    snapshot,
+    deleteSnapshot,
+
+    native(id) {
+      let value = natives.get(id);
+
+      if (!value) {
+        value = createNativeApi<MicrosandboxPlane, MicrosandboxSandboxSdk>({
+          http: nativeHttp,
+          placeholder: "id",
+          sandboxId: id,
+          sdk: binding,
+        });
+        natives.set(id, value);
+      }
+
+      return value;
+    },
+  };
+
+  return provider;
+}

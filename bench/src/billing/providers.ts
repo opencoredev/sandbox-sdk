@@ -8,6 +8,8 @@ import { endpoint } from "../connections.js";
 import type { Json } from "../json.js";
 import { archilControlUrl, archilSandboxBody, archilUsageBody } from "../archil.js";
 import { pricing } from "../pricing.js";
+import { checkMicrosandboxEndpoint } from "../microsandbox.js";
+import { microsandboxTier } from "../providers.js";
 import type { OwnedSandbox } from "./input.js";
 import { collectModal, modalBillingSource, type ModalReport } from "./modal.js";
 
@@ -85,6 +87,23 @@ type BillingSource = {
 };
 
 export const archilUsageSource = "GET /api/sandboxes/{id}/usage (Archil control plane)";
+
+export const microsandboxUsageSource =
+  "https://api.microsandbox.dev/v1/billing/usage/sandbox and /v1/billing/usage (costs.workloads)";
+
+/** Microsandbox's billing source for one tier; both tiers read the same account endpoints. */
+function microsandboxBilling(tier: "Standard" | "Shared"): BillingSource {
+  return {
+    source: microsandboxUsageSource,
+    granularity: "per sandbox per UTC day: vCPU-, memory MiB- and disk MiB-seconds of running time",
+    delay: "unknown: no finalization signal, so always provisional",
+    key: "MSB_API_KEY",
+    notes: [
+      `Metered, not invoice: Microsandbox's own per-sandbox daily usage rows, each priced at the published rates of the row's own compute_type (${tier} runs here; Standard $0.048/vCPU-hour, $0.003/GiB-hour, $0.0000625/GiB-hour of disk; Shared $0.007, $0.000375, $0.0000625; https://microsandbox.dev/pricing), cross-checked against costs.workloads when it names the sandbox. Plan fees, credits, volumes, snapshots and tax are excluded.`,
+      "Always provisional (complete: false, low confidence): the rows meter running intervals only, so a stopped sandbox's retained disk is missing; deletion is asynchronous; and costs.incomplete only flags older events. A sandbox with no row and no workloads entry is unavailable, never $0.",
+    ],
+  };
+}
 
 const sources = new Map<string, BillingSource>(
   Object.entries({
@@ -196,6 +215,8 @@ const sources = new Map<string, BillingSource>(
         "A sandbox with no usage interval counts as $0 only when Maritime's info says it ended with 0 running seconds and $0 so far; otherwise its cost is unavailable, never zero.",
       ],
     },
+    microsandbox: microsandboxBilling("Standard"),
+    "microsandbox-shared": microsandboxBilling("Shared"),
     styne: {
       source: "No per-sandbox billing endpoint (GET /v1/run/usage is daily account totals)",
       granularity: "not available per sandbox",
@@ -381,6 +402,97 @@ export function decodeArchil(
     complete: settled,
     confidence: settled ? "high" : "low",
     note: `Provider-reported cost (${usage.vcpu_hours} vCPU-hours, ${usage.memory_gib_hours} GiB-hours), before allowances and prepaid credit; storage and egress excluded${why}`,
+  };
+}
+
+/** One `SandboxDailyUsage` row of `GET /v1/billing/usage/sandbox`. */
+export const microsandboxUsageRowSchema = z.object({
+  sandbox_id: z.string(),
+  compute_type: z.enum(["standard", "shared"]),
+  day: z.string(),
+  vcpu_seconds: money,
+  mem_mib_seconds: money,
+  disk_mib_seconds: money,
+});
+
+export type MicrosandboxUsageRow = z.infer<typeof microsandboxUsageRowSchema>;
+
+/** `UsageBreakdown`. */
+export const microsandboxBreakdownSchema = z.object({
+  rows: z.array(microsandboxUsageRowSchema),
+});
+
+/** `UsageSummary`, as far as the collector reads it: `costs` may be null. */
+export const microsandboxSummarySchema = z.object({
+  costs: z
+    .object({
+      workloads: z.record(z.string(), money),
+      incomplete: z.boolean(),
+    })
+    .nullish(),
+});
+
+/** One usage row priced at its own compute type's published rates. */
+export function rateMicrosandboxRow(row: MicrosandboxUsageRow): number {
+  const price = pricing[row.compute_type === "shared" ? "microsandbox-shared" : "microsandbox"];
+
+  if (!price) throw new Error("Microsandbox pricing is missing");
+
+  return (
+    row.vcpu_seconds * price.cpuSecond +
+    (row.mem_mib_seconds / 1024) * price.memoryGiBSecond +
+    (row.disk_mib_seconds / 1024) * price.diskGiBSecond
+  );
+}
+
+/**
+ * One sandbox's cost from Microsandbox's usage rows and, when it names the sandbox, `costs.workloads`.
+ * Never $0 from absence: a sandbox with neither is unavailable. Always provisional: Microsandbox gives no
+ * finalization signal, its rows meter running time only (a stopped sandbox's disk is missing), and its
+ * delete is asynchronous. A workloads amount that disagrees with the rated rows is noted, not used.
+ */
+export function decodeMicrosandbox(input: {
+  id: string;
+  rows: readonly MicrosandboxUsageRow[];
+  workloadUsd: number | undefined;
+  /** Why `costs.workloads` could not be read, when it could not: the rows are rated without the cross-check. */
+  crossCheckFailure?: string;
+}): Cost {
+  const own = input.rows.filter((row) => row.sandbox_id === input.id);
+
+  if (own.length === 0 && input.workloadUsd === undefined)
+    return unavailable(
+      "Microsandbox lists no usage row and no workloads cost for this sandbox in the window; not counted as $0",
+    );
+
+  if (own.length === 0)
+    return {
+      kind: "metered",
+      usd: input.workloadUsd ?? 0,
+      scope: "window",
+      complete: false,
+      confidence: "low",
+      note: "Provisional: only Microsandbox's costs.workloads names this sandbox (no usage rows yet)",
+    };
+
+  const usd = own.reduce((sum, row) => sum + rateMicrosandboxRow(row), 0);
+  const tiers = [...new Set(own.map((row) => row.compute_type))].join("+");
+
+  const disagrees =
+    input.workloadUsd !== undefined && Math.abs(input.workloadUsd - usd) > 0.000002 + usd * 0.01;
+
+  const unchecked =
+    input.crossCheckFailure === undefined
+      ? ""
+      : `; not cross-checked, because /v1/billing/usage could not be read (${input.crossCheckFailure})`;
+
+  return {
+    kind: "metered",
+    usd,
+    scope: "window",
+    complete: false,
+    confidence: "low",
+    note: `Provisional, metered not invoice: ${own.length} daily usage row(s) of this sandbox at ${tiers} rates; running time only, so a stopped sandbox's disk is excluded${disagrees ? `; Microsandbox's costs.workloads says $${input.workloadUsd?.toFixed(6)}, the rows rate to $${usd.toFixed(6)}` : ""}${unchecked}`,
   };
 }
 
@@ -1113,6 +1225,8 @@ export async function collectProvider(
     "instabox",
     "archil",
     "maritime",
+    "microsandbox",
+    "microsandbox-shared",
   ].includes(provider);
 
   let blocked = offline
@@ -1181,6 +1295,74 @@ export async function collectProvider(
               ),
         });
       }
+
+      return result;
+    } catch (error) {
+      blocked = errorNote(error);
+    }
+  }
+
+  if (!blocked && microsandboxTier(provider) !== undefined) {
+    try {
+      const headers = { Authorization: `Bearer ${key}` };
+      const root = (env.MSB_API_URL?.trim() || "https://api.microsandbox.dev").replace(/\/+$/, "");
+      checkMicrosandboxEndpoint(root);
+      const window = windowFor(rows);
+
+      if (!window) {
+        for (const row of rows)
+          result.sandboxes.push({
+            id: row.id,
+            source: spec.source,
+            cost: unavailable(
+              "No run window: no sandbox in this run has a start and an end, so no usage was read; not zero",
+            ),
+          });
+
+        return result;
+      }
+
+      const query = new URLSearchParams({ from: window.start, to: window.end });
+
+      const breakdown = microsandboxBreakdownSchema.parse(
+        await transport(`${root}/v1/billing/usage/sandbox?${query}`, headers),
+      );
+
+      // The invoice preview is an optional cross-check: when it cannot be read, the usage rows are
+      // still rated, provisional as always, and say the cross-check did not happen.
+      let summary: z.infer<typeof microsandboxSummarySchema> | undefined;
+      let crossCheckFailure: string | undefined;
+
+      try {
+        summary = microsandboxSummarySchema.parse(
+          await transport(`${root}/v1/billing/usage?${query}`, headers),
+        );
+      } catch (error) {
+        crossCheckFailure = errorNote(error);
+      }
+
+      const unchecked =
+        crossCheckFailure === undefined
+          ? ""
+          : ` The costs.workloads cross-check could not be read (${crossCheckFailure}).`;
+
+      result.account = {
+        window,
+        incomplete: summary?.costs?.incomplete ?? null,
+        note: `Account usage rows for the run window, read once; daily rows can include activity outside this run. Not a net invoice.${unchecked}`,
+      };
+
+      for (const row of rows)
+        result.sandboxes.push({
+          id: row.id,
+          source: spec.source,
+          cost: decodeMicrosandbox({
+            id: row.id,
+            rows: breakdown.rows,
+            workloadUsd: summary?.costs?.workloads[row.id],
+            crossCheckFailure,
+          }),
+        });
 
       return result;
     } catch (error) {

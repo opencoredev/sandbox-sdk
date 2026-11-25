@@ -607,6 +607,7 @@ export function siteData(
         ? {
             vcpuHour: price.tiers ? null : price.cpuSecond * 3600,
             memoryGiBHour: price.memoryGiBSecond * 3600,
+            diskGiBHour: price.diskGiBSecond * 3600,
             fixed: price.fixed,
             fixedHour: price.fixedHour,
             tiers: price.tiers,

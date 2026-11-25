@@ -13,6 +13,16 @@ import {
   type NativeModules,
   type StyneTarget,
 } from "./existence.js";
+import {
+  capturedFrom,
+  deleteMicrosandboxSnapshot,
+  microsandboxSnapshotsFromSource,
+  readMicrosandboxSnapshot,
+  recordedSource,
+  settleMicrosandboxCapture,
+  isMicrosandboxSnapshotId,
+} from "./microsandbox.js";
+import { microsandboxTier } from "./providers.js";
 import { connectionOf, endpoint, modalClientParams } from "./connections.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
@@ -399,6 +409,11 @@ export async function snapshotCleaner(
     };
   }
 
+  if (microsandboxTier(name) !== undefined)
+    // By managed ID, or by name for a capture journaled before it was answered; also after the source
+    // sandbox is gone.
+    return (id) => deleteMicrosandboxSnapshot(connectionOf(provider, "microsandbox"), id);
+
   if (name === "maritime") {
     // Deleted by name, also after the source sandbox has ended. Only `404 snapshot_not_found`
     // confirms absence; a route-level `404 resource_not_found` must fail so recovery retains it.
@@ -730,6 +745,13 @@ export async function snapshotsFromSource(
   if (name === "maritime")
     return snapshotsFromMaritimeSandbox(provider, sourceSandboxId, journaled);
 
+  if (microsandboxTier(name) !== undefined)
+    return microsandboxSnapshotsFromSource(
+      connectionOf(provider, "microsandbox"),
+      sourceSandboxId,
+      journaled,
+    );
+
   if (name !== "superserve") return snapshotsFromDaytonaSandbox(provider, sourceSandboxId);
 
   const { Snapshot } = await nativeModules.load("@superserve/sdk");
@@ -759,6 +781,30 @@ export async function inspectSnapshot(
   sourceId: string,
   id: string,
 ): Promise<{ exists: boolean; sourceId?: string }> {
+  // Microsandbox: by managed ID or name. The source is the snapshot's own `sandbox_id`, or the adapter's
+  // source label; a snapshot that records neither is never attributed to anyone.
+  if (microsandboxTier(name) !== undefined) {
+    const snapshot = await readMicrosandboxSnapshot(connectionOf(provider, "microsandbox"), id);
+
+    // Only an exact managed-ID read proves absence. A by-name 404 means only that the name is not
+    // indexed (an unresolved capture, or one whose name lookup lags its managed ID), so it keeps the entry.
+    if (snapshot === undefined) {
+      if (!isMicrosandboxSnapshotId(id))
+        throw new Error(
+          "Snapshot not found by name; its managed ID is unknown, so the entry is kept",
+        );
+
+      return { exists: false };
+    }
+
+    if (capturedFrom(snapshot, sourceId)) return { exists: true, sourceId };
+    const recorded = recordedSource(snapshot);
+
+    if (recorded === undefined) throw new Error("Snapshot source metadata unavailable");
+
+    return { exists: true, sourceId: recorded };
+  }
+
   try {
     let info: SnapshotInfo;
 
@@ -975,19 +1021,37 @@ export async function inspectSnapshot(
 export const snapshotMetadata = { inspect: inspectSnapshot };
 
 /**
+ * A settled journal entry. `exists` names the snapshot the proven delete must use: the entry's own ID,
+ * or for a Microsandbox capture journaled by name, the managed ID settlement confirmed.
+ */
+export type JournaledSnapshot = { kind: "exists"; id: string } | { kind: "absent" };
+
+/**
  * Before a journaled snapshot entry is deleted or forgotten: a Maritime or Styne entry that still holds its
  * save's idempotency key is a save that never confirmed, so it is settled first ({@link settleMaritimeSave},
  * {@link settleStyneSave}). `absent` means nothing was saved and the entry may go; `exists` (or any other
- * entry) proceeds to the proven delete. An unsettled save throws, and the entry stays for recovery.
+ * entry) proceeds to the proven delete of the snapshot it names. An unsettled save throws, and the entry stays for recovery.
  */
 export async function settleJournaledSnapshot(
   name: string,
   provider: Provider,
-  entry: { id: string; parent: string | null; idempotencyKey?: string },
+  entry: { id: string; parent: string | null; idempotencyKey?: string; snapshotName?: string },
   timeoutMs: number,
-): Promise<"exists" | "absent"> {
+): Promise<JournaledSnapshot> {
+  // Microsandbox: a capture journaled by name before its request, never confirmed. Settled through the
+  // snapshot and its operation, keeping the managed ID it finds; an unresolved 404 throws and keeps the entry.
+  if (microsandboxTier(name) !== undefined && entry.snapshotName === entry.id) {
+    const capture = await settleMicrosandboxCapture(
+      connectionOf(provider, "microsandbox"),
+      entry.id,
+      timeoutMs,
+    );
+
+    return capture.kind === "exists" ? { kind: "exists", id: capture.managedId } : capture;
+  }
+
   if ((name !== "maritime" && name !== "styne") || entry.idempotencyKey === undefined)
-    return "exists";
+    return { kind: "exists", id: entry.id };
 
   if (entry.parent === null) throw new Error("Snapshot source missing; no deletion attempted");
 
@@ -999,7 +1063,9 @@ export async function settleJournaledSnapshot(
     timeoutMs,
   };
 
-  return name === "maritime" ? settleMaritimeSave(save) : settleStyneSave(save);
+  const saved = await (name === "maritime" ? settleMaritimeSave(save) : settleStyneSave(save));
+
+  return saved === "exists" ? { kind: "exists", id: entry.id } : { kind: "absent" };
 }
 
 /** A durable source proof plus current snapshot identity replaces a live-parent dependency. */

@@ -20,6 +20,8 @@ export const cloudProviders = [
   "maritime",
   "beam",
   "archil",
+  "microsandbox",
+  "microsandbox-shared",
   "styne",
 ];
 

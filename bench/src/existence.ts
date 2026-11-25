@@ -20,6 +20,7 @@ import {
   modalClientParams,
   type ModalClientParams,
 } from "./connections.js";
+import { microsandboxFetch } from "./microsandbox.js";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -45,7 +46,8 @@ export const lookupSchema = z.object({
 export type LookupEvidence = z.infer<typeof lookupSchema>;
 
 // Styne answers an ended sandbox with 410 until it forgets it; Maritime keeps one readable for
-// 7 days with `state: "ended"`.
+// 7 days with `state: "ended"`. Microsandbox has no such state: a `failed` or `stopped` sandbox is
+// still allocated (and its disk billed) until it is deleted and reads 404, so both stay present.
 const terminal = new Set(["deleted", "destroyed", "terminated", "killed", "ended"]);
 
 function redact(value: string) {
@@ -370,6 +372,24 @@ function isDaytonaSandboxApi(api: unknown): api is DaytonaSandboxApi {
 }
 
 /**
+ * The compute tier a Microsandbox adapter creates and lists on (its `computeType`), read structurally
+ * because the bench holds it as a plain `Provider`. Undefined for any other adapter, or one on the
+ * account's default tier.
+ */
+export function adapterComputeTier(provider: Provider): "standard" | "shared" | undefined {
+  const tier = "computeType" in provider ? provider.computeType : undefined;
+
+  return tier === "standard" || tier === "shared" ? tier : undefined;
+}
+
+/** The fields of a Microsandbox `SandboxResponse` the exact lookup reads, `compute.type` included. */
+const microsandboxInfo = z.object({
+  id: z.string(),
+  status: z.string(),
+  compute: z.object({ type: z.string() }).nullish(),
+});
+
+/**
  * Every native client below takes its endpoint, credentials and scope from the connection of the
  * adapter instance being read (`connectionOf`), never from the environment alone: a lookup sent to
  * another endpoint, account or team answers 404 for a sandbox that is running. Base URLs lose
@@ -661,6 +681,32 @@ export async function lookupSandbox(
           const sandbox = maritimeSandbox.parse(await response.json());
 
           return { id: sandbox.id, state: sandbox.state };
+        }
+
+        case "microsandbox":
+        case "microsandbox-shared": {
+          // Both tiers' adapters share one name, so the tier comes from the adapter itself.
+          const tier = adapterComputeTier(provider);
+
+          if (tier === undefined) throw new Error("Native lookup compute tier unknown");
+
+          // GET only: it never starts, stops or changes the sandbox. A deleted one reads 404.
+          const response = await microsandboxFetch(
+            connectionOf(provider, "microsandbox"),
+            `/sandboxes/${encodeURIComponent(id)}`,
+            { signal },
+          );
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          const sandbox = microsandboxInfo.parse(await response.json());
+
+          // A sandbox on the other tier is never this adapter's evidence, present or not.
+          if (sandbox.compute?.type !== tier)
+            throw new Error("Native lookup compute tier mismatch");
+
+          return { id: sandbox.id, status: sandbox.status };
         }
 
         case "instabox": {

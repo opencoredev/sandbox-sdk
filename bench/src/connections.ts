@@ -41,6 +41,7 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  * endpoint, account, team or project answers 404 for a sandbox that is running, which would be
  * recorded as absence. Archil, Local, Maritime, Modal, Railway and Styne have no `resolveConfig`;
  * their connection is read here from the same options and variables their adapters read.
+ * Microsandbox's is too, as its adapter resolves it.
  */
 export interface Connections {
   archil: ArchilConfig;
@@ -54,6 +55,7 @@ export interface Connections {
   instabox: InstaboxConfig;
   local: LocalConfig;
   maritime: MaritimeConfig;
+  microsandbox: MicrosandboxConfig;
   modal: ModalConfig;
   railway: RailwayConfig;
   styne: StyneConfig;
@@ -78,6 +80,16 @@ export interface ArchilConfig {
  * API host without trailing slashes. The control plane is `${baseUrl}/v1`.
  */
 export interface MaritimeConfig {
+  readonly apiKey: string;
+  readonly baseUrl: string;
+}
+
+/**
+ * What `microsandbox()` sends its requests with (`createMicrosandboxProvider`): the key, trimmed,
+ * and the API host, trimmed and without trailing slashes. The control plane is `${baseUrl}/v1`.
+ * Both bench tiers share it; the tier picks which sandboxes an adapter creates and lists.
+ */
+export interface MicrosandboxConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
 }
@@ -169,6 +181,20 @@ function maritimeConfig(options: ConnectionOptions): MaritimeConfig {
   };
 }
 
+/** As the Microsandbox adapter resolves it: options, then MSB_API_KEY and MSB_API_URL. */
+export function microsandboxConfig(options: ConnectionOptions = {}): MicrosandboxConfig {
+  const apiKey = (options.apiKey ?? process.env.MSB_API_KEY)?.trim();
+
+  if (!apiKey) throw Object.assign(new Error("Microsandbox API key is missing"), { code: "auth" });
+
+  return {
+    apiKey,
+    baseUrl: endpoint(
+      (options.baseUrl ?? process.env.MSB_API_URL ?? "https://api.microsandbox.dev").trim(),
+    ),
+  };
+}
+
 /** As the Styne adapter resolves it: options, then STYNE_API_KEY and STYNE_API_URL. */
 function styneConfig(options: ConnectionOptions): StyneConfig {
   const apiKey = (options.apiKey ?? process.env.STYNE_API_KEY)?.trim();
@@ -232,6 +258,10 @@ function resolve(name: string, options: ConnectionOptions): Connection {
       return { name, config: localConfig(options) };
     case "maritime":
       return { name, config: maritimeConfig(options) };
+    // One adapter serves both bench tiers; the tier is not part of where it connects.
+    case "microsandbox":
+    case "microsandbox-shared":
+      return { name: "microsandbox", config: microsandboxConfig(options) };
     case "modal":
       return {
         name,
@@ -292,6 +322,8 @@ function byName(connection: Connection): Partial<Connections> {
       return { local: connection.config };
     case "maritime":
       return { maritime: connection.config };
+    case "microsandbox":
+      return { microsandbox: connection.config };
     case "modal":
       return { modal: connection.config };
     case "railway":

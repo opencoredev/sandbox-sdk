@@ -1,0 +1,181 @@
+---
+title: Microsandbox
+seo:
+  title: Microsandbox Sandbox SDK in TypeScript
+description: Use Microsandbox Cloud microVMs from TypeScript through one portable API. Standard or shared compute, exact sizes with a root disk, public preview URLs, disk snapshots and restores, and host allow lists.
+---
+
+`microsandbox()` runs each sandbox as a [Microsandbox Cloud](https://microsandbox.dev) microVM. The adapter calls Microsandbox's REST API to create, list, snapshot and delete sandboxes, and runs commands and moves files through the official `microsandbox` package, which speaks the sandbox's guest agent.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(microsandbox())` and then `box.run`, `box.files`, `box.preview` and `box.snapshot`, and the same code runs on E2B or Daytona when you swap the factory. Microsandbox has no pause and no terminal through this API. The [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) gives you an authenticated request to Microsandbox's API when you need the rest.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk microsandbox
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk microsandbox
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk microsandbox
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk microsandbox
+```
+
+  </Tab>
+</Tabs>
+
+`microsandbox` loads a native addon from a platform package (`@superradcompany/microsandbox-linux-x64-gnu` and so on), so keep optional dependencies enabled, and keep `microsandbox` external when you bundle. `microsandbox@0.8.1`'s manifest doesn't list its platform packages, so on that version install yours next to it, at the same version:
+
+```bash
+npm install @superradcompany/microsandbox-linux-x64-gnu@0.8.1
+```
+
+Create an organization API key (`msb_...`) in Microsandbox and set `MSB_API_KEY`, or pass `microsandbox({ apiKey })`.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { microsandbox } from "@opencoredev/sandbox-sdk/microsandbox";
+
+await using box = await createSandbox(microsandbox(), { timeoutMs: 30 * 60_000 });
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+`await using` deletes the sandbox when the block ends. `timeoutMs` becomes the sandbox's maximum lifetime, a backstop if your process dies first.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                                     |
+| ------------------------------ | ----------- | ------------------------------------------------------------------------- |
+| Commands and streaming         | Yes         | Through the guest agent; live output                                      |
+| Files                          | Yes         | `/workspace` on the root disk                                             |
+| Background processes           | Yes         |                                                                           |
+| Preview URLs                   | Yes         | Public Services, deleted with the sandbox by the client that made them    |
+| Pause and resume               | No          |                                                                           |
+| Snapshots                      | Yes         | Disk snapshots; the sandbox stops for the capture; `deleteSnapshot` works |
+| Templates                      | No          | Pick the OCI image with `image`                                           |
+| Machine size                   | Yes         | Presets, or whole vCPUs, MiB of memory and GiB of root disk               |
+| Network policy                 | Yes         | `"none"`, or deny-by-default egress with an allow list                    |
+| Hard lifetime (`timeoutMs`)    | Yes         | Maximum lifetime in seconds; the sandbox stops                            |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Seconds                                                                   |
+| Keys                           | Best-effort | Stored as a label; concurrent creates can race                            |
+| Terminal                       | No          |                                                                           |
+
+## Compute tiers
+
+`microsandbox({ computeType: "standard" })` runs on dedicated CPUs, and `"shared"` on shared CPUs with dedicated memory and disk at a lower price. When you set it, the adapter sends it on every create, checks the tier of the sandbox it gets back (and deletes it if the tier is wrong), and `listSandboxes` and key lookups see only sandboxes on that tier. Without it, Microsandbox picks the account's default: standard on paid plans.
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { microsandbox } from "@opencoredev/sandbox-sdk/microsandbox";
+
+await using box = await createSandbox(microsandbox());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+The default image is `node:22-bookworm`. Each command runs as `sh -c`, with stdin closed unless you pass `stdin`. A timeout or abort kills the command and waits for its exit before `run` returns; when the kill cannot be confirmed, `run` fails with `outcome_unknown`.
+
+## Background processes and previews
+
+`box.preview(port)` returns an `https://` URL for the port. Nothing needs to be declared at creation. The adapter creates a Microsandbox Service for the port, named `sbx-<16 hex of the sandbox ID>-p<port>`, and deletes it when the same client destroys the sandbox. A client that didn't create the Service itself, such as another process that found the sandbox by key, deletes the sandbox, leaves the Service, and names it in the error, because nothing proves the Service is the one that client meant. Service URLs are public: anyone with the URL can reach the port, so add authentication in your app when it matters.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { microsandbox } from "@opencoredev/sandbox-sdk/microsandbox";
+
+await using box = await createSandbox(microsandbox(), { timeoutMs: 30 * 60_000 });
+await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
+const preview = await box.preview(8000);
+console.log(preview.url);
+```
+
+## Snapshots
+
+`box.snapshot()` takes a disk snapshot. Microsandbox captures a stopped sandbox, so the adapter stops a running one, captures it, and starts it again; running processes end. It returns the snapshot's ID. Pass it as `from` to create a new sandbox from it, with a `size` of CPU and memory: a restore keeps the snapshot's disk, so `diskGb` with `from` fails with `unsupported`. Snapshots are kept until you delete them with `deleteSnapshot(provider, id)`, so `expiresInMs` fails with `unsupported`.
+
+## Size, image, and lifetime
+
+| Preset   | vCPUs | Memory   |
+| -------- | ----- | -------- |
+| `small`  | 1     | 1024 MiB |
+| `medium` | 2     | 4096 MiB |
+| `large`  | 4     | 8192 MiB |
+
+Without `size`, Microsandbox's own default applies. An exact `size` takes whole vCPUs, at least 128 MiB of memory and, with `diskGb`, the writable root disk of a fresh sandbox.
+
+Standard compute bills $0.048 per vCPU-hour, $0.003 per GiB-hour of memory and $0.0000625 per GiB-hour of root disk; shared compute bills $0.007, $0.000375 and $0.0000625. A stopped sandbox keeps billing its disk until it is deleted, which `destroy()` does.
+
+`timeoutMs` is the sandbox's maximum lifetime in seconds, rounded up; without it, the adapter asks for one hour. `idleTimeoutMs` is Microsandbox's idle timeout, in seconds.
+
+`network: "none"` turns networking off. An allow list denies all other egress: each entry is a host name, `*.domain` for a domain and its subdomains, an IPv4 address, or a CIDR, and allowed names also resolve. An empty list is the same as `"none"`.
+
+## Configuration
+
+| Option             | Type                       | Default                        | Env var       |
+| ------------------ | -------------------------- | ------------------------------ | ------------- |
+| `apiKey`           | `string`                   |                                | `MSB_API_KEY` |
+| `baseUrl`          | `string`                   | `https://api.microsandbox.dev` | `MSB_API_URL` |
+| `computeType`      | `"standard"` or `"shared"` | the account's default          |               |
+| `image`            | `string`                   | `node:22-bookworm`             |               |
+| `timeoutMs`        | `number`                   | 1 hour                         |               |
+| `requestTimeoutMs` | `number`                   | 60 seconds                     |               |
+| `peer`             | `() => Promise<module>`    | `() => import("microsandbox")` |               |
+
+## Limitations
+
+- No pause or resume: stopping and starting a Microsandbox sandbox is a cold restart, not a memory pause.
+- A snapshot stops the sandbox while it is captured.
+- Keys are best-effort: two clients creating with one key at once can make two sandboxes.
+- A secret can't use a name the guest shell sets itself (`PWD`, `OLDPWD`, `SHLVL`, `_`, `IFS`, `PPID`, `OPTIND`, `LINENO`, `PS1`, `PS2`, `SHELLOPTS`, `BASHOPTS`): a reconnect couldn't read it back, so the create is refused.
+- No terminal or template builds.
+- The `microsandbox` package needs its native platform package and cannot be inlined into a bundle.
+
+## How it works
+
+- Sandboxes are created, read, listed, started, stopped, snapshotted and deleted on `https://api.microsandbox.dev/v1` with your key. Commands and files go through a `RemoteContext` from the `microsandbox` package that the adapter builds with the same key and URL, never the package's process-wide defaults.
+- `createSandbox` loads `microsandbox` before it sends anything, so a missing package or native addon fails with `unavailable` and no sandbox is made.
+- A create asks Microsandbox to start the sandbox and wait until it runs, and carries a unique name and an allocation marker in its labels. When its answer is lost, the adapter looks the sandbox up by name, and it only returns or deletes a sandbox carrying this call's marker; when nothing turns up, the create fails with `outcome_unknown` naming the sandbox.
+- At create, `/workspace` is made. If that step fails, the adapter deletes the sandbox before it throws.
+- Microsandbox finishes a delete after accepting it, so `destroy()` returns once the sandbox no longer reads, and fails with `outcome_unknown` if it still does after a minute.
+- A key lookup prefers a running sandbox, waits for a starting one, and starts a stopped one again (its lifetime or idle timeout ended) before returning it.
+- A stop ends every process. When the adapter restores a sandbox, or starts one again in a key lookup or after a snapshot, it marks the SDK processes recorded before that boot as exited, so the sandbox doesn't report a dead process as running. Every new connection to a sandbox does the same before its first command. A client connected before another client restarted the sandbox can still read those old records; call `close()` on the old sandbox and get it again to reconnect. A record written in the same second as the boot is left as it is.
+- `reapSandboxes({ idleOnly: true })` counts a sandbox that has fully stopped as idle without starting it; one still stopping or saving its state, or stopped for a snapshot this client is taking, is skipped until a later sweep.
+- While a preview's Service create is still in flight, or lost its answer less than 15 seconds ago and can't be read back, `destroy()` keeps the sandbox and fails with `unavailable`, so a late Service can't be left detached; destroy again shortly.
+- If `destroy()` can't list the sandbox's Services, it still deletes the sandbox and then fails. The next `destroy()` names any detached Service with the sandbox's slug that it can't prove it made, and leaves it for you to delete.
+- Your `labels` become Microsandbox labels, and a key is stored as the `sandbox-sdk-key` label.
+- `box.native` calls Microsandbox's API on the `control` plane, and `box.native.sdk(() => import("microsandbox"))` returns a `RemoteContext` with your key and the sandbox from `context.sandboxes.get`.
+- Errors keep only Microsandbox's HTTP status and error code, and never the API key or any `msb_` token.
+
+## Next steps
+
+- [Machine size and network](/guides/machine-size-and-network)
+- [Dev servers and previews](/guides/dev-servers-and-previews)
