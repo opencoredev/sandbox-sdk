@@ -825,6 +825,10 @@ describe("Buddy lifecycle", () => {
         });
       }
 
+      if (method === "DELETE" && url.endsWith("/workspaces/ws-a/sandboxes/sbx-noloc")) {
+        return new Response(null, { status: 307 });
+      }
+
       return new Response(null, { status: 204 });
     });
 
@@ -839,12 +843,17 @@ describe("Buddy lifecycle", () => {
         code: "outcome_unknown",
         retryable: false,
       });
+      await expect(p.destroy("sbx-noloc")).rejects.toMatchObject({
+        code: "outcome_unknown",
+        retryable: false,
+      });
     } finally {
       spy.mockRestore();
     }
 
     expect(seen).toEqual([
       { method: "DELETE", url: "https://api.buddy.invalid/workspaces/ws-a/sandboxes/sbx-1" },
+      { method: "DELETE", url: "https://api.buddy.invalid/workspaces/ws-a/sandboxes/sbx-noloc" },
     ]);
   });
 });

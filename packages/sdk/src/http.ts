@@ -1054,12 +1054,8 @@ export function createHttpClient<Plane extends string>(
           break;
         }
 
-        const location = response.headers.get("location");
-
-        if (!redirectStatuses.has(response.status) || location === null) break;
-        await response.body?.cancel().catch(() => {});
-
-        if (plane.redirects === false) {
+        if (plane.redirects === false && response.status >= 300 && response.status < 400) {
+          await response.body?.cancel().catch(() => {});
           const write = method !== "GET" && method !== "HEAD";
 
           throw failure(
@@ -1070,6 +1066,11 @@ export function createHttpClient<Plane extends string>(
             false,
           );
         }
+
+        const location = response.headers.get("location");
+
+        if (!redirectStatuses.has(response.status) || location === null) break;
+        await response.body?.cancel().catch(() => {});
 
         // Whether following would send this write again: 307 and 308 keep the method and body, and so do
         // 301 and 302 for anything but a POST.
