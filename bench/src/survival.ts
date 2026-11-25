@@ -298,14 +298,14 @@ export async function heartbeatWindow(input: WindowInput) {
       }
 
       const latencyMs = performance.now() - start - atMs;
-      const lookupMs = Math.min(callMs, endBy - performance.now());
+      const lookupStart = performance.now();
+      const lookupMs = Math.min(callMs, endBy - lookupStart);
       // Anything that arrives after the deadline is a timeout, whatever it says: a late refusal
       // proves nothing about quota, however late the deadline's own timer fired.
       const timedOut = error instanceof DeadlineError || latencyMs > callMs;
 
-      const lookupStart = performance.now();
-
-      // Judged by when the answer arrived, as the heartbeat is: a late answer proves nothing.
+      // Judged by when the answer arrived, as the heartbeat is: an answer past its budget, which never
+      // runs past `endBy`, proves nothing.
       const lookup =
         lookupMs > 0
           ? await deadline(lookupMs, () => input.track(input.lookup(lookupMs)))
