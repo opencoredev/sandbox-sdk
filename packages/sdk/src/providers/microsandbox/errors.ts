@@ -199,4 +199,4 @@ export function peerError(
 
 /** The fix for a peer that loaded but could not start its native addon, as `create` and the smoke checks name it. */
 export const nativeHint =
-  "Install microsandbox with optional dependencies enabled, so its platform package (@superradcompany/microsandbox-<platform>) is present, and Keep microsandbox external when bundling: it loads a native addon next to its own files.";
+  "Install microsandbox with optional dependencies enabled, so its platform package (@superradcompany/microsandbox-<platform>) is present; microsandbox 0.8.1 does not list it, so on that version install it yourself at the same version. Keep microsandbox external when bundling: it loads a native addon next to its own files.";

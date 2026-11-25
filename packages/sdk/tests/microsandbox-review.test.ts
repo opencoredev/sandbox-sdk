@@ -179,7 +179,7 @@ async function exec(
 
 /** A process record without an exit and a run marker, as a stop leaves them. */
 const staleRecord =
-  "mkdir -p /tmp/.sandbox-sdk/procs/p1 /tmp/.sandbox-sdk/runs && echo '{}' > /tmp/.sandbox-sdk/procs/p1/spec.json && touch /tmp/.sandbox-sdk/runs/r1";
+  "mkdir -p /tmp/.sandbox-sdk/procs/p1 /tmp/.sandbox-sdk/runs && echo '{}' > /tmp/.sandbox-sdk/procs/p1/spec.json && touch -d '1 hour ago' /tmp/.sandbox-sdk/procs/p1/spec.json /tmp/.sandbox-sdk/runs/r1";
 
 /** The record's exit code, or `none`, then whether the run marker is still there. */
 const recordState =
@@ -245,7 +245,7 @@ test("PR88-1 a long output stream adds no reaction per chunk to one shared promi
   expect(Math.max(...reactions.values())).toBeLessThan(50);
 });
 
-test("PR88-2 a failed Service listing fails the destroy, and the next destroy removes the detached Service", async () => {
+test("PR88-2 a failed Service listing fails the destroy, and the next destroy names the detached Service it cannot prove", async () => {
   const p = adapter();
   const { id: sandbox } = await p.create({ labels: labels() });
   const { url } = await p.previewUrl(sandbox, 3000);
@@ -263,9 +263,32 @@ test("PR88-2 a failed Service listing fails the destroy, and the next destroy re
   expect(fake.sandboxes.has(sandbox)).toBe(false);
   expect(fake.services.get(slug)?.status).toBe("detached");
 
+  // Nothing proves the detached slug was this sandbox's, so it is named and never deleted.
   listFails = false;
+  await expect(fresh.destroy(sandbox)).rejects.toThrow(slug);
+  expect(fake.services.get(slug)?.status).toBe("detached");
+
+  fake.services.delete(slug);
   await fresh.destroy(sandbox);
-  expect(fake.services.has(slug)).toBe(false);
+});
+
+test("PR88-2 an unreadable sandbox name fails the destroy instead of reporting its Services removed", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+  await p.previewUrl(sandbox, 3000);
+  let reads = 0;
+
+  const fresh = adapter({
+    fetch: async (input, init) =>
+      new URL(input).pathname === `/v1/sandboxes/${sandbox}` &&
+      init.method === "GET" &&
+      reads++ === 0
+        ? Response.json({ error: { code: "internal_error" } }, { status: 500 })
+        : realFetch(input, init),
+  });
+
+  await expect(fresh.destroy(sandbox)).rejects.toThrow(/could not be listed/);
+  expect(fake.sandboxes.has(sandbox)).toBe(false);
 });
 
 test("PR88-3 a failed create whose accepted DELETE never finishes stays outcome_unknown", async () => {
@@ -306,6 +329,22 @@ test("PR88-4 a restore marks the processes its source's stop ended as exited", a
     restored: (await exec(p, restored.id, recordState)).stdout,
     source: (await exec(p, source.id, recordState)).stdout,
   }).toEqual({ restored: "137 gone", source: "137 gone" });
+
+  // A record written since the restart is this boot's: another client's first use leaves it alone.
+  const fresh =
+    "mkdir -p /tmp/.sandbox-sdk/procs/p2 && echo '{}' > /tmp/.sandbox-sdk/procs/p2/spec.json";
+
+  expect((await exec(p, source.id, fresh)).exitCode).toBe(0);
+
+  expect(
+    (
+      await exec(
+        adapter(),
+        source.id,
+        "cat /tmp/.sandbox-sdk/procs/p2/exit 2>/dev/null || printf none",
+      )
+    ).stdout,
+  ).toBe("none");
 });
 
 test("PR88-5 a guest agent lookup that never answers still ends at the command's timeout or abort", async () => {
@@ -332,6 +371,34 @@ test("PR88-5 a guest agent lookup that never answers still ends at the command's
   ).toMatchObject({ exitCode: null, timedOut: true });
 }, 10_000);
 
+test("PR88-5 a lookup that times out is dropped, so the next command connects again", async () => {
+  const { id: sandbox } = await adapter().create({ labels: labels() });
+  let gets = 0;
+
+  const flaky = adapter({
+    requestTimeoutMs: 300,
+    peer: async () => ({
+      RemoteContext: class {
+        private readonly inner = new fake.peer.RemoteContext({
+          url: fake.url,
+          apiKey: key,
+          requestTimeoutMs: 300,
+        });
+
+        readonly sandboxes = {
+          get: (name: string) =>
+            gets++ === 0 ? new Promise<PeerSandbox>(() => {}) : this.inner.sandboxes.get(name),
+        };
+      },
+    }),
+  });
+
+  await expect(exec(flaky, sandbox, "true", { timeoutMs: 5000 })).rejects.toMatchObject({
+    code: "timeout",
+  });
+  expect(await exec(flaky, sandbox, "printf ok")).toMatchObject({ exitCode: 0, stdout: "ok" });
+}, 10_000);
+
 test("PR88-7 a key whose sandbox its lifetime stopped is started again, its dead processes exited", async () => {
   const p = adapter();
   const box = await createSandbox(p, { key: "project:7", labels: { app: "review" } });
@@ -345,6 +412,32 @@ test("PR88-7 a key whose sandbox its lifetime stopped is started again, its dead
     state: "137 gone",
   });
   await again.destroy();
+});
+
+test("PR88-7 a key lookup prefers a running sandbox over one still starting", async () => {
+  fake.faults.startingReads = 1000;
+  const p = adapter();
+  const first = await p.create({ labels: labels(), key: "project:8" });
+  const second = await p.create({ labels: labels(), key: "project:8" });
+  const starting = fake.sandboxes.get(first.id);
+
+  if (starting === undefined) throw new Error("no fake sandbox");
+  starting.status = "starting";
+
+  expect((await p.find("project:8"))?.id).toBe(second.id);
+});
+
+test("PR88-7 an aborted key lookup never starts a stopped sandbox", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels(), key: "project:9" });
+  expire(sandbox);
+  const controller = new AbortController();
+  controller.abort();
+
+  await expect(p.find("project:9", { signal: controller.signal })).rejects.toBeDefined();
+  expect(fake.requests.some((r) => r.path.startsWith(`/v1/sandboxes/${sandbox}/start`))).toBe(
+    false,
+  );
 });
 
 test("PR88-8 destroy returns only once the sandbox is gone, so its key makes a new sandbox", async () => {
@@ -374,4 +467,19 @@ test("PR88-9 idle-only reaping deletes a sandbox its lifetime stopped without pr
     gone: true,
     probes: 0,
   });
+});
+
+test("PR88-9 idle-only reaping never deletes a sandbox that is still saving its state", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+  const saving = fake.sandboxes.get(sandbox);
+
+  if (saving === undefined) throw new Error("no fake sandbox");
+  saving.status = "saving_state";
+
+  await reapSandboxes(p, {
+    idleOnly: true,
+    labels: { "sandbox-bench-run": "independent-review" },
+  }).catch(() => undefined);
+  expect(fake.sandboxes.has(sandbox)).toBe(true);
 });

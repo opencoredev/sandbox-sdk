@@ -305,6 +305,12 @@ export interface Provider<
   usage?(id: string): Promise<Record<string, number>>;
   pause?(id: string): Promise<void>;
   resume?(id: string): Promise<void>;
+  /**
+   * True only when the provider confirms the sandbox has fully stopped: not starting, stopping or
+   * saving, so no guest process can run. Idle-only reaping then counts a `stopped` sandbox idle
+   * without probing it, which would fail or start it. Without this, it is probed like any other.
+   */
+  isStopped?(id: string): Promise<boolean>;
   snapshot?(id: string, options?: SnapshotOptions): Promise<{ id: string }>;
   terminal?(id: string, options: TerminalOptions): Promise<Terminal>;
   /** Delete a snapshot by ID. `false` when it was already gone. Requires `"snapshot-delete"`. */

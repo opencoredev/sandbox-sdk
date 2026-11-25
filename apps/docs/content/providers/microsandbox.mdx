@@ -165,7 +165,10 @@ Standard compute bills $0.048 per vCPU-hour, $0.003 per GiB-hour of memory and $
 - A create asks Microsandbox to start the sandbox and wait until it runs, and carries a unique name and an allocation marker in its labels. When its answer is lost, the adapter looks the sandbox up by name, and it only returns or deletes a sandbox carrying this call's marker; when nothing turns up, the create fails with `outcome_unknown` naming the sandbox.
 - At create, `/workspace` is made. If that step fails, the adapter deletes the sandbox before it throws.
 - Microsandbox finishes a delete after accepting it, so `destroy()` returns once the sandbox no longer reads, and fails with `outcome_unknown` if it still does after a minute.
-- A key lookup that finds only a stopped sandbox (its lifetime or idle timeout ended) starts it again before returning it. Processes that the stop ended, and those in a sandbox restored from a snapshot, read as exited.
+- A key lookup prefers a running sandbox, waits for a starting one, and starts a stopped one again (its lifetime or idle timeout ended) before returning it.
+- A stop ends every process. On its first command after a start, each client marks the SDK processes recorded before that boot as exited, so a restarted or restored sandbox never reports a dead process as running.
+- `reapSandboxes({ idleOnly: true })` counts a sandbox that has fully stopped as idle without starting it; one still stopping or saving its state is never counted idle.
+- If `destroy()` can't list the sandbox's Services, it still deletes the sandbox and then fails. The next `destroy()` names any detached Service with the sandbox's slug that it can't prove it made, and leaves it for you to delete.
 - Your `labels` become Microsandbox labels, and a key is stored as the `sandbox-sdk-key` label.
 - `box.native` calls Microsandbox's API on the `control` plane, and `box.native.sdk(() => import("microsandbox"))` returns a `RemoteContext` with your key and the sandbox from `context.sandboxes.get`.
 - Errors keep only Microsandbox's HTTP status and error code, and never the API key or any `msb_` token.

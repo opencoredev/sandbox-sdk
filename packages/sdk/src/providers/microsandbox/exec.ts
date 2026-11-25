@@ -70,7 +70,7 @@ export const killMs = 30_000;
  * `promise`, or `"stop"` once `signal` fires. Each call adds one abort listener and removes it when
  * `promise` settles, so a stream of reads never piles reactions onto one long-lived promise.
  */
-function orStop<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | "stop"> {
+export function orStop<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | "stop"> {
   return new Promise((resolve, reject) => {
     const stop = () => resolve("stop");
 

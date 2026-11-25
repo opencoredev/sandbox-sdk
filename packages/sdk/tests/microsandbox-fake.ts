@@ -20,7 +20,14 @@ import type {
 import type { JsonObject, JsonValue } from "../src/shared/json.js";
 import { isString } from "../src/shared/narrow.js";
 
-type Status = "created" | "starting" | "running" | "stopping" | "stopped" | "failed";
+type Status =
+  | "created"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "saving_state"
+  | "stopped"
+  | "failed";
 
 export interface FakeSandbox {
   id: string;
@@ -37,6 +44,8 @@ export interface FakeSandbox {
   reference: string | null;
   createdAt: string;
   children: Set<ChildProcess>;
+  /** When the guest last booted: create and each start. Commands read it as `/proc/uptime`. */
+  bootedAt: number;
 }
 
 export interface FakeService {
@@ -182,7 +191,7 @@ export class FakePeerError extends Error {
 }
 
 const mapped = (sandbox: FakeSandbox, text: string) =>
-  text.replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare/g, (path) =>
+  text.replace(/\/workspace|\/tmp\/\.sandbox-sdk|\/tmp\/sdk-bare|\/proc\/uptime/g, (path) =>
     join(sandbox.root, path),
   );
 
@@ -424,7 +433,8 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
     const id = crypto.randomUUID();
     const root = join(work, `snapshot-${id}`);
 
-    if (source) await cp(source.root, root, { recursive: true });
+    // A disk snapshot keeps each file's modification time.
+    if (source) await cp(source.root, root, { recursive: true, preserveTimestamps: true });
     else await mkdir(root, { recursive: true });
     const foreign = faults.snapshotForeignSource;
     faults.snapshotForeignSource = undefined;
@@ -494,11 +504,11 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
       const snapshot = snapshots.get(spec.disk_snapshot_ref?.id ?? "");
 
       if (!snapshot) return failure(response, 404, "snapshot_not_found");
-      await cp(snapshot.root, root, { recursive: true });
+      await cp(snapshot.root, root, { recursive: true, preserveTimestamps: true });
       reference = null;
     }
 
-    for (const dir of ["workspace", "tmp/.sandbox-sdk", "tmp/sdk-bare"])
+    for (const dir of ["workspace", "tmp/.sandbox-sdk", "tmp/sdk-bare", "proc"])
       await mkdir(join(root, dir), { recursive: true });
     const start = url.searchParams.get("start") === "true";
 
@@ -517,6 +527,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
       reference,
       createdAt: new Date().toISOString(),
       children: new Set(),
+      bootedAt: Date.now(),
     };
 
     if (sandbox.status === "running" && faults.startFails) sandbox.status = "failed";
@@ -645,6 +656,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
 
         if (sandbox.status === "running") return json(response, 200, view(sandbox));
         sandbox.status = faults.startFails ? "failed" : "running";
+        sandbox.bootedAt = Date.now();
 
         return json(response, 200, view(sandbox));
       }
@@ -879,6 +891,10 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
           stdin: options.stdin,
         });
         const cwd = mapped(sandbox, options.dir ?? "/");
+        await writeFile(
+          join(sandbox.root, "proc/uptime"),
+          `${((Date.now() - sandbox.bootedAt) / 1000).toFixed(2)} 0.00\n`,
+        );
 
         const child = spawn(
           cmd,

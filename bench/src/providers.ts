@@ -379,6 +379,7 @@ const providerMembers = {
   usage: (target) => target.usage?.bind(target),
   pause: (target) => target.pause?.bind(target),
   resume: (target) => target.resume?.bind(target),
+  isStopped: (target) => target.isStopped?.bind(target),
   snapshot: (target) => target.snapshot?.bind(target),
   terminal: (target) => target.terminal?.bind(target),
   deleteSnapshot: (target) => target.deleteSnapshot?.bind(target),

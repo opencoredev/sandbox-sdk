@@ -110,11 +110,18 @@ The sandbox's ID is its immutable `SandboxResponse.id`; the adapter keeps
 `list()` and `find()` page `GET /v1/sandboxes?labels=<JSON>` and filter again
 locally: every label must match, and with `computeType` only sandboxes on that
 tier count, so a standard client never sees a shared sandbox. `find()` skips
-`failed` sandboxes and prefers a running one. A stopped one (its lifetime or
-idle timeout ended; a `stopping` one is waited out first) is started again and
-the records of processes its stop ended are marked exited before `find()`
-returns it. A restore runs the same invalidation before `/workspace` setup, as
-does the restart after a snapshot.
+`failed` sandboxes and prefers one whose status is `running`. Without one, a
+`starting` match is waited for, and a stopped one (its lifetime or idle
+timeout ended; `stopping` and `saving_state` are waited out first) is started
+again, unless the lookup was aborted. `isStopped(id)` is true only for
+`stopped` and `failed`, so idle-only reaping counts only those idle without a
+probe.
+
+A stop ends every guest process but leaves its record on the disk, which a
+restart or restore keeps. Each guest handle, on its first use after a start,
+marks records without an exit and run markers older than the guest's boot
+(`date +%s` minus `/proc/uptime`) as exited and removed. Anything written since
+that boot is left alone, so every client can run it safely.
 
 ## Commands
 
@@ -129,7 +136,9 @@ stream ends first.
 
 The guest agent lookup (`sandboxes.get`, and the name read behind it) runs
 inside the command's timeout and abort: one that fires first reports
-`{ exitCode: null, timedOut: true }`, as nothing was started. Each read of the
+`{ exitCode: null, timedOut: true }`, as nothing was started. The lookup itself
+has a `requestTimeoutMs` deadline, and a failed one is dropped so the next
+command connects again. Each read of the
 stream races the stop with one removable abort listener, so a long stream never
 adds reactions to a shared promise.
 
@@ -172,10 +181,11 @@ this ID that still target this sandbox (or nothing, once it is detached),
 deletes each (404 is gone), and then always runs
 `DELETE /v1/sandboxes/{id}`, even when a Service could not be removed. A
 Service that failed stays in memory and the call fails after the sandbox is
-deleted, so destroying again finishes it. A Service listing that fails is
-reported the same way, after the delete: the ID is remembered, and the next
-destroy also reads the whole Service list for this ID's slugs among detached
-Services. Microsandbox accepts a DELETE before it finishes, so an accepted
+deleted, so destroying again finishes it. A Service listing that fails, or a
+sandbox name that cannot be read (not a 404), is reported the same way, after
+the delete. The ID is remembered, and the next destroy reads the whole Service
+list for detached slugs of this ID's shape that memory cannot prove. It names
+them in its error and never deletes them. Microsandbox accepts a DELETE before it finishes, so an accepted
 delete is confirmed by reading `GET /v1/sandboxes/{id}` until it answers 404,
 on its own 60-second deadline; a sandbox that still reads then fails with
 `outcome_unknown`, as does a failed create whose cleanup it was.
