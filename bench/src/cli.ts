@@ -28,6 +28,12 @@ export async function main(load: typeof loadProvider = loadProvider) {
     return;
   }
 
+  if (args[0] === "expanded") {
+    await (await import("./expanded/cli.js")).expandedCommand(args.slice(1));
+
+    return;
+  }
+
   if (args[0] === "realistic") {
     await (await import("./realistic/cli.js")).realisticCommand(args.slice(1));
 
