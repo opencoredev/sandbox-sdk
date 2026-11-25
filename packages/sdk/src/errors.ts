@@ -154,6 +154,12 @@ export const withheldErrors = new WeakSet<SandboxError>();
 /** Timeout errors created by `ProcessHandle.wait()`'s own deadline timer. */
 export const waitDeadlineErrors = new WeakSet<SandboxError>();
 
+/**
+ * Evidence fields as the provider sent them, before an adapter scrubbed them for display. The core
+ * redacts the sandbox's secrets in these first, since scrubbing folds a multiline secret.
+ */
+const unscrubbedEvidence = new WeakMap<Error, Pick<NativeEvidence, "providerMessage">>();
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -772,10 +778,7 @@ export class Redactor {
         cause:
           cause.cause === undefined
             ? undefined
-            : scrubCause(
-                cause.cause instanceof Error ? cause.cause.message : String(cause.cause),
-                (text) => this.text(text),
-              ),
+            : scrubCause(causeText(cause.cause), (text) => this.text(text)),
       });
 
       if (waitDeadlineErrors.has(cause)) waitDeadlineErrors.add(mapped);
@@ -1007,8 +1010,28 @@ export interface NativeEvidence {
  * cause to its message, so the JSON is what reaches users; the fields stay readable on the adapter's
  * own error.
  */
-export function evidenceCause(evidence: NativeEvidence): Error & NativeEvidence {
-  return Object.assign(new Error(JSON.stringify(evidence)), evidence);
+export function evidenceCause(
+  evidence: NativeEvidence,
+  unscrubbed?: Pick<NativeEvidence, "providerMessage">,
+): Error & NativeEvidence {
+  const cause = Object.assign(new Error(JSON.stringify(evidence)), evidence);
+
+  if (unscrubbed !== undefined) unscrubbedEvidence.set(cause, unscrubbed);
+
+  return cause;
+}
+
+/** A cause's text for {@link Redactor.error}: adapter evidence with its unscrubbed fields restored. */
+function causeText(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const unscrubbed = unscrubbedEvidence.get(cause);
+
+  if (unscrubbed === undefined) return cause.message;
+  const fields = evidenceFields(cause.message);
+
+  return fields === undefined
+    ? cause.message
+    : JSON.stringify({ ...Object.fromEntries(fields), ...unscrubbed });
 }
 
 /** A redact function for values an adapter knows, such as its API key. Empty values are skipped. */
