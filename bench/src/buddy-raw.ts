@@ -117,22 +117,22 @@ export async function createRawBuddy(input: {
   admit: (box: RawBuddyBox) => void;
 }): Promise<RawBuddyBox> {
   const config = buddyConfig();
+
+  const sandboxesPath = config.project
+    ? `/sandboxes?project_name=${encodeURIComponent(config.project)}`
+    : "/sandboxes";
+
   const owner = crypto.randomUUID();
   const identifier = `sdk-raw-${owner.replace(/-/g, "").slice(0, 20)}`;
   const note = JSON.stringify({ ...input.labels, [rawOwnerField]: owner });
-
-  const body = config.project
-    ? { name: identifier, identifier, os: "ubuntu:24.04", note, project_name: config.project }
-    : { name: identifier, identifier, os: "ubuntu:24.04", note };
-
   let created: z.infer<typeof buddyRecord>;
 
   try {
     created = buddyRecord.parse(
       await (
-        await buddyCall("/sandboxes", {
+        await buddyCall(sandboxesPath, {
           method: "POST",
-          json: body,
+          json: { name: identifier, identifier, os: "ubuntu:24.04", note },
         })
       ).json(),
     );
@@ -173,30 +173,83 @@ async function recoverByIdentifier(
     ? `/sandboxes?project_name=${encodeURIComponent(config.project)}`
     : "/sandboxes";
 
+  let lastReadSucceeded = false;
+
   for (let read = 0; read < 5; read++) {
     if (read > 0) await new Promise((resolve) => setTimeout(resolve, 2000));
 
+    try {
+      const list = z
+        .object({ sandboxes: z.array(buddyRecord).optional() })
+        .parse(await (await buddyCall(listPath)).json());
+
+      const holder = list.sandboxes?.find((s) => s.identifier === identifier);
+
+      if (!holder) {
+        lastReadSucceeded = true;
+        continue;
+      }
+
+      const record = buddyRecord.parse(
+        await (await buddyCall(`/sandboxes/${encodeURIComponent(holder.id)}`)).json(),
+      );
+
+      if (record.id === holder.id && ownerOf(record.note) === owner)
+        admit(
+          rawBox(record.id, async () => {
+            throw new Error("Buddy create answer was lost");
+          }),
+        );
+
+      return;
+    } catch {
+      lastReadSucceeded = false;
+    }
+  }
+
+  // If the final recovery read did not confirm absence cleanly, retain a deferred-lookup
+  // cleanup handle so the run's final cleanup sweep still finds and deletes any leaked VM.
+  if (!lastReadSucceeded) admit(deferredRawBox(identifier, owner, listPath));
+}
+
+/** Deferred cleanup handle for an unresolved raw identifier whose immediate recovery failed. */
+function deferredRawBox(identifier: string, owner: string, listPath: string): RawBuddyBox {
+  async function findOwnedId(): Promise<string | undefined> {
     const list = z
       .object({ sandboxes: z.array(buddyRecord).optional() })
       .parse(await (await buddyCall(listPath)).json());
 
     const holder = list.sandboxes?.find((s) => s.identifier === identifier);
 
-    if (!holder) continue;
+    if (!holder) return undefined;
 
     const record = buddyRecord.parse(
       await (await buddyCall(`/sandboxes/${encodeURIComponent(holder.id)}`)).json(),
     );
 
-    if (record.id === holder.id && ownerOf(record.note) === owner)
-      admit(
-        rawBox(record.id, async () => {
-          throw new Error("Buddy create answer was lost");
-        }),
-      );
-
-    return;
+    return record.id === holder.id && ownerOf(record.note) === owner ? record.id : undefined;
   }
+
+  return {
+    id: identifier,
+    exec: async () => {
+      throw new Error("Buddy create answer was lost");
+    },
+    destroy: async () => {
+      const id = await findOwnedId();
+
+      if (!id) return;
+
+      try {
+        await (
+          await buddyCall(`/sandboxes/${encodeURIComponent(id)}`, { method: "DELETE" })
+        ).body?.cancel();
+      } catch (error) {
+        if (!z.object({ status: z.literal(404) }).safeParse(error).success) throw error;
+      }
+    },
+    exists: async () => (await findOwnedId()) !== undefined,
+  };
 }
 
 /** One raw sandbox for `sdk-overhead.ts`: `exec` as given, and the plain delete and existence reads. */

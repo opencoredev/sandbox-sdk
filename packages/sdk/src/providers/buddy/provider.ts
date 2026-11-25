@@ -38,6 +38,7 @@ import { files as guestFiles, type Guest } from "../../shared/guest.js";
 import { isJsonObject, type JsonObject, type JsonValue } from "../../shared/json.js";
 import { isString } from "../../shared/narrow.js";
 import { quote } from "../../shared/shell.js";
+import { bootRepairScript } from "../../shell/process-records.js";
 import {
   authOf,
   isSdkIdentifier,
@@ -175,6 +176,9 @@ const cleanupMs = 30_000;
 /** How long a sandbox may take to reach `RUNNING` with its setup done. */
 const readyMs = 180_000;
 
+/** Cap on full-file downloads so a growing guest file cannot exhaust host memory. */
+const maxReadBytes = 32 * 1024 * 1024;
+
 /**
  * Run on every sandbox before it is returned (create, find, resume): the base image has no /workspace,
  * the SDK's working directory. Commands run as `buddy` (uid 1001) with passwordless sudo. It also checks
@@ -233,6 +237,8 @@ export function guestPath(path: string): string {
 /** What each sandbox's guest holds that this client put there: the bridge, and shared env files. */
 interface GuestState {
   bridge: boolean;
+  /** Whether stale pre-boot process records have been repaired on this handle. */
+  bootRepaired: boolean;
   /** Env JSON to the private file that holds it. */
   envs: Map<string, string>;
   /** Commands that ended, whose directories the next launch removes. */
@@ -268,32 +274,35 @@ const lockDir = "/tmp/.sandbox-sdk/locks/endpoints.lock";
 
 /**
  * Takes the guest lock on the sandbox's endpoints: an atomic `mkdir`, with `owner` inside. A lock older
- * than two minutes is a crashed client's lease and is broken. Exits 75 when the lock stays taken for
+ * than `leaseMinutes` is a crashed client's lease and is broken. Exits 75 when the lock stays taken for
  * about 20 seconds.
  */
-const lockCommand = (owner: string) =>
+const lockCommand = (owner: string, leaseMinutes: number) =>
   [
     "umask 077",
     "mkdir -p /tmp/.sandbox-sdk/locks || exit 1",
     `l=${lockDir}`,
     "i=0",
     `while ! mkdir "$l" 2>/dev/null; do`,
-    `  if [ -n "$(find "$l" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rm -rf "$l"; continue; fi`,
+    `  if [ -n "$(find "$l" -maxdepth 0 -mmin +${leaseMinutes} 2>/dev/null)" ]; then rm -rf "$l"; continue; fi`,
     "  i=$((i + 1)); [ $i -lt 200 ] || exit 75; sleep 0.1",
     "done",
     `printf %s ${quote(owner)} > "$l/owner"`,
   ].join("\n");
 
-/** Writes `credentials` (when given) to their private file, then releases the lock if `owner` holds it. */
-const unlockCommand = (owner: string, credentials?: PreviewCredentials) =>
+/** Writes `credentials` to their private file only while `owner` still holds the endpoint lock. Exits 75 if lost. */
+const writeCredentialsCommand = (owner: string, credentials: PreviewCredentials) =>
   [
     "umask 077",
-    ...(credentials
-      ? [
-          `mkdir -p ${previewDir} || exit 1`,
-          `printf %s ${quote(Buffer.from(JSON.stringify(credentials)).toString("base64"))} | base64 -d > ${previewDir}/${credentials.port}.part && mv -f ${previewDir}/${credentials.port}.part ${previewDir}/${credentials.port} || exit 1`,
-        ]
-      : []),
+    `l=${lockDir}`,
+    `[ "$(cat "$l/owner" 2>/dev/null)" = ${quote(owner)} ] || exit 75`,
+    `mkdir -p ${previewDir} || exit 1`,
+    `printf %s ${quote(Buffer.from(JSON.stringify(credentials)).toString("base64"))} | base64 -d > ${previewDir}/${credentials.port}.part && mv -f ${previewDir}/${credentials.port}.part ${previewDir}/${credentials.port} || exit 1`,
+  ].join("\n");
+
+/** Releases the endpoint lock if `owner` still holds it. */
+const unlockCommand = (owner: string) =>
+  [
     `l=${lockDir}`,
     `[ "$(cat "$l/owner" 2>/dev/null)" = ${quote(owner)} ] && rm -rf "$l"`,
     "exit 0",
@@ -428,7 +437,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     let state = guests.get(id);
 
     if (!state) {
-      state = { bridge: false, envs: new Map(), finished: [] };
+      state = { bridge: false, bootRepaired: false, envs: new Map(), finished: [] };
       guests.set(id, state);
     }
 
@@ -510,10 +519,31 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     }
   }
 
-  /** Runs the setup command, which makes /workspace and installs the bridge. */
+  /** Runs the setup command, which makes /workspace, installs the bridge and repairs pre-boot process records. */
   async function setUp(id: string, deadline: Deadline) {
-    await shell(id, setupCommand, { timeoutMs: Math.max(1000, deadline.remaining()) });
-    guestOf(id).bridge = true;
+    await shell(id, setupCommand, { deadline });
+    await shell(id, bootRepairScript(), { deadline });
+    const state = guestOf(id);
+    state.bridge = true;
+    state.bootRepaired = true;
+  }
+
+  async function ensureBootRepaired(id: string, path: string) {
+    const resolved = posix.resolve("/workspace", path);
+
+    if (
+      resolved !== "/tmp/.sandbox-sdk/procs" &&
+      !resolved.startsWith("/tmp/.sandbox-sdk/procs/") &&
+      resolved !== "/tmp/.sandbox-sdk/runs" &&
+      !resolved.startsWith("/tmp/.sandbox-sdk/runs/")
+    )
+      return;
+
+    const state = guestOf(id);
+
+    if (state.bootRepaired) return;
+    await shell(id, bootRepairScript(), { readOnly: true });
+    state.bootRepaired = true;
   }
 
   /** Readiness for a sandbox another call made or a stopped one woke: running, set up, /workspace there. */
@@ -533,16 +563,23 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     const deadline = budgetMs === undefined ? undefined : createDeadline(budgetMs);
     const request: Partial<HttpRequest<BuddyPlane>> = deadline ? { deadline } : {};
 
+    let gone = false;
+
     try {
       let last: unknown;
 
       for (let attempt = 0; attempt < 4; attempt++) {
         try {
           await http.request({ method: "DELETE", ...sandboxPath(id), ...request });
+          gone = true;
 
           return;
         } catch (error) {
-          if (isGone(error)) return;
+          if (isGone(error)) {
+            gone = true;
+
+            return;
+          }
 
           if (error instanceof SandboxError && !error.retryable) throw error;
 
@@ -559,13 +596,20 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
       try {
         await readSandbox(id, request);
       } catch (error) {
-        if (isGone(error)) return;
+        if (isGone(error)) {
+          gone = true;
+
+          return;
+        }
       }
 
       throw last;
     } finally {
       forget(id);
-      sandboxTokens.delete(id);
+
+      // Release per-sandbox redaction entries only once the sandbox is confirmed gone; a refused
+      // DELETE leaves the sandbox live, so later errors must still redact its secrets.
+      if (gone) sandboxTokens.delete(id);
     }
   }
 
@@ -1267,7 +1311,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
       try {
         outcome = await step(first);
       } catch (error) {
-        if (settled !== undefined || isUnknown(error)) throw error;
+        if (settled !== undefined) throw error;
 
         if (control.cancelled()) return stopped();
 
@@ -1313,20 +1357,11 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     }
   }
 
-  async function readFile(id: string, path: string): Promise<Uint8Array> {
-    const response = await http.request({
-      method: "GET",
-      path: `/sandboxes/{id}/download/${guestPath(path)}`,
-      params: { id },
-      sandboxId: id,
-      timeoutMs: 300_000,
-      maxBytes: 2 ** 32,
-    });
+  function assertDownloadFile(headers: Headers, id: string, path: string) {
+    const type = (headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
+    const disposition = headers.get("content-disposition") ?? "";
 
-    const type = (response.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
-    const disposition = response.headers.get("content-disposition") ?? "";
-
-    if (type === "application/octet-stream") return response.body;
+    if (type === "application/octet-stream") return;
 
     if (type === "application/gzip" || /\.tar\.gz"?\s*$/i.test(disposition))
       throw fail(`${path} is a directory, not a file`, "invalid_argument", { sandboxId: id });
@@ -1334,6 +1369,93 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     throw fail("the download answered with a content type the adapter does not know", "provider", {
       sandboxId: id,
     });
+  }
+
+  async function readFile(id: string, path: string): Promise<Uint8Array> {
+    await ensureBootRepaired(id, path);
+
+    const response = await http.request({
+      method: "GET",
+      path: `/sandboxes/{id}/download/${guestPath(path)}`,
+      params: { id },
+      sandboxId: id,
+      timeoutMs: 300_000,
+      maxBytes: maxReadBytes,
+    });
+
+    assertDownloadFile(response.headers, id, path);
+
+    return response.body;
+  }
+
+  /**
+   * Streams only `range` of a file so a large or growing file is never buffered whole in host memory.
+   */
+  async function readFileRange(
+    id: string,
+    path: string,
+    range: { offset: number; length: number },
+  ): Promise<Uint8Array> {
+    await ensureBootRepaired(id, path);
+
+    const response = await http.stream({
+      method: "GET",
+      path: `/sandboxes/{id}/download/${guestPath(path)}`,
+      params: { id },
+      sandboxId: id,
+      timeoutMs: 300_000,
+    });
+
+    try {
+      assertDownloadFile(response.headers, id, path);
+    } catch (error) {
+      await response.body?.cancel().catch(() => {});
+      throw error;
+    }
+
+    if (range.length <= 0) {
+      await response.body?.cancel().catch(() => {});
+
+      return new Uint8Array(0);
+    }
+
+    const end = range.offset + range.length;
+    const kept: Uint8Array[] = [];
+    let seen = 0;
+    let size = 0;
+    const reader = response.body?.getReader();
+
+    try {
+      while (reader && seen < end) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+        const from = Math.max(range.offset - seen, 0);
+        const to = Math.min(end - seen, value.byteLength);
+
+        if (to > from) {
+          kept.push(value.slice(from, to));
+          size += to - from;
+        }
+
+        seen += value.byteLength;
+      }
+    } catch (error) {
+      if (error instanceof SandboxError) throw error;
+      throw fail("the file read broke off", "unavailable", { sandboxId: id });
+    } finally {
+      await reader?.cancel().catch(() => {});
+    }
+
+    const bytes = new Uint8Array(size);
+    let at = 0;
+
+    for (const part of kept) {
+      bytes.set(part, at);
+      at += part.byteLength;
+    }
+
+    return bytes;
   }
 
   async function writeFile(id: string, path: string, bytes: Uint8Array) {
@@ -1359,11 +1481,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     name,
     raw: (command) => shell(id, command),
     upload: (path, bytes) => writeFile(id, path, bytes),
-    read: async (path, range) => {
-      const bytes = await readFile(id, path);
-
-      return range ? bytes.subarray(range.offset, range.offset + range.length) : bytes;
-    },
+    read: (path, range) => (range ? readFileRange(id, path, range) : readFile(id, path)),
   });
 
   const shared = guestFiles(
@@ -1376,11 +1494,20 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     // The guest metadata program lists in os.listdir order.
     listOrder: "directory",
     read: readFile,
+    readRange: readFileRange,
     write: async (id, path, bytes) => {
       await writeFile(id, path, bytes);
     },
-    list: shared.list,
-    stat: shared.stat,
+    list: async (id, path) => {
+      await ensureBootRepaired(id, path);
+
+      return shared.list(id, path);
+    },
+    stat: async (id, path) => {
+      await ensureBootRepaired(id, path);
+
+      return shared.stat(id, path);
+    },
     mkdir: shared.mkdir,
     remove: shared.remove,
   };
@@ -1603,7 +1730,8 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     const endpointName = `sbx-p${port}`;
     const auth = options.public ? "NONE" : "BASIC";
     const owner = randomUUID();
-    const locked = await run(id, lockCommand(owner), { timeoutMs: 40_000 });
+    const lockLeaseMinutes = Math.max(2, Math.ceil((requestTimeoutMs * 2 + 60_000) / 60_000));
+    const locked = await run(id, lockCommand(owner, lockLeaseMinutes), { timeoutMs: 40_000 });
 
     if (locked.exitCode === 75)
       throw fail("another client is changing this sandbox's endpoints; retry", "unavailable", {
@@ -1616,10 +1744,11 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
         sandboxId: id,
       });
 
+    const lockDeadline = createDeadline((lockLeaseMinutes * 60 - 30) * 1000);
     let released = false;
 
     try {
-      const sandbox = await readSandbox(id);
+      const sandbox = await readSandbox(id, { deadline: lockDeadline });
       const reused = await existing(id, sandbox, port);
 
       if (reused) return reused;
@@ -1653,16 +1782,46 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
         c.endpoint.name !== endpointName && c.kept ? [c.kept] : [],
       );
 
-      const made: PreviewCredentials | undefined =
-        auth === "BASIC"
-          ? { port, login: "sbx", password: randomBytes(24).toString("base64url") }
-          : undefined;
+      // Reuse any saved password on disk (e.g. after switching private -> public -> private) or persist
+      // the new credentials under the lock BEFORE patching Buddy, so Buddy never holds a BASIC password
+      // that disagrees with the guest's preview credential file.
+      let made: PreviewCredentials | undefined;
 
-      // Registered before the request, so no error from here on can show them.
-      if (made) {
-        addSandboxToken(id, made.password);
-        addSandboxToken(id, basic(made));
-        addSandboxToken(id, basic(made).slice("Basic ".length));
+      if (auth === "BASIC") {
+        const saved = await readCredentials(id, port);
+
+        if (saved) {
+          made = saved;
+          addSandboxToken(id, basic(saved).slice("Basic ".length));
+        } else {
+          made = { port, login: "sbx", password: randomBytes(24).toString("base64url") };
+          addSandboxToken(id, made.password);
+          addSandboxToken(id, basic(made));
+          addSandboxToken(id, basic(made).slice("Basic ".length));
+
+          const wrote = await run(id, writeCredentialsCommand(owner, made), {
+            deadline: lockDeadline,
+          });
+
+          if (wrote.exitCode === 75)
+            throw fail(
+              "the endpoint lock expired before saving credentials; retry",
+              "unavailable",
+              {
+                sandboxId: id,
+                retryable: true,
+              },
+            );
+
+          if (wrote.exitCode !== 0)
+            throw fail(
+              `the preview credentials could not be saved (exit ${wrote.exitCode})`,
+              "provider",
+              {
+                sandboxId: id,
+              },
+            );
+        }
       }
 
       const ours: JsonObject = {
@@ -1683,6 +1842,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
             method: "PATCH",
             ...sandboxPath(id),
             body: { endpoints: [...others, ours] },
+            deadline: lockDeadline,
           }),
         );
       } catch (error) {
@@ -1690,7 +1850,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
 
         // Under the lock no other client changed the endpoints: a new endpoint of ours with the asked
         // port and auth means the change took. A changed one cannot be told apart, so that stays unknown.
-        const check = await readSandbox(id).catch(() => {
+        const check = await readSandbox(id, { deadline: lockDeadline }).catch(() => {
           throw error;
         });
 
@@ -1709,7 +1869,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
           sandboxId: id,
         });
 
-      await shell(id, unlockCommand(owner, made), { timeoutMs: 30_000 });
+      await shell(id, unlockCommand(owner), { timeoutMs: 30_000 });
       released = true;
 
       return made ? { url, headers: { Authorization: basic(made) } } : { url };
@@ -1910,6 +2070,13 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
 
       for (const [key, value] of Object.entries(environment))
         if (isString(value)) values[key] = value;
+
+      // Re-arm provider redaction for recovered secrets after reconnect.
+      for (const secretName of names) {
+        const value = values[secretName];
+
+        if (value) addSandboxToken(id, value);
+      }
 
       return { record: JSON.stringify(names), environment: values };
     },

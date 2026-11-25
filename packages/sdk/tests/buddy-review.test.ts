@@ -3,7 +3,7 @@ import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { createSandbox, reapSandboxes, SandboxError } from "../src/index.js";
+import { connectSandbox, createSandbox, reapSandboxes, SandboxError } from "../src/index.js";
 import { FrameError, LineSplitter } from "../src/providers/buddy/exec.js";
 import { buddy, type BuddyOptions } from "../src/providers/buddy/index.js";
 import type { Fetch } from "../src/http.js";
@@ -1403,5 +1403,172 @@ test("destroyed sandboxes release their secrets and preview passwords from the p
     failReads = false;
     await boxA.destroy().catch(() => {});
     await boxB.destroy().catch(() => {});
+  }
+});
+
+test("refused destroy keeps redaction active and reconnect re-arms persisted secrets", async () => {
+  let refuseDelete = true;
+  let leakedText = "";
+  let failNative = false;
+
+  const p = provider({
+    fetch: async (input, init) => {
+      const url = new URL(input);
+
+      if (
+        refuseDelete &&
+        (init?.method ?? "GET") === "DELETE" &&
+        /\/sandboxes\/[^/]+$/.test(url.pathname)
+      )
+        return Response.json({ errors: [{ message: "Forbidden" }] }, { status: 403 });
+
+      if (failNative && (init?.method ?? "GET") === "GET" && url.pathname.endsWith("/execs"))
+        throw new TypeError(`native boom ${leakedText}`);
+
+      return fetch(input, init);
+    },
+  });
+
+  const secretValue = "buddy-persisted-secret-7731";
+  const box = await createSandbox(p, { secrets: { PERSISTED_SECRET: secretValue } });
+
+  try {
+    const preview = await box.preview(3000);
+    const authHeader = preview.headers?.Authorization ?? "";
+
+    const password = Buffer.from(authHeader.slice("Basic ".length), "base64")
+      .toString()
+      .split(":")[1];
+
+    expect(password).toBeTruthy();
+    leakedText = `${secretValue} ${password}`;
+
+    // Refused DELETE leaves the sandbox live: native errors must still redact both secrets.
+    await expect(box.destroy()).rejects.toBeInstanceOf(SandboxError);
+    failNative = true;
+
+    const afterRefusedDelete = await failure(
+      p.native(box.id).request<void>("GET", "/sandboxes/{sandbox_id}/execs"),
+    );
+
+    const refusedDetail = `${afterRefusedDelete?.message ?? ""} ${String(afterRefusedDelete?.cause ?? "")}`;
+
+    expect(afterRefusedDelete).toBeInstanceOf(SandboxError);
+    expect(refusedDetail).not.toContain(secretValue);
+    expect(refusedDetail).not.toContain(password ?? "");
+
+    // Closing drops the handle, and reconnecting re-arms persisted secret redaction.
+    failNative = false;
+    await box.close();
+
+    const reopened = await connectSandbox(p, box.id);
+
+    try {
+      // Recover persisted secrets and reattach preview credentials on the reopened handle.
+      await reopened.run("true");
+      await reopened.preview(3000);
+      failNative = true;
+
+      const afterReconnect = await failure(
+        reopened.native.request<void>("GET", "/sandboxes/{sandbox_id}/execs"),
+      );
+
+      const reconnectDetail = `${afterReconnect?.message ?? ""} ${String(afterReconnect?.cause ?? "")}`;
+
+      expect(afterReconnect).toBeInstanceOf(SandboxError);
+      expect(reconnectDetail).not.toContain(secretValue);
+      expect(reconnectDetail).not.toContain(password ?? "");
+    } finally {
+      failNative = false;
+      await reopened.close();
+    }
+  } finally {
+    failNative = false;
+    refuseDelete = false;
+    await p.destroy(box.id).catch(() => {});
+  }
+});
+
+test("spool read 5xx kills the running command before rejecting", async () => {
+  const box = await createSandbox(
+    provider({
+      fetch: async (input, init) => {
+        const url = new URL(input);
+
+        if ((init?.method ?? "GET") === "GET" && url.pathname.endsWith("/log"))
+          return Response.json({ lines: [], next_offset: 0, truncated: true });
+
+        if (
+          (init?.method ?? "GET") === "POST" &&
+          url.pathname.endsWith("/exec") &&
+          String(init?.body ?? "").includes("/spool")
+        )
+          return Response.json({ errors: [{ message: "Internal error" }] }, { status: 500 });
+
+        return fetch(input, init);
+      },
+    }),
+  );
+
+  try {
+    const marker = join(sandboxOf(box.id).root, "workspace", "survived-spool-5xx");
+
+    const exec = box.run("sleep 0.7; : > survived-spool-5xx");
+
+    const stream = (async () => {
+      for await (const _ of exec) {
+        // Consume streaming chunks so the adapter polls logs and enters readSpool().
+      }
+    })();
+
+    await expect(exec.then((r) => r)).rejects.toMatchObject({ code: "outcome_unknown" });
+    await stream.catch(() => {});
+
+    await delay(900);
+    await expect(access(marker)).rejects.toThrow();
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("switching private preview to public and back reuses saved credentials cleanly", async () => {
+  const privateProvider = provider({ public: false });
+  const publicProvider = provider({ public: true });
+  const box = await createSandbox(privateProvider);
+
+  try {
+    const first = await box.preview(3000);
+
+    expect(first.headers?.Authorization).toMatch(/^Basic /);
+
+    const pub = await publicProvider.previewUrl(box.id, 3000);
+
+    expect(pub.headers).toBeUndefined();
+
+    const freshPrivate = provider({ public: false });
+    const restored = await freshPrivate.previewUrl(box.id, 3000);
+
+    expect(restored.headers?.Authorization).toBe(first.headers?.Authorization);
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("files.readRange reads only the requested bytes without buffering the full download", async () => {
+  const p = provider();
+  const box = await createSandbox(p);
+
+  try {
+    await box.files.write("/workspace/ranged.txt", "0123456789abcdef");
+
+    const slice = await p.files.readRange?.(box.id, "/workspace/ranged.txt", {
+      offset: 4,
+      length: 6,
+    });
+
+    expect(slice).toBeDefined();
+    expect(Buffer.from(slice ?? new Uint8Array()).toString()).toBe("456789");
+  } finally {
+    await box.destroy();
   }
 });
