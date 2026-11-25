@@ -2,9 +2,12 @@
 title: Docker sandbox for AI agents in TypeScript
 description: Run your agent's shell commands and file edits in a Docker container from TypeScript, lock the container down, then move the same code to a cloud sandbox by changing one import.
 published: 2026-11-01
+updated: 2026-11-25
 ---
 
 If you are building an agent that runs shell commands, those commands need somewhere to run that isn't your laptop or your server. A Docker container is the closest isolated machine you already have. This guide shows how to start one from TypeScript, hand it to an agent as tools, tighten what the container can do, and later move the same code to a cloud sandbox.
+
+The same agent code can use Docker on your laptop and a cloud sandbox in production. With `@opencoredev/sandbox-sdk`, the agent loop stays in your app and only its sandbox changes: `createSandbox(local())` starts a Docker container, `createSandbox(e2b())` starts an E2B microVM instead, and `box.run`, `box.files` and `sandboxTools(box)` stay as they are. The guide to [picking a cloud provider](/docs/getting-started/choose-a-provider) helps you choose among E2B, Vercel Sandbox, Daytona and the rest.
 
 The short version:
 
@@ -150,7 +153,7 @@ import { e2b } from "@opencoredev/sandbox-sdk/e2b";
 await using box = await createSandbox(e2b()); // reads E2B_API_KEY
 ```
 
-`box.run`, `box.files`, `box.git` and `sandboxTools(box)` stay as they are. The same goes for `vercel()`, `daytona()`, `upstash()` and the other providers. Some need their own SDK installed next to this one, such as `@vercel/sandbox` for Vercel. [Choose a provider](/docs/getting-started/choose-a-provider) helps you pick.
+`box.run`, `box.files`, `box.git` and `sandboxTools(box)` stay as they are. The same goes for `vercel()`, `daytona()`, `upstash()` and the other providers. Some need their own SDK installed next to this one, such as `@vercel/sandbox` for Vercel. The provider guide linked at the top helps you pick.
 
 Options differ by provider. Allow lists, disk size, pause and snapshots aren't available everywhere, and a provider that can't enforce an option fails with `unsupported` rather than ignoring it. Check the [capability matrix](/docs/reference/capabilities) before you rely on one. For speed and price numbers across providers, see [AI Sandbox Bench](https://aisandboxbench.com).
 
@@ -200,6 +203,8 @@ Code that takes a `Sandbox` runs the same against `memory()`, `local()` and ever
 ## Common questions
 
 **Do I need the Docker CLI?** No. `local()` talks to the Docker Engine API over its Unix socket.
+
+**Can I run an AI coding agent in Docker locally and in the cloud with the same code?** Yes, when the agent is your own TypeScript code. The agent loop stays in your app and only its sandbox changes: choose the provider by environment, for example `process.env.NODE_ENV === "production" ? e2b() : local()`, and its commands and file edits run in a local Docker container during development and in an E2B microVM in production. Options differ by provider, as the section on moving to the cloud explains. To run an existing agent such as Claude Code itself inside a sandbox, [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) creates local and Docker-hosted cloud sandboxes with its `sbx` CLI.
 
 **Does it work in CI?** Yes, on any runner with a Docker Engine. Use `memory()` for unit tests and `local()` for the integration tests that need a real shell.
 
