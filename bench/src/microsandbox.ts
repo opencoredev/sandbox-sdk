@@ -171,6 +171,11 @@ export interface ServiceEntry {
    * here is someone else's.
    */
   superseded: boolean;
+  /**
+   * Called before DELETE when a live attached read proves this Service belongs to `sandboxName` and
+   * the journal entry is still `pending` or lacks `createdAt`, so the durable journal upgrades first.
+   */
+  onVerified?: (createdAt: string | undefined) => void | Promise<void>;
 }
 
 /** Whether `other` is a retry slug the adapter makes after `slug` was taken: `<slug>-<4 hex>`. */
@@ -220,6 +225,12 @@ export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome>
 
   if (service.target !== null && service.target !== undefined) {
     if (service.target.sandbox !== entry.sandboxName) return { kind: "foreign" };
+
+    if (
+      entry.state !== "created" ||
+      (entry.createdAt === undefined && service.created_at !== undefined)
+    )
+      await entry.onVerified?.(service.created_at);
   } else if (service.status === "detached" && !entry.superseded) {
     if (entry.state !== "created")
       return {

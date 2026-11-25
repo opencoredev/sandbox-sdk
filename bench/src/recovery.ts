@@ -227,18 +227,59 @@ export async function reapRun(
     const settledServicesInRun = new Set<string>();
 
     // Retire Service entries as soon as the adapter confirms deletion or foreign conflict during
-    // destroy(), before the sandbox itself is deleted and before the Service sweep runs.
+    // destroy(), and persist verified attached identity before DELETE can fail and detach it.
     if (tier !== undefined && takesAttemptHooks(p.provider)) {
       p.provider.setAttemptHooks({
-        serviceSettled: async ({ slug, outcome }) => {
-          if (outcome !== "deleted" && outcome !== "conflict") return;
-          settledServicesInRun.add(slug);
-
+        serviceSettled: async ({ slug, outcome, createdAt }) => {
           if (!journal) return;
 
           const matching = journal.resources.filter(
             (r) => r.provider === p.name && r.kind === "service" && r.id === slug,
           );
+
+          if (outcome === "created") {
+            const mutated: {
+              entry: z.infer<typeof resource>;
+              prevState: "pending" | "created" | undefined;
+              prevCreatedAt: string | undefined;
+            }[] = [];
+
+            for (const entry of matching) {
+              const nextCreatedAt = createdAt ?? entry.serviceCreatedAt;
+
+              if (entry.serviceState !== "created" || entry.serviceCreatedAt !== nextCreatedAt) {
+                mutated.push({
+                  entry,
+                  prevState: entry.serviceState,
+                  prevCreatedAt: entry.serviceCreatedAt,
+                });
+                entry.serviceState = "created";
+
+                if (nextCreatedAt !== undefined) entry.serviceCreatedAt = nextCreatedAt;
+              }
+            }
+
+            if (mutated.length === 0) return;
+
+            try {
+              await persistJournal();
+            } catch (error) {
+              for (const item of mutated) {
+                if (item.prevState === undefined) delete item.entry.serviceState;
+                else item.entry.serviceState = item.prevState;
+
+                if (item.prevCreatedAt === undefined) delete item.entry.serviceCreatedAt;
+                else item.entry.serviceCreatedAt = item.prevCreatedAt;
+              }
+
+              throw error;
+            }
+
+            return;
+          }
+
+          if (outcome !== "deleted" && outcome !== "conflict") return;
+          settledServicesInRun.add(slug);
 
           for (const entry of matching) await forget(entry);
         },
@@ -541,6 +582,29 @@ export async function reapRun(
             superseded: services.some(
               (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
             ),
+            onVerified: async (verifiedCreatedAt) => {
+              if (!journal) return;
+              const prevState = entry.serviceState;
+              const prevCreatedAt = entry.serviceCreatedAt;
+              const nextCreatedAt = verifiedCreatedAt ?? entry.serviceCreatedAt;
+
+              if (entry.serviceState === "created" && entry.serviceCreatedAt === nextCreatedAt)
+                return;
+              entry.serviceState = "created";
+
+              if (nextCreatedAt !== undefined) entry.serviceCreatedAt = nextCreatedAt;
+
+              try {
+                await persistJournal();
+              } catch (error) {
+                if (prevState === undefined) delete entry.serviceState;
+                else entry.serviceState = prevState;
+
+                if (prevCreatedAt === undefined) delete entry.serviceCreatedAt;
+                else entry.serviceCreatedAt = prevCreatedAt;
+                throw error;
+              }
+            },
           }),
         );
 

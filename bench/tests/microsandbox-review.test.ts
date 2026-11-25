@@ -1914,4 +1914,134 @@ describe("independent review reproductions", () => {
     await p.destroy(source.id);
     expect(fake.services.has(slug)).toBe(false);
   });
+
+  test("R8-1 verified sweep deletion survives a transient journal rename failure", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const sandbox = fake.sandboxes.get(source.id);
+
+    if (!sandbox) throw new Error("Fixture sandbox missing");
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    const snapshot = await capture(p, source.id);
+    await journal([
+      { provider: "microsandbox", id: source.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: slug,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "pending",
+      },
+      {
+        provider: "microsandbox",
+        id: snapshot.id,
+        kind: "snapshot",
+        parent: source.id,
+        snapshotProof: proof(source.id),
+      },
+    ]);
+    await writeFile(join(out, "results.json"), JSON.stringify({ runId: run }));
+    await p.previewUrl(source.id, 3000);
+
+    const ownershipPath = join(out, "ownership.json");
+    const realRename = journalFiles.rename;
+    let failures = 0;
+
+    const rename = vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (to === ownershipPath && failures === 0) {
+        const ids = z
+          .object({ resources: z.array(z.object({ id: z.string() })) })
+          .parse(JSON.parse(await readFile(from, "utf8")))
+          .resources.map((r) => r.id);
+
+        if (ids.includes(snapshot.id) && ids.includes(source.id) && !ids.includes(slug)) {
+          failures++;
+          throw new Error("simulated one-shot sweep retirement rename failure");
+        }
+      }
+
+      await realRename(from, to);
+    });
+
+    await reap();
+    expect(failures).toBe(1);
+    expect(fake.services.has(slug)).toBe(false);
+    expect(fake.snapshots.has(snapshot.id)).toBe(false);
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    rename.mockRestore();
+
+    const retryFailed = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
+
+    expect({
+      retryFailed,
+      reviewedIds: results.cleanupReview.map((item) => item.id),
+      journal: z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
+        .resources,
+    }).toEqual({ retryFailed: false, reviewedIds: [], journal: [] });
+  });
+
+  test("R8-2 fresh reap removes a verified pending Service after one DELETE failure", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const sandbox = fake.sandboxes.get(source.id);
+
+    if (!sandbox) throw new Error("Fixture sandbox missing");
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    await journal([
+      { provider: "microsandbox", id: source.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: slug,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "pending",
+      },
+    ]);
+    await writeFile(join(out, "results.json"), JSON.stringify({ runId: run }));
+    await p.previewUrl(source.id, 3000);
+
+    let failures = 0;
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (
+        new URL(String(input)).pathname === `/v1/services/${slug}` &&
+        init?.method === "DELETE" &&
+        failures === 0
+      ) {
+        failures++;
+
+        return Response.json(
+          { error: "simulated one-shot Service DELETE failure" },
+          { status: 500 },
+        );
+      }
+
+      return realFetch(input, init);
+    });
+
+    await reap();
+    expect(failures).toBe(1);
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    fetchMock.mockRestore();
+
+    const retryFailed = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
+
+    expect({
+      retryFailed,
+      serviceStatus: fake.services.get(slug)?.status,
+      reviewedIds: results.cleanupReview.map((item) => item.id),
+      journal: z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
+        .resources,
+    }).toEqual({ retryFailed: false, serviceStatus: undefined, reviewedIds: [], journal: [] });
+  });
 });

@@ -368,7 +368,7 @@ export function createMicrosandboxProvider(
   /** Service slugs this adapter made or was about to make, per sandbox ID, with target name and creation timestamp. */
   const ownedServices = new Map<
     string,
-    Map<string, { target: string; createdAt?: string | undefined }>
+    Map<string, { target: string; createdAt?: string | undefined; confirmed?: boolean | undefined }>
   >();
 
   /** Public Service URLs per sandbox ID and port. */
@@ -632,13 +632,26 @@ export function createMicrosandboxProvider(
   }
 
   /** Records Service `slug` of sandbox `id` as this adapter's, so a later destroy still finds it once detached. */
-  function ownService(id: string, slug: string, sandboxName: string, createdAt?: string) {
+  function ownService(
+    id: string,
+    slug: string,
+    sandboxName: string,
+    createdAt?: string,
+    confirmed?: boolean,
+  ) {
     const owned =
       ownedServices.get(id) ??
-      new Map<string, { target: string; createdAt?: string | undefined }>();
+      new Map<
+        string,
+        { target: string; createdAt?: string | undefined; confirmed?: boolean | undefined }
+      >();
 
     const existing = owned.get(slug);
-    owned.set(slug, { target: sandboxName, createdAt: createdAt ?? existing?.createdAt });
+    owned.set(slug, {
+      target: sandboxName,
+      createdAt: createdAt ?? existing?.createdAt,
+      confirmed: confirmed ?? existing?.confirmed,
+    });
     ownedServices.set(id, owned);
 
     return owned;
@@ -652,7 +665,8 @@ export function createMicrosandboxProvider(
     outcome: {
       sandboxId: string;
       slug: string;
-      outcome: "conflict" | "deleted";
+      outcome: "created" | "conflict" | "deleted";
+      createdAt?: string | undefined;
     },
     deadline: Deadline,
   ) {
@@ -711,7 +725,10 @@ export function createMicrosandboxProvider(
 
     // Deleting the entry being visited is safe while iterating a Map.
     for (const [slug, entry] of ownedServices.get(id) ??
-      new Map<string, { target: string; createdAt?: string | undefined }>()) {
+      new Map<
+        string,
+        { target: string; createdAt?: string | undefined; confirmed?: boolean | undefined }
+      >()) {
       if (!isOwnedSlug(slug, id)) continue;
 
       try {
@@ -746,6 +763,14 @@ export function createMicrosandboxProvider(
 
           if (entry.createdAt === undefined && service.createdAt !== undefined)
             entry.createdAt = service.createdAt;
+
+          if (!entry.confirmed) {
+            entry.confirmed = true;
+            await notifyServiceCleanup(
+              { sandboxId: id, slug, outcome: "created", createdAt: entry.createdAt },
+              deadline,
+            );
+          }
         } else if (
           entry.createdAt !== undefined &&
           service.createdAt !== undefined &&
@@ -1216,7 +1241,7 @@ export function createMicrosandboxProvider(
     }
 
     if (created.target?.sandbox === sandboxName) {
-      ownService(id, slug, sandboxName, created.createdAt);
+      ownService(id, slug, sandboxName, created.createdAt, true);
       await hooks.serviceSettled?.({
         sandboxId: id,
         slug,

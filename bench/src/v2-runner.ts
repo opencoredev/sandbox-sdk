@@ -2852,6 +2852,21 @@ export async function runV2(
           superseded: services.some(
             (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
           ),
+          onVerified: async (verifiedCreatedAt) => {
+            const key = `${p.name}/service/${entry.id}`;
+            const current = owned.get(key);
+
+            if (current === undefined) return;
+            const nextCreatedAt = verifiedCreatedAt ?? current.serviceCreatedAt;
+
+            if (current.serviceState === "created" && current.serviceCreatedAt === nextCreatedAt)
+              return;
+            const updated = { ...current, serviceState: "created" as const };
+
+            if (nextCreatedAt !== undefined) updated.serviceCreatedAt = nextCreatedAt;
+            owned.set(key, updated);
+            await persist();
+          },
         });
 
         if (outcome.kind === "pending") {
