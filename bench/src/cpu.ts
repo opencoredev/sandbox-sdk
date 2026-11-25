@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Sandbox } from "@opencoredev/sandbox-sdk";
 import { statistics } from "./stats.js";
 import { deadline, DeadlineError } from "./timing.js";
-import { command } from "./workloads.js";
+import { probeCommand } from "./workloads.js";
 
 /**
  * Fixed work for the CPU probe (probes/cpu.py): `segments` runs of `steps` iterations of the same
@@ -100,8 +100,12 @@ export const cpuProbeSchema = z.object({
     affinity: z.number().int().positive(),
     quota: z.number().positive().finite().nullable(),
   }),
-  python: z.string(),
+  /** `platform.python_version()`, such as 3.12.3 or 3.14.0rc1: nothing else is kept. */
+  python: z.string().regex(/^\d{1,2}\.\d{1,3}\.\d{1,3}(?:(?:a|b|rc)\d{1,2})?\+?$/),
 });
+
+/** The longest probe reply parsed: its JSON is about 1 KiB per worker, so this fits 256 CPUs. */
+export const maxProbeOutputChars = 256 * 1024;
 
 export type CpuProbe = z.infer<typeof cpuProbeSchema>;
 
@@ -199,7 +203,22 @@ function checkRun(run: z.infer<typeof runSchema>, work: CpuWork, label: string) 
  */
 export function cpuResult(output: string, challenge: CpuChallenge, hostSeconds: number): CpuResult {
   const { work, workers, seed } = challenge;
-  const probe = cpuProbeSchema.parse(JSON.parse(output));
+
+  // Fixed messages only: a parser's message would copy guest text into the report.
+  if (output.length > maxProbeOutputChars)
+    throw new Error(`CPU probe output is longer than ${maxProbeOutputChars} characters`);
+  let json: unknown;
+
+  try {
+    json = JSON.parse(output);
+  } catch {
+    throw new Error("CPU probe output is not JSON");
+  }
+
+  const parsed = cpuProbeSchema.safeParse(json);
+
+  if (!parsed.success) throw new Error("CPU probe output does not match the probe's format");
+  const probe = parsed.data;
 
   if (probe.seed !== seed) throw new Error(`CPU probe ran from seed ${probe.seed}, not ${seed}`);
 
@@ -289,12 +308,12 @@ export interface StagedCpuProbe {
 /** One read of the guest clock: its offset from the host's, right to within half the round trip. */
 async function readGuestClock(box: Sandbox, path: string, timeoutMs: number, signal?: AbortSignal) {
   const before = hostEpochMs();
-  const reply = await command(box, `python3 ${path} clock`, timeoutMs, signal);
+  const reply = await probeCommand(box, `python3 ${path} clock`, timeoutMs, signal);
   const after = hostEpochMs();
   const guestMs = Number(reply) * 1000;
 
   if (!Number.isFinite(guestMs) || guestMs <= 0)
-    throw new Error(`CPU probe clock reply is not a time: ${JSON.stringify(reply.slice(0, 80))}`);
+    throw new Error("CPU probe clock reply is not a time");
 
   return guestMs - (before + after) / 2;
 }
@@ -406,7 +425,7 @@ export async function runStagedCpuProbe(
 ) {
   const dispatchedAt = performance.now();
   const dispatchedEpoch = hostEpochMs();
-  const output = await command(box, staged.command, timeoutMs, signal);
+  const output = await probeCommand(box, staged.command, timeoutMs, signal, maxProbeOutputChars);
   const returnedAt = performance.now();
 
   if (signal?.aborted) throw new Error("CPU probe aborted");

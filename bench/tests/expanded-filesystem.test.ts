@@ -1,3 +1,6 @@
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { describe, expect, it } from "vitest";
 import {
   expectedSmallFilesDigest,
@@ -15,6 +18,7 @@ import {
   verifySqlite,
   verifyTar,
 } from "../src/expanded/filesystem.js";
+import { exportExpandedSiteData } from "../src/expanded/registry.js";
 import {
   honestRounds,
   seedA,
@@ -214,5 +218,120 @@ describe("filesystem scenarios", () => {
     expect(Math.max(...sizes)).toBe(65_536);
     expect(files.filter((f) => f.kind === "bytes")).toHaveLength(10);
     expect(new Set(files.map((f) => f.name)).size).toBe(20);
+  });
+});
+
+describe("fs-sdk-transfer-batch read-back", () => {
+  /**
+   * The memory backing with a guest read-back: `head -c N path | base64` answers from the file the guest
+   * holds, which `grown` makes 4 MiB larger than the one written. `hang` never answers a read-back.
+   */
+  function guest({ grown = "", hang = false }) {
+    const backing = memory({ handlers: { rm: () => 0, mkdir: () => 0 } });
+    const reads: { command: string; timeoutMs: number }[] = [];
+
+    const provider: Provider = {
+      ...backing,
+      exec: async (id, input) => {
+        const head = /^head -c (\d+) '([^']+)'/.exec(input.command);
+
+        if (!head) return backing.exec(id, input);
+        reads.push({ command: input.command, timeoutMs: input.timeoutMs });
+
+        if (hang)
+          return new Promise((resolve) => {
+            setTimeout(() => resolve({ exitCode: null, timedOut: true }), input.timeoutMs);
+          });
+
+        const path = head[2] ?? "";
+        const data = await backing.files.read(id, path);
+
+        const held = path.endsWith(`/${grown}`)
+          ? new Uint8Array(data.byteLength + 4 * 1024 * 1024)
+          : data;
+
+        input.onChunk({ stream: "stdout", text: Buffer.from(held).toString("base64") });
+
+        return { exitCode: 0, timedOut: false };
+      },
+    };
+
+    return { provider, reads };
+  }
+
+  it("reads at most one byte past each file, so a grown file never comes back whole", async () => {
+    const files = transferFiles(seedA);
+    const grown = files[3]?.name ?? "";
+    const { provider, reads } = guest({ grown });
+    const box = await createSandbox(provider);
+    const scenario = filesystemScenarios.find((s) => s.id === "fs-sdk-transfer-batch");
+
+    try {
+      await expect(scenario?.run(box, { seed: seedA, timeoutMs: 10_000 })).rejects.toThrow(
+        `${grown} differs`,
+      );
+      expect(reads).toHaveLength(4);
+      expect(reads.every((read) => read.timeoutMs === 10_000)).toBe(true);
+
+      for (const [i, read] of reads.entries()) {
+        const written = (
+          await box.files.read(`/workspace/bench-sdk-xfer/${files[i]?.name}`, {
+            as: "bytes",
+          })
+        ).byteLength;
+
+        expect(read.command).toMatch(new RegExp(`^head -c ${written + 1} `));
+      }
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  it("gives up on a read-back at the deadline, which kills it", async () => {
+    const { provider, reads } = guest({ hang: true });
+    const box = await createSandbox(provider);
+    const scenario = filesystemScenarios.find((s) => s.id === "fs-sdk-transfer-batch");
+    const start = performance.now();
+
+    try {
+      await expect(scenario?.run(box, { seed: seedA, timeoutMs: 200 })).rejects.toThrow(
+        /could not be read back/,
+      );
+      expect(reads).toHaveLength(1);
+      expect(performance.now() - start).toBeLessThan(5_000);
+    } finally {
+      await box.destroy();
+    }
+  });
+});
+
+describe("fs-sdk-transfer-batch metric version", () => {
+  it("is version 2, and site data never mixes in samples from the files.read version", () => {
+    const transfer = filesystemScenarios.find((s) => s.id === "fs-sdk-transfer-batch");
+
+    expect(transfer?.metricVersion).toBe(2);
+
+    const sample = {
+      scenarioId: "fs-sdk-transfer-batch",
+      provider: "memory",
+      seed: seedA,
+      unit: "files/s" as const,
+      better: "higher" as const,
+      proof: "fs-sdk-xfer:proof",
+      wallMs: 1,
+    };
+
+    const metric = exportExpandedSiteData(
+      [
+        { ...sample, value: 900 },
+        { ...sample, value: 40, metricVersion: 2 },
+      ],
+      filesystemScenarios,
+    ).metrics.find((m) => m.id === "fs-sdk-transfer-batch");
+
+    expect(metric).toMatchObject({
+      metricVersion: 2,
+      values: [{ provider: "memory", n: 1, median: 40 }],
+    });
   });
 });

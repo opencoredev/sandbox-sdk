@@ -18,6 +18,8 @@ import {
   rawRequestMs,
 } from "../src/maritime-raw.js";
 import { microsandboxConfig } from "../src/connections.js";
+// Styne has no peer SDK: its official `styne-sdk` is not what the adapter replaces, so the floor is the API itself.
+import { createRawStyne, styneCall, styneRun } from "../src/styne-raw.js";
 import {
   createRawMicrosandbox,
   redactMicrosandbox,
@@ -62,45 +64,6 @@ const sdkRoot = resolve(values.sdk);
 const runId = `sbx57-${Date.now().toString(36)}`;
 const label = { "sdk-overhead-run": runId };
 const moduleUrl = (path: string) => pathToFileURL(resolve(sdkRoot, "dist", path)).href;
-
-/**
- * Styne's REST API with the run's key, as the floor and raw creates call it. Styne has no peer SDK:
- * its official `styne-sdk` is not what the adapter replaces, so the floor is the API itself.
- */
-async function styneCall(
-  path: string,
-  init: { method?: string; body?: BodyInit; json?: object } = {},
-) {
-  const response = await fetch(`${process.env.STYNE_API_URL ?? "https://api.styne.ai"}${path}`, {
-    method: init.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${process.env.STYNE_API_KEY ?? ""}`,
-      "Content-Type": init.json === undefined ? "application/octet-stream" : "application/json",
-    },
-    body: init.json === undefined ? init.body : JSON.stringify(init.json),
-  });
-
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw Object.assign(new Error(`Styne ${path.split("/")[1]} failed: HTTP ${response.status}`), {
-      status: response.status,
-    });
-  }
-
-  return response;
-}
-
-/** One command to its end through `POST /sandboxes/{id}/commands`; a non-zero exit throws. */
-async function styneRun(id: string, command: string) {
-  const response = await styneCall(`/sandboxes/${encodeURIComponent(id)}/commands`, {
-    method: "POST",
-    json: { argv: ["sh", "-c", command], timeoutMs },
-  });
-
-  const result = z.object({ exitCode: z.number().nullable() }).parse(await response.json());
-
-  if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}`);
-}
 
 const nativeUrl = (name: string) =>
   import.meta.resolve(name, pathToFileURL(resolve(sdkRoot, "package.json")).href);
@@ -1120,50 +1083,13 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
     });
   }
 
-  if (name === "styne") {
-    // Same template and lifetime as the adapter's defaults: base, one hour.
-    const created = z.object({ sandboxID: z.string() }).parse(
-      await (
-        await styneCall("/sandboxes", {
-          method: "POST",
-          json: { templateID: templates.get(name) ?? "base", metadata: label, timeout: 3600 },
-        })
-      ).json(),
-    );
-
-    const id = created.sandboxID;
-
-    return {
-      id,
-      exec: () => styneRun(id, "true"),
-      destroy: async () => {
-        try {
-          await (
-            await styneCall(`/sandboxes/${encodeURIComponent(id)}`, { method: "DELETE" })
-          ).body?.cancel();
-        } catch (error) {
-          // A second delete answers 404, an ended sandbox 410.
-          if (!styneGone.safeParse(error).success) throw error;
-        }
-      },
-      exists: async () => {
-        try {
-          await (await styneCall(`/sandboxes/${encodeURIComponent(id)}`)).body?.cancel();
-
-          return true;
-        } catch (error) {
-          if (styneGone.safeParse(error).success) return false;
-          throw error;
-        }
-      },
-    };
-  }
+  if (name === "styne")
+    // Same template and lifetime as the adapter's defaults: base, one hour. Admitted for use and cleanup
+    // only once a read of the sandbox carries this create's own owner marker.
+    return createRawStyne({ template: templates.get(name) ?? "base", labels: label, admit });
 
   throw new Error(`Unknown provider ${name}`);
 }
-
-/** Styne's answer for a sandbox that is gone: 404, or 410 while it still remembers it. */
-const styneGone = z.object({ status: z.union([z.literal(404), z.literal(410)]) });
 
 async function initCost(name: ProviderName): Promise<OpResult> {
   const pkg = nativePackages[name];

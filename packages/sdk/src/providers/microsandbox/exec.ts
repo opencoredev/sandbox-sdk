@@ -33,6 +33,8 @@ export interface PeerExecHandle {
 /** `SandboxFsOps`, as far as the adapter uses it. */
 export interface PeerFs {
   read(path: string): Promise<Uint8Array>;
+  /** `FsReadStream`: the file in chunks, so a ranged read stops once it has its bytes. */
+  readStream(path: string): Promise<AsyncIterable<Uint8Array>>;
   write(path: string, data: Uint8Array): Promise<void>;
 }
 

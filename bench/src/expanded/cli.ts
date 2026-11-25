@@ -30,8 +30,8 @@
  * no lifetime that ends the sandbox) are skipped before any create.
  */
 import { randomInt, randomUUID } from "node:crypto";
-import { readlinkSync } from "node:fs";
-import { mkdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { constants, readlinkSync } from "node:fs";
+import { mkdir, open, rename, rm, rmdir, writeFile, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -723,6 +723,7 @@ async function runSample(
       proof: outcome.proof,
       wallMs: Math.round(performance.now() - started),
       details: outcome.details,
+      metricVersion: scenario.metricVersion ?? 1,
     };
 
     state.results.samples.push(sample);
@@ -757,6 +758,7 @@ const hasCode = (code: string) => (cause: unknown) =>
 
 const isExisting = hasCode("EEXIST");
 const isNoProcess = hasCode("ESRCH");
+const isSymlinkLoop = hasCode("ELOOP");
 
 /**
  * Run `action` holding `run.lock`, a directory only one process can create, so claiming, taking
@@ -788,16 +790,41 @@ async function withClaimLock<T>(out: string, action: () => Promise<T>): Promise<
   }
 }
 
+/** The largest run.json read: a claim is one short JSON line. */
+const maxClaimBytes = 4096;
+
+/**
+ * The claim at `path`, opened without following a symlink. Anything but a small regular file (a
+ * symlink, a directory, a large file) is unreadable, so --force never takes it over.
+ */
 async function readClaim(
   path: string,
 ): Promise<{ kind: "missing" } | { kind: "unreadable" } | { kind: "claim"; claim: Claim }> {
+  let file: FileHandle;
+
+  try {
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if (isMissingFile(error)) return { kind: "missing" };
+
+    // ELOOP: run.json is a symlink.
+    if (isSymlinkLoop(error)) return { kind: "unreadable" };
+    throw error;
+  }
+
   let text: string;
 
   try {
-    text = await readFile(path, "utf8");
-  } catch (error) {
-    if (isMissingFile(error)) return { kind: "missing" };
-    throw error;
+    const info = await file.stat();
+
+    if (!info.isFile() || info.size > maxClaimBytes) return { kind: "unreadable" };
+    const bytes = Buffer.alloc(maxClaimBytes + 1);
+    const { bytesRead } = await file.read(bytes, 0, bytes.byteLength, 0);
+
+    if (bytesRead > maxClaimBytes) return { kind: "unreadable" };
+    text = bytes.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await file.close();
   }
 
   try {
@@ -872,7 +899,8 @@ async function claimOutput(out: string, runId: string, force: boolean, namespace
         `${path} belongs to a run that may be still alive: its process is still alive, or the claim names no pid on this host and PID namespace to check. --force takes over only a claim whose process is gone. Stop that run, remove run.json yourself once you know it is gone, or choose another --out.`,
       );
 
-    return writeFile(path, mine);
+    // A rename replaces the claim itself; a write would go through whatever run.json now points at.
+    return replaceFile(path, mine);
   });
 }
 

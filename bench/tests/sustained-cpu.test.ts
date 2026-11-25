@@ -25,6 +25,7 @@ import {
   fingerprintCommand,
   labelsFor,
   lcgChecksum,
+  listedLeftovers,
   lifetimeMs,
   logLineSchema,
   mergeResults,
@@ -109,7 +110,7 @@ const fingerprintOutput = [
   "uptime=12.34 ",
   "pythonPath=/usr/bin/python3",
   "python=Python 3.11.2",
-  "cmdline=console=ttyS0 reboot=k panic=1",
+  "cmdline=console=ttyS0 reboot=k panic=1 mitigations=off idle=poll root.key=guestbootsecret4711",
 ].join("\n");
 
 /**
@@ -471,7 +472,7 @@ describe("fingerprint and plan", () => {
       uptimeAtStartS: 12.34,
       python: "Python 3.11.2",
       pythonPath: "/usr/bin/python3",
-      cmdline: "console=ttyS0 reboot=k panic=1",
+      kernelFlags: ["mitigations=off", "idle=poll"],
     });
     expect(parseFingerprint("nproc=\npython=\ncmdline=")).toEqual({
       guestVcpus: null,
@@ -479,7 +480,7 @@ describe("fingerprint and plan", () => {
       uptimeAtStartS: null,
       python: null,
       pythonPath: null,
-      cmdline: null,
+      kernelFlags: [],
     });
   });
 
@@ -617,6 +618,18 @@ describe("runProvider", () => {
       .map((c) => c.split(" ")[2]);
 
     expect(new Set(seeds).size).toBe(3);
+
+    // The fingerprint keeps only allowlisted kernel parameters, never the raw command line.
+    expect((await readLog(out, "styne")).find((line) => line.kind === "fingerprint")).toMatchObject(
+      { fingerprint: { kernelFlags: ["mitigations=off", "idle=poll"] } },
+    );
+
+    for (const text of [
+      JSON.stringify(report),
+      await readFile(paths(out).log("styne"), "utf8"),
+      await readFile(paths(out).provider("styne"), "utf8"),
+    ])
+      expect(text).not.toContain("guestbootsecret4711");
   });
 
   it("stops early on a tampered segment and still destroys the sandbox", async () => {
@@ -1346,6 +1359,27 @@ function fakeBoatApi() {
 }
 
 describe("sweep ownership", () => {
+  it("sweeps only listed sandboxes that carry every attempt label, whatever the listing returns", async () => {
+    const labels = { "sandbox-bench-run": "run", "sc-provider": "styne", "sc-attempt": "aaaa" };
+
+    const info = (id: string, own: Labels) => ({
+      id,
+      labels: own,
+      state: "running" as const,
+      createdAt: 0,
+    });
+
+    const provider = {
+      list: async () => [
+        info("mine", { ...labels, extra: "1" }),
+        info("other-attempt", { ...labels, "sc-attempt": "bbbb" }),
+        info("unlabelled", {}),
+      ],
+    };
+
+    expect(await listedLeftovers(provider, labels)).toEqual(["mine"]);
+  });
+
   it("labels every attempt apart, Boat in its one label", () => {
     const first = { runId: "sustained15m-20261123", attemptId: "aaaaaaaaaaaa" };
     const second = { ...first, attemptId: "bbbbbbbbbbbb" };

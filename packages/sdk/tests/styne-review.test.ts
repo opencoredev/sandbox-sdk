@@ -232,3 +232,88 @@ test("pause and resume accept already_paused or already_running only as a 409 ab
   expect(paused).toEqual(["provider", "provider", "provider", "done", "done"]);
   expect(resumed).toEqual(["provider", "provider", "done"]);
 });
+
+test("backfill #90: a redirect off Styne's origin is refused before the create body goes there", async () => {
+  const sent: string[] = [];
+
+  const p = styne({
+    apiKey: "review-fixture-api-key",
+    baseUrl: "https://api.styne.invalid",
+    fetch: async (url, init) => {
+      sent.push(`${init?.method ?? "GET"} ${new URL(url).origin}`);
+
+      return new Response(null, {
+        status: 307,
+        headers: { location: "https://elsewhere.invalid/sandboxes" },
+      });
+    },
+  });
+
+  const failure = await p
+    .create({ labels: {}, env: { TOKEN: "secret-value" }, secretNames: ["TOKEN"] })
+    .then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+
+  expect(failure).toBeInstanceOf(SandboxError);
+  expect(sent.length).toBeGreaterThan(0);
+  expect(sent.every((line) => line.endsWith("https://api.styne.invalid"))).toBe(true);
+});
+
+test("backfill #90: a ranged file read stops streaming once its range is in", async () => {
+  const chunk = 64 * 1024;
+  let pulled = 0;
+  let cancelled = false;
+
+  const p = styne({
+    apiKey: "review-fixture-api-key",
+    baseUrl: "https://api.styne.invalid",
+    fetch: async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.enqueue(new Uint8Array(chunk).map((_, i) => (pulled + i) % 251));
+            pulled += chunk;
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      ),
+  });
+
+  const bytes = await p.files.readRange?.(id, "/workspace/big.bin", {
+    offset: chunk + 10,
+    length: 100,
+  });
+
+  expect(bytes).toEqual(new Uint8Array(100).map((_, i) => (chunk + 10 + i) % 251));
+  expect(cancelled).toBe(true);
+  expect(pulled).toBeLessThanOrEqual(4 * chunk);
+});
+
+test("backfill #90: a whole-file read refuses a file over 32 MiB instead of buffering it", async () => {
+  const chunk = 1024 * 1024;
+  let pulled = 0;
+
+  const p = styne({
+    apiKey: "review-fixture-api-key",
+    baseUrl: "https://api.styne.invalid",
+    fetch: async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (pulled > 64 * chunk) return controller.close();
+            controller.enqueue(new Uint8Array(chunk));
+            pulled += chunk;
+          },
+        }),
+      ),
+  });
+
+  await expect(p.files.read(id, "/workspace/huge.bin")).rejects.toMatchObject({
+    code: "unsupported",
+  });
+  expect(pulled).toBeLessThanOrEqual(34 * chunk);
+});

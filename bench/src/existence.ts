@@ -20,7 +20,7 @@ import {
   modalClientParams,
   type ModalClientParams,
 } from "./connections.js";
-import { microsandboxFetch } from "./microsandbox.js";
+import { microsandboxFetch, readMicrosandboxJson } from "./microsandbox.js";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -700,7 +700,7 @@ export async function lookupSandbox(
           if (!response.ok)
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
 
-          const sandbox = microsandboxInfo.parse(await response.json());
+          const sandbox = await readMicrosandboxJson(response, microsandboxInfo);
 
           // A sandbox on the other tier is never this adapter's evidence, present or not.
           if (sandbox.compute?.type !== tier)
@@ -713,8 +713,10 @@ export async function lookupSandbox(
           // GET only: it never wakes, starts or changes the machine.
           const { apiKey, baseUrl } = connectionOf(provider, "instabox");
 
+          // A redirect would carry the key to another origin and answer for another resource.
           const response = await fetch(`${baseUrl}/v1/machines/${encodeURIComponent(id)}`, {
             headers: { "X-API-Key": apiKey },
+            redirect: "error",
             signal,
           });
 
@@ -731,6 +733,7 @@ export async function lookupSandbox(
 
           const response = await fetch(`${endpoint(baseUrl)}/sandboxes/${encodeURIComponent(id)}`, {
             headers: { "X-API-Key": apiKey },
+            redirect: "error",
             signal,
           });
 

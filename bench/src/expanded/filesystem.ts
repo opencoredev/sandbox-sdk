@@ -712,6 +712,26 @@ export function verifyTransfer(raw: string, seed: number): VerifyResult {
   };
 }
 
+/**
+ * At most `expected + 1` bytes of a guest file, read through a guest command: `files.read` takes no byte
+ * limit and cannot be cancelled, so a file the guest grew would be buffered whole. The output cap holds
+ * the ceiling on the transfer itself, and the command is killed at the deadline.
+ */
+async function readBack(box: Sandbox, path: string, expected: number, timeoutMs: number) {
+  const limit = expected + 1;
+
+  const result = await box.run(`head -c ${limit} ${quote(path)} | base64 | tr -d '\\n'`, {
+    timeoutMs,
+    maxOutputBytes: Math.ceil(limit / 3) * 4,
+  });
+
+  if (!result.ok) throw new Error(`fs-sdk-transfer-batch: ${path} could not be read back`);
+
+  if (result.truncated) throw new Error(`fs-sdk-transfer-batch: ${path} differs`);
+
+  return Buffer.from(result.stdout, "base64");
+}
+
 async function runTransfer(box: Sandbox, ctx: ExpandedContext) {
   const files = transferFiles(ctx.seed);
 
@@ -724,9 +744,9 @@ async function runTransfer(box: Sandbox, ctx: ExpandedContext) {
 
     for (const file of files) {
       const path = `${transferDir}/${file.name}`;
-      const back = await box.files.read(path, { as: "bytes" });
+      const expected = fileBytes(file);
 
-      if (!sameBytes(back, fileBytes(file)))
+      if (!sameBytes(await readBack(box, path, expected.byteLength, ctx.timeoutMs), expected))
         throw new Error(`fs-sdk-transfer-batch: ${path} differs`);
     }
 
@@ -818,9 +838,11 @@ export const filesystemScenarios: readonly ExpandedScenario[] = [
     category: "filesystem",
     label: "SDK file transfer",
     description:
-      "Write 20 seeded files of 1 to 64 KiB through box.files.write, read each back byte-exact with box.files.read, and check the guest's copy.",
+      "Write 20 seeded files of 1 to 64 KiB through box.files.write, read each back byte-exact through a bounded guest read, and check the guest's copy.",
     unit: "files/s",
     better: "higher",
+    // 2: read-backs go through a bounded guest command, not `files.read`.
+    metricVersion: 2,
     verifyOutput: verifyTransfer,
     async run(box, ctx) {
       return outcomeOf(

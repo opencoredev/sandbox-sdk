@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import {
+  SandboxError,
+  createSandbox,
+  type RunResult,
+  type Sandbox,
+} from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { LookupEvidence } from "../src/existence.js";
 import type { FailureOutcome } from "../src/failure.js";
 import {
@@ -6,6 +13,7 @@ import {
   heartbeatOffsets,
   heartbeatWindow,
   parseBootId,
+  sendHeartbeat,
   survivalFailure,
   type SentHeartbeat,
 } from "../src/survival.js";
@@ -49,6 +57,12 @@ describe("parseBootId", () => {
     expect(() => parseBootId("")).toThrow("not a boot ID");
     expect(() => parseBootId("cat: /proc/sys/kernel/random/boot_id: No such file")).toThrow(
       "not a boot ID",
+    );
+  });
+
+  it("never copies the guest's reply into the error", () => {
+    expect(() => parseBootId("TOKEN=sk-guest-secret")).toThrow(
+      /^Heartbeat reply is not a boot ID$/,
     );
   });
 });
@@ -292,5 +306,75 @@ describe("survival plans", () => {
     expect(heartbeatOffsets(plan)).toEqual([0, 40, 80, 120]);
     expect(result.verdict).toEqual({ kind: "survived" });
     expect(result.heartbeats.map((h) => h.kind)).toEqual(["ok", "ok", "ok", "ok"]);
+  });
+});
+
+describe("heartbeats through the guest", () => {
+  const guestText = "Traceback: TOKEN=sk-guest-secret in /home/guest/private";
+
+  async function box(run: Partial<RunResult> | Error) {
+    const sandbox = await createSandbox(memory());
+
+    const spy = vi.spyOn(sandbox, "run");
+
+    if (run instanceof Error) spy.mockRejectedValue(run);
+    else
+      spy.mockResolvedValue({
+        ok: true,
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        output: "",
+        durationMs: 1,
+        truncated: false,
+        timedOut: false,
+        cwd: "/workspace",
+        command: "",
+        ...run,
+      });
+
+    return sandbox;
+  }
+
+  async function window(sandbox: Sandbox) {
+    return heartbeatWindow({
+      plan: { windowMs: 40, intervalMs: 40 },
+      heartbeatTimeoutMs: 1000,
+      endBy: Number.POSITIVE_INFINITY,
+      sanitize: (text: string) => text,
+      track: <T>(work: Promise<T>) => work,
+      heartbeat: (signal) => sendHeartbeat(sandbox, 1000, signal),
+      lookup: async () => lookup("present", "running"),
+      stop: new AbortController().signal,
+    });
+  }
+
+  it("records a failed heartbeat by its exit code alone, never the guest's output", async () => {
+    const result = await window(
+      await box({ ok: false, exitCode: 1, stdout: guestText, stderr: guestText }),
+    );
+
+    const miss = result.heartbeats[0];
+
+    expect(miss?.kind === "missed" && miss.failure.note).toBe("Guest exit 1");
+    expect(JSON.stringify(result)).not.toContain("sk-guest-secret");
+  });
+
+  it("refuses an oversized reply with a fixed message", async () => {
+    const result = await window(await box({ stdout: guestText, truncated: true }));
+    const miss = result.heartbeats[0];
+
+    expect(miss?.kind === "missed" && miss.failure.note).toBe(
+      "Guest probe output exceeded 4096 bytes",
+    );
+    expect(JSON.stringify(result)).not.toContain("sk-guest-secret");
+  });
+
+  it("keeps a typed lifecycle error from the SDK", async () => {
+    const gone = new SandboxError("Sandbox gone", { provider: "memory", code: "not_found" });
+    const result = await window(await box(gone));
+    const miss = result.heartbeats[0];
+
+    expect(miss?.kind === "missed" && miss.failure.code).toBe("not_found");
   });
 });

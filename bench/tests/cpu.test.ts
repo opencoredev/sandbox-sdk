@@ -1,7 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { cpuResult, lcgChecksum, segmentConsistency, throughputSpread } from "../src/cpu.js";
+import { createSandbox, type RunResult } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+import {
+  cpuResult,
+  lcgChecksum,
+  maxProbeOutputChars,
+  runStagedCpuProbe,
+  segmentConsistency,
+  throughputSpread,
+  type StagedCpuProbe,
+} from "../src/cpu.js";
+import { failureOutcome } from "../src/failure.js";
 
 const probePath = new URL("../probes/cpu.py", import.meta.url);
 const at = 1_800_000_000;
@@ -59,6 +70,44 @@ describe("CPU probe checksum", () => {
 
     expect(perf).toContain(kernel);
     expect(cpu).toContain(kernel);
+  });
+});
+
+describe("cpuResult on untrusted output", () => {
+  const secret = "sk-guest-secret-0123456789";
+
+  it("refuses oversized output before parsing it", () => {
+    expect(() => cpuResult(" ".repeat(maxProbeOutputChars + 1), challenge, 10)).toThrow(
+      /longer than/,
+    );
+  });
+
+  it("reports malformed output with fixed messages that copy no guest text", () => {
+    for (const reply of [`not json ${secret}`, JSON.stringify({ seed: secret })]) {
+      let message = "";
+
+      try {
+        cpuResult(reply, challenge, 10);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message).toMatch(/CPU probe output/);
+      expect(message).not.toContain(secret);
+    }
+  });
+
+  it("keeps only a Python version, never free text", () => {
+    const withPython = (python: string) =>
+      output().replace('"python":"3.12.3"', `"python":${JSON.stringify(python)}`);
+
+    expect(cpuResult(withPython("3.14.0rc1"), challenge, 10).probe.python).toBe("3.14.0rc1");
+    expect(() => cpuResult(withPython(`3.12.3 ${secret}`), challenge, 10)).toThrow(
+      "does not match the probe's format",
+    );
+    expect(() => cpuResult(withPython("x".repeat(10_000)), challenge, 10)).toThrow(
+      "does not match the probe's format",
+    );
   });
 });
 
@@ -162,5 +211,57 @@ describe("throughputSpread", () => {
       maxOverMin: null,
       cv: null,
     });
+  });
+});
+
+describe("runStagedCpuProbe on a failing guest", () => {
+  const guestText = "Traceback: TOKEN=sk-guest-secret in /home/guest/private";
+
+  const staged: StagedCpuProbe = {
+    challenge: { work: { segments: 1, steps: 1 }, seed: 1, workers: 1 },
+    command: "python3 /tmp/probe.py run",
+    clockOffsetMs: 0,
+  };
+
+  async function failing(result: Partial<RunResult>) {
+    const sandbox = await createSandbox(memory());
+
+    vi.spyOn(sandbox, "run").mockResolvedValue({
+      ok: false,
+      exitCode: 1,
+      stdout: guestText,
+      stderr: guestText,
+      output: guestText,
+      durationMs: 1,
+      truncated: false,
+      timedOut: false,
+      cwd: "/workspace",
+      command: "",
+      ...result,
+    });
+
+    return sandbox;
+  }
+
+  it("reports a failed probe by its exit code alone", async () => {
+    const error = await runStagedCpuProbe(await failing({}), staged, 1000).catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(failureOutcome(error, (text) => text)).toEqual({
+      kind: "failure",
+      note: "Guest exit 1",
+    });
+  });
+
+  it("refuses an oversized reply with a fixed message", async () => {
+    const error = await runStagedCpuProbe(
+      await failing({ ok: true, exitCode: 0, truncated: true }),
+      staged,
+      1000,
+    ).catch((e: Error) => e);
+
+    expect(failureOutcome(error, (text) => text).note).toBe(
+      `Guest probe output exceeded ${maxProbeOutputChars} bytes`,
+    );
   });
 });

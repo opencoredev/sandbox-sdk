@@ -296,7 +296,7 @@ describe("P2.3: CPU overlap is proven from the host clock, never from guest wall
             endedAt: all.endedAt,
           },
           cpus: { visible: 1, affinity: 1, quota: null },
-          python: "fixture",
+          python: "3.12.3",
         }),
       );
       // The clock steps back once the run is over, so the two clock reads agree.
@@ -340,7 +340,7 @@ describe("P2.3: CPU overlap is proven from the host clock, never from guest wall
             consistency: ran.result[phase],
             guestVcpus: 1,
             cpus: { visible: 1, affinity: 1, quota: null },
-            python: "fixture",
+            python: "3.12.3",
             ...cpuPhaseEvidence(ran, phase),
           },
         });

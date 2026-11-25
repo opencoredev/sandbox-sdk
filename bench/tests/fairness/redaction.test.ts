@@ -283,3 +283,96 @@ describe.runIf(supported)("guest output in every check's stop reason", () => {
     ).toMatch(/Only 0 sandboxes/);
   }, 30_000);
 });
+
+describe("a completed security probe", () => {
+  it("keeps no raw kernel command line or dmesg in its result or log", async () => {
+    const bootSecret = "guestbootsecret4711";
+    const out = await mkdtemp(join(tmpdir(), "fairness-redact-probe-"));
+
+    const probe = [
+      "@@uname",
+      "Linux 6.1.102 x86_64",
+      "@@version",
+      "Linux version 6.1.102 (gcc 12)",
+      "@@cmdline",
+      `console=ttyS0 mitigations=off root.key=${bootSecret} virtio_mmio.device=4K@0xd0000000:5 idle=${bootSecret} nohz_full=${bootSecret}`,
+      "@@vulnerabilities",
+      "meltdown=Not affected",
+      "@@cpuinfo",
+      "vendor_id\t: AuthenticAMD",
+      "hypervisorFlag=1",
+      "@@user",
+      "uid=0",
+      "user=root",
+      "sudo=no",
+      "@@status",
+      "Seccomp:\t0",
+      "@@dmi",
+      "@@dmesg",
+      `[    0.000000] Command line: root.key=${bootSecret}`,
+      "@@pid1",
+      "comm=init",
+      "@@markers",
+      "rootfs=ext4",
+      "@@end",
+    ].join("\n");
+
+    const box: Box = {
+      id: "probe-box",
+      run: async (command) => ({
+        ok: true,
+        exitCode: 0,
+        timedOut: false,
+        stderr: "",
+        stdout: command.includes("@@cmdline")
+          ? probe
+          : "12.34 40.00\nboot=0f8fad5b-d9cb-469f-a165-70867728950e\n",
+      }),
+      write: async () => {},
+      lookup: async () => ({
+        result: "not-found",
+        method: "fake",
+        checkedAt: new Date().toISOString(),
+      }),
+      destroy: async () => {},
+    };
+
+    const open: OpenSession = async () => ({
+      kind: "ready",
+      session: { create: async () => box, leftovers: async () => [], destroyById: async () => {} },
+    });
+
+    const outcome = await runCheck(
+      securityProbe,
+      [setup],
+      { runId: "redact", out, concurrency: 1 },
+      {
+        open,
+        signal: new AbortController().signal,
+        progress: () => {},
+        retryDelayMs: 0,
+        lateSweepDelayMs: 0,
+      },
+    );
+
+    const entry = outcome.report.providers[0];
+    expect(entry?.status, entry?.reason ?? "").toBe("completed");
+    expect(securityProbe.resultSchema.parse(entry?.result).weakeningFlags).toEqual([
+      "mitigations=off",
+    ]);
+    expect(securityProbe.resultSchema.parse(entry?.result).notableFlags).toEqual([
+      "idle",
+      "nohz_full",
+    ]);
+
+    const persisted = await Promise.all([
+      ...(await readdir(join(out, "providers"))).map((f) =>
+        readFile(join(out, "providers", f), "utf8"),
+      ),
+      ...(await readdir(join(out, "logs"))).map((f) => readFile(join(out, "logs", f), "utf8")),
+    ]);
+
+    for (const text of [JSON.stringify(outcome.report), ...persisted])
+      expect(text).not.toContain(bootSecret);
+  });
+});

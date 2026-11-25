@@ -6,7 +6,7 @@
  */
 import { z } from "zod";
 import type { MicrosandboxConfig } from "./connections.js";
-import { microsandboxFetch } from "./microsandbox.js";
+import { microsandboxFetch, readMicrosandboxJson } from "./microsandbox.js";
 
 /**
  * `text` without the configured key or anything shaped like a Microsandbox credential (an organization
@@ -88,7 +88,7 @@ async function byName(connection: MicrosandboxConfig, name: string) {
     throw new Error(`Microsandbox read failed: HTTP ${response.status}`);
   }
 
-  return sandboxRecord.parse(await response.json());
+  return await readMicrosandboxJson(response, sandboxRecord);
 }
 
 export async function createRawMicrosandbox(input: {
@@ -174,7 +174,7 @@ export async function createRawMicrosandbox(input: {
 
       if (response.status < 500)
         throw new Error(`Microsandbox create refused: HTTP ${response.status}`);
-    } else created = sandboxRecord.parse(await response.json());
+    } else created = await readMicrosandboxJson(response, sandboxRecord);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Microsandbox create refused"))
       throw error;

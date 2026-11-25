@@ -48,6 +48,8 @@ export function exportExpandedSiteData(
     for (const sample of samples) {
       if (sample.scenarioId !== scenario.id) continue;
 
+      if ((sample.metricVersion ?? 1) !== (scenario.metricVersion ?? 1)) continue;
+
       if (!Number.isFinite(sample.value) || sample.value <= 0) continue;
 
       const list = byProvider.get(sample.provider) ?? [];
@@ -76,6 +78,7 @@ export function exportExpandedSiteData(
       description: scenario.description,
       unit: scenario.unit,
       better: scenario.better,
+      metricVersion: scenario.metricVersion ?? 1,
       values,
     };
   });

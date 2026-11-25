@@ -47,6 +47,11 @@ export interface ExpandedScenario {
   readonly description: string;
   readonly unit: ExpandedUnit;
   readonly better: "lower" | "higher";
+  /**
+   * Raised when what the metric measures changes, so its samples are never aggregated with those of
+   * an earlier version. Absent means 1.
+   */
+  readonly metricVersion?: number;
   /** Run inside a real sandbox and return verified metric + seed-bound proof. */
   run(box: Sandbox, ctx: ExpandedContext): Promise<ExpandedOutcome>;
   /**
@@ -67,6 +72,8 @@ export interface ExpandedRunSample {
   readonly proof: string;
   readonly wallMs: number;
   readonly details?: ExpandedDetails;
+  /** The scenario's `metricVersion` when it ran; absent in results from before versioning, meaning 1. */
+  readonly metricVersion?: number;
 }
 
 export interface ExpandedSiteMetric {
@@ -76,6 +83,7 @@ export interface ExpandedSiteMetric {
   readonly description: string;
   readonly unit: ExpandedUnit;
   readonly better: "lower" | "higher";
+  readonly metricVersion: number;
   readonly values: readonly {
     readonly provider: string;
     readonly n: number;

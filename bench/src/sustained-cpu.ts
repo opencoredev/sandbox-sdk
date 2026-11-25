@@ -37,6 +37,7 @@ import {
 } from "@opencoredev/sandbox-sdk";
 import type { Labels, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
+import { cmdlineFlags } from "./fairness/security-probe.js";
 import { isMissingFile } from "./files.js";
 import { loadProvider } from "./providers.js";
 import { collectMetadata } from "./publication.js";
@@ -228,7 +229,8 @@ const fingerprintSchema = z.object({
   uptimeAtStartS: z.number().nonnegative().nullable(),
   python: z.string().nullable(),
   pythonPath: z.string().nullable(),
-  cmdline: z.string().nullable(),
+  /** The kernel command line reduced to its allowlisted parameters; the raw line is guest text. */
+  kernelFlags: z.array(z.string()).default([]),
 });
 
 export type Fingerprint = z.infer<typeof fingerprintSchema>;
@@ -599,7 +601,7 @@ export function parseFingerprint(stdout: string): Fingerprint {
     uptimeAtStartS: number("uptime"),
     python: text("python"),
     pythonPath: text("pythonPath"),
-    cmdline: text("cmdline"),
+    kernelFlags: Object.values(cmdlineFlags(text("cmdline") ?? "")).flat(),
   };
 }
 
@@ -723,6 +725,19 @@ export function labelsFor(setup: ProviderSetup, attempt: Attempt): Labels {
 }
 
 /**
+ * The IDs a provider lists under `labels`, keeping only sandboxes that carry every one of them exactly:
+ * a listing that filtered too broadly never puts another run's sandbox up for a sweep's delete.
+ */
+export async function listedLeftovers(
+  provider: Pick<Provider, "list">,
+  labels: Labels,
+): Promise<string[]> {
+  return (await provider.list(labels))
+    .filter((info) => Object.entries(labels).every(([key, value]) => info.labels[key] === value))
+    .map((info) => info.id);
+}
+
+/**
  * Loads a provider as the realistic harness does (`loadSlotProvider`): the same-machine template,
  * product and size, Modal's, Maritime's and Styne's factory lifetime, and `timeoutMs` on create where the
  * adapter takes one, long enough for the whole burn.
@@ -772,7 +787,7 @@ export const openLiveSession: OpenSession = async (setup, plan) => {
           destroy: () => sandbox.destroy(),
         };
       },
-      leftovers: async () => (await provider.list(labels)).map((info) => info.id),
+      leftovers: () => listedLeftovers(provider, labels),
       destroyById: (id) => provider.destroy(id),
     },
   };

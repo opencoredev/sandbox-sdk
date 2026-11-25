@@ -67,7 +67,7 @@ import {
   heartbeatCommand,
   heartbeatDetails,
   heartbeatWindow,
-  parseBootId,
+  sendHeartbeat,
   sessionRefusal,
   survivalFailure,
   type SurvivalVerdict,
@@ -649,6 +649,8 @@ export async function runV2(
 
     if (!gone.has(key)) gone.set(key, performance.now());
 
+    if (pendingDeletes.delete(key)) await persist();
+
     return true;
   }
 
@@ -716,6 +718,13 @@ export async function runV2(
 
   const owned = new Map<string, OwnedEntry>();
 
+  /**
+   * Sandboxes whose delete was acknowledged but no exact lookup has yet seen gone. They leave `owned`,
+   * so the run treats them as deleted, but stay in the journal until a lookup proves them absent; any
+   * left at the end of the run are cleanup failures, and `bun bench reap` finds them.
+   */
+  const pendingDeletes = new Map<string, OwnedEntry>();
+
   // Per-attempt Apps (--app-per-attempt): journaled before any sandbox is allocated in them and
   // never removed, so recovery can list their sandboxes and billing can attribute their charges.
   const apps = new Map<string, JournalApp>();
@@ -734,6 +743,9 @@ export async function runV2(
     );
 
     if (override && !owned.has(override.key)) resources.push(override.value);
+
+    for (const [key, value] of pendingDeletes)
+      if (!owned.has(key) && key !== override?.key) resources.push(value);
 
     return JSON.stringify(
       { runId: config.run, connectionFingerprints, resources, apps: [...apps.values()] },
@@ -788,7 +800,10 @@ export async function runV2(
           {
             runId: config.run,
             connectionFingerprints,
-            resources: [...nextOwned.values()],
+            resources: [
+              ...nextOwned.values(),
+              ...[...pendingDeletes].flatMap(([key, value]) => (nextOwned.has(key) ? [] : [value])),
+            ],
             apps: [...apps.values()],
           },
           null,
@@ -1251,10 +1266,19 @@ export async function runV2(
           throw new DeletionUnconfirmedError(id);
         }
 
-        // Acknowledged, not yet observed gone: the stop time is the first lookup that finds it so.
+        // Acknowledged, not yet observed gone: the stop time is the first lookup that finds it so,
+        // and it stays journaled as a pending delete until then.
+        const key = `${loaded.name}/${id}`;
+        const entry = owned.get(key);
+
+        if (!gone.has(key))
+          pendingDeletes.set(
+            key,
+            entry ?? { provider: loaded.name, id, kind: "sandbox", parent: null },
+          );
         watchGone(loaded, id);
         restores.mark(loaded.name, id, "destroyed");
-        owned.delete(`${loaded.name}/${id}`);
+        owned.delete(key);
 
         // A timed destroy row carries the confirmed stop in its phases; any other deletion
         // journals it, so billing can still settle the sandbox's App (Modal).
@@ -2133,8 +2157,7 @@ export async function runV2(
 
           const result = await heartbeatWindow({
             plan: survivalPlan,
-            heartbeat: async (signal) =>
-              parseBootId(await command(active, heartbeatCommand, timeout, signal)),
+            heartbeat: (signal) => sendHeartbeat(active, timeout, signal),
             lookup: (ms) => lookupSandbox(p.provider, active.id, ms),
             heartbeatTimeoutMs: timeout,
             // One deadline for the whole cohort, leaving its cleanup steps reserved.
@@ -3134,6 +3157,7 @@ export async function runV2(
                   p.provider,
                   source.id,
                   journaled,
+                  signal,
                 );
 
                 if (!snapshots.length) break;
@@ -3880,8 +3904,8 @@ export async function runV2(
         const sourceCleaner = await snapshotCleaner(p.name, p.provider, item.id);
         const journaled = journaledSnapshots(owned.values(), p.name, item.id);
 
-        for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, p.provider, item.id, journaled),
+        for (const snapshot of await deadline(config["timeout-ms"], (signal) =>
+          snapshotsFromSource(p.name, p.provider, item.id, journaled, signal),
         )) {
           await persistConfirmedSnapshot(`${p.name}/snapshot/${snapshot.id}`, {
             provider: p.name,
@@ -4145,9 +4169,43 @@ export async function runV2(
         if (key.startsWith(`${p.name}/`) && !gone.has(key))
           await observeGone(p, key.slice(p.name.length + 1), left).catch(() => false);
       }
+
+      for (const [key, entry] of pendingDeletes) {
+        const left = Math.min(config["timeout-ms"], lookupsEnd - performance.now());
+
+        if (left <= 0) return;
+
+        if (entry.provider === p.name && !charges.has(key))
+          await observeGone(p, entry.id, left).catch(() => false);
+      }
     }),
   );
   const cutoff = performance.now();
+
+  // A delete no lookup confirmed is a cleanup failure, and stays journaled for `bun bench reap`.
+  for (const [key, entry] of pendingDeletes) {
+    if (gone.has(key)) {
+      pendingDeletes.delete(key);
+      continue;
+    }
+
+    const note =
+      "Delete acknowledged, but no exact lookup saw the sandbox gone; kept in the journal";
+
+    const cleanup = report.cleanup.find((c) => c.provider === entry.provider);
+
+    if (!cleanup) {
+      report.cleanup.push({ provider: entry.provider, remaining: [entry.id], error: note });
+      continue;
+    }
+
+    if (!cleanup.remaining.includes(entry.id)) cleanup.remaining.push(entry.id);
+
+    if (!cleanup.error?.includes(note))
+      cleanup.error = cleanup.error ? `${cleanup.error}; ${note}` : note;
+  }
+
+  await persist();
 
   for (const p of ready) {
     const sweep = swept.get(p.name);

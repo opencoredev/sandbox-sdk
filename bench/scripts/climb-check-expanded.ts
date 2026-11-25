@@ -146,7 +146,7 @@ export async function runAll<S>(input: {
   return outcomes;
 }
 
-async function scenarioOutcome(
+export async function scenarioOutcome(
   scenario: ExpandedScenario,
   box: Sandbox,
   seed: number,
@@ -172,6 +172,7 @@ async function scenarioOutcome(
       proof: outcome.proof,
       wallMs: Math.round(performance.now() - start),
       details: outcome.details,
+      metricVersion: scenario.metricVersion ?? 1,
     },
   };
 }

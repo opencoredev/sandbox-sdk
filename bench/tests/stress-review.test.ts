@@ -80,7 +80,7 @@ describe("finding 6: the CPU probe checks timing and a fresh challenge", () => {
         endedAt: at + 2 * run.seconds,
       },
       cpus: { visible: 1, affinity: 1, quota: null },
-      python: "fixture",
+      python: "3.12.3",
     });
   }
 
@@ -210,7 +210,7 @@ describe("finding 7: CPU burst overlap and segment consistency", () => {
             endedAt: worker.endedAt,
           },
           cpus: { visible: 1, affinity: 1, quota: null },
-          python: "fake",
+          python: "3.12.3",
         }),
       );
 
@@ -715,7 +715,7 @@ describe("PR 75 review: the diagnostic clock read never discards a verified CPU 
             endedAt: worker.endedAt,
           },
           cpus: { visible: 1, affinity: 1, quota: null },
-          python: "fake",
+          python: "3.12.3",
         }),
       );
 

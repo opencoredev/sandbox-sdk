@@ -575,7 +575,7 @@ describe("P2.5 and P2.6: CPU probe timing", () => {
         workers: [run(start + seconds + worker.after)],
       },
       cpus: { visible: 1, affinity: 1, quota: null },
-      python: "fixture",
+      python: "3.12.3",
     });
   }
 
@@ -644,7 +644,7 @@ describe("P2.5 and P2.6: CPU probe timing", () => {
             endedAt: startedAt + 2 * phase,
           },
           cpus: { visible: 1, affinity: 1, quota: null },
-          python: "fixture",
+          python: "3.12.3",
         }),
       );
 

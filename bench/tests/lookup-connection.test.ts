@@ -13,7 +13,13 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { ModalClientParams } from "../src/connections.js";
 import { lookupSandbox } from "../src/existence.js";
 import { loadProvider, type FactoryOptions } from "../src/providers.js";
-import { inspectSnapshot } from "../src/snapshots.js";
+import { snapshotProvenanceSchema } from "../src/ownership.js";
+import {
+  deleteProvenSnapshot,
+  inspectSnapshot,
+  snapshotCleaner,
+  snapshotsFromSource,
+} from "../src/snapshots.js";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { bound, fakeNativeModules } from "./native-fakes.js";
 
@@ -582,5 +588,210 @@ describe("lookups use the explicit options the adapter was built with, not the e
       expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
       expect(params).toEqual([expect.objectContaining(live)]);
     });
+  });
+});
+
+describe("raw reads and deletes keep the key on the adapter's origin", () => {
+  it("Instabox and Superserve: lookups, snapshot reads and the snapshot delete refuse redirects", async () => {
+    otherEnvironment();
+    const sent: string[] = [];
+
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      sent.push(`${init?.method ?? "GET"} ${url.pathname} ${init?.redirect ?? "follow"}`);
+
+      if (url.pathname.endsWith(`/machines/${id}`)) return Response.json({ id, state: "running" });
+
+      if (url.pathname.endsWith(`/snapshots/${id}`))
+        return Response.json({ id, sourceMachineId: "source", sandbox_id: "source" });
+
+      if (url.pathname.endsWith("/source/snapshots")) return Response.json([{ id }]);
+
+      return Response.json({ id, status: "active" });
+    });
+
+    const instabox = await load("instabox", {
+      apiKey: "live-key",
+      baseUrl: "https://live.invalid/ib/",
+    });
+
+    const superserve = await load("superserve", {
+      apiKey: "live-key",
+      baseUrl: "https://live.invalid/ss/",
+    });
+
+    expect((await lookupSandbox(instabox, id, budget)).result).toBe("present");
+    await inspectSnapshot("instabox", instabox, "source", id);
+    await (
+      await snapshotCleaner("instabox", instabox, "source")
+    )(id);
+    expect((await lookupSandbox(superserve, id, budget)).result).toBe("present");
+    expect(await inspectSnapshot("superserve", superserve, "source", id)).toEqual({
+      exists: true,
+      sourceId: "source",
+    });
+    expect(await snapshotsFromSource("superserve", superserve, "source")).toEqual([{ id }]);
+    await (
+      await snapshotCleaner("superserve", superserve, "source")
+    )(id);
+
+    expect(sent).toEqual([
+      `GET /ib/v1/machines/${id} error`,
+      `GET /ib/v1/snapshots/${id} error`,
+      `DELETE /ib/v1/snapshots/${id} error`,
+      `GET /ss/sandboxes/${id} error`,
+      `GET /ss/snapshots/${id} error`,
+      `GET /ss/sandboxes/source/snapshots error`,
+      `DELETE /ss/snapshots/${id} error`,
+    ]);
+  });
+
+  it("Upstash: a failed account-wide snapshot listing is never proof the snapshot is gone", async () => {
+    otherEnvironment();
+    fakeNativeModules({ "@upstash/box": { Box: { get: vi.fn(), deleteSnapshots: vi.fn() } } });
+    stubFetch(() => [404, {}]);
+
+    const adapter = await load("upstash", {
+      apiKey: "live-key",
+      baseUrl: "https://live.invalid/up/",
+    });
+
+    await expect(inspectSnapshot("upstash", adapter, "source", id)).rejects.toThrow(
+      /listing unavailable/,
+    );
+  });
+});
+
+describe("Superserve snapshot transport", () => {
+  const superserve = () =>
+    load("superserve", { apiKey: "live-key", baseUrl: "https://live.invalid/ss/" });
+
+  it("aborts both the request and its body read when the caller's deadline passes", async () => {
+    otherEnvironment();
+    const signals: AbortSignal[] = [];
+
+    vi.stubGlobal("fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+      const signal = init?.signal;
+
+      if (!signal) throw new Error("request sent without a signal");
+      signals.push(signal);
+
+      // Headers arrive at once; the body never finishes unless the signal ends it.
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"id":'));
+            signal.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const adapter = await superserve();
+    const caller = new AbortController();
+    setTimeout(() => caller.abort(new Error("cleanup deadline")), 50);
+
+    await expect(
+      inspectSnapshot("superserve", adapter, "source", id, caller.signal),
+    ).rejects.toThrow("cleanup deadline");
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
+
+    const hung = new AbortController();
+    vi.stubGlobal(
+      "fetch",
+      (_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          }),
+        ),
+    );
+    setTimeout(() => hung.abort(new Error("cleanup deadline")), 50);
+
+    await expect(
+      (await snapshotCleaner("superserve", adapter, "source"))(id, hung.signal),
+    ).rejects.toThrow("cleanup deadline");
+  });
+
+  it("retries a transient answer or network error like the SDK, and stops after 3 attempts", async () => {
+    otherEnvironment();
+    const answers: (number | "network")[] = [503, "network", 200];
+    let calls = 0;
+
+    vi.stubGlobal("fetch", async () => {
+      calls++;
+      const answer = answers.shift() ?? 502;
+
+      if (answer === "network") throw new TypeError("fetch failed");
+
+      return answer === 200
+        ? Response.json({ id, sandbox_id: "source" })
+        : Response.json({ error: { code: "unavailable" } }, { status: answer });
+    });
+
+    const adapter = await superserve();
+
+    expect(await inspectSnapshot("superserve", adapter, "source", id)).toEqual({
+      exists: true,
+      sourceId: "source",
+    });
+    expect(calls).toBe(3);
+
+    calls = 0;
+    await expect(snapshotsFromSource("superserve", adapter, "source")).rejects.toThrow(
+      "Snapshot listing unavailable",
+    );
+    expect(calls).toBe(3);
+  });
+
+  it("reports a delete refused for a dependent sandbox as in use, without its text, so cleanup retries it", async () => {
+    otherEnvironment();
+    const deletes: number[] = [];
+    let inUse = true;
+
+    vi.stubGlobal("fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method !== "DELETE") return Response.json({ id, sandbox_id: "source" });
+      deletes.push(Date.now());
+
+      if (!inUse) return new Response(null, { status: 204 });
+
+      return Response.json(
+        { error: { code: "snapshot_in_use", message: "in use by sandbox sbx-private-4711" } },
+        { status: 409 },
+      );
+    });
+
+    const adapter = await superserve();
+    const remove = await snapshotCleaner("superserve", adapter, "source");
+    const refused = await remove(id).catch((error: Error) => error);
+
+    expect(refused).toMatchObject({
+      message: "Superserve snapshot is in use by a dependent sandbox",
+      status: 409,
+    });
+    expect(String(refused)).not.toContain("sbx-private-4711");
+
+    deletes.length = 0;
+    setTimeout(() => {
+      inUse = false;
+    }, 150);
+
+    await deleteProvenSnapshot(
+      "superserve",
+      adapter,
+      id,
+      "source",
+      snapshotProvenanceSchema.parse({
+        sourceId: "source",
+        runLabel: "run",
+        sdkLabel: "1",
+        verifiedAt: new Date().toISOString(),
+      }),
+      "run",
+      5_000,
+    );
+    expect(deletes.length).toBeGreaterThan(1);
   });
 });

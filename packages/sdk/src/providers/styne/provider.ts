@@ -250,6 +250,9 @@ const defaultLifetimeMs = 3_600_000;
 /** A command's stdin goes in base64 lines of this many bytes. */
 const stdinChunkBytes = 1024 * 1024;
 
+/** A whole-file read is buffered in memory, so it stops at the shared HTTP client's default of 32 MiB. */
+const maxReadBytes = 32 * 1024 * 1024;
+
 type Body = JsonObject;
 
 /** A 2xx body as JSON, or `undefined` when it is empty or not JSON: each caller treats that as unreadable. */
@@ -319,7 +322,15 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
   const http: HttpClient<StynePlane> = createHttpClient<StynePlane>({
     provider: name,
     label: "Styne",
-    planes: { api: { baseUrl, auth: () => ({ Authorization: `Bearer ${apiKey()}` }) } },
+    // Styne never redirects off its own origin; following one would replay a create's secret
+    // environment values or an upload's bytes there.
+    planes: {
+      api: {
+        baseUrl,
+        auth: () => ({ Authorization: `Bearer ${apiKey()}` }),
+        crossOriginRedirects: false,
+      },
+    },
     defaultPlane: "api",
     fetch: options.fetch,
     timeoutMs: requestTimeoutMs,
@@ -793,7 +804,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
         ...sandboxPath(id, "/files"),
         query: { path },
         timeoutMs: 300_000,
-        maxBytes: 2 ** 32,
+        maxBytes: maxReadBytes,
       });
 
       return response.body;
@@ -802,6 +813,69 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
       if (error instanceof SandboxError && error.code === "file_not_found") await getSandbox(id);
       throw error;
     }
+  }
+
+  /**
+   * Bytes `range` of a file: Styne's file route has no range, so the body is streamed from the start
+   * and cancelled once the range is in. Only the range is kept, so a file larger than it, or one that
+   * grew after a size check, is never buffered whole.
+   */
+  async function readFileRange(
+    id: string,
+    path: string,
+    range: { offset: number; length: number },
+  ): Promise<Uint8Array> {
+    let response: Response;
+
+    try {
+      response = await http.stream({
+        method: "GET",
+        ...sandboxPath(id, "/files"),
+        query: { path },
+        timeoutMs: 300_000,
+      });
+    } catch (error) {
+      if (error instanceof SandboxError && error.code === "file_not_found") await getSandbox(id);
+      throw error;
+    }
+
+    const end = range.offset + range.length;
+    const kept: Uint8Array[] = [];
+    let seen = 0;
+    let size = 0;
+    const reader = response.body?.getReader();
+
+    try {
+      while (reader && seen < end) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+        const from = Math.max(range.offset - seen, 0);
+        const to = Math.min(end - seen, value.byteLength);
+
+        if (to > from) {
+          kept.push(value.slice(from, to));
+          size += to - from;
+        }
+
+        seen += value.byteLength;
+      }
+    } catch (error) {
+      if (error instanceof SandboxError) throw error;
+      throw fail("the file read broke off", "unavailable", { sandboxId: id });
+    } finally {
+      await reader?.cancel().catch(() => {});
+    }
+
+    const bytes = new Uint8Array(size);
+    let at = 0;
+
+    for (const part of kept) {
+      bytes.set(part, at);
+      at += part.byteLength;
+    }
+
+    return bytes;
   }
 
   async function writeFile(id: string, path: string, data: Uint8Array) {
@@ -820,11 +894,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     name,
     raw: (command) => shell(id, command),
     upload: (path, bytes) => writeFile(id, path, bytes),
-    read: async (path, range) => {
-      const bytes = await readFile(id, path);
-
-      return range ? bytes.subarray(range.offset, range.offset + range.length) : bytes;
-    },
+    read: (path, range) => (range ? readFileRange(id, path, range) : readFile(id, path)),
   });
 
   const shared = guestFiles(
@@ -837,6 +907,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     // The guest metadata program lists in os.listdir order.
     listOrder: "directory",
     read: readFile,
+    readRange: readFileRange,
     write: async (id, path, data) => {
       await writeFile(id, path, data);
     },

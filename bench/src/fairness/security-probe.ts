@@ -116,8 +116,19 @@ export const mitigationFlags: readonly { readonly name: string; readonly value: 
     { name: "nokaslr", value: null },
   ];
 
-/** Performance-oriented parameters worth showing beside the mitigations. */
-export const notableFlags = ["cpuidle_haltpoll.force", "idle", "nosmt", "isolcpus", "nohz_full"];
+const cpuList = String.raw`\d{1,4}(-\d{1,4})?(,\d{1,4}(-\d{1,4})?){0,15}`;
+
+/**
+ * Performance-oriented parameters worth showing beside the mitigations, each with the values it may
+ * be reported with. Any other value is guest text, so only the name is kept.
+ */
+export const notableFlags: ReadonlyMap<string, RegExp> = new Map([
+  ["cpuidle_haltpoll.force", /^[YyNn01]$/],
+  ["idle", /^(poll|halt|nomwait)$/],
+  ["nosmt", /^force$/],
+  ["isolcpus", new RegExp(`^((nohz|domain|managed_irq),){0,3}${cpuList}$`)],
+  ["nohz_full", new RegExp(`^${cpuList}$`)],
+]);
 
 /** The kernel treats `-` and `_` in a parameter name alike. */
 const normalName = (name: string) => name.replaceAll("-", "_");
@@ -169,7 +180,13 @@ export function cmdlineFlags(cmdline: string) {
     .filter((p) => mitigationFlags.some((f) => f.name === p.name && f.value === p.value))
     .map((p) => p.token);
 
-  const notable = parsed.filter((p) => notableFlags.includes(p.name)).map((p) => p.token);
+  const notable = parsed.flatMap(({ name, value }) => {
+    const allowed = notableFlags.get(name);
+
+    if (!allowed) return [];
+
+    return value !== null && allowed.test(value) ? [`${name}=${value}`] : [name];
+  });
 
   return { weakening, notable };
 }
@@ -311,7 +328,7 @@ export const securityResultSchema = z.object({
     insideVm: z.boolean().nullable(),
   }),
   kernel: z.string().nullable(),
-  cmdline: z.string().nullable(),
+  /** Only allowlisted kernel parameters: the raw command line can carry boot secrets. */
   weakeningFlags: z.array(z.string()),
   notableFlags: z.array(z.string()),
   vulnerabilities: z.array(z.object({ name: z.string(), status: z.string() })),
@@ -387,7 +404,6 @@ export function parseProbe(stdout: string) {
     facts,
     isolation: classifyIsolation(facts),
     kernel: facts.kernel,
-    cmdline,
     weakeningFlags: flags.weakening,
     notableFlags: flags.notable,
     vulnerabilities,
@@ -452,7 +468,10 @@ export const securityProbe: Check<SecurityResult> = {
         `Probe ${probe.timedOut ? "timed out" : `exited ${probe.exitCode}`} without ${missing.join(", ") || "finishing"}: ${sanitize(probe.stderr).slice(0, 200)}`,
       );
     const parsed = parseProbe(probe.stdout);
-    await context.note("facts", parsed.facts);
+    // The raw kernel command line and dmesg can carry boot secrets: the log keeps only the other facts
+    // and what was derived from those two (the isolation evidence, the allowlisted flags).
+    const { cmdline: _cmdline, dmesg: _dmesg, ...facts } = parsed.facts;
+    await context.note("facts", facts);
     context.say(
       `${parsed.isolation.kind}; ${parsed.cpu.modelName ?? "cpu ?"}; uptime ${first.uptimeS ?? "?"}s after ${round(sinceCreateS, 1)}s; ${parsed.vulnerableCount} vulnerable`,
     );
@@ -464,7 +483,6 @@ export const securityProbe: Check<SecurityResult> = {
       bootId: first.bootId,
       isolation: parsed.isolation,
       kernel: parsed.kernel,
-      cmdline: parsed.cmdline,
       weakeningFlags: parsed.weakeningFlags,
       notableFlags: parsed.notableFlags,
       vulnerabilities: parsed.vulnerabilities,
