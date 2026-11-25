@@ -13,9 +13,30 @@ import { microsandboxFetch } from "./microsandbox.js";
  * key, `msb_...`, or a personal access token, `msb_pat_...`), so it can be shown or saved.
  */
 export function redactMicrosandbox(text: string, apiKey: string) {
-  const keyless = apiKey.length >= 8 ? text.split(apiKey).join("[redacted]") : text;
+  // Every match is found in the original text, so one never hides part of another.
+  const spans = [...text.matchAll(/msb_(?:pat_)?[A-Za-z0-9_-]+/g)].map(
+    (match) => [match.index, match.index + match[0].length] as const,
+  );
 
-  return keyless.replace(/msb_(?:pat_)?[A-Za-z0-9_-]+/g, "[redacted]");
+  for (
+    let at = apiKey === "" ? -1 : text.indexOf(apiKey);
+    at >= 0;
+    at = text.indexOf(apiKey, at + 1)
+  )
+    spans.push([at, at + apiKey.length]);
+
+  spans.sort((a, b) => a[0] - b[0]);
+  let shown = "";
+  let from = 0;
+
+  for (const [start, end] of spans) {
+    if (end <= from) continue;
+
+    if (start >= from) shown += `${text.slice(from, start)}[redacted]`;
+    from = end;
+  }
+
+  return shown + text.slice(from);
 }
 
 /** The label the raw create stores its owner marker in. */

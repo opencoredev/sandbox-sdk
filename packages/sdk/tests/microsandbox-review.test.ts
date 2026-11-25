@@ -7,7 +7,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createSandbox, reapSandboxes } from "../src/index.js";
 import { Redactor, type SandboxError } from "../src/errors.js";
-import { capturedFrom, parseSandbox, tokenPattern } from "../src/providers/microsandbox/api.js";
+import {
+  capturedFrom,
+  parseSandbox,
+  parseSnapshot,
+  tokenPattern,
+} from "../src/providers/microsandbox/api.js";
 import { peerError } from "../src/providers/microsandbox/errors.js";
 import {
   execute,
@@ -77,18 +82,16 @@ test("R1 sandbox DELETE is dispatched when the Services request consumes its dea
   expect(fake.sandboxes.has(sandbox)).toBe(false);
 });
 
-test("R2 failed Service discovered by a fresh adapter remains available to the next destroy", async () => {
+test("R2 a Service a fresh adapter cannot prove stays for the client that made it", async () => {
   const p = adapter();
   const { id: sandbox } = await p.create({ labels: labels() });
   const { url } = await p.previewUrl(sandbox, 3000);
   const slug = new URL(url).pathname.split("/").at(-1) ?? "";
   const fresh = adapter();
-  fake.faults.serviceDeleteFails = true;
   await expect(fresh.destroy(sandbox)).rejects.toThrow(/Services/);
   expect(fake.sandboxes.has(sandbox)).toBe(false);
   expect(fake.services.get(slug)?.status).toBe("detached");
-  fake.faults.serviceDeleteFails = false;
-  await fresh.destroy(sandbox);
+  await p.destroy(sandbox);
   expect(fake.services.has(slug)).toBe(false);
 });
 
@@ -895,12 +898,20 @@ test("PR88 merge review: a Service create whose answer was lost keeps its sandbo
 
   await replay();
 
-  if (fake.sandboxes.has(sandbox)) await p.destroy(sandbox);
+  // The create's answer never came, so nothing proves the Service that landed is this client's: the
+  // later destroy names it and leaves it.
+  const later = fake.sandboxes.has(sandbox)
+    ? await p.destroy(sandbox).then(
+        () => "",
+        (error: SandboxError) => error.message,
+      )
+    : "";
 
   expect({
     first,
-    detached: [...fake.services.values()].filter((service) => service.target === null).length,
-  }).toEqual({ first: "unavailable", detached: 0 });
+    named: later.includes("nothing proves this client made"),
+    left: fake.services.size,
+  }).toEqual({ first: "unavailable", named: true, left: 1 });
 });
 
 test("PR88 merge review: destroy keeps the sandbox while a Service create is still in flight", async () => {
@@ -1627,4 +1638,98 @@ test("PR88 security review: the boot repair follows no symlink planted under /tm
   );
 
   expect(after.stdout).toBe("kept\n clean");
+});
+
+test("PR88 security review: a Service another client made is left alone, listed or reused", async () => {
+  const first = adapter();
+  const { id: listedBox } = await first.create({ labels: labels() });
+  const { id: reusedBox } = await first.create({ labels: labels() });
+
+  await first.previewUrl(listedBox, 3000);
+  await first.previewUrl(reusedBox, 3000);
+
+  const slugs = [...fake.services.keys()];
+  const other = adapter();
+
+  await other.previewUrl(reusedBox, 3000);
+
+  const shown = await Promise.all(
+    [listedBox, reusedBox].map((box) =>
+      other.destroy(box).then(
+        () => "",
+        (error: SandboxError) => error.message,
+      ),
+    ),
+  );
+
+  expect({
+    kept: slugs.every((slug) => fake.services.has(slug)),
+    reported: shown.every((message) => message.includes("nothing proves this client made them")),
+  }).toEqual({ kept: true, reported: true });
+
+  for (const slug of slugs) fake.services.delete(slug);
+});
+
+test("PR88 security review: a remembered Service without the creation timestamp this client saw is left alone", async () => {
+  let strip = true;
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const response = await realFetch(input, init);
+
+      if (!strip || !new URL(input).pathname.startsWith("/v1/services")) return response;
+
+      const text = await response.text();
+
+      return new Response(text.replaceAll(/"created_at":"[^"]*",?/g, ""), {
+        status: response.status,
+        headers: response.headers,
+      });
+    },
+  });
+
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  await p.previewUrl(sandbox, 3000);
+  strip = false;
+
+  const slug = [...fake.services.keys()].find((s) => s.endsWith("-p3000"));
+
+  await p.destroy(sandbox).catch(() => {});
+
+  expect(slug !== undefined && fake.services.has(slug)).toBe(true);
+
+  if (slug !== undefined) fake.services.delete(slug);
+});
+
+test("PR88 security review: an unreadable reported sandbox_id never lets the source label stand in", () => {
+  const snapshot = parseSnapshot({
+    name: "n",
+    location: { type: "managed", id: crypto.randomUUID() },
+    sandbox_id: 42,
+    labels: { "sandbox-sdk-source": "ours" },
+  });
+
+  expect(capturedFrom(snapshot, "ours")).toBe(false);
+});
+
+test("PR88 security review: the boot repair touches nothing under a directory others can write", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  const plant = [
+    "mkdir -p /tmp/.sandbox-sdk/runs/old",
+    "touch -d '1 hour ago' /tmp/.sandbox-sdk/runs/old",
+    "chmod 777 /tmp/.sandbox-sdk/runs",
+  ].join(" && ");
+
+  expect((await exec(p, sandbox, plant)).exitCode).toBe(0);
+
+  const after = await exec(
+    p,
+    sandbox,
+    `sh -c ${quote(bootRepairScript())}; [ -e /tmp/.sandbox-sdk/runs/old ] && printf kept || printf removed; chmod 755 /tmp/.sandbox-sdk/runs`,
+  );
+
+  expect(after.stdout).toBe("kept");
 });

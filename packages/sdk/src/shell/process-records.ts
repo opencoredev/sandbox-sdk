@@ -109,10 +109,13 @@ export function logPageScript(input: {
  * any time. The lock is only tried: this script never breaks or waits out a lock it does not hold,
  * and the whole scan gives up on contended records after about a second, leaving them as they
  * are. A timestamp that cannot be read proves nothing, so that record is left as it is too. /tmp is
- * writable by anything in the guest, so no symlink is followed and nothing another user owns is
- * written or removed: the exit is created only where no file or link stands. */
+ * writable by anything in the guest, so the repair works only below directories that are this user's
+ * own, no symlink, and writable by no other user, so nobody can swap a path between its check and its
+ * use; it follows no symlink, and the exit is created only where no file or link stands. */
 export function bootRepairScript(): string {
-  const owned = (path: string) => `[ -d "${path}" ] && [ ! -L "${path}" ] && [ -O "${path}" ]`;
+  // Writable by its group only when that group is this user's own, and never by everyone.
+  const owned = (path: string) =>
+    `[ -d "${path}" ] && [ ! -L "${path}" ] && [ -O "${path}" ] && perm=$(stat -c %A "${path}") && case "$perm" in d???????-?) true ;; *) false ;; esac && { [ -G "${path}" ] || case "$perm" in d????-????) true ;; *) false ;; esac; }`;
 
   const stale = `${owned("$d")} && [ -f "$d/spec.json" ] && [ ! -L "$d/spec.json" ] && [ ! -e "$d/exit" ] && [ ! -L "$d/exit" ] && t=$(stat -c %Y "$d/spec.json") && [ "$t" -lt "$boot" ]`;
 

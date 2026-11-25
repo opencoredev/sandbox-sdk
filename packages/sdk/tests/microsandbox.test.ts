@@ -685,13 +685,15 @@ describe("Services (previewUrl) and destroy", () => {
     expect(fake.services.has(slug)).toBe(false);
   });
 
-  test("destroy finds owned Services by the sandbox filter after a fresh client", async () => {
+  test("destroy names, and leaves, a Service the sandbox filter shows that another client made", async () => {
     const first = provider();
     const box = await first.create({ labels: {} });
     await first.previewUrl(box.id, 6000);
     const second = provider();
-    await second.destroy(box.id);
-    expect([...fake.services.keys()].some((s) => s.endsWith("-p6000"))).toBe(false);
+    await expect(second.destroy(box.id)).rejects.toThrow(
+      /-p6000\).*nothing proves this client made/,
+    );
+    expect([...fake.services.keys()].some((s) => s.endsWith("-p6000"))).toBe(true);
   });
 });
 

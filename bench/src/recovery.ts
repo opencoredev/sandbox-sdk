@@ -206,7 +206,7 @@ export async function reapRun(
     // an unrelated in-flight write.
     const needsWrite = targets.some((entry) => {
       if (!journal || !journal.resources.includes(entry)) return false;
-      const nextCreatedAt = createdAt ?? entry.serviceCreatedAt;
+      const nextCreatedAt = entry.serviceCreatedAt ?? createdAt;
 
       return entry.serviceState !== "created" || entry.serviceCreatedAt !== nextCreatedAt;
     });
@@ -219,7 +219,7 @@ export async function reapRun(
 
       for (const entry of targets) {
         if (!journal.resources.includes(entry)) continue;
-        const nextCreatedAt = createdAt ?? entry.serviceCreatedAt;
+        const nextCreatedAt = entry.serviceCreatedAt ?? createdAt;
 
         if (entry.serviceState === "created" && entry.serviceCreatedAt === nextCreatedAt) continue;
         const promoted: z.infer<typeof resource> = { ...entry, serviceState: "created" };

@@ -8,6 +8,7 @@ import { endpoint } from "../connections.js";
 import type { Json } from "../json.js";
 import { archilControlUrl, archilSandboxBody, archilUsageBody } from "../archil.js";
 import { pricing } from "../pricing.js";
+import { checkMicrosandboxEndpoint } from "../microsandbox.js";
 import { microsandboxTier } from "../providers.js";
 import type { OwnedSandbox } from "./input.js";
 import { collectModal, modalBillingSource, type ModalReport } from "./modal.js";
@@ -1305,6 +1306,7 @@ export async function collectProvider(
     try {
       const headers = { Authorization: `Bearer ${key}` };
       const root = (env.MSB_API_URL?.trim() || "https://api.microsandbox.dev").replace(/\/+$/, "");
+      checkMicrosandboxEndpoint(root);
       const window = windowFor(rows);
 
       if (!window) {

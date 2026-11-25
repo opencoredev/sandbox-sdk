@@ -70,7 +70,7 @@ console.log(result.stdout);
 | Commands and streaming         | Yes         | Through the guest agent; live output                                      |
 | Files                          | Yes         | `/workspace` on the root disk                                             |
 | Background processes           | Yes         |                                                                           |
-| Preview URLs                   | Yes         | Public Services, deleted with the sandbox                                 |
+| Preview URLs                   | Yes         | Public Services, deleted with the sandbox by the client that made them    |
 | Pause and resume               | No          |                                                                           |
 | Snapshots                      | Yes         | Disk snapshots; the sandbox stops for the capture; `deleteSnapshot` works |
 | Templates                      | No          | Pick the OCI image with `image`                                           |
@@ -106,7 +106,7 @@ The default image is `node:22-bookworm`. Each command runs as `sh -c`, with stdi
 
 ## Background processes and previews
 
-`box.preview(port)` returns an `https://` URL for the port. Nothing needs to be declared at creation. The adapter creates a Microsandbox Service for the port, named `sbx-<16 hex of the sandbox ID>-p<port>`, and deletes it when the sandbox is destroyed. Service URLs are public: anyone with the URL can reach the port, so add authentication in your app when it matters.
+`box.preview(port)` returns an `https://` URL for the port. Nothing needs to be declared at creation. The adapter creates a Microsandbox Service for the port, named `sbx-<16 hex of the sandbox ID>-p<port>`, and deletes it when the same client destroys the sandbox. A client that didn't create the Service itself, such as another process that found the sandbox by key, deletes the sandbox, leaves the Service, and names it in the error, because nothing proves the Service is the one that client meant. Service URLs are public: anyone with the URL can reach the port, so add authentication in your app when it matters.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";

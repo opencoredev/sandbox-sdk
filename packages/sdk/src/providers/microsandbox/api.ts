@@ -240,7 +240,13 @@ export function parseSnapshot(raw: JsonValue | undefined): MicrosandboxSnapshot 
   return {
     name,
     location: locationOf(field(raw, "location")),
-    sandboxId: isString(sandboxId) && sandboxId ? sandboxId : undefined,
+    // Reported but unreadable is not absent: it never lets the caller-set source label stand in.
+    sandboxId:
+      sandboxId === undefined || sandboxId === null
+        ? undefined
+        : isString(sandboxId) && sandboxId
+          ? sandboxId
+          : "",
     labels: labelsOf(field(raw, "labels")),
   };
 }

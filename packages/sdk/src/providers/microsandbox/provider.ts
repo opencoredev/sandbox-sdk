@@ -833,13 +833,11 @@ export function createMicrosandboxProvider(
   }
 
   /**
-   * Deletes the Services this adapter made for sandbox `id`. Candidates come from memory (which survives
-   * a detached sandbox) and from the cloud's list filtered by the sandbox's name; each must match the
-   * adapter's own slug shape for this ID and still target this sandbox (or nothing) before it is deleted.
-   * A listed one joins memory, so if its delete fails, the next destroy retries it after the sandbox is
-   * gone and the list no longer shows it. After a destroy whose listing failed (see {@link unlisted}),
-   * the whole list is read for this ID's detached slugs that memory cannot prove, which are named and
-   * never deleted. Returns the slugs whose deletion failed, those unproven slugs, and whether every
+   * Deletes the Services this client made for sandbox `id`. Only memory (which survives a detached
+   * sandbox) names them, and each is deleted only while it still targets this sandbox (or nothing) and
+   * carries the creation timestamp this client saw. The cloud's list filtered by the sandbox's name, and
+   * after a destroy whose listing failed (see {@link unlisted}) the whole list for this ID's detached
+   * slugs, name the Services at this ID's slugs that memory cannot prove, which are never deleted. Returns the slugs whose deletion failed, those unproven slugs, and whether every
    * listing answered.
    */
   async function removeServices(id: string, sandboxName: string | undefined, deadline: Deadline) {
@@ -875,15 +873,17 @@ export function createMicrosandboxProvider(
       }
     };
 
-    // The filtered list is a second source; memory still names what this adapter made.
+    // Only memory names what this client made: one the filtered list shows at this ID's slugs and
+    // nothing proves is named and left alone, however it is attached.
     let listed =
       sandboxName === undefined ||
       (await listServices(sandboxName, (service) => {
-        if (!isOwnedSlug(service.slug, id) || service.target?.sandbox !== sandboxName) return;
-
-        // A listing never replaces the creation timestamp memory holds: that is the Service's identity.
-        const known = ownedServices.get(id)?.get(service.slug)?.createdAt;
-        ownService(id, service.slug, sandboxName, known ?? service.createdAt);
+        if (
+          isOwnedSlug(service.slug, id) &&
+          service.target?.sandbox === sandboxName &&
+          !ownedServices.get(id)?.has(service.slug)
+        )
+          unproven.push(service.slug);
       }));
 
     if (unlisted.has(id)) {
@@ -990,8 +990,12 @@ export function createMicrosandboxProvider(
             continue;
           }
 
-          if (entry.createdAt === undefined && service.createdAt !== undefined)
-            entry.createdAt = service.createdAt;
+          // Without the creation timestamp this client saw, the live one proves nothing.
+          if (entry.createdAt === undefined) {
+            ownedServices.get(id)?.delete(slug);
+            unproven.push(slug);
+            continue;
+          }
 
           if (!(await syncIdentity())) continue;
         } else if (
@@ -1129,7 +1133,7 @@ export function createMicrosandboxProvider(
 
     if (unproven.length > 0)
       throw fail(
-        `the sandbox was deleted; detached Services with its slugs (${unproven.join(", ")}) were left alone, as nothing proves they were made for it. Delete them yourself if they were`,
+        `the sandbox was deleted; Services with its slugs (${unproven.join(", ")}) were left alone, as nothing proves this client made them. Delete them yourself if it did`,
         "provider",
         { sandboxId: id },
       );
@@ -1645,7 +1649,6 @@ export function createMicrosandboxProvider(
 
     if (service === "taken" || !routes(service, sandboxName, port))
       throw fail(`no Service could be made for port ${port}`, "provider", { sandboxId: id });
-    ownService(id, service.slug, sandboxName, service.createdAt);
     const url = serviceUrl(service);
 
     for (const token of tokensIn(url)) tokens.add(token);

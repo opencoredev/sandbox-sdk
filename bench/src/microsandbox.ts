@@ -44,16 +44,9 @@ export class MicrosandboxHttpError extends Error {
 /** Hosts where plain HTTP keeps the bearer on this machine: the loopback test fakes. */
 const loopbackHosts: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-/**
- * One control-plane request through the run adapter's own connection, bounded. The key goes only to
- * an https origin, or a loopback one over http, and never follows a redirect to another.
- */
-export async function microsandboxFetch(
-  connection: MicrosandboxConfig,
-  path: string,
-  init: RequestInit = {},
-) {
-  const base = new URL(connection.baseUrl);
+/** Refuses an API URL the key must not go to: anything but https, or http on a loopback host. */
+export function checkMicrosandboxEndpoint(baseUrl: string) {
+  const base = new URL(baseUrl);
 
   if (base.username || base.password)
     throw new Error("Microsandbox API URL must not carry credentials");
@@ -63,6 +56,18 @@ export async function microsandboxFetch(
     !(base.protocol === "http:" && loopbackHosts.has(base.hostname))
   )
     throw new Error("Microsandbox API URL must use https; plain http is allowed only for loopback");
+}
+
+/**
+ * One control-plane request through the run adapter's own connection, bounded. The key goes only to
+ * an https origin, or a loopback one over http, and never follows a redirect to another.
+ */
+export async function microsandboxFetch(
+  connection: MicrosandboxConfig,
+  path: string,
+  init: RequestInit = {},
+) {
+  checkMicrosandboxEndpoint(connection.baseUrl);
 
   const headers = new Headers(init.headers);
 

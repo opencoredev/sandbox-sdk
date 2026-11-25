@@ -879,7 +879,7 @@ export async function runV2(
         if (entry === undefined) return;
 
         if (outcome === "created") {
-          const nextCreatedAt = createdAt ?? entry.serviceCreatedAt;
+          const nextCreatedAt = entry.serviceCreatedAt ?? createdAt;
 
           if (entry.serviceState === "created" && entry.serviceCreatedAt === nextCreatedAt) return;
           const updated = { ...entry, serviceState: "created" as const };
@@ -1225,7 +1225,7 @@ export async function runV2(
                 await persistConfirmedSnapshot(svcKey, {
                   ...current,
                   serviceState: "created",
-                  serviceCreatedAt: probed.createdAt,
+                  serviceCreatedAt: current.serviceCreatedAt ?? probed.createdAt,
                 });
               }
             }
@@ -3969,7 +3969,7 @@ export async function runV2(
             const current = owned.get(key);
 
             if (current === undefined) return;
-            const nextCreatedAt = verifiedCreatedAt ?? current.serviceCreatedAt;
+            const nextCreatedAt = current.serviceCreatedAt ?? verifiedCreatedAt;
 
             if (current.serviceState === "created" && current.serviceCreatedAt === nextCreatedAt)
               return;

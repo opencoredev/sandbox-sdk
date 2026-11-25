@@ -31,7 +31,11 @@ import { collectProvider } from "../src/billing/providers.js";
 import { lookupSandbox } from "../src/existence.js";
 import { journalFiles } from "../src/files.js";
 import { mergeSources, type MergeSource } from "../src/merge.js";
-import { createRawMicrosandbox, type RawMicrosandboxBox } from "../src/microsandbox-raw.js";
+import {
+  createRawMicrosandbox,
+  redactMicrosandbox,
+  type RawMicrosandboxBox,
+} from "../src/microsandbox-raw.js";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
 import { siteData } from "../src/site-data.js";
 import { reapRun } from "../src/recovery.js";
@@ -1043,6 +1047,36 @@ describe("independent review reproductions", () => {
     await journal([{ provider: "microsandbox", id: other.id, kind: "sandbox", parent: null }]);
     await reap();
     expect(fake.sandboxes.has(other.id)).toBe(true);
+  });
+
+  test("PR88-S2 a fresh reap never trades the journal's Service identity for a replacement's", async () => {
+    const p = adapter();
+    const { id: sandbox } = await p.create({ labels: labels() });
+    const sandboxName = fake.sandboxes.get(sandbox)?.name;
+
+    await p.previewUrl(sandbox, 3000);
+
+    const slug = [...fake.services.keys()].find((s) => s.endsWith("-p3000"));
+
+    if (slug === undefined || sandboxName === undefined) throw new Error("no fake Service");
+
+    // The journal holds the create this run saw; the live Service at the slug is another one.
+    await journal([
+      { provider: "microsandbox", id: sandbox, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: slug,
+        kind: "service",
+        parent: sandbox,
+        sandboxName,
+        serviceState: "created",
+        serviceCreatedAt: "2001-01-01T00:00:00.000Z",
+      },
+    ]);
+    await reap();
+
+    expect(fake.services.has(slug)).toBe(true);
+    fake.services.delete(slug);
   });
 
   test("R2-1 runV2 keeps a pending Service and its parent sandbox journaled while the Service returns 404", async () => {
@@ -2075,19 +2109,20 @@ describe("independent review reproductions", () => {
       await realRename(from, to);
     });
 
-    expect(await reap()).toBe(false);
+    // The failed write lands in the Service sweep now, so the first reap leaves the Service for review.
+    expect(await reap()).toBe(true);
     expect(failedOnce).toBe(true);
-    expect(fake.services.has(slug)).toBe(false);
-    expect(fake.sandboxes.has(source.id)).toBe(false);
     rename.mockRestore();
     expect(await reap()).toBe(false);
+    expect(fake.services.has(slug)).toBe(false);
+    expect(fake.sandboxes.has(source.id)).toBe(false);
     expect(
       z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
         .resources,
     ).toEqual([]);
   });
 
-  test("R7-2 SDK destroy retries detachment using created_at seen on the attached exact read", async () => {
+  test("R7-2 SDK destroy never takes an attached read's created_at as its own Service's identity", async () => {
     const p = adapter();
     const source = await p.create({ labels: labels() });
     const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
@@ -2113,13 +2148,14 @@ describe("independent review reproductions", () => {
 
     await p.previewUrl(source.id, 3000);
     fake.faults.serviceDeleteFails = true;
-    await expect(p.destroy(source.id)).rejects.toThrow("could not be removed");
+    await expect(p.destroy(source.id)).rejects.toThrow("nothing proves this client made");
     expect(fake.services.get(slug)?.status).toBe("detached");
     expect(fake.sandboxes.has(source.id)).toBe(false);
     fetchMock.mockRestore();
     fake.faults.serviceDeleteFails = false;
-    await p.destroy(source.id);
-    expect(fake.services.has(slug)).toBe(false);
+    await p.destroy(source.id).catch(() => {});
+    expect(fake.services.has(slug)).toBe(true);
+    fake.services.delete(slug);
   });
 
   test("R8-1 verified sweep deletion survives a transient journal rename failure", async () => {
@@ -3747,5 +3783,41 @@ describe("PR88 security review", () => {
       capturedFrom(snapshot(null), "ours"),
       capturedFrom(snapshot("ours"), "ours"),
     ]).toEqual([false, true, true]);
+  });
+});
+
+describe("PR88 security review, second round", () => {
+  test("PR88-S1 billing never sends the key over plain http to a host off this machine", async () => {
+    let sent = 0;
+
+    await collectProvider(
+      "microsandbox",
+      [
+        {
+          provider: "microsandbox",
+          id: crypto.randomUUID(),
+          startedAt: "2026-11-24T10:00:00.000Z",
+          finishedAt: "2026-11-24T10:01:00.000Z",
+          scenarios: new Set(),
+          confirmedStopAt: null,
+          app: null,
+        },
+      ],
+      { MSB_API_KEY: key, MSB_API_URL: "http://billing.microsandbox.example" },
+      async () => {
+        sent++;
+
+        return { rows: [], sandboxes: [] };
+      },
+    );
+
+    expect(sent).toBe(0);
+  });
+
+  test("PR88-S3 redaction finds the key and token shapes in the original text, however they overlap", () => {
+    expect([
+      redactMicrosandbox("x KEYmsb_pat_1y z", "KEYmsb_p"),
+      redactMicrosandbox("short k9 key", "k9"),
+    ]).toEqual(["x [redacted] z", "short [redacted] key"]);
   });
 });
