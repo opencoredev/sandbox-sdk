@@ -381,6 +381,9 @@ function isDaytonaSandboxApi(api: unknown): api is DaytonaSandboxApi {
 /** The fields of Styne's `GET /sandboxes/{id}` the lookup reads. */
 const styneSandbox = z.object({ sandboxID: z.string(), state: z.string() });
 
+/** Styne's error body: `{ error_code }`, such as `not_found` (https://docs.styne.ai/errors). */
+const styneErrorBody = z.object({ error_code: z.string() });
+
 /** Beam's gateway container listing, as the existence check reads it. */
 const beamContainers = z.object({
   containers: z.array(z.object({ containerId: z.string(), status: z.string() })),
@@ -558,6 +561,16 @@ export async function lookupSandbox(
             await response.body?.cancel();
 
             return { sandboxId: id, state: "killed" };
+          }
+
+          // A forgotten sandbox answers 404 `not_found`; a route-level or undecodable 404 is unavailable.
+          if (response.status === 404) {
+            const answer = styneErrorBody.safeParse(await response.json().catch(() => null));
+
+            if (answer.success && answer.data.error_code === "not_found")
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+
+            throw new Error("Styne lookup answered a route or unknown error");
           }
 
           if (!response.ok)

@@ -99,7 +99,11 @@ function styneFetch(provider: Provider, path: string, init: RequestInit = {}) {
 
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
 
-  return fetch(`${baseUrl}${path}`, { ...init, headers });
+  // A write never follows a redirect, which would replay it as another request.
+  const method = init.method ?? "GET";
+  const redirect = method === "GET" ? init.redirect : "error";
+
+  return fetch(`${baseUrl}${path}`, { ...init, headers, redirect });
 }
 
 function httpError(message: string, status: number) {

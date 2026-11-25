@@ -160,6 +160,15 @@ describe("Styne existence", () => {
   });
 });
 
+describe("Styne existence without Styne's not_found", () => {
+  it("reads a route-level or undecodable 404 as unavailable, never absent", async () => {
+    styneApi({ status: 404, json: { error_code: "route_not_found" } }, { status: 404 });
+
+    expect((await lookupSandbox(styneProvider, "vm1", 1000)).result).toBe("unavailable");
+    expect((await lookupSandbox(styneProvider, "vm1", 1000)).result).toBe("unavailable");
+  });
+});
+
 describe("Styne snapshots", () => {
   it("decodes sandboxID for provenance and reads a deleted name as absent", async () => {
     styneApi(
