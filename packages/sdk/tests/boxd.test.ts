@@ -1242,9 +1242,37 @@ describe("boxd failure evidence", () => {
 
       const cause = String(error instanceof SandboxError ? error.cause : "");
 
-      expect(cause).toContain("[URL REDACTED]");
       expect(cause).not.toContain("sig123");
       expect(cause).not.toContain("storage.example");
+    } finally {
+      resume.mockRestore();
+      await box.destroy();
+    }
+  });
+
+  test("a credential label that overlaps a sandbox secret still hides its value", async () => {
+    const box = await createSandbox(factory(), { secrets: { APP: "myapp-api" } });
+    const machines = box.native.client.machines;
+
+    const resume = vi.spyOn(machines, "resume").mockRejectedValueOnce(
+      Object.assign(new Error("rejected myapp-api_key=hunter2 for this machine"), {
+        name: "ConflictError",
+        grpcCode: 9,
+      }),
+    );
+
+    try {
+      await box.pause();
+
+      const error = await box.resume().then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+      const cause = String(error instanceof SandboxError ? error.cause : "");
+
+      expect(cause).not.toContain("hunter2");
+      expect(cause).not.toContain("myapp-api");
     } finally {
       resume.mockRestore();
       await box.destroy();

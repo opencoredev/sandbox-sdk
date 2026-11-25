@@ -778,7 +778,10 @@ export class Redactor {
         cause:
           cause.cause === undefined
             ? undefined
-            : scrubCause(causeText(cause.cause), (text) => this.text(text)),
+            : scrubCause(
+                causeText(cause.cause, (text) => this.text(text)),
+                (text) => this.text(text),
+              ),
       });
 
       if (waitDeadlineErrors.has(cause)) waitDeadlineErrors.add(mapped);
@@ -807,10 +810,8 @@ export class Redactor {
 }
 
 /** Credential-shaped text in native messages: URLs (which can carry tokens), auth headers, and key=value pairs. */
-const urlPattern = /https?:\/\/[^\s"'<>]+/gi;
-
 const credentialPatterns: [RegExp, string][] = [
-  [urlPattern, "[URL REDACTED]"],
+  [/https?:\/\/[^\s"'<>]+/gi, "[URL REDACTED]"],
   [
     /(\bauthorization["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n;]+)/gi,
     "$1[REDACTED]",
@@ -1024,21 +1025,23 @@ export function evidenceCause(
 }
 
 /**
- * A cause's text for {@link Redactor.error}: adapter evidence with its unscrubbed fields restored.
- * URLs go first, since redacting a secret that begins a URL would hide the URL from the scrub.
+ * A cause's text for {@link Redactor.error}: adapter evidence with its unscrubbed message restored.
+ * Redacting secrets first can break a credential pattern's match, and scrubbing first can split a
+ * secret, so a message holding both is withheld whole.
  */
-function causeText(cause: unknown): string {
+function causeText(cause: unknown, redact: (text: string) => string): string {
   if (!(cause instanceof Error)) return String(cause);
-  const unscrubbed = unscrubbedEvidence.get(cause);
-
-  if (unscrubbed === undefined) return cause.message;
+  const raw = unscrubbedEvidence.get(cause)?.providerMessage;
   const fields = evidenceFields(cause.message);
 
-  if (fields === undefined || unscrubbed.providerMessage === undefined) return cause.message;
+  if (raw === undefined || fields === undefined) return cause.message;
+  const credentials = scrubCredentials(raw);
+  const hasCredential = credentials !== raw;
+  const hasSecret = redact(raw) !== raw;
 
   return JSON.stringify({
     ...Object.fromEntries(fields),
-    providerMessage: unscrubbed.providerMessage.replace(urlPattern, "[URL REDACTED]"),
+    providerMessage: hasCredential && hasSecret ? redactedMarker : credentials,
   });
 }
 
