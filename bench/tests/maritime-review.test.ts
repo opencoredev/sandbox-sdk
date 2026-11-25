@@ -21,6 +21,7 @@ import { parseV2 } from "../src/v2-config.js";
 import { sanitize } from "../src/v2-runner.js";
 import { bound, boundFake, fakeNativeModules } from "./native-fakes.js";
 import { fingerprintOf } from "../src/connections.js";
+import { lookupSandbox } from "../src/existence.js";
 
 const dirs: string[] = [];
 
@@ -1125,4 +1126,45 @@ describe("re-review regressions on 6d6fea6", () => {
     expect(rejectedWrites).toBe(1);
     expect(deleted).toContain(snapshotId);
   }, 30_000);
+});
+
+describe("Maritime exact reads decide absence only from Maritime's own codes", () => {
+  it.each([
+    [404, { code: "sandbox_not_found" }, "not-found"],
+    [410, { code: "sandbox_ended" }, "terminal"],
+    [404, { code: "resource_not_found" }, "unavailable"],
+    [404, null, "unavailable"],
+  ] as const)("%i %j reads as %s", async (status, body, result) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      body === null ? new Response("not json", { status }) : Response.json(body, { status }),
+    );
+
+    const lookup = await lookupSandbox(
+      bound(maritime(), { apiKey: "mk_test_key" }),
+      "sbx-src",
+      5000,
+    );
+
+    expect(lookup.result).toBe(result);
+  });
+
+  it("snapshot writes refuse redirects, as the adapter's do", async () => {
+    const redirects: (RequestRedirect | undefined)[] = [];
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "DELETE") redirects.push(init.redirect);
+
+      return Response.json({ deleted: true });
+    });
+
+    const clean = await snapshotCleaner(
+      "maritime",
+      bound(maritime(), { apiKey: "mk_test_key" }),
+      "sbx-src",
+    );
+
+    await clean("snap-1");
+
+    expect(redirects).toEqual(["error"]);
+  });
 });

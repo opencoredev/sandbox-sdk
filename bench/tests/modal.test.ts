@@ -194,6 +194,63 @@ function recordingProvider(name: string, creates: CreateInput[]) {
   }));
   vi.spyOn(snapshots, "snapshotCleaner").mockResolvedValue(async () => {});
 
+  // Exact stop reads answer from the memory backing, so the run never reaches a real SDK.
+  const live = (id: string) =>
+    backing.connect(id).then(
+      () => true,
+      () => false,
+    );
+
+  class SandboxNotFoundError extends Error {}
+
+  class NotFoundError extends Error {}
+
+  class ClientError extends Error {
+    constructor(readonly code: number) {
+      super("not found");
+    }
+  }
+
+  fakeNativeModules({
+    e2b: {
+      Sandbox: {
+        getInfo: vi.fn().mockImplementation(async (sandboxId: string) => {
+          if (!(await live(sandboxId))) throw new SandboxNotFoundError("not found");
+
+          return { sandboxId, state: "running" };
+        }),
+        listSnapshots: () => ({ hasNext: false, nextItems: async () => [] }),
+        deleteSnapshot: vi.fn(),
+      },
+      SandboxNotFoundError,
+    },
+    modal: {
+      NotFoundError,
+      ModalClient: class {
+        readonly images = { fromId: vi.fn(), delete: vi.fn() };
+
+        readonly sandboxes = {
+          fromId: async (sandboxId: string) => ({
+            sandboxId,
+            poll: async () => ((await live(sandboxId)) ? null : 0),
+            getTags: async () => ({}),
+            terminate: async () => {},
+          }),
+          async *list() {},
+        };
+
+        readonly environments = { objects: { async *list() {} } };
+
+        readonly cpClient = {
+          async *workspaceBillingReport() {},
+        };
+
+        close() {}
+      },
+    },
+    "nice-grpc": { ClientError, Status: { NOT_FOUND: 5 } },
+  });
+
   return provider;
 }
 
