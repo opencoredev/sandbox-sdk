@@ -489,7 +489,11 @@ export function createTenkiProvider<S extends TenkiSession>(
             (domains?.length &&
               (domains.some((domain) => !value.egress.allowDomains.includes(domain)) ||
                 value.egress.allowDomains.some((domain) => !domains.includes(domain)) ||
-                value.egress.allowCidrs.length))
+                value.egress.allowCidrs.length ||
+                value.egress.interceptHttps ||
+                value.egress.allowedPorts.length ||
+                value.egress.httpRules.length ||
+                value.egress.policyNames.length))
           )
             throw failure("Luxor did not confirm the requested network policy", "unsupported");
 
