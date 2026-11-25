@@ -1027,3 +1027,66 @@ test("PR88 merge review: a capture that starts while isStopped reads the sandbox
   expect(await stopped).toBe(false);
   await snapshot;
 });
+
+test("PR88 merge review: concurrent previews of one port make one Service", async () => {
+  let posts = 0;
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      if (new URL(input).pathname === "/v1/services" && init.method === "POST") posts++;
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+  const [a, b] = await Promise.all([p.previewUrl(id, 3000), p.previewUrl(id, 3000)]);
+
+  expect({ posts, same: a.url === b.url }).toEqual({ posts: 1, same: true });
+});
+
+test("PR88 merge review: a preview asked for during a destroy sends no Service", async () => {
+  let posts = 0;
+  let holding = false;
+  let release = () => {};
+
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  let listing = () => {};
+
+  const listed = new Promise<void>((resolve) => {
+    listing = resolve;
+  });
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const url = new URL(input);
+
+      if (url.pathname === "/v1/services" && init.method === "POST") posts++;
+
+      if (holding && url.pathname === "/v1/services" && init.method === "GET") {
+        holding = false;
+        listing();
+        await gate;
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+  holding = true;
+  const destroyed = p.destroy(id);
+  await listed;
+  const preview = await p.previewUrl(id, 3000).catch((error: SandboxError) => error.code);
+  release();
+  await destroyed;
+
+  expect({ preview, posts, detached: [...fake.services.values()].length }).toEqual({
+    preview: "invalid_argument",
+    posts: 0,
+    detached: 0,
+  });
+});

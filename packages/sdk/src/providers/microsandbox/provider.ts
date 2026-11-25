@@ -1014,6 +1014,9 @@ export function createMicrosandboxProvider(
     return { failed, unpersistedIdentity, unproven, unsettled, listed };
   }
 
+  /** Destroys under way in this client, per sandbox ID: no new Service is sent for one. */
+  const destroying = new Map<string, number>();
+
   /**
    * Deletes a sandbox: its adapter-owned Services first, then the sandbox itself, which always runs even
    * when a Service could not be removed. A 404 is gone. A failed Service is kept in memory for the next
@@ -1024,6 +1027,19 @@ export function createMicrosandboxProvider(
    * after the sandbox is deleted, never as success.
    */
   async function destroy(id: string, budgetMs = cleanupMs) {
+    destroying.set(id, (destroying.get(id) ?? 0) + 1);
+
+    try {
+      return await destroyOnce(id, budgetMs);
+    } finally {
+      const left = (destroying.get(id) ?? 1) - 1;
+
+      if (left > 0) destroying.set(id, left);
+      else destroying.delete(id);
+    }
+  }
+
+  async function destroyOnce(id: string, budgetMs: number) {
     let sandboxName = names.get(id);
     // An unreadable name leaves the sandbox's Services unlisted, unlike a 404: it is already gone.
     let unreadable = false;
@@ -1484,6 +1500,13 @@ export function createMicrosandboxProvider(
     const sending = owned.get(slug);
 
     if (sending !== undefined) sending.inFlight = true;
+
+    // A destroy that started first may already be past this slug, so nothing is sent.
+    if (destroying.has(id)) {
+      owned.delete(slug);
+      throw fail("the sandbox is being destroyed", "invalid_argument", { sandboxId: id });
+    }
+
     let created: MicrosandboxService;
 
     try {
@@ -1546,7 +1569,22 @@ export function createMicrosandboxProvider(
     return created;
   }
 
-  async function previewUrl(id: string, port: number) {
+  /** Preview lookups under way per sandbox ID and port, so concurrent calls make one Service. */
+  const previewing = new Map<string, Promise<{ url: string }>>();
+
+  function previewUrl(id: string, port: number) {
+    const key = `${id}:${port}`;
+    let pending = previewing.get(key);
+
+    if (pending === undefined) {
+      pending = makePreview(id, port).finally(() => previewing.delete(key));
+      previewing.set(key, pending);
+    }
+
+    return pending;
+  }
+
+  async function makePreview(id: string, port: number) {
     const cached = previews.get(`${id}:${port}`);
 
     if (cached) return { url: cached };
