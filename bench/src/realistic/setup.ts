@@ -7,7 +7,7 @@
  *   the 4 vCPU / 8 GiB defaults of Boat and Freestyle. Luxor and Superserve get 20 GB disks
  *   (2026-11-18): their 5 GB and 4 GiB disks left too little free space for the workloads.
  * - Default sizes and "default size too small" come from FIT.md (SBX-95, fetched 2026-11-05).
- * - `lifetime`: whether the adapter accepts `timeoutMs` (Upstash, Superserve and Boat refuse it).
+ * - `lifetime`: whether the adapter accepts `timeoutMs` (Upstash, Superserve, Boat and Buddy refuse it).
  * - `provisioned` is the size each is billed for, used for list prices and the budget guard.
  */
 import type { CreateInput } from "@opencoredev/sandbox-sdk/provider";
@@ -343,6 +343,27 @@ export const providerSetups: readonly ProviderSetup[] = [
         tooSmall: {},
       },
       default: { vcpu: 2, provisioned: size(2, 4, 12), tooSmall: {} },
+    },
+  },
+  {
+    // Buddy (2026-11-24): the default tier is 2x4, 2 vCPU and 4 decimal GB (3814 MiB to the guest)
+    // with a 50 GB disk (46 GiB usable), Ubuntu 24.04 with Node.js 24, Python 3.12, Go and git;
+    // same-machine asks for 4x8 (7629 MiB to the guest). Commands run as `buddy` (uid 1001) with
+    // passwordless sudo. Buddy has no hard lifetime, so the adapter refuses `timeoutMs`; a sandbox
+    // with an idle timeout stops after that long without activity. https://buddy.works/docs/sandboxes
+    name: "buddy",
+    adapter: "buddy",
+    product: null,
+    lifetime: false,
+    pricingKey: "buddy",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 50),
+        tooSmall: {},
+      },
+      default: { vcpu: 2, provisioned: size(2, 4, 50), tooSmall: {} },
     },
   },
   {

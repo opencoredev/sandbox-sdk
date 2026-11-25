@@ -155,6 +155,10 @@
       "types": "./dist/providers/styne/index.d.ts",
       "default": "./dist/providers/styne/index.js"
     },
+    "./buddy": {
+      "types": "./dist/providers/buddy/index.d.ts",
+      "default": "./dist/providers/buddy/index.js"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

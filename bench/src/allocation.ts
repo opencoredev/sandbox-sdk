@@ -1,9 +1,12 @@
 import type { Sample } from "./v2-model.js";
 import { resources, verifyRestoredResources } from "./fingerprint.js";
 import { provisionedAllocation } from "./provisioned-allocations.js";
-import { pricing } from "./pricing.js";
+import { pricing, type Resources } from "./pricing.js";
 import { isSizePreset, type Size } from "./v2-config.js";
 import { distribution } from "./v2-stats.js";
+
+/** The CPU and memory a size asks a provider for. */
+export type Compute = Pick<Resources, "cpu" | "memoryGiB">;
 
 /** Each provider's named size presets. */
 interface SizePresets {
@@ -70,6 +73,12 @@ const presets: SizePresets = {
     medium: { cpu: 4, memoryGiB: 8 },
     large: { cpu: 8, memoryGiB: 16 },
   },
+  // The Buddy adapter's presets: Buddy's 2x4, 4x8 and 8x16 tiers.
+  buddy: {
+    small: { cpu: 2, memoryGiB: 4 },
+    medium: { cpu: 4, memoryGiB: 8 },
+    large: { cpu: 8, memoryGiB: 16 },
+  },
   // The Baseten adapter's presets: memory sets CPU at 2 GiB per vCPU.
   baseten: {
     small: { cpu: 1, memoryGiB: 2 },
@@ -96,17 +105,28 @@ const standardPresets = {
   large: { cpu: 4, memoryGiB: 8 },
 };
 
-/** The CPU and memory a `--size` request asks the provider for. */
-export function requestedSize(provider: string, size: Size): { cpu: number; memoryGiB: number } {
-  return isSizePreset(size)
-    ? (presets[provider] ?? standardPresets)[size]
-    : { cpu: size.cpu, memoryGiB: size.memoryMb / 1024 };
+/**
+ * The CPU and memory a `--size` request asks the provider for. Buddy has only native tiers of 2 GB per
+ * vCPU, and its adapter takes an exact size in binary (2048 MiB per vCPU) or decimal (2000 MB per vCPU)
+ * memory: either is that tier, billed as `cpu * 2` GB.
+ */
+export function requestedSize(provider: string, size: Size): Compute {
+  if (isSizePreset(size)) return (presets[provider] ?? standardPresets)[size];
+
+  if (
+    provider === "buddy" &&
+    (size.memoryMb === size.cpu * 2048 || size.memoryMb === size.cpu * 2000)
+  )
+    return { cpu: size.cpu, memoryGiB: size.cpu * 2 };
+
+  return { cpu: size.cpu, memoryGiB: size.memoryMb / 1024 };
 }
 
 /**
- * What a request-billed provider (Modal) bills for one sandbox: the requested size, exactly, or
- * without a size the minimum request, a lower bound because usage above it is billed too. Null for
- * every other provider. The guest's own view is never used.
+ * What a request-billed provider (Modal, Buddy) bills for one sandbox: the requested size, exactly, or
+ * without a size its default request, whose bound the price table gives: a lower bound for Modal, whose
+ * usage above it is billed too, exact for Buddy's fixed default tier. Null for every other provider.
+ * The guest's own view is never used.
  */
 export function requestBilledCompute(
   provider: string,
@@ -117,7 +137,7 @@ export function requestBilledCompute(
   if (!billed) return null;
 
   return size === null
-    ? { compute: { ...billed.minimum }, bound: "lower" }
+    ? { compute: { ...billed.minimum }, bound: billed.defaultBound }
     : { compute: requestedSize(provider, size), bound: "exact" };
 }
 

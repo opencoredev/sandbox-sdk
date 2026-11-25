@@ -493,16 +493,17 @@ describe("fingerprint and plan", () => {
 });
 
 describe("parseCli", () => {
-  it("defaults to all 19 providers, Archil, Maritime, Styne and both Microsandbox tiers included, 30 x 30 s, concurrency 15", () => {
+  it("defaults to all 20 providers, Archil, Maritime, Styne, Buddy and both Microsandbox tiers included, 30 x 30 s, concurrency 15", () => {
     const cli = parseCli([]);
 
     expect(cli.providers).toEqual(providerSetups.map((s) => s.name));
-    expect(cli.providers).toHaveLength(19);
+    expect(cli.providers).toHaveLength(20);
     expect(cli.providers).toEqual(
       expect.arrayContaining([
         "archil",
         "maritime",
         "styne",
+        "buddy",
         "microsandbox",
         "microsandbox-shared",
       ]),

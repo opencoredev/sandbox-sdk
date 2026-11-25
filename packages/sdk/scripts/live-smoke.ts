@@ -91,6 +91,10 @@ const registry = {
     env: [["STYNE_API_KEY"]],
     load: async () => (await import("../src/providers/styne/index.js")).styne(),
   },
+  buddy: {
+    env: [["BUDDY_TOKEN"], ["BUDDY_WORKSPACE"]],
+    load: async () => (await import("../src/providers/buddy/index.js")).buddy(),
+  },
   boxd: {
     env: [["BOXD_API_KEY"]],
     load: async () => (await import("../src/providers/boxd/index.js")).boxd(),

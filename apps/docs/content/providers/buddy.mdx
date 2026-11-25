@@ -1,0 +1,172 @@
+---
+title: Buddy
+seo:
+  title: Buddy Sandbox SDK in TypeScript
+description: Use Buddy sandboxes from TypeScript through Buddy's REST API and one portable API. Persistent Ubuntu VMs with exact keys, fixed sizes, previews behind Basic auth, stop and start, snapshots, and no extra package.
+---
+
+`buddy()` runs each sandbox as a [Buddy](https://buddy.works/sandboxes) sandbox, a persistent Ubuntu virtual machine, by calling Buddy's REST API directly. There is no other package to install.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(buddy())` and then `box.run`, `box.files`, `box.preview`, `box.pause` and `box.snapshot`, and the same code runs on E2B or Daytona when you swap the factory. Buddy has no network policy, no hard lifetime and no terminal through this API. The [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) gives you an authenticated request to Buddy's API when you need the rest.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+</Tabs>
+
+Create a personal access token in Buddy with the `Sandboxes: Manage` scope (add `Workspace: Read`) and set `BUDDY_TOKEN`, then set `BUDDY_WORKSPACE` to your workspace's domain, the `my-company` in `app.buddy.works/my-company`. You can pass both as `buddy({ token, workspace })` instead.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { buddy } from "@opencoredev/sandbox-sdk/buddy";
+
+await using box = await createSandbox(buddy(), { idleTimeoutMs: 30 * 60_000 });
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+`await using` deletes the sandbox when the block ends. `idleTimeoutMs` becomes Buddy's sandbox timeout, which stops the sandbox after 30 minutes without activity, a backstop if your process dies first. A stopped sandbox keeps its disk and bills no compute.
+
+## What it supports
+
+| Feature                        | Support | Notes                                                       |
+| ------------------------------ | ------- | ----------------------------------------------------------- |
+| Commands and streaming         | Yes     | Live output; one command runs for at most 90 minutes        |
+| Files                          | Yes     | `/workspace` on the 50 GB disk                              |
+| Background processes           | Yes     |                                                             |
+| Preview URLs                   | Yes     | Private by HTTP Basic auth: send the returned `headers`     |
+| Pause and resume               | Partial | Stops and starts the machine: the disk stays, processes end |
+| Snapshots                      | Yes     | Disk snapshots, kept until deleted; `deleteSnapshot` works  |
+| Templates                      | No      |                                                             |
+| Machine size                   | Yes     | Twelve fixed sizes, 1x2 to 12x24 (vCPU x GB)                |
+| Network policy                 | No      |                                                             |
+| Hard lifetime (`timeoutMs`)    | No      | Fails with `unsupported`                                    |
+| Idle timeout (`idleTimeoutMs`) | Yes     | Stops the sandbox after that many seconds without activity  |
+| Keys                           | Exact   | A key becomes the sandbox's unique identifier               |
+| Terminal                       | No      |                                                             |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to stream output as it arrives.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { buddy } from "@opencoredev/sandbox-sdk/buddy";
+
+await using box = await createSandbox(buddy());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+The default image is Ubuntu 24.04 with Node.js 24, Python 3.12, Go, git, Docker and ripgrep. Commands run as `buddy` (uid 1001), who has passwordless `sudo`. Each command gets its own process group, and a timeout or abort kills that whole group before `run` returns, children included. Buddy runs one command for at most 90 minutes; start longer jobs with `box.start`.
+
+Buddy records every command started on its async route (`POST /execs`) in the sandbox's execution history (`GET /execs`), with its command text and its output. The adapter keeps values out of the recorded command text: create-time `env` and `secrets` are encrypted sandbox variables (`encrypted: true`), and per-run `env`, `stdin` and commands longer than 4 KB are written into a private directory in the sandbox first, through Buddy's unrecorded command route (`POST /exec`), so the recorded command only names that directory. A second client recovers secret values over `POST /exec` too.
+
+What a command prints is different. Its stdout and stderr travel through Buddy's execution log (base64-framed), and Buddy keeps that log on its servers. The SDK redacts secret values from `RunResult` and from errors, but it cannot scrub Buddy's own log: a command that prints a secret leaves that secret in Buddy's history.
+
+## Background processes and previews
+
+`box.preview(port)` returns an `https://` URL for the port and an `Authorization: Basic` header to send with every request. Nothing needs to be declared at creation. The adapter makes the endpoint with a new password the first time a port is previewed and keeps the credentials in a private file in the sandbox, so another client that previews the same port gets the same header back without changing the endpoint.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { buddy } from "@opencoredev/sandbox-sdk/buddy";
+
+await using box = await createSandbox(buddy());
+await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
+const preview = await box.preview(8000, { path: "/health" });
+const response = await fetch(preview.url, { headers: preview.headers });
+console.log(response.status);
+```
+
+`buddy({ public: true })` makes previewed ports public instead, with no header. Endpoints you added to the sandbox yourself are kept when the adapter adds one; an endpoint with custom TLS settings makes `preview` fail rather than risk changing it.
+
+## Pause, resume, and snapshots
+
+`box.pause()` stops the machine and `box.resume()` starts it again, which takes a few seconds. The disk persists, so files, installed packages and git state are there after a resume, but running processes end, and the SDK marks them failed with exit code 137. Traffic to one of the sandbox's preview endpoints also starts a stopped sandbox.
+
+`box.snapshot()` saves the sandbox's disk and returns the snapshot's ID once Buddy has finished it. Pass it as `from` to create a new sandbox from it, with any `size`. Snapshots are kept until you delete them with `deleteSnapshot(provider, id)`, so `expiresInMs` fails with `unsupported`.
+
+## Size and timeouts
+
+| Preset   | Buddy size | vCPUs | Memory | Disk  |
+| -------- | ---------- | ----- | ------ | ----- |
+| `small`  | `2x4`      | 2     | 4 GB   | 50 GB |
+| `medium` | `4x8`      | 4     | 8 GB   | 50 GB |
+| `large`  | `8x16`     | 8     | 16 GB  | 50 GB |
+
+Without `size`, a sandbox is `2x4`. An exact `size` takes 1 to 12 vCPUs with 2 GB of memory each: `memoryMb` is the vCPU count times 2048 (or 2000), and `diskGb`, if given, must be 50. Buddy's GB are decimal, so a `2x4` guest sees about 3.7 GiB of memory and a `4x8` guest about 7.5 GiB. Buddy bills $0.0144 per vCPU-hour plus $0.0144 per GB-hour of the size while a sandbox runs, per started minute, and stores used disk and snapshots at $0.00011 per GB-hour.
+
+Buddy has no hard lifetime, so `timeoutMs` fails with `unsupported`. `idleTimeoutMs` stops the sandbox after that long without activity, in whole seconds; without it, a sandbox runs until you stop or delete it. A create that passes `env` or `secrets` takes about five seconds longer: Buddy stores them as encrypted sandbox variables, which it sets up before the sandbox starts.
+
+## Configuration
+
+| Option             | Type                   | Default                 | Env var           |
+| ------------------ | ---------------------- | ----------------------- | ----------------- |
+| `token`            | `string`               |                         | `BUDDY_TOKEN`     |
+| `workspace`        | `string`               |                         | `BUDDY_WORKSPACE` |
+| `project`          | `string`               | none (workspace-scoped) | `BUDDY_PROJECT`   |
+| `region`           | `"US" \| "EU" \| "AS"` | `"US"`                  | `BUDDY_REGION`    |
+| `baseUrl`          | `string`               | the region's API host   | `BUDDY_API_URL`   |
+| `os`               | `string`               | `ubuntu:24.04`          |                   |
+| `public`           | `boolean`              | `false`                 |                   |
+| `requestTimeoutMs` | `number`               | 60 seconds              |                   |
+
+With `project`, sandboxes are created in that project and keys are scoped to it: the same key in two projects names two sandboxes.
+
+## Limitations
+
+- No network policy, hard lifetime, terminal or template builds.
+- Pause stops the machine: running processes end.
+- One command runs for at most 90 minutes.
+- Buddy has no usage or billing API, so cost is the published rate times the time a sandbox ran.
+
+## How it works
+
+- Sandboxes are created, read, stopped, started, snapshotted and deleted under `/workspaces/{workspace}/sandboxes` on the region's API host with your token.
+- A key becomes the sandbox's identifier, a hash of the key (and project), which Buddy keeps unique across the workspace. Of two concurrent creates with one key, one succeeds and the other is refused, and the SDK attaches the second caller to the first one's sandbox without ever deleting it.
+- Every create writes the SDK's tag, your labels, the key, the names of your secrets and an allocation ID into the sandbox's tags and note, also on a restore from a snapshot. When a create's answer is lost, the adapter finds the sandbox by the identifier it sent and returns it only when the note carries this call's allocation ID. A sandbox is returned only once it is running with its setup done and `/workspace` exists; if setup fails, the adapter deletes it before it throws.
+- `env` and `secrets` become encrypted sandbox variables. A second client reads the secret names from the note and their values from the sandbox's environment, through the unrecorded command route.
+- Commands start on Buddy's recorded command route under a small launcher that runs them with `setsid` in their own session. Output is framed and numbered, read from Buddy's log, and from a private spool file in the sandbox when the log is cut or misses a frame. A timeout or abort first runs a second command that kills the group and confirms it gone, then cancels the execution at Buddy, and returns the output written before the stop; when the kill cannot be confirmed, `run` fails with `outcome_unknown`. A command is never sent twice once it may have run: a start whose answer was lost and that Buddy's history does not show is `outcome_unknown`, unless the sandbox recorded that the command refused to start.
+- Previews are endpoints on the sandbox. Each change reads the endpoint list, adds the SDK's endpoint (`sbx-p<port>`) and writes the list back, under a lock in the sandbox, so two clients never overwrite each other's endpoints. When any endpoint has TLS or encrypted settings a write would lose, or an endpoint named `sbx-p<port>` is not a plain HTTP endpoint on that port, `preview` fails and nothing is changed.
+- `box.native` calls Buddy's API on the planes `workspace` (paths under `/workspaces/{workspace}`, such as `/sandboxes/{sandbox_id}/execs`) and `api` (the API host's root).
+- Errors keep only Buddy's HTTP status, and never the token, a preview password or an encrypted value.
+
+## Next steps
+
+- [Machine size and network](/guides/machine-size-and-network)
+- [Dev servers and previews](/guides/dev-servers-and-previews)

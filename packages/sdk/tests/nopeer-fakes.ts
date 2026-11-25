@@ -7,12 +7,14 @@
 // - Boat and Sandboxer: tests/boat-mock.ts (local HTTP servers).
 // - Maritime: tests/maritime-fake.ts (a local HTTP server running real processes).
 // - Styne: tests/styne-fake.ts (a local HTTP server running real processes).
+// - Buddy: tests/buddy-fake.ts (a local HTTP server running real processes).
 import { isString } from "../src/shared/narrow.js";
 import { afterAll, runAfterAll } from "./vitest-shim.js";
 import { boatMock } from "./boat-mock.js";
 import { apiUrl as daytonaApiUrl, cleanupMock } from "./daytona-mock.js";
 import { fakeE2B } from "./e2b-fake.js";
 import { cleanupFreestyle, freestyleFetch } from "./freestyle-mock.js";
+import { buddyFake } from "./buddy-fake.js";
 import { maritimeFake } from "./maritime-fake.js";
 import { styneFake } from "./styne-fake.js";
 import { installSuperserveFake, resetSuperserveFake } from "./superserve-fake.js";
@@ -27,6 +29,7 @@ export interface FakeProviders {
   sandboxer: { apiKey: string; baseUrl: string };
   maritime: { apiKey: string; baseUrl: string };
   styne: { apiKey: string; baseUrl: string };
+  buddy: { token: string; workspace: string; baseUrl: string };
 }
 
 /** Starts every fake and routes `fetch` to them. `close()` stops them and restores `fetch` and `WebSocket`. */
@@ -37,6 +40,7 @@ export async function startFakes(): Promise<{ options: FakeProviders; close(): P
   const sandboxer = await boatMock("sandboxer");
   const maritime = await maritimeFake();
   const styne = await styneFake();
+  const buddy = await buddyFake();
   installSuperserveFake();
   const superserveFetch = globalThis.fetch;
   const e2bFetch = e2b.fetch(original.fetch);
@@ -68,6 +72,7 @@ export async function startFakes(): Promise<{ options: FakeProviders; close(): P
       sandboxer: { apiKey: "test-key", baseUrl: sandboxer.apiUrl },
       maritime: { apiKey: "fake-key", baseUrl: maritime.url },
       styne: { apiKey: "fake-key", baseUrl: styne.url },
+      buddy: buddy.options,
     },
     async close() {
       globalThis.fetch = original.fetch;
@@ -75,6 +80,7 @@ export async function startFakes(): Promise<{ options: FakeProviders; close(): P
       await runAfterAll();
       await Promise.all([e2b.close(), boat.dispose(), sandboxer.dispose(), maritime.close()]);
       await Promise.all([e2b.close(), boat.dispose(), sandboxer.dispose(), styne.close()]);
+      await buddy.close();
     },
   };
 }

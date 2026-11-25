@@ -15,6 +15,7 @@ import type { Freestyle } from "freestyle";
 import type { Sandbox as VercelSandbox, Snapshot as VercelSnapshot } from "@vercel/sandbox";
 import { archilControlUrl, archilSandboxBody } from "./archil.js";
 import {
+  buddyWorkspaceApi,
   connectionOf,
   endpoint,
   modalClientParams,
@@ -453,6 +454,9 @@ export const styneEnded: ReadonlySet<string> = new Set([
   "agent_exit",
 ]);
 
+/** Buddy's error answer: `{ errors: [{ message }] }`. */
+export const buddyErrors = z.object({ errors: z.array(z.object({ message: z.string() })).min(1) });
+
 /** Beam's gateway container listing, as the existence check reads it. */
 const beamContainers = z.object({
   containers: z.array(z.object({ containerId: z.string(), status: z.string() })),
@@ -707,6 +711,37 @@ export async function lookupSandbox(
             throw new Error("Native lookup compute tier mismatch");
 
           return { id: sandbox.id, status: sandbox.status };
+        }
+
+        case "buddy": {
+          // GET only: it never starts a stopped sandbox. Absence is a 404 that names the sandbox or
+          // resource as missing; any other answer stays unavailable. On this adapter instance's
+          // workspace and token; a redirect would answer from somewhere other than that endpoint.
+          const config = connectionOf(provider, "buddy");
+
+          const response = await fetch(
+            `${buddyWorkspaceApi(config)}/sandboxes/${encodeURIComponent(id)}`,
+            {
+              headers: { Authorization: `Bearer ${config.token}` },
+              redirect: "error",
+              signal,
+            },
+          );
+
+          if (response.status === 404) {
+            const body = buddyErrors.safeParse(await response.json().catch(() => null));
+            const message = body.success ? body.data.errors[0]?.message : undefined;
+
+            throw Object.assign(new Error("Native lookup failed"), {
+              status:
+                message === "Resource not found" || message === "Sandbox not found" ? 404 : 502,
+            });
+          }
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+
+          return nativeInfo.parse(await response.json());
         }
 
         case "instabox": {

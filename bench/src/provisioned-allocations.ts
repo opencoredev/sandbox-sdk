@@ -89,6 +89,9 @@ const defaults: DefaultAllocations = {
   // measures it.
   microsandbox: { cpu: 1, memoryGiB: 0.5 },
   "microsandbox-shared": { cpu: 1, memoryGiB: 0.5 },
+  // Buddy's default tier, 2x4: 2 vCPU and 4 decimal GB (3814 MiB to the guest) with a 50 GB disk
+  // (46 GiB usable). Disk is billed on used data as storage, outside the estimate.
+  buddy: { cpu: 2, memoryGiB: 4, diskGiB: 50 },
 };
 
 export function provisionedAllocation(provider: string, template: string | null) {

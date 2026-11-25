@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { DaytonaNative } from "@opencoredev/sandbox-sdk/daytona";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import {
+  buddyErrors,
   daytonaClient,
   e2bConnection,
   upstashConnection,
@@ -23,7 +24,7 @@ import {
   isMicrosandboxSnapshotId,
 } from "./microsandbox.js";
 import { microsandboxTier } from "./providers.js";
-import { connectionOf, endpoint, modalClientParams } from "./connections.js";
+import { buddyWorkspaceApi, connectionOf, endpoint, modalClientParams } from "./connections.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
 
@@ -474,6 +475,345 @@ async function snapshotsFromMaritimeSandbox(
 }
 
 /**
+ * Buddy's workspace API through the adapter instance's connection. Snapshot reads and deletes never need
+ * the source running. No call follows a redirect: a write would be replayed, token included, at another
+ * origin, and a read would answer for another resource.
+ */
+function buddyFetch(provider: Provider, path: string, init: RequestInit = {}) {
+  const config = connectionOf(provider, "buddy");
+  const headers = new Headers(init.headers);
+
+  headers.set("Authorization", `Bearer ${config.token}`);
+
+  if (init.body !== undefined) headers.set("Content-Type", "application/json");
+
+  return fetch(`${buddyWorkspaceApi(config)}${path}`, { ...init, headers, redirect: "error" });
+}
+
+const buddySnapshot = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  status: z.string().optional(),
+  url: z.string().optional(),
+});
+
+type BuddySnapshot = z.infer<typeof buddySnapshot>;
+
+const buddySnapshotList = z.object({ snapshots: z.array(buddySnapshot).optional() });
+
+/** Whether a Buddy 404 says the resource is missing (`Resource not found`), not some other failure. */
+async function isBuddyMissing(response: Response): Promise<boolean> {
+  if (response.status !== 404) return false;
+  const body = buddyErrors.safeParse(await response.json().catch(() => null));
+
+  return body.success && body.data.errors[0]?.message === "Resource not found";
+}
+
+/** The source sandbox a Buddy snapshot's API URL names; undefined once the source is deleted. */
+function sourceOf(snapshot: BuddySnapshot): string | undefined {
+  const match = /\/sandboxes\/([^/]+)\/snapshots\//.exec(snapshot.url ?? "")?.[1];
+
+  return match === undefined ? undefined : decodeURIComponent(match);
+}
+
+/** Whether a snapshot can be the source's: its URL names that source, or no source at all. */
+const fromSource = (snapshot: BuddySnapshot, sourceId: string) => {
+  const named = sourceOf(snapshot);
+
+  return named === undefined || named === sourceId;
+};
+
+/**
+ * A snapshot name the run picks before the save and journals with the source, for providers whose save
+ * the run names (Maritime, Buddy), so a save whose answer is lost still names the snapshot to settle.
+ */
+export function journaledSnapshotName(run: string) {
+  return maritimeSnapshotName(run);
+}
+
+/**
+ * `POST /sandboxes/{id}/snapshots` under a name the run journaled before the request. Only an answer
+ * naming this snapshot counts; `onSaved` gets its ID at once, so the run journals it before it waits for
+ * the snapshot to be `CREATED` (or deletes anything). A 4xx answer is a refusal: it carries `refused`.
+ */
+export async function createNamedBuddySnapshot(
+  provider: Provider,
+  sandboxId: string,
+  name: string,
+  onSaved: (id: string) => Promise<void>,
+) {
+  const response = await buddyFetch(
+    provider,
+    `/sandboxes/${encodeURIComponent(sandboxId)}/snapshots`,
+    {
+      method: "POST",
+      body: JSON.stringify({ name }),
+      signal: AbortSignal.timeout(120_000),
+    },
+  );
+
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw Object.assign(httpError("Buddy snapshot failed", response.status), {
+      refused:
+        response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status),
+    });
+  }
+
+  const saved = buddySnapshot.parse(await response.json());
+
+  if (saved.name !== name) throw new Error("Buddy snapshot answer names another snapshot");
+  await onSaved(saved.id);
+
+  const end = Date.now() + 600_000;
+
+  for (let status = saved.status; status !== "CREATED";) {
+    if (status === "FAILED" || status === "DELETING")
+      throw new Error(`Buddy snapshot ${saved.id} is ${status}`);
+
+    if (Date.now() > end) throw new Error("Buddy snapshot was not created in ten minutes");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const read = await buddyFetch(
+      provider,
+      `/sandboxes/${encodeURIComponent(sandboxId)}/snapshots/${encodeURIComponent(saved.id)}`,
+      { signal: AbortSignal.timeout(30_000) },
+    );
+
+    if (!read.ok) {
+      await read.body?.cancel();
+      throw httpError("Buddy snapshot read failed", read.status);
+    }
+
+    status = buddySnapshot.parse(await read.json()).status;
+  }
+
+  return { id: saved.id };
+}
+
+/**
+ * The snapshots named `name`: from the source's own list while it exists, and from the workspace's list,
+ * which keeps a snapshot after its source is deleted. `sourceGone` is true only on Buddy's
+ * `404 Resource not found` for the source.
+ */
+async function buddySnapshotsNamed(
+  provider: Provider,
+  sourceId: string,
+  name: string,
+  signal: AbortSignal,
+) {
+  const source = await buddyFetch(
+    provider,
+    `/sandboxes/${encodeURIComponent(sourceId)}/snapshots`,
+    {
+      signal,
+    },
+  );
+
+  let sourceGone = false;
+  const sourceFound = new Map<string, BuddySnapshot>();
+  const allFound = new Map<string, BuddySnapshot>();
+
+  if (source.ok) {
+    for (const s of buddySnapshotList.parse(await source.json()).snapshots ?? [])
+      if (s.name === name) {
+        sourceFound.set(s.id, s);
+        allFound.set(s.id, s);
+      }
+  } else if (await isBuddyMissing(source)) sourceGone = true;
+  else throw httpError("Buddy snapshot listing failed", source.status);
+
+  const workspace = await buddyFetch(provider, "/sandboxes/snapshots", { signal });
+
+  if (!workspace.ok) {
+    await workspace.body?.cancel();
+    throw httpError("Buddy snapshot listing failed", workspace.status);
+  }
+
+  for (const s of buddySnapshotList.parse(await workspace.json()).snapshots ?? [])
+    if (s.name === name) allFound.set(s.id, s);
+
+  if (allFound.size > 1) return { found: [...allFound.values()], sourceGone };
+
+  const [only] = allFound.values();
+
+  if (!only) return { found: [], sourceGone };
+
+  if (!sourceGone && !sourceFound.has(only.id) && sourceOf(only) !== sourceId)
+    return { found: [], sourceGone };
+
+  if (!fromSource(only, sourceId)) return { found: [], sourceGone };
+
+  return { found: [only], sourceGone };
+}
+
+/** How long after it was journaled a Buddy save that has not shown can still land. */
+export const buddySaveWindowMs = 10 * 60_000;
+
+/**
+ * Decides a Buddy save whose answer was lost, timed out or unreadable, by the exact name journaled before
+ * it: `exists` with the snapshot's ID once a list shows that name, `absent` only when two reads at least
+ * five seconds apart both miss it and the save can no longer land (its source is gone, or the journal entry
+ * is older than {@link buddySaveWindowMs}). A single miss never settles it; when the deadline passes first,
+ * this throws and the journal entry stays for recovery.
+ */
+export async function settleBuddySave(input: {
+  provider: Provider;
+  sandboxId: string;
+  name: string;
+  journaledAt: string;
+  timeoutMs: number;
+}): Promise<JournaledSnapshot> {
+  const end = Date.now() + input.timeoutMs;
+  let firstMiss: number | undefined;
+
+  for (;;) {
+    const left = end - Date.now();
+
+    if (left <= 0) throw new Error("Buddy snapshot save did not settle; journal entry kept");
+
+    const read = await buddySnapshotsNamed(
+      input.provider,
+      input.sandboxId,
+      input.name,
+      AbortSignal.timeout(Math.max(1, Math.min(30_000, left))),
+    ).catch(() => undefined);
+
+    if (read && read.found.length > 1)
+      throw new Error("Several Buddy snapshots carry the journaled name; none deleted");
+
+    const [hit] = read?.found ?? [];
+
+    if (hit) return { kind: "exists", id: hit.id };
+
+    if (read) {
+      const settled =
+        read.sourceGone || Date.now() - Date.parse(input.journaledAt) > buddySaveWindowMs;
+
+      if (settled && firstMiss !== undefined && Date.now() - firstMiss >= 5000)
+        return { kind: "absent" };
+
+      if (settled) firstMiss ??= Date.now();
+    }
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(2000, Math.max(0, end - Date.now()))),
+    );
+  }
+}
+
+/**
+ * Which listed Buddy snapshots are the journal's own, by exact identity. A confirmed entry matches only
+ * the snapshot with its ID AND its journaled name: an ID whose name now differs is not proof, and the
+ * entry is left for its own check, which refuses it. A pending save matches the one snapshot carrying
+ * its journaled name; two or more with that name are ambiguous and match nothing, so none is deleted on
+ * a name alone. Each match carries the journal's name, never the live one.
+ */
+export function ownedBuddySnapshots(
+  listed: readonly { id: string; name?: string }[],
+  journaled: readonly JournaledSnapshotEntry[],
+): { id: string; name: string }[] {
+  const found = new Map<string, { id: string; name: string }>();
+
+  for (const entry of journaled) {
+    const pending = entry.pendingSave?.name;
+
+    if (pending !== undefined) {
+      const named = listed.filter((s) => s.name === pending);
+      const [only] = named;
+
+      if (only && named.length === 1) found.set(only.id, { id: only.id, name: pending });
+      continue;
+    }
+
+    const hit = listed.find((s) => s.id === entry.id);
+
+    if (hit && entry.name !== undefined && hit.name === entry.name)
+      found.set(hit.id, { id: hit.id, name: entry.name });
+  }
+
+  return [...found.values()];
+}
+
+/** Buddy snapshots of one source that the journal holds, by exact ID and name or a pending save's name. */
+async function snapshotsFromBuddySandbox(
+  provider: Provider,
+  sourceSandboxId: string,
+  journaled: readonly JournaledSnapshotEntry[],
+  signal?: AbortSignal,
+) {
+  const init = signal ? { signal } : {};
+
+  const source = await buddyFetch(
+    provider,
+    `/sandboxes/${encodeURIComponent(sourceSandboxId)}/snapshots`,
+    init,
+  );
+
+  if (source.ok) {
+    const sourceItems = buddySnapshotList.parse(await source.json()).snapshots ?? [];
+    const hasPending = journaled.some((entry) => entry.pendingSave !== undefined);
+
+    if (!hasPending) return ownedBuddySnapshots(sourceItems, journaled);
+
+    // Check the workspace inventory too so a pending name duplicated outside the source list is
+    // treated as ambiguous and never deleted on name alone.
+    const workspace = await buddyFetch(provider, "/sandboxes/snapshots", init);
+
+    if (!workspace.ok) {
+      await workspace.body?.cancel();
+      throw httpError("Buddy snapshot listing failed", workspace.status);
+    }
+
+    const workspaceItems = buddySnapshotList.parse(await workspace.json()).snapshots ?? [];
+    const duplicatedNames = new Set<string>();
+    const idsByName = new Map<string, Set<string>>();
+
+    for (const item of [...sourceItems, ...workspaceItems]) {
+      if (item.name === undefined) continue;
+      let ids = idsByName.get(item.name);
+
+      if (!ids) {
+        ids = new Set();
+        idsByName.set(item.name, ids);
+      }
+
+      ids.add(item.id);
+
+      if (ids.size > 1) duplicatedNames.add(item.name);
+    }
+
+    return ownedBuddySnapshots(
+      sourceItems,
+      journaled.filter(
+        (entry) => entry.pendingSave === undefined || !duplicatedNames.has(entry.pendingSave.name),
+      ),
+    );
+  }
+
+  if (!(await isBuddyMissing(source)))
+    throw httpError("Buddy snapshot listing failed", source.status);
+
+  // The source is gone: the workspace list keeps its snapshots, without the source in their URL.
+  const workspace = await buddyFetch(provider, "/sandboxes/snapshots", init);
+
+  if (!workspace.ok) {
+    await workspace.body?.cancel();
+    throw httpError("Buddy snapshot listing failed", workspace.status);
+  }
+
+  const allWorkspace = buddySnapshotList.parse(await workspace.json()).snapshots ?? [];
+  const matches = ownedBuddySnapshots(allWorkspace, journaled);
+  const byId = new Map(allWorkspace.map((s) => [s.id, s]));
+
+  return matches.filter((m) => {
+    const full = byId.get(m.id);
+
+    return full !== undefined && fromSource(full, sourceSandboxId);
+  });
+}
+
+/**
  * Providers whose snapshots the bench cannot delete. Their snapshot scenarios are skipped: a run
  * would leave every snapshot it made behind, and no cleaner can honestly report one removed.
  */
@@ -481,11 +821,23 @@ export const undeletableSnapshots: ReadonlyMap<string, string> = new Map([
   ["beam", "Beam has no API to delete a memory snapshot"],
 ]);
 
+/**
+ * A snapshot delete. `signal` ends it early; Buddy's also takes the name the journal holds for the
+ * snapshot, and `beforeDelete`, which runs once every check has passed and just before the DELETE.
+ */
+export type SnapshotDelete = (
+  id: string,
+  signal?: AbortSignal,
+  expectedName?: string,
+  beforeDelete?: () => Promise<void>,
+) => Promise<void>;
+
 export async function snapshotCleaner(
   name: string,
   provider: Provider,
   sandboxId: string,
-): Promise<(id: string, signal?: AbortSignal) => Promise<void>> {
+  expectedName?: string,
+): Promise<SnapshotDelete> {
   if (name === "instabox") {
     // A fresh request: cleanup can run after the source machine is gone.
     return async (id) => {
@@ -577,6 +929,90 @@ export async function snapshotCleaner(
       }
 
       throw httpError("Styne snapshot delete failed", response.status);
+    };
+  }
+
+  if (name === "buddy") {
+    // By ID on the workspace route, also after the source is deleted. A snapshot still `CREATING` is
+    // waited for first. Only `404 Resource not found` on the delete confirms absence: a miss in the
+    // workspace list, which can lag the source's, never does. Honors the caller's abort signal so an
+    // expired cleanup never issues a late DELETE.
+    return async (id, signal, callExpectedName, beforeDelete) => {
+      const requiredName = callExpectedName ?? expectedName;
+
+      const checkAborted = () => {
+        if (signal?.aborted) throw new Error("Buddy snapshot cleanup timed out before delete");
+      };
+
+      const path = `/sandboxes/snapshots/${encodeURIComponent(id)}`;
+      const end = Date.now() + 120_000;
+
+      for (;;) {
+        checkAborted();
+        const list = await buddyFetch(provider, "/sandboxes/snapshots", signal ? { signal } : {});
+        checkAborted();
+
+        if (!list.ok) {
+          await list.body?.cancel();
+          throw httpError("Buddy snapshot listing failed", list.status);
+        }
+
+        const snapshot = (buddySnapshotList.parse(await list.json()).snapshots ?? []).find(
+          (s) => s.id === id,
+        );
+
+        checkAborted();
+
+        if (snapshot) {
+          if (requiredName !== undefined && snapshot.name !== requiredName)
+            throw new Error("Snapshot name differs from the journaled name; no deletion attempted");
+
+          const listedSource = sourceOf(snapshot);
+
+          if (listedSource !== undefined && listedSource !== sandboxId)
+            throw new Error(
+              "Snapshot source differs from recorded provenance; no deletion attempted",
+            );
+        }
+
+        if (snapshot?.status !== "CREATING" || Date.now() > end) break;
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+          }, 1000);
+
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(new Error("Buddy snapshot cleanup timed out before delete"));
+          };
+
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+
+      checkAborted();
+
+      if (beforeDelete) {
+        await beforeDelete();
+        checkAborted();
+      }
+
+      const response = await buddyFetch(
+        provider,
+        path,
+        signal ? { method: "DELETE", signal } : { method: "DELETE" },
+      );
+
+      if (response.ok || (await isBuddyMissing(response))) {
+        await response.body?.cancel().catch(() => {});
+
+        return;
+      }
+
+      await response.body?.cancel().catch(() => {});
+      throw httpError("Buddy snapshot delete failed", response.status);
     };
   }
 
@@ -847,27 +1283,49 @@ export async function snapshotsFromDaytonaSandbox(provider: Provider, sourceSand
 }
 
 /**
+ * A snapshot entry the journal holds for one source: its ID, and for Buddy the name it was saved under,
+ * or, while its save is pending, that save's name (its ID until the snapshot's ID is known).
+ */
+export interface JournaledSnapshotEntry {
+  id: string;
+  name?: string;
+  pendingSave?: { name: string };
+}
+
+/** The journal's entries for a source, given as entries or as their IDs alone. */
+function entriesOf(
+  journaled: ReadonlySet<string> | readonly JournaledSnapshotEntry[],
+): readonly JournaledSnapshotEntry[] {
+  return "has" in journaled ? [...journaled].map((id) => ({ id })) : journaled;
+}
+
+/**
  * Query only a source sandbox already recorded in the run ownership journal. `journaled` is the snapshot
- * IDs the journal holds for that source; providers whose names the run picks before saving (Maritime, Styne)
- * keep only those.
+ * entries (or IDs) the journal holds for that source; providers whose names the run picks before saving
+ * (Maritime, Styne, Buddy) keep only those, and Buddy only by exact identity ({@link ownedBuddySnapshots}).
  */
 export async function snapshotsFromSource(
   name: string,
   provider: Provider,
   sourceSandboxId: string,
-  journaled: ReadonlySet<string> = new Set(),
+  journaled: ReadonlySet<string> | readonly JournaledSnapshotEntry[] = [],
   signal?: AbortSignal,
 ) {
-  if (name === "styne") return snapshotsFromStyneSandbox(provider, sourceSandboxId, journaled);
+  const entries = entriesOf(journaled);
+  const ids: ReadonlySet<string> = new Set(entries.map((entry) => entry.id));
 
-  if (name === "maritime")
-    return snapshotsFromMaritimeSandbox(provider, sourceSandboxId, journaled);
+  if (name === "buddy")
+    return snapshotsFromBuddySandbox(provider, sourceSandboxId, entries, signal);
+
+  if (name === "styne") return snapshotsFromStyneSandbox(provider, sourceSandboxId, ids);
+
+  if (name === "maritime") return snapshotsFromMaritimeSandbox(provider, sourceSandboxId, ids);
 
   if (microsandboxTier(name) !== undefined)
     return microsandboxSnapshotsFromSource(
       connectionOf(provider, "microsandbox"),
       sourceSandboxId,
-      journaled,
+      ids,
     );
 
   if (name !== "superserve") return snapshotsFromDaytonaSandbox(provider, sourceSandboxId);
@@ -902,6 +1360,122 @@ const snapshotInfo = z.object({
 
 type SnapshotInfo = z.infer<typeof snapshotInfo>;
 
+const buddyAbsenceUnproven = "Snapshot metadata not visible; absence unproven";
+
+/**
+ * A Buddy snapshot by exact ID: from the source's own list first while the source exists, then the
+ * workspace list and Buddy's exact-ID snapshot route (`GET /sandboxes/{source}/snapshots/{id}`).
+ * `undefined` only when the live source list and workspace list omit it AND the exact-ID endpoint
+ * answers `404 Resource not found`; when the source is already gone, a miss in the workspace list
+ * never proves absence (it can lag) and throws {@link buddyAbsenceUnproven} instead.
+ */
+async function buddySnapshotById(
+  provider: Provider,
+  sourceId: string,
+  id: string,
+  signal?: AbortSignal,
+) {
+  const init = signal ? { signal } : {};
+
+  const source = await buddyFetch(
+    provider,
+    `/sandboxes/${encodeURIComponent(sourceId)}/snapshots`,
+    init,
+  );
+
+  if (source.ok) {
+    const listed = (buddySnapshotList.parse(await source.json()).snapshots ?? []).find(
+      (s) => s.id === id,
+    );
+
+    if (listed) return { snapshot: listed, provenSourceId: sourceOf(listed) ?? sourceId };
+
+    // Live source list answered cleanly without this snapshot. Check the workspace list so we never
+    // mistake an unattributed workspace record for absence OR authorize deleting it without source proof.
+    const workspace = await buddyFetch(provider, "/sandboxes/snapshots", init);
+
+    if (!workspace.ok) {
+      await workspace.body?.cancel();
+      throw httpError("Snapshot metadata unavailable", workspace.status);
+    }
+
+    const wsListed = (buddySnapshotList.parse(await workspace.json()).snapshots ?? []).find(
+      (s) => s.id === id,
+    );
+
+    if (!wsListed) {
+      // Both lists can lag on a live source; only an exact-ID 404 proves absence.
+      const exact = await buddyFetch(
+        provider,
+        `/sandboxes/${encodeURIComponent(sourceId)}/snapshots/${encodeURIComponent(id)}`,
+        init,
+      );
+
+      if (exact.ok) {
+        const snap = buddySnapshot.parse(await exact.json());
+
+        if (snap.id !== id) throw new Error("Snapshot metadata ID mismatch");
+
+        return { snapshot: snap, provenSourceId: sourceOf(snap) ?? sourceId };
+      }
+
+      if (await isBuddyMissing(exact)) {
+        // A source-scoped 404 can mean the source sandbox vanished between the first list and this
+        // GET, while the snapshot itself still survives in the workspace. Recheck the source list:
+        // only if the source is still live (and still omits the snapshot) is absence proven.
+        const recheck = await buddyFetch(
+          provider,
+          `/sandboxes/${encodeURIComponent(sourceId)}/snapshots`,
+          init,
+        );
+
+        if (recheck.ok) {
+          const again = (buddySnapshotList.parse(await recheck.json()).snapshots ?? []).find(
+            (s) => s.id === id,
+          );
+
+          if (again) return { snapshot: again, provenSourceId: sourceOf(again) ?? sourceId };
+
+          return undefined;
+        }
+
+        if (await isBuddyMissing(recheck)) throw new Error(buddyAbsenceUnproven);
+        await recheck.body?.cancel().catch(() => {});
+        throw httpError("Snapshot metadata unavailable", recheck.status);
+      }
+
+      await exact.body?.cancel().catch(() => {});
+      throw httpError("Snapshot metadata unavailable", exact.status);
+    }
+
+    const wsSource = sourceOf(wsListed);
+
+    if (wsSource !== undefined) return { snapshot: wsListed, provenSourceId: wsSource };
+    throw new Error(
+      "Snapshot missing from live source list and lacks source provenance in workspace list; no deletion attempted",
+    );
+  }
+
+  if (!(await isBuddyMissing(source)))
+    throw httpError("Snapshot metadata unavailable", source.status);
+
+  const workspace = await buddyFetch(provider, "/sandboxes/snapshots", init);
+
+  if (!workspace.ok) {
+    await workspace.body?.cancel();
+    throw httpError("Snapshot metadata unavailable", workspace.status);
+  }
+
+  const wsListed = (buddySnapshotList.parse(await workspace.json()).snapshots ?? []).find(
+    (s) => s.id === id,
+  );
+
+  // When the source is gone, a single workspace-list miss never proves a confirmed snapshot is absent.
+  if (!wsListed) throw new Error(buddyAbsenceUnproven);
+
+  return { snapshot: wsListed, provenSourceId: sourceOf(wsListed) };
+}
+
 /** Read snapshot metadata without connecting to, activating, or requiring a live source sandbox. */
 export async function inspectSnapshot(
   name: string,
@@ -909,6 +1483,7 @@ export async function inspectSnapshot(
   sourceId: string,
   id: string,
   signal?: AbortSignal,
+  expectedName?: string,
 ): Promise<{ exists: boolean; sourceId?: string }> {
   // Microsandbox: by managed ID or name. The source is the snapshot's own `sandbox_id`, or the adapter's
   // source label; a snapshot that records neither is never attributed to anyone.
@@ -1065,6 +1640,22 @@ export async function inspectSnapshot(
         return { exists: true, sourceId: snapshot.sourceSandboxId };
       }
 
+      case "buddy": {
+        // The exact journaled ID, its journaled name, and its source in the URL while the source exists.
+        if (expectedName === undefined)
+          throw new Error("Snapshot has no journaled name; no deletion attempted");
+        const hit = await buddySnapshotById(provider, sourceId, id, signal);
+
+        if (!hit) return { exists: false };
+
+        if (hit.snapshot.name !== expectedName)
+          throw new Error("Snapshot name differs from the journaled name; no deletion attempted");
+
+        return hit.provenSourceId === undefined
+          ? { exists: true }
+          : { exists: true, sourceId: hit.provenSourceId };
+      }
+
       case "upstash": {
         const { apiKey, baseUrl } = connectionOf(provider, "upstash");
 
@@ -1159,6 +1750,7 @@ export async function inspectSnapshot(
     if (
       name !== "maritime" &&
       name !== "styne" &&
+      name !== "buddy" &&
       lookupError(error, name, `${name}:snapshot-exact-get`).result === "not-found"
     )
       return { exists: false };
@@ -1174,18 +1766,46 @@ export const snapshotMetadata = { inspect: inspectSnapshot };
  */
 export type JournaledSnapshot = { kind: "exists"; id: string } | { kind: "absent" };
 
+/** A save journaled before its request whose snapshot ID is not known yet (Buddy): its name and when. */
+export interface PendingSave {
+  name: string;
+  journaledAt: string;
+}
+
 /**
  * Before a journaled snapshot entry is deleted or forgotten: a Maritime or Styne entry that still holds its
  * save's idempotency key is a save that never confirmed, so it is settled first ({@link settleMaritimeSave},
- * {@link settleStyneSave}). `absent` means nothing was saved and the entry may go; `exists` (or any other
- * entry) proceeds to the proven delete of the snapshot it names. An unsettled save throws, and the entry stays for recovery.
+ * {@link settleStyneSave}); a Buddy entry holds its pending save's name ({@link settleBuddySave}), and
+ * settling it finds the snapshot's ID. `absent` means nothing was saved and the entry may go; `exists` (or
+ * any other entry) proceeds to the proven delete of the snapshot it names. An unsettled save throws, and the
+ * entry stays for recovery.
  */
 export async function settleJournaledSnapshot(
   name: string,
   provider: Provider,
-  entry: { id: string; parent: string | null; idempotencyKey?: string; snapshotName?: string },
+  entry: {
+    id: string;
+    parent: string | null;
+    idempotencyKey?: string;
+    snapshotName?: string;
+    pendingSave?: PendingSave;
+  },
   timeoutMs: number,
 ): Promise<JournaledSnapshot> {
+  if (name === "buddy") {
+    if (entry.pendingSave === undefined) return { kind: "exists", id: entry.id };
+
+    if (entry.parent === null) throw new Error("Snapshot source missing; no deletion attempted");
+
+    return settleBuddySave({
+      provider,
+      sandboxId: entry.parent,
+      name: entry.pendingSave.name,
+      journaledAt: entry.pendingSave.journaledAt,
+      timeoutMs,
+    });
+  }
+
   // Microsandbox: a capture journaled by name before its request, never confirmed. Settled through the
   // snapshot and its operation, keeping the managed ID it finds; an unresolved 404 throws and keeps the entry.
   if (microsandboxTier(name) !== undefined && entry.snapshotName === entry.id) {
@@ -1225,7 +1845,10 @@ export async function deleteProvenSnapshot(
   proof: SnapshotProvenance | undefined,
   run: string,
   timeoutMs: number,
-  cleaner?: (id: string, signal?: AbortSignal) => Promise<void>,
+  cleaner?: SnapshotDelete,
+  expectedName?: string,
+  parentSignal?: AbortSignal,
+  options?: { deleteVerified?: boolean; onDeleteVerified?: () => Promise<void> },
 ) {
   const valid = snapshotProvenanceSchema.safeParse(proof);
 
@@ -1233,24 +1856,99 @@ export async function deleteProvenSnapshot(
     throw new Error("Recorded snapshot provenance missing or mismatched; no deletion attempted");
   const end = performance.now() + Math.min(timeoutMs, 30000);
   let backoffMs = 100;
+  let verifiedRecorded = options?.deleteVerified === true;
+
+  const linkAbort = (budget: number) => {
+    const controller = new AbortController();
+    const onParentAbort = () => controller.abort();
+
+    if (parentSignal?.aborted) controller.abort();
+    else parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+    const abortTimer = setTimeout(() => controller.abort(), budget);
+
+    return {
+      signal: controller.signal,
+      cleanup: () => {
+        clearTimeout(abortTimer);
+        parentSignal?.removeEventListener("abort", onParentAbort);
+        controller.abort();
+      },
+    };
+  };
 
   for (;;) {
     const remaining = end - performance.now();
 
-    if (remaining <= 0) throw new Error("Snapshot cleanup retry budget exhausted");
+    if (remaining <= 0 || parentSignal?.aborted)
+      throw new Error("Snapshot cleanup retry budget exhausted");
 
-    const live = await deadline(remaining, (signal) =>
-      snapshotMetadata.inspect(name, provider, valid.data.sourceId, id, signal),
-    );
+    const inspectAbort = linkAbort(remaining);
+    let live: Awaited<ReturnType<typeof inspectSnapshot>>;
+
+    try {
+      try {
+        live = await deadline(remaining, (signal) =>
+          snapshotMetadata.inspect(
+            name,
+            provider,
+            valid.data.sourceId,
+            id,
+            AbortSignal.any([signal, inspectAbort.signal]),
+            expectedName,
+          ),
+        );
+      } catch (error) {
+        // When a prior attempt already verified live ownership and persisted deleteVerified before
+        // issuing DELETE, a lost DELETE response leaves the workspace list empty after the source is
+        // gone. Allow retrying DELETE (which still inspects the workspace list for conflicts and
+        // settles cleanly on 404 Resource not found).
+        if (
+          name === "buddy" &&
+          verifiedRecorded &&
+          error instanceof Error &&
+          error.message === buddyAbsenceUnproven
+        )
+          live = { exists: true };
+        else throw error;
+      }
+    } finally {
+      inspectAbort.cleanup();
+    }
+
+    if (parentSignal?.aborted) throw new Error("Snapshot cleanup retry budget exhausted");
 
     if (!live.exists) return;
 
     if (live.sourceId !== undefined && live.sourceId !== valid.data.sourceId)
       throw new Error("Snapshot source differs from recorded provenance; no deletion attempted");
-    const remove = cleaner ?? (await snapshotCleaner(name, provider, valid.data.sourceId));
+
+    const remove =
+      cleaner ?? (await snapshotCleaner(name, provider, valid.data.sourceId, expectedName));
+
+    // Persist deleteVerified ONLY when the cleaner is actually about to issue DELETE (after all
+    // final workspace name/source checks pass), never before a check that can reject the delete.
+    const beforeDelete =
+      !verifiedRecorded && options?.onDeleteVerified
+        ? async () => {
+            await options.onDeleteVerified?.();
+            verifiedRecorded = true;
+          }
+        : undefined;
 
     try {
-      await deadline(Math.max(1, end - performance.now()), (signal) => remove(id, signal));
+      const budget = end - performance.now();
+
+      if (budget <= 0 || parentSignal?.aborted)
+        throw new Error("Snapshot cleanup retry budget exhausted");
+      const removeAbort = linkAbort(budget);
+
+      try {
+        await deadline(budget, (signal) =>
+          remove(id, AbortSignal.any([signal, removeAbort.signal]), expectedName, beforeDelete),
+        );
+      } finally {
+        removeAbort.cleanup();
+      }
 
       return;
     } catch (error) {

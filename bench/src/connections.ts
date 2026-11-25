@@ -44,7 +44,7 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  * endpoint, account, team or project answers 404 for a sandbox that is running, which would be
  * recorded as absence. Archil, Local, Maritime, Modal, Railway and Styne have no `resolveConfig`;
  * their connection is read here from the same options and variables their adapters read.
- * Microsandbox's is too, as its adapter resolves it.
+ * Microsandbox's and Buddy's are too, as their adapters resolve them.
  */
 export interface Connections {
   archil: ArchilConfig;
@@ -52,6 +52,7 @@ export interface Connections {
   beam: BeamConfig;
   boat: BoatConfig;
   boxd: BoxdConfig;
+  buddy: BuddyConfig;
   daytona: DaytonaConfig;
   e2b: E2BConfig;
   freestyle: FreestyleConfig;
@@ -106,6 +107,18 @@ export interface StyneConfig {
   readonly baseUrl: string;
 }
 
+/**
+ * What `buddy()` sends its requests with (`createBuddyProvider`): the token and workspace, trimmed,
+ * the project it scopes creates and lookups to, if any, and the API host without trailing slashes
+ * (`baseUrl`, else the region's host). The workspace API is `${baseUrl}/workspaces/${workspace}`.
+ */
+export interface BuddyConfig {
+  readonly token: string;
+  readonly workspace: string;
+  readonly project: string | undefined;
+  readonly baseUrl: string;
+}
+
 /** The Docker socket `local()` talks to (`new Docker(options.dockerHost)` in the local adapter). */
 export interface LocalConfig {
   readonly socketPath: string;
@@ -151,6 +164,7 @@ const connectionOptions = z.object({
   gatewayUrl: z.string().optional(),
   jwtToken: z.string().optional(),
   organizationId: z.string().optional(),
+  project: z.string().optional(),
   projectId: z.string().optional(),
   region: z.string().optional(),
   target: z.string().optional(),
@@ -158,6 +172,7 @@ const connectionOptions = z.object({
   token: z.string().optional(),
   tokenId: z.string().optional(),
   tokenSecret: z.string().optional(),
+  workspace: z.string().optional(),
   workspaceId: z.string().optional(),
 });
 
@@ -210,6 +225,49 @@ function styneConfig(options: ConnectionOptions): StyneConfig {
   };
 }
 
+/** Buddy's API host for each region, as the adapter maps BUDDY_REGION (default US). */
+const buddyRegions: ReadonlyMap<string, string> = new Map([
+  ["US", "https://api.buddy.works"],
+  ["EU", "https://api.eu.buddy.works"],
+  ["AS", "https://api.asia.buddy.works"],
+]);
+
+/**
+ * As the Buddy adapter resolves it: options, then BUDDY_TOKEN, BUDDY_WORKSPACE, BUDDY_PROJECT,
+ * BUDDY_API_URL and BUDDY_REGION. An unknown region fails, as it does in the adapter.
+ */
+export function buddyConfig(options: ConnectionOptions = {}): BuddyConfig {
+  const env = process.env;
+  const token = (options.token ?? env.BUDDY_TOKEN)?.trim();
+
+  if (!token) throw Object.assign(new Error("Buddy token is missing"), { code: "auth" });
+
+  const workspace = (options.workspace ?? env.BUDDY_WORKSPACE)?.trim();
+
+  if (!workspace)
+    throw Object.assign(new Error("Buddy workspace is missing"), { code: "invalid_argument" });
+
+  const region = (options.region ?? env.BUDDY_REGION)?.trim().toUpperCase();
+  const regionHost = buddyRegions.get(region || "US");
+
+  if (regionHost === undefined)
+    throw Object.assign(new Error("Buddy region must be US, EU or AS"), {
+      code: "invalid_argument",
+    });
+
+  return {
+    token,
+    workspace,
+    project: (options.project ?? env.BUDDY_PROJECT)?.trim() || undefined,
+    baseUrl: endpoint(options.baseUrl ?? env.BUDDY_API_URL ?? regionHost),
+  };
+}
+
+/** Buddy's workspace API for a connection: where every sandbox and snapshot route lives. */
+export function buddyWorkspaceApi(config: BuddyConfig): string {
+  return `${config.baseUrl}/workspaces/${encodeURIComponent(config.workspace)}`;
+}
+
 /** The local adapter's socket: `dockerHost`, then DOCKER_HOST, then Docker's default socket. */
 function localConfig(options: ConnectionOptions): LocalConfig {
   const host = options.dockerHost ?? process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock";
@@ -249,6 +307,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
       return { name, config: boatConfig(options) };
     case "boxd":
       return { name, config: boxdConfig(options) };
+    case "buddy":
+      return { name, config: buddyConfig(options) };
     case "daytona":
       return { name, config: daytonaConfig(options) };
     case "e2b":
@@ -313,6 +373,8 @@ function byName(connection: Connection): Partial<Connections> {
       return { boat: connection.config };
     case "boxd":
       return { boxd: connection.config };
+    case "buddy":
+      return { buddy: connection.config };
     case "daytona":
       return { daytona: connection.config };
     case "e2b":

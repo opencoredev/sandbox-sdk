@@ -28,9 +28,14 @@ export interface Price {
   offeredSizes: Pick<Resources, "cpu" | "memoryGiB">[] | null;
   /**
    * Billed on the requested allocation, so the guest's own view is never priced. `minimum` is the
-   * request of a sandbox created without a size: a lower bound when usage above it is also billed.
+   * request of a sandbox created without a size. `defaultBound` says how its price relates to the
+   * bill: `lower` when usage above it is also billed (Modal's burst), `exact` when the default is a
+   * fixed tier billed as such (Buddy's 2x4).
    */
-  requestBilled: { minimum: Pick<Resources, "cpu" | "memoryGiB"> } | null;
+  requestBilled: {
+    minimum: Pick<Resources, "cpu" | "memoryGiB">;
+    defaultBound: "exact" | "lower";
+  } | null;
   /** Price multipliers for a pinned region: `broad` for one of `broadRegions`, `narrow` for any other. */
   regionMultiplier: { broad: number; narrow: number; broadRegions: readonly string[] } | null;
 }
@@ -126,6 +131,22 @@ export const pricing: PriceTable = {
     source: "https://docs.styne.ai/billing",
     notes:
       "Published per-size rates from 2026-11-20 after the plan's included VM hours: small (2 vCPU, 4 GB) $0.016/hour, default (4, 8) $0.032, large (8, 16) $0.064, xlarge (16, 32) $0.128, metered per second while running; disk comes with the size; paused or sleeping VMs cost $0 and snapshot storage is $0 today. Estimates only: Styne has no per-sandbox billing API (GET /v1/run/usage is daily account totals). Plan fees ($20, $99, $499 a month) and their included hours excluded.",
+  },
+  buddy: {
+    ...base,
+    // $0.00024 per CPU-minute and $0.00024 per GB-minute of the tier, in one-minute increments.
+    cpuSecond: 0.0144 / 3600,
+    memoryGiBSecond: 0.0144 / 3600,
+    diskGiBSecond: 0,
+    minimumSeconds: 60,
+    incrementSeconds: 60,
+    retrieved: "2026-11-24",
+    source: "https://buddy.works/pricing",
+    // Buddy bills its native tier (2 vCPU + 4 GB for 2x4), checked on its Usage page on 2026-11-24.
+    requestBilled: { minimum: { cpu: 2, memoryGiB: 4 }, defaultBound: "exact" },
+    offeredSizes: Array.from({ length: 12 }, (_, i) => ({ cpu: i + 1, memoryGiB: (i + 1) * 2 })),
+    notes:
+      "Published Sandboxes rates: $0.00024/CPU-minute ($0.0144/vCPU-hour) and $0.00024/GB-minute ($0.0144/GB-hour) of the tier's memory, billed per started minute with a one-minute minimum (a 25-second 2x4 probe billed 2 CPU-minutes and 4 GB-minutes on 2026-11-24). Twelve fixed tiers, 1x2 to 12x24, 2 GB per vCPU and a 50 GB disk; the default is 2x4. Priced on the tier, not the guest: Buddy's GB are decimal, so a 2x4 guest shows 3814 MiB (3.73 GiB) and a 4x8 guest 7629 MiB (7.45 GiB), about 6.9% under the binary GiB the tier name suggests; that gap stays as an allocation caveat. Storage ($0.00011/GB-hour of used disk and snapshots, about $0.08/GB-month, not the 50 GB allocation) and the $29/month Pro plan are excluded. Buddy has no usage or billing API, so every Buddy figure is this estimate.",
   },
   superserve: {
     ...base,
@@ -277,7 +298,7 @@ export const pricing: PriceTable = {
     diskGiBSecond: 0,
     retrieved: "2026-11-09",
     source: "https://modal.com/pricing",
-    requestBilled: { minimum: { cpu: 0.125, memoryGiB: 0.125 } },
+    requestBilled: { minimum: { cpu: 0.125, memoryGiB: 0.125 }, defaultBound: "lower" },
     // https://modal.com/docs/guide/region-selection
     regionMultiplier: { broad: 1.15, narrow: 1.75, broadRegions: ["us", "eu", "ap"] },
     notes:
@@ -374,6 +395,8 @@ export const defaultCompute: ComputeTable = {
   maritime: { cpu: 2, memoryGiB: 4 },
   // Styne's base template: the default size, 4 vCPU / 8 GiB.
   styne: { cpu: 4, memoryGiB: 8 },
+  // Buddy's default tier, 2x4: 2 vCPU and 4 decimal GB.
+  buddy: { cpu: 2, memoryGiB: 4 },
   // Beam's TypeScript SDK default: 1 CPU, 128 MiB.
   beam: { cpu: 1, memoryGiB: 0.125 },
   // Archil's default: 1 vCPU, 2048 MiB.

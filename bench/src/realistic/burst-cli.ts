@@ -83,6 +83,7 @@ const allProviders = [
   "baseten",
   "instabox",
   "maritime",
+  "buddy",
   "beam",
   "archil",
   "microsandbox",

@@ -33,14 +33,14 @@ const llmsDetails = `**When to use Sandbox SDK.** Use it when server-side TypeSc
 - give an AI agent tools to run commands, read and edit files, and start dev servers (AI SDK, Mastra, or the OpenAI Agents SDK);
 - run code a user or a model wrote, such as an AI app builder with a live preview;
 - keep one long-lived sandbox per user or project and find it again by key;
-- switch between Docker or agentOS on your own machine, E2B, Vercel Sandbox, Modal, Baseten, Daytona, Upstash Box, Railway, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, Instabox, Archil, Maritime, Microsandbox, and Styne without rewriting code;
+- switch between Docker or agentOS on your own machine, E2B, Vercel Sandbox, Modal, Baseten, Daytona, Upstash Box, Railway, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, Instabox, Archil, Maritime, Microsandbox, Styne, and Buddy without rewriting code;
 - test all of the above offline with the in-process \`memory()\` provider.
 
 It is not a hosted service: it calls each provider's HTTP API or SDK with your keys, and nothing runs between you and the provider. It does not run in the browser, since provider keys must stay on a server, and it needs Node.js or Bun: the core imports Node built-ins such as \`node:child_process\` and \`node:fs\`, so edge runtimes such as Cloudflare Workers, Vercel Edge Functions, and Deno Deploy are not supported. It is not an isolation layer of its own: the provider supplies the security boundary.
 
 **How an agent should use it.**
 
-1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. E2B, Daytona, Freestyle, Superserve, Instabox, Maritime, Styne, Boat, and Sandboxer need nothing else. For Vercel, Modal, Baseten, Archil, Microsandbox, Upstash Box, Railway, Luxor, boxd, or agentOS, install that provider's SDK next to it (\`@vercel/sandbox\`, \`modal\`, \`@basetenlabs/sandbox\`, \`disk\`, \`microsandbox\`, \`@upstash/box\`, \`railway\`, \`@tenkicloud/sandbox\`, \`@boxd-sh/sdk\`, or \`@rivet-dev/agentos-core\`).
+1. Install the package: \`npm i @opencoredev/sandbox-sdk\` or \`bun add @opencoredev/sandbox-sdk\`. E2B, Daytona, Freestyle, Superserve, Instabox, Maritime, Styne, Buddy, Boat, and Sandboxer need nothing else. For Vercel, Modal, Baseten, Archil, Microsandbox, Upstash Box, Railway, Luxor, boxd, or agentOS, install that provider's SDK next to it (\`@vercel/sandbox\`, \`modal\`, \`@basetenlabs/sandbox\`, \`disk\`, \`microsandbox\`, \`@upstash/box\`, \`railway\`, \`@tenkicloud/sandbox\`, \`@boxd-sh/sdk\`, or \`@rivet-dev/agentos-core\`).
 2. Start with \`memory()\` from \`@opencoredev/sandbox-sdk/memory\` (no machine, no keys), then \`local()\` from \`/local\` (Docker), following the [Quickstart](https://sandbox-sdk.app/docs/getting-started/quickstart).
 3. Create sandboxes with \`createSandbox(provider, options)\` and \`await using\`. Pass \`key\` to get the same sandbox back on the next request.
 4. A non-zero exit code is a result, not an error: check \`result.ok\`. The SDK throws only \`SandboxError\`; branch on \`error.code\` ([errors](https://sandbox-sdk.app/docs/reference/errors)).
@@ -54,7 +54,7 @@ Source: [github.com/opencoredev/sandbox-sdk](https://github.com/opencoredev/sand
 export default defineConfig({
   title: "Sandbox SDK",
   description:
-    "Sandboxes for your agents and your users. Any provider, one line. One TypeScript API over Docker, agentOS, E2B, Vercel Sandbox, Modal, Baseten, Daytona, Upstash Box, Railway, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, Instabox, Archil, Maritime, Microsandbox, and Styne, called with your own keys.",
+    "Sandboxes for your agents and your users. Any provider, one line. One TypeScript API over Docker, agentOS, E2B, Vercel Sandbox, Modal, Baseten, Daytona, Upstash Box, Railway, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, Instabox, Archil, Maritime, Microsandbox, Styne, and Buddy, called with your own keys.",
   logo: { image: "/logo.svg", text: "Sandbox SDK", href: "https://sandbox-sdk.app" },
   content: {
     root: "content",
@@ -136,6 +136,7 @@ export default defineConfig({
               icon: "/integrations/microsandbox.svg",
             },
             { label: "Styne", root: "/providers/styne", icon: "/integrations/styne.svg" },
+            { label: "Buddy", root: "/providers/buddy", icon: "/integrations/buddy.svg" },
             { label: "Daytona", root: "/providers/daytona", icon: "/integrations/daytona.svg" },
             { label: "Upstash Box", root: "/providers/upstash", icon: "/integrations/upstash.svg" },
             { label: "Railway", root: "/providers/railway", icon: "/integrations/railway.svg" },

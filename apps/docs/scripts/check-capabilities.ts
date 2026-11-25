@@ -44,6 +44,7 @@ import { instabox } from "../../../packages/sdk/src/providers/instabox/index.ts"
 import { local } from "../../../packages/sdk/src/providers/local/index.ts";
 import { maritime } from "../../../packages/sdk/src/providers/maritime/index.ts";
 import { createMicrosandboxProvider } from "../../../packages/sdk/src/providers/microsandbox/provider.ts";
+import { buddy } from "../../../packages/sdk/src/providers/buddy/index.ts";
 import { createModalProvider } from "../../../packages/sdk/src/providers/modal/provider.ts";
 import { createRailwayProvider } from "../../../packages/sdk/src/providers/railway/provider.ts";
 import { sandboxer } from "../../../packages/sdk/src/providers/sandboxer/index.ts";
@@ -69,7 +70,7 @@ async function stubTransport(): Promise<never> {
 
 const realFetch = globalThis.fetch;
 
-/** E2B, Daytona, Freestyle, Instabox, Maritime, Styne, Superserve, Boat and Sandboxer reach their API through the global
+/** E2B, Daytona, Freestyle, Instabox, Maritime, Styne, Buddy, Superserve, Boat and Sandboxer reach their API through the global
  * fetch, so it stands in for them. */
 const stubFetch: typeof fetch = async () => {
   transportCalls += 1;
@@ -166,6 +167,11 @@ const subjects: readonly Subject[] = [
       ),
   },
   { column: "Styne", build: () => styne({ apiKey: offlineKey }) },
+  {
+    column: "Buddy",
+    build: () =>
+      buddy({ token: offlineKey, workspace: "offline", baseUrl: "https://offline.invalid" }),
+  },
   { column: "Memory", build: () => memory() },
 ];
 
@@ -382,6 +388,7 @@ const rows: readonly Row[] = [
       "Bearer header": [],
       "Cookie header": [],
       "Query token": [],
+      "Basic header": [],
       No: [],
     },
     unchecked: "every Preview URL cell except Fake needs a live provider",

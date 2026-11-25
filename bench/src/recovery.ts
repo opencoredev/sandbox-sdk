@@ -68,6 +68,12 @@ const resource = z.object({
   serviceSuperseded: z.boolean().optional(),
   /** A Microsandbox capture's name; equal to `id` while unconfirmed. */
   snapshotName: z.string().optional(),
+  /** A Buddy save journaled before its request: its name and when, present until its ID is known. */
+  pendingSave: z.object({ name: z.string(), journaledAt: z.iso.datetime() }).optional(),
+  /** The snapshot's name, which a Buddy delete checks along with its ID. */
+  name: z.string().optional(),
+  /** Set and persisted only after live metadata verified this exact snapshot before issuing DELETE. */
+  deleteVerified: z.boolean().optional(),
 });
 
 const settledSnapshotSchema = z.object({
@@ -363,12 +369,22 @@ export async function reapRun(
         { tier },
       );
 
+    const dropReviews = (id: string, kind: CleanupReview["kind"]) => {
+      for (const item of reviews.filter(
+        (r) => r.provider === p.name && r.id === id && r.kind === kind,
+      ))
+        reviews.splice(reviews.indexOf(item), 1);
+    };
+
     const forget = async (entry: z.infer<typeof resource>) => {
+      // A Buddy snapshot may also be under review by the name it was saved under.
       const matchingReviews = reviews.filter(
         (r) =>
           r.provider === entry.provider &&
           r.kind === entry.kind &&
-          (r.id === entry.id || (entry.snapshotName !== undefined && r.id === entry.snapshotName)),
+          (r.id === entry.id ||
+            (entry.snapshotName !== undefined && r.id === entry.snapshotName) ||
+            (entry.kind === "snapshot" && entry.name !== undefined && r.id === entry.name)),
       );
 
       if (journal) {
@@ -763,10 +779,8 @@ export async function reapRun(
         if (proof.sourceId !== entry.id || proof.runLabel !== config.run)
           throw new Error("Snapshot-source provenance mismatch");
 
-        const journaled = new Set(
-          (journal?.resources ?? [])
-            .filter((r) => r.provider === p.name && r.kind === "snapshot" && r.parent === entry.id)
-            .map((r) => r.id),
+        const journaled = (journal?.resources ?? []).filter(
+          (r) => r.provider === p.name && r.kind === "snapshot" && r.parent === entry.id,
         );
 
         for (const snapshot of await deadline(config["timeout-ms"], (signal) =>
@@ -776,12 +790,24 @@ export async function reapRun(
           // idempotency key, or a capture of this source journaled by its name. Replace them with the
           // confirmed snapshot entry BEFORE deleting: if the delete succeeds on the server and drops its
           // response, a later step must inspect/delete the snapshot rather than replaying the save POST.
+          // A Buddy save still pending is journaled under its name, not yet its ID.
           const earlier = (journal?.resources ?? []).filter(
             (r) =>
               r.provider === p.name &&
               r.kind === "snapshot" &&
               (r.id === snapshot.id ||
-                (snapshot.name !== undefined && r.parent === entry.id && r.id === snapshot.name)),
+                (snapshot.name !== undefined &&
+                  r.parent === entry.id &&
+                  (r.id === snapshot.name || r.pendingSave?.name === snapshot.name))),
+          );
+
+          const hadVerifiedDelete = earlier.some(
+            (r) =>
+              r.provider === p.name &&
+              r.id === snapshot.id &&
+              r.parent === entry.id &&
+              (p.name !== "buddy" || r.name === snapshot.name) &&
+              r.deleteVerified === true,
           );
 
           // A capture journaled by name keeps that name on its ID entry, and as a name->ID alias, so
@@ -791,7 +817,7 @@ export async function reapRun(
               ? snapshot.name
               : undefined;
 
-          const item: z.infer<typeof resource> = {
+          let item: z.infer<typeof resource> = {
             provider: p.name,
             id: snapshot.id,
             kind: "snapshot",
@@ -800,6 +826,11 @@ export async function reapRun(
           };
 
           if (alias !== undefined) item.snapshotName = alias;
+
+          // The journal's own name: a Buddy discovery matches only snapshots that carry it.
+          if (p.name === "buddy" && snapshot.name !== undefined) item.name = snapshot.name;
+
+          if (hadVerifiedDelete) item.deleteVerified = true;
 
           const previousResources = journal ? [...journal.resources] : null;
           const previousSettled = journal ? [...journal.settledSnapshots] : null;
@@ -826,6 +857,22 @@ export async function reapRun(
             throw error;
           }
 
+          const markItemDeleteVerified = async () => {
+            if (!journal || item.deleteVerified) return;
+            const previousResources = [...journal.resources];
+            const verifiedItem = { ...item, deleteVerified: true };
+
+            journal.resources = journal.resources.map((r) => (r === item ? verifiedItem : r));
+
+            try {
+              await persistJournal();
+              item = verifiedItem;
+            } catch (error) {
+              journal.resources = previousResources;
+              throw error;
+            }
+          };
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,
@@ -834,9 +881,16 @@ export async function reapRun(
             proof,
             config.run,
             config["timeout-ms"],
+            undefined,
+            item.name,
+            undefined,
+            { deleteVerified: item.deleteVerified, onDeleteVerified: markItemDeleteVerified },
           );
 
           await forget(item);
+
+          // The entries it replaced, such as a pending save under its name, leave no review behind.
+          for (const replaced of earlier) dropReviews(replaced.id, "snapshot");
         }
 
         await forget(entry);
@@ -877,9 +931,20 @@ export async function reapRun(
               (s) => s.provider === p.name && s.name === entry.snapshotName && s.id === settled.id,
             );
 
-          if (entry.idempotencyKey !== undefined || settled.id !== entry.id || aliasMissing) {
-            const { idempotencyKey: _, ...withoutKey } = entry;
-            const confirmed = { ...withoutKey, id: settled.id };
+          if (
+            entry.idempotencyKey !== undefined ||
+            entry.pendingSave !== undefined ||
+            settled.id !== entry.id ||
+            aliasMissing
+          ) {
+            // The settled entry, without its save key or pending name and under the snapshot's ID,
+            // is written BEFORE the delete: a dropped delete answer then never replays the save.
+            const { idempotencyKey: _, pendingSave, ...withoutKey } = entry;
+
+            const confirmed =
+              pendingSave === undefined
+                ? { ...withoutKey, id: settled.id }
+                : { ...withoutKey, id: settled.id, name: pendingSave.name };
 
             if (journal) {
               const previousResources = [...journal.resources];
@@ -947,6 +1012,22 @@ export async function reapRun(
             }
           }
 
+          const markCurrentDeleteVerified = async () => {
+            if (!journal || current.deleteVerified) return;
+            const previousResources = [...journal.resources];
+            const verifiedEntry = { ...current, deleteVerified: true };
+
+            journal.resources = journal.resources.map((r) => (r === current ? verifiedEntry : r));
+
+            try {
+              await persistJournal();
+              current = verifiedEntry;
+            } catch (error) {
+              journal.resources = previousResources;
+              throw error;
+            }
+          };
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,
@@ -955,8 +1036,17 @@ export async function reapRun(
             current.snapshotProof,
             config.run,
             config["timeout-ms"],
+            undefined,
+            current.name,
+            undefined,
+            {
+              deleteVerified: current.deleteVerified,
+              onDeleteVerified: markCurrentDeleteVerified,
+            },
           );
           await forget(current);
+          // A re-keyed pending save may still be under review by its pending name.
+          dropReviews(entry.id, "snapshot");
         } else {
           await forget(entry);
         }
