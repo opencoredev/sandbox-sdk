@@ -26,6 +26,7 @@ import {
 } from "../src/microsandbox.js";
 import { collectProvider } from "../src/billing/providers.js";
 import { lookupSandbox } from "../src/existence.js";
+import { journalFiles } from "../src/files.js";
 import { mergeSources, type MergeSource } from "../src/merge.js";
 import { createRawMicrosandbox, type RawMicrosandboxBox } from "../src/microsandbox-raw.js";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
@@ -1098,5 +1099,161 @@ describe("independent review reproductions", () => {
       admitted: 1,
       remaining: 0,
     });
+  });
+
+  test("R3-1 end-of-run sweep leaves a replacement Service at a previously confirmed slug alone", async () => {
+    const p = adapter();
+    const replacementTarget = await p.create({ labels: {} });
+    const create = p.create.bind(p);
+    let ownedId = "";
+    let slug = "";
+    let replacementCreated = false;
+    p.create = async (input) => {
+      const result = await create(input);
+      ownedId = result.id;
+      slug = `sbx-${result.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+      await p.previewUrl(result.id, 3000);
+
+      return result;
+    };
+
+    const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+
+      if (init?.method === "DELETE" && path === `/v1/sandboxes/${ownedId}` && !replacementCreated) {
+        expect(fake.services.has(slug)).toBe(false);
+        const target = fake.sandboxes.get(replacementTarget.id);
+
+        if (!target) throw new Error("Replacement target is missing");
+
+        const created = await realFetch(`${fake.url}/v1/services`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ slug, target: { sandbox: target.name, port: 3000 } }),
+        });
+
+        expect(created.status).toBe(201);
+        await created.body?.cancel();
+
+        const deleted = await realFetch(`${fake.url}/v1/sandboxes/${replacementTarget.id}`, {
+          method: "DELETE",
+          headers,
+        });
+
+        expect(deleted.ok).toBe(true);
+        await deleted.body?.cancel();
+        replacementCreated = true;
+      }
+
+      return realFetch(input, init);
+    });
+
+    await runV2(
+      loaded(p),
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--run",
+        run,
+        "--out",
+        out,
+        "--runs",
+        "1",
+        "--max-sandboxes",
+        "4",
+        "--bursts",
+        "",
+        "--ownership-visibility-ms",
+        "100",
+        "--timeout-ms",
+        "3000",
+        "--scenarios",
+        "cold",
+      ]),
+      async () => {},
+    );
+    expect(replacementCreated).toBe(true);
+    expect(fake.sandboxes.has(ownedId)).toBe(false);
+
+    const deletes = fake.requests.filter(
+      (r) => r.method === "DELETE" && r.path === `/v1/services/${slug}`,
+    );
+
+    expect({ replacementPresent: fake.services.has(slug), serviceDeletes: deletes.length }).toEqual(
+      { replacementPresent: true, serviceDeletes: 1 },
+    );
+  });
+
+  test("R3-2 clears capture review across failed results.json rename and clears results.md", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    let name = "";
+    p.setAttemptHooks({
+      snapshot: (attempt) => {
+        name = attempt.name;
+      },
+    });
+    const snapshot = await capture(p, source.id);
+    await p.destroy(source.id);
+
+    let visible = false;
+    let refuseDelete = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+
+      if (path === `/v1/snapshots/by-name/${name}`)
+        return Response.json({ error: { code: "snapshot_not_found" } }, { status: 404 });
+
+      if (!visible && path === "/v1/snapshot-operations")
+        return Response.json({ data: [], next_cursor: null });
+
+      if (refuseDelete && init?.method === "DELETE" && path === `/v1/snapshots/${snapshot.id}`)
+        return Response.json({ error: { code: "internal_error" } }, { status: 500 });
+
+      return realFetch(input, init);
+    });
+
+    await journal([
+      {
+        provider: "microsandbox",
+        id: name,
+        kind: "snapshot",
+        parent: source.id,
+        snapshotName: name,
+        snapshotProof: proof(source.id),
+      },
+    ]);
+    expect(await reap()).toBe(true);
+    expect(await readFile(join(out, "results.md"), "utf8")).toContain(name);
+
+    visible = true;
+    refuseDelete = true;
+    const realRename = journalFiles.rename;
+
+    const rename = vi.spyOn(journalFiles, "rename").mockImplementation((from, to) => {
+      if (to === join(out, "results.json"))
+        return Promise.reject(new Error("simulated results write failure"));
+
+      return realRename(from, to);
+    });
+
+    await expect(reap()).rejects.toThrow("simulated results write failure");
+    refuseDelete = false;
+    await expect(reap()).rejects.toThrow("simulated results write failure");
+    expect(fake.snapshots.has(snapshot.id)).toBe(false);
+    rename.mockRestore();
+
+    const failed = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
+
+    expect({ failed, reviewedIds: results.cleanupReview.map((item) => item.id) }).toEqual({
+      failed: false,
+      reviewedIds: [],
+    });
+    expect(await readFile(join(out, "results.md"), "utf8")).not.toContain(name);
   });
 });

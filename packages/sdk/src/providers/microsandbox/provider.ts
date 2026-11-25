@@ -109,15 +109,16 @@ export interface MicrosandboxHooks {
     port: number;
   }): void | Promise<void>;
   /**
-   * After that `POST /v1/services` settles. `created`: the Service at `slug` was made for this sandbox.
-   * `refused`: a 4xx (or never sent) made nothing. `conflict`: a 409, so the slug is someone else's and
-   * must never be deleted as this sandbox's; the adapter then tries another slug. Not called when the
-   * outcome stays unknown, so a journal entry for it stays pending.
+   * After a Service's create or delete settles. `created`: the Service at `slug` was made for this
+   * sandbox. `refused`: a 4xx (or never sent) made nothing. `conflict`: a 409 (or a live Service now
+   * targeting another sandbox), so the slug is someone else's and must never be deleted as this
+   * sandbox's. `deleted`: the adapter deleted the Service and released its slug. Not called when a
+   * create outcome stays unknown, so a journal entry for it stays pending.
    */
   serviceSettled?(outcome: {
     sandboxId: string;
     slug: string;
-    outcome: "created" | "refused" | "conflict";
+    outcome: "created" | "refused" | "conflict" | "deleted";
   }): void | Promise<void>;
 }
 
@@ -693,6 +694,9 @@ export function createMicrosandboxProvider(
         // Never a Service that now targets another sandbox.
         if (service.target !== null && service.target.sandbox !== target) {
           ownedServices.get(id)?.delete(slug);
+          await Promise.resolve(
+            hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "conflict" }),
+          ).catch(() => {});
           continue;
         }
 
@@ -708,6 +712,9 @@ export function createMicrosandboxProvider(
         }
 
         ownedServices.get(id)?.delete(slug);
+        await Promise.resolve(
+          hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "deleted" }),
+        ).catch(() => {});
       } catch {
         failed.push(slug);
       }

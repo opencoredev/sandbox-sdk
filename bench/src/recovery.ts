@@ -19,7 +19,14 @@ import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot, settleJournaledSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
-import { cleanService, isRetrySlug, settleAllocationAttempt, tierLabel } from "./microsandbox.js";
+import {
+  cleanService,
+  isRetrySlug,
+  readMicrosandboxSnapshot,
+  settleAllocationAttempt,
+  settleMicrosandboxCapture,
+  tierLabel,
+} from "./microsandbox.js";
 import { microsandboxTier } from "./providers.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import {
@@ -192,7 +199,10 @@ export async function reapRun(
       }
 
       for (const item of reviews.filter(
-        (r) => r.provider === entry.provider && r.id === entry.id && r.kind === entry.kind,
+        (r) =>
+          r.provider === entry.provider &&
+          r.kind === entry.kind &&
+          (r.id === entry.id || (entry.snapshotName !== undefined && r.id === entry.snapshotName)),
       ))
         reviews.splice(reviews.indexOf(item), 1);
     };
@@ -567,6 +577,26 @@ export async function reapRun(
             current = confirmed;
           }
 
+          if (current.snapshotName !== undefined && current.snapshotName !== current.id) {
+            const hasSettledReview = reviews.some(
+              (r) =>
+                r.provider === current.provider && r.id === current.id && r.kind === current.kind,
+            );
+
+            for (let i = reviews.length - 1; i >= 0; i--) {
+              const item = reviews[i]!;
+
+              if (
+                item.provider === current.provider &&
+                item.id === current.snapshotName &&
+                item.kind === current.kind
+              ) {
+                if (hasSettledReview) reviews.splice(i, 1);
+                else item.id = current.id;
+              }
+            }
+          }
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,
@@ -587,6 +617,42 @@ export async function reapRun(
           current.kind,
           sanitize(error instanceof Error ? error.message : "Snapshot recovery failed"),
         );
+      }
+    }
+
+    // A prior reap may have deleted a Microsandbox snapshot and emptied the journal before failing
+    // to write results.json. Settle any orphaned snapshot review by proving it absent on the API.
+    if (tier !== undefined) {
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      for (const item of reviews.filter((r) => r.provider === p.name && r.kind === "snapshot")) {
+        const stillJournaled = (journal?.resources ?? []).some(
+          (r) =>
+            r.provider === p.name &&
+            r.kind === "snapshot" &&
+            (r.id === item.id || r.snapshotName === item.id),
+        );
+
+        if (stillJournaled) continue;
+
+        try {
+          const absent = uuidPattern.test(item.id)
+            ? (await deadline(config["timeout-ms"], () => readMicrosandboxSnapshot(item.id))) ===
+              undefined
+            : (
+                await deadline(config["timeout-ms"], () =>
+                  settleMicrosandboxCapture(item.id, config["timeout-ms"]),
+                )
+              ).kind === "absent";
+
+          if (absent) {
+            const index = reviews.indexOf(item);
+
+            if (index >= 0) reviews.splice(index, 1);
+          }
+        } catch {
+          // Keep the review until absence can be proven.
+        }
       }
     }
 
@@ -699,13 +765,17 @@ export async function reapRun(
     await writeOwnership(join(config.out, "results.json"), JSON.stringify(record, null, 2) + "\n");
   }
 
+  const mdPath = join(config.out, "results.md");
+  const md = await readFile(mdPath, "utf8").catch(() => null);
+
   if (reviews.length || releases.length || resolutions.length) {
-    const md = await readFile(join(config.out, "results.md"), "utf8").catch(() => "");
     await writeFile(
-      join(config.out, "results.md"),
-      md.replace(/^cleanup(?:Review|Released|Resolved):.*\n/gm, "") +
+      mdPath,
+      (md ?? "").replace(/^cleanup(?:Review|Released|Resolved):.*\n/gm, "") +
         `\ncleanupReview: ${JSON.stringify(reviews)}\ncleanupReleased: ${JSON.stringify(releases)}\ncleanupResolved: ${JSON.stringify(resolutions)}\n`,
     );
+  } else if (md !== null && /^cleanup(?:Review|Released|Resolved):/m.test(md)) {
+    await writeFile(mdPath, md.replace(/^cleanup(?:Review|Released|Resolved):.*\n/gm, ""));
   }
 
   return failed || reviews.length > 0;
