@@ -105,14 +105,17 @@ export function logPageScript(input: {
 /** After a stop and a start, mark as killed (137) each record that has no exit and was last
  * written in an earlier second than the guest's boot (`btime`), and remove run markers older than
  * the boot. Each check and write holds the record's lock, so a setup that reuses the name since
- * the boot is never marked killed, and any client can run this at any time. */
+ * the boot is never marked killed, and any client can run this at any time. A timestamp that
+ * cannot be read proves nothing, so that record is left as it is. */
 export function bootRepairScript(): string {
   const lock = `"$d/lock"`;
 
   const mark = [
     ...lockLines(lock),
     `trap ${quote(unlockCommand(lock))} EXIT`,
-    `[ ! -f "$d/spec.json" ] || [ -f "$d/exit" ] || [ "$(stat -c %Y "$d/spec.json")" -ge "$boot" ] || printf 137 > "$d/exit"`,
+    `if [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && t=$(stat -c %Y "$d/spec.json") && [ "$t" -lt "$boot" ]`,
+    `then printf 137 > "$d/exit" || exit 1`,
+    `fi`,
   ];
 
   return [

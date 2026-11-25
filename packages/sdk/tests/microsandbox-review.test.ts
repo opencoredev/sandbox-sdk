@@ -12,6 +12,8 @@ import {
   type PeerSandbox,
 } from "../src/providers/microsandbox/exec.js";
 import { microsandbox, type MicrosandboxOptions } from "../src/providers/microsandbox/index.js";
+import { quote } from "../src/shared/shell.js";
+import { bootRepairScript } from "../src/shell/process-records.js";
 import { microsandboxFake, type MicrosandboxFake } from "./microsandbox-fake.js";
 
 const key = "msb_fake_key_0123456789";
@@ -431,6 +433,26 @@ test("PR88-4 a repair waits for the record's lock, so a setup reusing the name i
 
   expect(next.stdout).toBe("none");
 }, 10_000);
+
+test("PR88-4 a repair that cannot read a record's timestamp leaves the record alone", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  const failingStat =
+    "mkdir -p /tmp/.sandbox-sdk/bin /tmp/.sandbox-sdk/procs/p2 && printf '#!/bin/sh\\nexit 127\\n' > /tmp/.sandbox-sdk/bin/stat && chmod +x /tmp/.sandbox-sdk/bin/stat && echo '{}' > /tmp/.sandbox-sdk/procs/p2/spec.json";
+
+  expect((await exec(p, sandbox, failingStat)).exitCode).toBe(0);
+
+  expect(
+    (
+      await exec(
+        p,
+        sandbox,
+        `PATH=/tmp/.sandbox-sdk/bin:$PATH sh -c ${quote(bootRepairScript())}; cat /tmp/.sandbox-sdk/procs/p2/exit 2>/dev/null || printf none`,
+      )
+    ).stdout,
+  ).toBe("none");
+});
 
 test("PR88-5 a guest agent lookup that never answers still ends at the command's timeout or abort", async () => {
   const { id: sandbox } = await adapter().create({ labels: labels() });

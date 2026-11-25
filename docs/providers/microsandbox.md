@@ -128,7 +128,7 @@ is touched, and a record written in the boot's own second is left alone, so the
 repair is safe for any client at any time. `find()` and the restart
 after a snapshot connect right after their start, so the sandbox they hand out
 is already repaired. A client whose handle predates another client's restart
-can still read the old records until it reconnects; it never loses current
+can still read the old records until it reconnects (`close()` drops its handle); it never loses current
 work.
 
 ## Commands
