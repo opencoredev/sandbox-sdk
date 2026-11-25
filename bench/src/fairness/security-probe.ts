@@ -11,6 +11,7 @@
  *   the CPU's vendor, family, model and clock, and whether commands run as root.
  */
 import { z } from "zod";
+import { sanitize } from "../v2-runner.js";
 import { CheckStop, type Check } from "./framework.js";
 
 export const firstCommand = `cat /proc/uptime 2>/dev/null; echo "boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"`;
@@ -448,7 +449,7 @@ export const securityProbe: Check<SecurityResult> = {
 
     if (probe.timedOut || !probe.ok || missing.length > 0)
       throw new CheckStop(
-        `Probe ${probe.timedOut ? "timed out" : `exited ${probe.exitCode}`} without ${missing.join(", ") || "finishing"}: ${probe.stderr.slice(0, 200)}`,
+        `Probe ${probe.timedOut ? "timed out" : `exited ${probe.exitCode}`} without ${missing.join(", ") || "finishing"}: ${sanitize(probe.stderr).slice(0, 200)}`,
       );
     const parsed = parseProbe(probe.stdout);
     await context.note("facts", parsed.facts);

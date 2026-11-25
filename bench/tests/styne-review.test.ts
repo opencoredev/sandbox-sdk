@@ -1,7 +1,8 @@
 /**
- * Regressions from the Sol review of 5027098: a Styne save journals its idempotency key and is settled
- * before its entry is forgotten, only Styne's own error codes decide absence or an ended sandbox, and
- * no Styne read follows a redirect.
+ * Regressions from the Sol reviews of 5027098 and 48c6037: a Styne save journals its idempotency key and
+ * is settled before its entry is forgotten, only Styne's own error codes about the resource asked for
+ * decide absence or an ended sandbox, a save is confirmed only for its own source, and no Styne read
+ * follows a redirect.
  */
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,7 +13,12 @@ import { z } from "zod";
 import { fingerprintOf } from "../src/connections.js";
 import { lookupSandbox } from "../src/existence.js";
 import { reapRun } from "../src/recovery.js";
-import { inspectSnapshot, snapshotCleaner, snapshotsFromSource } from "../src/snapshots.js";
+import {
+  createNamedStyneSnapshot,
+  inspectSnapshot,
+  snapshotCleaner,
+  snapshotsFromSource,
+} from "../src/snapshots.js";
 import { parseV2 } from "../src/v2-config.js";
 import { bound, boundFake } from "./native-fakes.js";
 
@@ -342,5 +348,86 @@ describe("Styne reads never follow a redirect", () => {
     });
 
     expect((await lookupSandbox(styneProvider(), "vm1", 1000)).result).toBe("unavailable");
+  });
+});
+
+describe("round 2: every Styne answer must be about the resource asked for", () => {
+  it("a replay refused for another sandbox settles nothing; the entry stays", async () => {
+    for (const refusal of [
+      { status: 410, json: { error_code: "sandbox_ended", sandboxID: "vmOther" } },
+      { status: 404, json: { error_code: "not_found", sandboxID: "vmOther" } },
+      { status: 404, json: { error_code: "not_found", name: "bench-other-snapshot" } },
+    ]) {
+      const { calls, journal } = await reapPendingSave((call) =>
+        call.method === "POST"
+          ? Response.json(refusal.json, { status: refusal.status })
+          : Response.json(notFound, { status: 404 }),
+      );
+
+      expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+      expect(journal).toContain(name);
+      expect(journal).toContain("save-key-1");
+    }
+  }, 30_000);
+
+  it("a snapshot 404 naming another resource is neither absence nor a done delete", async () => {
+    const foreign = [
+      { error_code: "not_found", name: "bench-other-snapshot" },
+      { error_code: "not_found", snapshotID: "snap-other" },
+      { error_code: "not_found", sandboxID: "vmOther" },
+      { error_code: "not_found", id: "bench-other-snapshot" },
+    ];
+
+    const answers = [...foreign, ...foreign, { error_code: "not_found", name }].map((json) =>
+      Response.json(json, { status: 404 }),
+    );
+
+    styneApi(() => answers.shift() ?? new Response(null, { status: 500 }));
+    const provider = styneProvider();
+
+    for (let i = 0; i < foreign.length; i++)
+      await expect(inspectSnapshot("styne", provider, sourceId, name)).rejects.toThrow();
+
+    const clean = await snapshotCleaner("styne", provider, sourceId);
+
+    for (let i = 0; i < foreign.length; i++)
+      await expect(clean(name)).rejects.toThrow(/delete failed/);
+
+    expect(await inspectSnapshot("styne", provider, sourceId, name)).toEqual({ exists: false });
+  });
+
+  it("a sandbox 404 or 410 naming another resource is unavailable", async () => {
+    const answers = [
+      Response.json({ error_code: "not_found", id: "vmOther" }, { status: 404 }),
+      Response.json({ error_code: "sandbox_ended", name: "bench-other-snapshot" }, { status: 410 }),
+      Response.json({ error_code: "not_found", sandboxID: "vm1", id: "vm1" }, { status: 404 }),
+    ];
+
+    styneApi(() => answers.shift() ?? new Response(null, { status: 500 }));
+    const provider = styneProvider();
+    const results: string[] = [];
+
+    for (let i = 0; i < 3; i++) results.push((await lookupSandbox(provider, "vm1", 1000)).result);
+
+    expect(results).toEqual(["unavailable", "unavailable", "not-found"]);
+  });
+
+  it("a save is confirmed only by an answer naming this snapshot of this source", async () => {
+    const answers = [
+      Response.json({ name, sandboxID: "vmOther" }, { status: 201 }),
+      Response.json({ name }, { status: 201 }),
+      Response.json({ name, sandboxID: sourceId }, { status: 201 }),
+    ];
+
+    styneApi(() => answers.shift() ?? new Response(null, { status: 500 }));
+    const provider = styneProvider();
+
+    await expect(createNamedStyneSnapshot(provider, sourceId, name, "k")).rejects.toThrow(
+      /another snapshot or source/,
+    );
+    await expect(createNamedStyneSnapshot(provider, sourceId, name, "k")).rejects.toThrow(
+      /another snapshot or source/,
+    );
+    expect(await createNamedStyneSnapshot(provider, sourceId, name, "k")).toEqual({ id: name });
   });
 });

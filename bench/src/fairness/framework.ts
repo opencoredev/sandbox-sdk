@@ -699,7 +699,7 @@ async function attempt<R>(input: {
 
   const logQuietly = async (line: LogLine) => {
     if (logClosed) {
-      say(`after the attempt: ${line.kind} ${JSON.stringify(line).slice(0, 200)}`);
+      say(`after the attempt: ${line.kind} ${sanitize(JSON.stringify(line)).slice(0, 200)}`);
 
       return;
     }

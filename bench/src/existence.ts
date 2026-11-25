@@ -382,13 +382,48 @@ function isDaytonaSandboxApi(api: unknown): api is DaytonaSandboxApi {
 const styneSandbox = z.object({ sandboxID: z.string(), state: z.string() });
 
 /**
- * Styne's error body: `{ error_code }`, such as `not_found` (https://docs.styne.ai/errors). An ended
- * sandbox's 410 may also name the sandbox.
+ * Styne's error body: `{ error_code }`, such as `not_found` (https://docs.styne.ai/errors), and the
+ * resource it answers for when it names one: a sandbox's `sandboxID`, a snapshot's `name` or
+ * `snapshotID`, or an `id`.
  */
-export const styneErrorBody = z.object({
+const styneErrorBody = z.object({
   error_code: z.string(),
   sandboxID: z.string().optional(),
+  name: z.string().optional(),
+  snapshotID: z.string().optional(),
+  id: z.string().optional(),
 });
+
+/** What a Styne request is about: its sandbox, and for a snapshot call the snapshot's name, its ID. */
+export interface StyneTarget {
+  sandboxId: string;
+  snapshot?: string;
+}
+
+/**
+ * Styne's own `error_code` in a failed answer about `target`, or undefined when the body does not decode
+ * or names any other resource: such an answer decides nothing.
+ */
+export async function styneErrorCode(
+  response: Response,
+  target: StyneTarget,
+): Promise<string | undefined> {
+  const parsed = styneErrorBody.safeParse(await response.json().catch(() => null));
+
+  if (!parsed.success) return undefined;
+  const { error_code, sandboxID, name, snapshotID, id } = parsed.data;
+
+  const named: [string | undefined, string | undefined][] = [
+    [sandboxID, target.sandboxId],
+    [name, target.snapshot],
+    [snapshotID, target.snapshot],
+    [id, target.snapshot ?? target.sandboxId],
+  ];
+
+  return named.every(([value, expected]) => value === undefined || value === expected)
+    ? error_code
+    : undefined;
+}
 
 /** Styne's codes for a sandbox that ended: killed, timed out, its node lost, or its guest agent gone. */
 export const styneEnded: ReadonlySet<string> = new Set([
@@ -574,20 +609,16 @@ export async function lookupSandbox(
             redirect: "error",
           });
 
-          // Only Styne's own codes decide, for this sandbox when the body names one: a 410 with an ended
+          // Only Styne's own codes about this sandbox decide ({@link styneErrorCode}): a 410 with an ended
           // code (answered until Styne forgets it) is an ended sandbox, and `404 not_found` a forgotten
           // one. A route-level, undecodable or foreign 404 or 410 is unavailable.
           if (response.status === 404 || response.status === 410) {
-            const answer = styneErrorBody.safeParse(await response.json().catch(() => null));
+            const code = await styneErrorCode(response, { sandboxId: id });
 
-            const own =
-              answer.success &&
-              (answer.data.sandboxID === undefined || answer.data.sandboxID === id);
-
-            if (own && response.status === 410 && styneEnded.has(answer.data.error_code))
+            if (response.status === 410 && code !== undefined && styneEnded.has(code))
               return { sandboxId: id, state: "killed" };
 
-            if (own && response.status === 404 && answer.data.error_code === "not_found")
+            if (response.status === 404 && code === "not_found")
               throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
 
             throw new Error("Styne lookup answered a route or unknown error");

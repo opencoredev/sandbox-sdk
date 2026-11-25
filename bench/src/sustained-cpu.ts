@@ -29,7 +29,12 @@ import {
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { deflateRawSync } from "node:zlib";
-import { createSandbox, type CreateOptions } from "@opencoredev/sandbox-sdk";
+import {
+  createSandbox,
+  SandboxError,
+  type CreateOptions,
+  type ErrorCode,
+} from "@opencoredev/sandbox-sdk";
 import type { Labels, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
 import { isMissingFile } from "./files.js";
@@ -1341,11 +1346,11 @@ async function burnAttempt(
     const ready = session;
     say("creating sandbox");
 
-    box = await deadline(createTimeoutMs, (signal) => {
-      creating = ready.create(AbortSignal.any([signal, dependencies.signal]));
-
-      return creating;
-    });
+    // The deadline stops the wait, not the create: aborting it would let the SDK reject while the
+    // provider still makes the sandbox. The call itself is kept and reclaimed in cleanup.
+    const call = ready.create(dependencies.signal);
+    creating = call;
+    box = await deadline(createTimeoutMs, () => call);
     await log({ kind: "sandbox", id: box.id, at: now() });
     say(`sandbox ${box.id}`);
 
@@ -1438,7 +1443,15 @@ async function burnAttempt(
     stopReason = errorText(cause);
     say(`stopped: ${stopReason}`);
   } finally {
-    cleanup = await cleanUp({ box, creating, session, log: logQuietly, say, delay });
+    cleanup = await cleanUp({
+      provider: name,
+      box,
+      creating,
+      session,
+      log: logQuietly,
+      say,
+      delay,
+    });
     input.onCleanup(cleanup);
   }
 
@@ -1478,13 +1491,53 @@ async function burnAttempt(
 type QuietLog = (line: LogLine) => Promise<void>;
 
 /**
+ * Create error codes for a request the provider refused, so nothing was allocated, as
+ * `refusalCodes` in realistic/burst.ts. Any other rejection (an abort, a timeout, a network error,
+ * `outcome_unknown`) may have left a sandbox running.
+ */
+const refusalCodes: ReadonlySet<ErrorCode> = new Set([
+  "quota",
+  "auth",
+  "unsupported",
+  "invalid_argument",
+  "not_found",
+]);
+
+/** Providers whose refusals do not prove nothing was allocated, as in realistic/burst.ts. */
+const allocateBeforeRefusal: ReadonlySet<string> = new Set(["modal"]);
+
+/** How a create the attempt got no sandbox from ended, as far as cleanup can tell. */
+type LateCreate =
+  | { readonly kind: "created"; readonly box: BurnBox }
+  | { readonly kind: "refused" }
+  | { readonly kind: "ambiguous"; readonly error: string }
+  | { readonly kind: "pending" };
+
+/** Waits a bounded time for a create the attempt got no sandbox from. Never throws. */
+async function settleLate(provider: string, creating: Promise<BurnBox>): Promise<LateCreate> {
+  return deadline(lateCreateMs, () =>
+    creating.then(
+      (box): LateCreate => ({ kind: "created", box }),
+      (cause): LateCreate =>
+        cause instanceof SandboxError &&
+        cause.sandboxId === undefined &&
+        refusalCodes.has(cause.code) &&
+        !allocateBeforeRefusal.has(provider)
+          ? { kind: "refused" }
+          : { kind: "ambiguous", error: errorText(cause) },
+    ),
+  ).catch((): LateCreate => ({ kind: "pending" }));
+}
+
+/**
  * Destroys the attempt's sandbox, including one its create returns after the deadline gave up on
  * it, then sweeps its labels for any left (a lost create, or the sandbox the destroy failed on).
  * Never throws.
  */
 async function cleanUp(input: {
+  readonly provider: string;
   readonly box: BurnBox | null;
-  /** The adapter's create, which racing its deadline did not cancel. */
+  /** The adapter's create, which the deadline only stopped waiting for. */
   readonly creating: Promise<BurnBox> | null;
   readonly session: BurnSession | null;
   readonly log: QuietLog;
@@ -1494,9 +1547,10 @@ async function cleanUp(input: {
   const { session, log, say, delay } = input;
   let box = input.box;
   let pending: string | null = null;
+  let ambiguous: string | null = null;
 
   if (box === null && input.creating !== null) {
-    const late = await settleLate(input.creating);
+    const late = await settleLate(input.provider, input.creating);
 
     if (late.kind === "created") box = late.box;
 
@@ -1504,6 +1558,9 @@ async function cleanUp(input: {
       pending = `A create still unanswered after ${lateCreateMs / 1000}s may leave a sandbox running`;
       say(`CREATE PENDING: ${pending}`);
     }
+
+    if (late.kind === "ambiguous")
+      ambiguous = `The create failed without proving nothing was made (${late.error}), and the sweep destroyed nothing`;
   }
 
   let failed: string | null = null;
@@ -1526,19 +1583,13 @@ async function cleanUp(input: {
   const unswept =
     failed !== null && !swept.destroyed.includes(failed) ? `${failed} did not destroy` : null;
 
-  const error = [pending, swept.error, unswept].filter((text) => text !== null).join("; ");
+  // An attempt makes one sandbox, so a sweep that destroyed one under its labels reclaimed the
+  // ambiguous create's; an empty one proves nothing.
+  const lost = swept.destroyed.length === 0 ? ambiguous : null;
+
+  const error = [pending, lost, swept.error, unswept].filter((text) => text !== null).join("; ");
 
   return error === "" ? { kind: "clean" } : { kind: "unconfirmed", error };
-}
-
-/** Waits a bounded time for a create the deadline gave up on. Never throws. */
-async function settleLate(creating: Promise<BurnBox>) {
-  return deadline(lateCreateMs, () =>
-    creating.then(
-      (box) => ({ kind: "created", box }) as const,
-      () => ({ kind: "failed" }) as const,
-    ),
-  ).catch(() => ({ kind: "pending" }) as const);
 }
 
 /**
