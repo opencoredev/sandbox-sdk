@@ -139,6 +139,10 @@ function regionFor(
   return region;
 }
 
+/**
+ * Providers in the held-open idle diagnostic. Maritime is not: its usage intervals leave out a paused
+ * sandbox's disk ($0.08/GB-month), so an idle that pauses would read cheaper than it bills.
+ */
 export const heldOpenProviders = [
   "e2b",
   "daytona",
@@ -149,6 +153,7 @@ export const heldOpenProviders = [
   "modal",
   "vercel",
   "instabox",
+  "archil",
   "styne",
 ];
 
@@ -299,9 +304,9 @@ export async function loadSlotProvider(
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
-  // Modal's and Styne's factory lifetime for creates without one; each attempt also passes its own below.
+  // Modal's, Maritime's and Styne's factory lifetime for creates without one; each attempt also passes its own below.
   const lifetime: Record<string, number> =
-    setup.adapter === "modal" || setup.adapter === "styne"
+    setup.adapter === "modal" || setup.adapter === "maritime" || setup.adapter === "styne"
       ? { [setup.adapter]: slotMs + 15 * 60_000 }
       : {};
 

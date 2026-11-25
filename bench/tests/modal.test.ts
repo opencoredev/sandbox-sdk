@@ -13,7 +13,7 @@ import { loadProvider, type DestroyTiming, type FactoryOptions } from "../src/pr
 import * as snapshots from "../src/snapshots.js";
 import { runV2 } from "../src/v2-runner.js";
 import { parseV2 } from "../src/v2-config.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, boundFake, fakeNativeModules } from "./native-fakes.js";
 
 const dirs: string[] = [];
 
@@ -133,7 +133,15 @@ it("admits every Modal iteration under the default dollar budget", async () => {
   const out = await directory();
 
   const report = await runV2(
-    [{ kind: "ready", name: "modal", cloud: true, region: "us-east", provider: memory() }],
+    [
+      {
+        kind: "ready",
+        name: "modal",
+        cloud: true,
+        region: "us-east",
+        provider: boundFake(memory()),
+      },
+    ],
     parseV2([
       "--providers",
       "modal",
@@ -204,7 +212,7 @@ it("restores a Modal snapshot at the source's requested size, and leaves other p
           name,
           cloud: false,
           region: null,
-          provider: recordingProvider(name, creates),
+          provider: boundFake(recordingProvider(name, creates)),
         },
       ],
       parseV2([
@@ -277,7 +285,8 @@ it("registers Modal snapshot cleanup and metadata through Modal's own client", a
     },
   });
 
-  const provider = memory();
+  const provider = bound({ ...memory(), name: "modal" });
+
   expect(await snapshots.inspectSnapshot("modal", provider, "sb-1", "im-1")).toEqual({
     exists: true,
   });
@@ -294,6 +303,10 @@ it("gives Modal sandboxes a hard lifetime covering a whole iteration, or the con
   const defaults = parseV2(["--providers", "modal"]);
   // 180 s per scenario for 15 scenarios plus create, fingerprint, restore and destroy.
   expect(lifetimeOptions("modal", defaults)).toEqual({ timeoutMs: 180_000 * 19 });
+  // A cpu-sustained run (named, never by `all`) adds its probe step.
+  expect(
+    lifetimeOptions("modal", parseV2(["--scenarios", "cpu-sustained", "--bursts", ""])),
+  ).toEqual({ timeoutMs: 180_000 * 20 });
   expect(lifetimeOptions("modal", parseV2(["--lifetime-ms", "modal=7200000"]))).toEqual({
     timeoutMs: 7_200_000,
   });

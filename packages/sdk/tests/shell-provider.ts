@@ -75,11 +75,16 @@ export async function shellProvider(): Promise<Provider> {
       return { url: `http://unused.invalid:${port}/` };
     },
     files: {
+      writeSupportsMode: true,
       async read(_, path) {
         return new Uint8Array(await fs.readFile(mapped(path)));
       },
-      async write(_, path, data) {
-        await fs.writeFile(mapped(path), data);
+      async write(_, path, data, options) {
+        await fs.writeFile(
+          mapped(path),
+          data,
+          options?.mode !== undefined ? { mode: options.mode } : undefined,
+        );
       },
       async mkdir(_, path) {
         await fs.mkdir(mapped(path), { recursive: true });

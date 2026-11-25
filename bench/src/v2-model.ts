@@ -84,6 +84,21 @@ export interface ReportV2 {
     track: ConfigV2["track"];
     reason: string;
   }[];
-  budgets: Record<string, { created: number; estimatedUSD: number; stop: string | null }>;
+  budgets: Record<string, ProviderBudget>;
   methodology: string[];
+}
+
+/** One provider's budget guard, as the run reports it. */
+export interface ProviderBudget {
+  created: number;
+  /**
+   * The harness's estimate: every sandbox priced from its iteration's start until its deletion
+   * was confirmed, or until the run returned for one still live (see `openLiabilities`).
+   */
+  estimatedUSD: number;
+  stop: string | null;
+  /** The dollar cap admission checked against; set once the run's cleanup has been priced. */
+  capUSD?: number;
+  /** Sandboxes still live at return: priced only to the return, they cost more until reaped. */
+  openLiabilities?: { id: string; liveMs: number }[];
 }

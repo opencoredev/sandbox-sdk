@@ -12,6 +12,7 @@ import { PhaseClock, firstByteAttempt, perfMetrics, filePayloads } from "../src/
 import { headroom, collectMetadata } from "../src/publication.js";
 import { markdownV2, htmlV2, writeV2 } from "../src/v2-report.js";
 import * as snapshots from "../src/snapshots.js";
+import { boundFake } from "./native-fakes.js";
 
 const fingerprint = {
   cpuModel: "fixture",
@@ -80,7 +81,7 @@ function fake(overrides: Partial<Provider> = {}): Provider {
 const ready = (name: string, provider: Provider, region: string | null = null) => ({
   kind: "ready" as const,
   name,
-  provider,
+  provider: boundFake(provider),
   region,
   cloud: false,
 });
@@ -579,12 +580,17 @@ it.each(["native-failure", "unsupported", "setup-failure"])(
       return async () => {};
     });
 
-    const provider = fake({
-      capabilities: new Set(mode === "unsupported" ? [] : ["snapshot"]),
-      snapshot: async () => {
-        throw new Error("native snapshot failed");
-      },
-    });
+    // An adapter without the capability has no snapshot method; createSandbox rejects one that does.
+    const provider = fake(
+      mode === "unsupported"
+        ? { capabilities: new Set([]) }
+        : {
+            capabilities: new Set(["snapshot"]),
+            snapshot: async () => {
+              throw new Error("native snapshot failed");
+            },
+          },
+    );
 
     const report = await runV2(
       [ready("fixture", provider)],

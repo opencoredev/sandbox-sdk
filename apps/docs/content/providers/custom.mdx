@@ -26,7 +26,7 @@ Import the types from `@opencoredev/sandbox-sdk/provider`. A `Provider` has:
 | `keyMode`                                 | `"exact"` if the service enforces unique names, otherwise `"best-effort"`                       |
 | `capabilities`                            | The optional features you implement                                                             |
 | `create(input)`                           | Create a sandbox with the requested size, env, network, ports, limits, labels, and snapshot     |
-| `find(key)`                               | Find a sandbox by key, or `undefined`                                                           |
+| `find(key, { signal? })`                  | Find a sandbox by key, or `undefined`. `signal` is the create's signal                          |
 | `connect(id)`                             | Attach to a sandbox by ID. Throw `not_found` if it's gone.                                      |
 | `list(labels)`                            | List sandboxes matching labels                                                                  |
 | `destroy(id)`                             | Delete a sandbox                                                                                |
@@ -47,7 +47,7 @@ Paths are absolute POSIX paths and times are epoch milliseconds.
 - **Exec closes stdin** unless `stdin` is given, emits chunks in arrival order, and kills the entire remote process group before settling on timeout or abort.
 - **Translate errors.** Map the service's failures to `SandboxError` codes such as `auth`, `not_found`, `quota`, and `unavailable`. Don't attach the native error object, since it can hold credentials.
 - **Keep policy out.** Redaction, edit, git, process records, and readiness belong to the core.
-- **Declare what you implement.** A capability without its method fails at `createSandbox` with code `provider`.
+- **Declare what you implement.** A capability without its method, or an optional method (`pause`, `snapshot`, `terminal`, `deleteSnapshot`, `buildTemplate`) without its matching capability, fails at `createSandbox` with code `provider`.
 
 ## Add features only your service has
 

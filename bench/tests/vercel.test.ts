@@ -14,7 +14,7 @@ import { estimateCost, priceAtSize } from "../src/pricing.js";
 import { providerDefaults } from "../src/providers.js";
 import { providerSetup } from "../src/realistic/setup.js";
 import { snapshotMetadata } from "../src/snapshots.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, fakeNativeModules, boundFake } from "./native-fakes.js";
 
 /** Vercel's SDK throws an APIError that carries the HTTP Response. */
 const notFound = () =>
@@ -141,7 +141,7 @@ it("treats Vercel's 404 as absence and a readable sandbox as present", async () 
     },
   });
 
-  const provider = { ...memory(), name: "vercel" };
+  const provider = bound({ ...memory(), name: "vercel" });
   expect(await lookupSandbox(provider, "gone", 1000)).toMatchObject({ result: "not-found" });
   expect(await lookupSandbox(provider, "here", 1000)).toMatchObject({
     result: "present",
@@ -167,7 +167,7 @@ it("reads a deleted Vercel snapshot as gone", async () => {
     },
   });
 
-  const provider = { ...memory(), name: "vercel" };
+  const provider = bound({ ...memory(), name: "vercel" });
   expect(await snapshotMetadata.inspect("vercel", provider, "sbx-1", "snap_1")).toEqual({
     exists: true,
   });
@@ -201,7 +201,7 @@ it("deletes a cost-suite sandbox when Vercel's meter capture never returns", asy
   const { parseV2 } = await import("../src/v2-config.js");
   const out = await mkdtemp(join(tmpdir(), "bench-vercel-stall-"));
   const stop = vi.spyOn(vercelMeter, "stop").mockImplementation(() => new Promise(() => {}));
-  const provider = memory();
+  const provider = boundFake(memory());
 
   const report = await runV2(
     [{ kind: "ready", name: "vercel", cloud: false, region: null, provider }],

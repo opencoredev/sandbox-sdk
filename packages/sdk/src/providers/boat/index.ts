@@ -1,4 +1,9 @@
-import { boatApi } from "../boat-api/index.js";
+import {
+  boatApi,
+  resolveBoatApiConfig,
+  type BoatConfig,
+  type BoatConnection,
+} from "../boat-api/index.js";
 import type { BoatPlane } from "../boat-api/transport.js";
 import type { NativeApi } from "../../native.js";
 import type { Provider } from "../../provider.js";
@@ -27,11 +32,11 @@ export interface BoatOptions extends BoatCreateOptions {
   apiKey?: string;
   /** Defaults to BOAT_API_BASE, then https://boat.dev/api/v1. */
   baseUrl?: string;
-  /** @deprecated Use baseUrl. Removed in 1.0.0. */
+  /** @deprecated Use baseUrl. Deprecated; will be removed in 2.0.0. */
   apiUrl?: string;
   /** Native machine size; default: Boat default (4 CPU/8 GB). Per-create size wins. */
   machine?: BoatMachine;
-  /** @deprecated Use machine. Removed in 1.0.0. */
+  /** @deprecated Use machine. Deprecated; will be removed in 2.0.0. */
   type?: BoatMachine;
   /** Deadline for each control-plane request. Default: 90 seconds. */
   requestTimeoutMs?: number;
@@ -68,6 +73,19 @@ export type BoatProvider = Provider<BoatNative, "size"> & {
   /** Boat's API with no sandbox bound, for account calls such as `GET /limits`. */
   readonly api: NativeApi<BoatPlane, BoatClientSdk>;
 };
+
+export type { BoatConfig, BoatConnection };
+
+/**
+ * The key and base URL `boat(options)` sends every request with, read from `options` and the
+ * environment as the adapter reads them. Throws `auth` when the key is missing, as the adapter
+ * does. Build your own `@boatdev/sdk` client against the same account with
+ * `new Configuration({ basePath: config.baseUrl, accessToken: config.apiKey })`.
+ * It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(options: BoatConnection = {}): BoatConfig {
+  return resolveBoatApiConfig(options);
+}
 
 /** Boat API v1 over plain HTTP. No other package to install. */
 export function boat(options: BoatOptions = {}): BoatProvider {

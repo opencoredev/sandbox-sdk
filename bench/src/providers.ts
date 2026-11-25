@@ -3,11 +3,13 @@ import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 import { lifetimeOptions } from "./lifetime.js";
 import { createAppByLabel } from "./modal-apps.js";
+import { bindConnection } from "./connections.js";
 
 const templateKeys = new Map([
   ["e2b", "template"],
   ["superserve", "template"],
   ["instabox", "template"],
+  ["maritime", "template"],
   ["styne", "template"],
   ["daytona", "snapshot"],
   ["freestyle", "snapshotId"],
@@ -16,6 +18,7 @@ const templateKeys = new Map([
   ["modal", "image"],
   ["baseten", "image"],
   ["beam", "image"],
+  ["archil", "image"],
   ["local", "image"],
 ]);
 
@@ -69,6 +72,7 @@ export type LoadedProvider = ReadyProvider | SkippedProvider;
 const credentials = new Map([
   ["superserve", ["SUPERSERVE_API_KEY"]],
   ["instabox", ["INSTABOX_API_KEY"]],
+  ["maritime", ["MARITIME_API_KEY"]],
   ["styne", ["STYNE_API_KEY"]],
   ["e2b", ["E2B_API_KEY"]],
   ["railway", ["RAILWAY_API_TOKEN", "RAILWAY_ENVIRONMENT_ID"]],
@@ -82,7 +86,19 @@ const credentials = new Map([
   ["modal", ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]],
   ["baseten", ["BASETEN_API_KEY"]],
   ["beam", ["BEAM_TOKEN", "BEAM_WORKSPACE_ID"]],
+  ["archil", ["ARCHIL_API_KEY"]],
 ]);
+
+/**
+ * Every provider `loadProvider` builds: the cloud ones with a credential policy, the local Docker
+ * adapter, and the in-process ones. Each must have a connection fingerprint (connections.ts).
+ */
+export const providerNames: readonly string[] = [
+  ...credentials.keys(),
+  "local",
+  "memory",
+  "agentos",
+];
 
 const regionKeys = new Map([
   ["e2b", "E2B_REGION"],
@@ -90,6 +106,8 @@ const regionKeys = new Map([
   ["daytona", "DAYTONA_TARGET"],
   // Pins sandboxes at Modal's region price multiplier; loadProvider passes it to the adapter.
   ["modal", "MODAL_SANDBOX_REGION"],
+  // Archil keys are region-scoped; the adapter reads ARCHIL_REGION itself (default aws-us-east-1).
+  ["archil", "ARCHIL_REGION"],
 ]);
 
 // Providers whose region places the sandbox and sets its price, so the label and the placement
@@ -240,7 +258,7 @@ export async function loadProvider(
   // Before anything else: a conflicting region configuration refuses the run.
   const region = providerRegion(name, env);
 
-  if (!credentials.has(name) && name !== "local" && name !== "memory" && name !== "agentos")
+  if (!providerNames.includes(name))
     return {
       kind: "skipped",
       name,
@@ -268,8 +286,7 @@ export async function loadProvider(
   if (!factory.success)
     return { kind: "skipped", name, note: `Entry point does not export ${name}()` };
 
-  // Factory failures are real configuration errors, not missing-provider skips.
-  const provider = await factory.data({
+  const options = {
     ...providerDefaults(name),
     ...templateOptions(name, config?.template[name]),
     ...productOptions(name, config?.product[name]),
@@ -278,9 +295,14 @@ export async function loadProvider(
     ...appOptions(name),
     ...regionOptions(name, region),
     ...config?.factory,
-  });
+  };
+
+  // Factory failures are real configuration errors, not missing-provider skips.
+  const provider = await factory.data(options);
 
   assertProvider(provider);
+  // Reads, snapshots and cleanup reach this instance's sandboxes through the same connection.
+  bindConnection(provider, options);
 
   return {
     kind: "ready",
@@ -315,6 +337,8 @@ const providerMembers = {
   previewMode: (target) => target.previewMode,
   inlineActivity: (target) => target.inlineActivity,
   procActivity: (target) => target.procActivity,
+  recordsSecretNames: (target) => target.recordsSecretNames,
+  readsMetadataOnlyWhenRunning: (target) => target.readsMetadataOnlyWhenRunning,
   commandShell: (target) => target.commandShell,
   processRecordRoot: (target) => target.processRecordRoot,
   capabilities: (target) => target.capabilities,

@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import type { Redactor } from "./errors.js";
+import { SandboxError, type Redactor } from "./errors.js";
 import type { OutputChunk, SandboxBase } from "./types.js";
 import { chunkRedactor } from "./run.js";
 
@@ -13,8 +13,9 @@ function redactorOf(box: SandboxBase<unknown>) {
   const redactor = redactors.get(box);
 
   if (!redactor)
-    throw new Error(
+    throw new SandboxError(
       "Unknown sandbox handle. Secret redaction cannot be guaranteed. Use createSandbox or connectSandbox.",
+      { code: "invalid_argument" },
     );
 
   return redactor;
@@ -29,7 +30,9 @@ export function toolOutputFilter(box: SandboxBase<unknown>, emit: (chunk: Output
   type State = "plain" | "escape" | "csi" | "string" | "string_escape";
 
   const states: Record<OutputChunk["stream"], State> = { stdout: "plain", stderr: "plain" };
-  const filter = chunkRedactor(redactorOf(box), emit, true);
+  const redactor = redactorOf(box);
+  const interleaved = chunkRedactor(redactor, emit, true);
+  const filter = chunkRedactor(redactor, (chunk) => interleaved.push(chunk), false);
 
   return {
     push(chunk: OutputChunk) {
@@ -78,6 +81,7 @@ export function toolOutputFilter(box: SandboxBase<unknown>, emit: (chunk: Output
     },
     flush() {
       filter.flush();
+      interleaved.flush();
     },
   };
 }

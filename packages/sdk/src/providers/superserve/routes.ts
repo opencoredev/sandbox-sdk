@@ -15,12 +15,16 @@ import type { JsonValue } from "../../shared/json.js";
 import { isNumber, isObject, isString } from "../../shared/narrow.js";
 import { failure } from "./errors.js";
 
+/** What a Superserve adapter sends its requests with, from `resolveConfig`. */
 export interface SuperserveConfig {
-  apiKey: string;
-  /** Control plane, e.g. https://api.superserve.ai. */
-  baseUrl: string;
+  readonly apiKey: string;
+  /**
+   * Control plane, e.g. https://api.superserve.ai. The adapter's own requests drop trailing
+   * slashes before they append a path.
+   */
+  readonly baseUrl: string;
   /** Data plane and preview host, e.g. sandbox.superserve.ai. */
-  sandboxHost: string;
+  readonly sandboxHost: string;
 }
 
 const defaultBaseUrl = "https://api.superserve.ai";
@@ -55,8 +59,18 @@ function sandboxHostFor(baseUrl: string): string {
   return defaultSandboxHost;
 }
 
-/** Reads the key and endpoints: an explicit base URL wins, then the key's region (`ss_live_<region>_`), then the default. */
-export function resolveConfig(options: { apiKey?: string; baseUrl?: string }): SuperserveConfig {
+/**
+ * The key and endpoints `superserve(options)` uses, read from `options` and the environment as the
+ * adapter reads them: a non-blank base URL wins, then the key's region (`ss_live_<region>_`), then
+ * US East. Throws `auth` when the key is missing, as the adapter does. A request to another
+ * region's control plane answers 404 for a sandbox that is running, so pass `baseUrl` to
+ * `@superserve/sdk` calls too. The adapter's `native.sdk()` passes only an explicit `baseUrl`
+ * option, and leaves the rest to the package.
+ * It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(
+  options: { apiKey?: string; baseUrl?: string } = {},
+): SuperserveConfig {
   const apiKey = options.apiKey ?? process.env.SUPERSERVE_API_KEY;
 
   if (!apiKey?.trim())
@@ -64,6 +78,7 @@ export function resolveConfig(options: { apiKey?: string; baseUrl?: string }): S
       "Superserve API key is missing. Authentication is required. Set SUPERSERVE_API_KEY or pass apiKey.",
       "auth",
     );
+
   const override = (options.baseUrl ?? process.env.SUPERSERVE_BASE_URL)?.trim() || undefined;
 
   if (override !== undefined)

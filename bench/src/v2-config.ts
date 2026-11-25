@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { checkScenarioPlan } from "./scenarios.js";
 
 const integer = z.coerce.number().int().positive();
 
@@ -70,6 +71,14 @@ const assignments = (value: string[]): Record<string, string> =>
     }),
   );
 
+/**
+ * Providers with no disk size option, by the reason. A size with a disk is refused here, before
+ * anything runs, so it is reported as unsupported rather than recorded as failed creates.
+ */
+const noDiskSize: ReadonlyMap<string, string> = new Map([
+  ["archil", "Archil sandboxes have no disk size option (the root disk is fixed)"],
+]);
+
 const sizes = z
   .array(z.string())
   .default([])
@@ -77,8 +86,13 @@ const sizes = z
     Object.fromEntries(
       Object.entries(assignments(value)).map(([name, raw]) => {
         if (!raw) throw new Error("Expected provider=size");
+        const size = sizeSchema.parse(sizeInput(raw));
+        const noDisk = noDiskSize.get(name);
 
-        return [name, sizeSchema.parse(sizeInput(raw))];
+        if (noDisk && !isSizePreset(size) && size.diskGb !== undefined)
+          throw new Error(`${noDisk}; pass ${name}=cpu:memoryMb`);
+
+        return [name, size];
       }),
     ),
   );
@@ -147,6 +161,9 @@ const schema = z.object({
     .pipe(z.array(z.enum(["modal"]))),
   "account-limits": overrides,
   "burst-cohorts": integer.max(100).default(3),
+  // Survival cohorts: every member must answer a heartbeat every interval through the window.
+  "survival-window-ms": integer.max(3_600_000).default(300_000),
+  "survival-heartbeat-ms": integer.min(1000).default(15_000),
   bursts: z
     .string()
     .default("3")
@@ -164,21 +181,40 @@ const schema = z.object({
     .string()
     .regex(/^[a-zA-Z0-9_-]{1,100}$/)
     .default(`sbx45-${Date.now()}`),
+  // Start even when --out holds another run's journal with entries, overwriting it.
+  force: z.boolean().default(false),
 });
 
 export type ConfigV2 = z.infer<typeof schema>;
 
 const repeatable = new Set(["size", "template", "product"]);
+const flags = new Set(["force"]);
+
+type ArgOption = { type: "string"; multiple?: boolean } | { type: "boolean" };
+
+function argOption(key: string): ArgOption {
+  if (flags.has(key)) return { type: "boolean" };
+
+  return repeatable.has(key) ? { type: "string", multiple: true } : { type: "string" };
+}
 
 export function parseV2(args: string[]) {
-  const options: Record<string, { type: "string"; multiple?: boolean }> = Object.fromEntries(
-    Object.keys(schema.shape).map((key) => [
-      key,
-      repeatable.has(key) ? { type: "string", multiple: true } : { type: "string" },
-    ]),
+  const options: Record<string, ArgOption> = Object.fromEntries(
+    Object.keys(schema.shape).map((key) => [key, argOption(key)]),
   );
 
   const config = schema.parse(parseArgs({ args, options, strict: true }).values);
+
+  if (config["survival-heartbeat-ms"] > config["survival-window-ms"])
+    throw new Error("--survival-heartbeat-ms must not exceed --survival-window-ms");
+
+  // The window always ends with a heartbeat (`heartbeatOffsets`). With a remainder, that slot
+  // falls less than an interval after the one before it, so a reply on time to that one can
+  // leave the final slot busy and the member without a verdict.
+  if (config["survival-window-ms"] % config["survival-heartbeat-ms"] !== 0)
+    throw new Error("--survival-window-ms must be a whole multiple of --survival-heartbeat-ms");
+
+  checkScenarioPlan(config.scenarios, config.bursts);
 
   if (config.scenarios.includes("cost") && config.scenarios.length !== 1)
     throw new Error("The cost suite must run alone (--scenarios cost)");

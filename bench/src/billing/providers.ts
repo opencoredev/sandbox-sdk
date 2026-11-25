@@ -3,7 +3,10 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
+import { resolveConfig as vercelConfig } from "@opencoredev/sandbox-sdk/vercel";
+import { endpoint } from "../connections.js";
 import type { Json } from "../json.js";
+import { archilControlUrl, archilSandboxBody, archilUsageBody } from "../archil.js";
 import { pricing } from "../pricing.js";
 import type { OwnedSandbox } from "./input.js";
 import { collectModal, modalBillingSource, type ModalReport } from "./modal.js";
@@ -80,6 +83,8 @@ type BillingSource = {
   key: string;
   notes: string[];
 };
+
+export const archilUsageSource = "GET /api/sandboxes/{id}/usage (Archil control plane)";
 
 const sources = new Map<string, BillingSource>(
   Object.entries({
@@ -179,6 +184,18 @@ const sources = new Map<string, BillingSource>(
         "Metered, not invoice: Instabox's own per-machine usage (running time only, not starting, paused or stopped) at the published rates, $0.004/vCPU-hour and $0.00225/GiB-hour (https://instabox.sh/docs/account/pricing.md). Disk is included in paid plans (Builder: 1 TiB across machines) and egress within the plan's allowance, so neither is priced. Plan fee, monthly credits and tax are excluded.",
       ],
     },
+    maritime: {
+      source:
+        "https://api.maritime.sh/v1/sandboxes/{id}/info and https://api.maritime.sh/v1/usage?sandbox={id}",
+      granularity: "per running interval of one sandbox, each with its cost in USD",
+      delay:
+        "live; final once the sandbox has ended and every running interval has an end (ended sandboxes stay readable for 7 days)",
+      key: "MARITIME_API_KEY",
+      notes: [
+        "Metered, not invoice: Maritime's own cost of each running interval ($0.0055/vCPU-hour and $0.00275/GiB-hour per second, disk included while running; https://maritime.sh/docs/billing). A paused sandbox's disk ($0.08/GB-month) is not in these intervals and is not priced. Plan fee, its equal usage credit and tax are excluded.",
+        "A sandbox with no usage interval counts as $0 only when Maritime's info says it ended with 0 running seconds and $0 so far; otherwise its cost is unavailable, never zero.",
+      ],
+    },
     styne: {
       source: "No per-sandbox billing endpoint (GET /v1/run/usage is daily account totals)",
       granularity: "not available per sandbox",
@@ -195,6 +212,16 @@ const sources = new Map<string, BillingSource>(
       key: "BEAM_TOKEN",
       notes: [
         "The dashboard's Usage page shows workspace totals; no per-sandbox billing API found. No fabricated cost.",
+      ],
+    },
+    archil: {
+      source: archilUsageSource,
+      granularity: "sandbox lifetime: vCPU-hours, memory GiB-hours and cost, sampled each minute",
+      delay: "about a minute; readable for 90 days, final once the sandbox is deleted",
+      key: "ARCHIL_API_KEY",
+      notes: [
+        "Archil's own per-sandbox cost at its rates ($0.055/vCPU-hour, $0.020/GiB-hour; https://docs.archil.com/administration/billing.md), before included allowances and prepaid credit. Compute only: disk data storage, egress and the plan minimum are excluded.",
+        "Free-plan sandboxes get deny-all egress; paid plans are unrestricted.",
       ],
     },
     freestyle: {
@@ -318,6 +345,165 @@ export function instaboxUsageQuery(row: Pick<OwnedSandbox, "startedAt">, now = D
   return query;
 }
 
+/**
+ * How long after a sandbox's session ended (Archil's own `finished_at`) a usage read must be made to
+ * count as settled. `as_of` is when the usage was read, and the meter updates about once a minute, so
+ * a read this long after the end has seen the final minute.
+ */
+export const archilSettleMs = 120_000;
+
+/**
+ * One sandbox's usage from Archil's `GET /api/sandboxes/{id}/usage`: Archil's own cost since the
+ * sandbox was created. It is final only once the sandbox is deleted and the read (`as_of`, the read
+ * time) is at least {@link archilSettleMs} after Archil's own end of its last session (`finished_at`);
+ * without that end, or read sooner, it is provisional. The bench's last sample is not used: a sandbox
+ * left for the final cleanup sweep can run on long after it.
+ */
+export function decodeArchil(
+  raw: Json,
+  state: { deleted: boolean; endedAt: string | undefined },
+): Cost {
+  const usage = archilUsageBody.parse(raw);
+  const asOf = usage.as_of === undefined ? Number.NaN : Date.parse(usage.as_of);
+  const ended = state.endedAt === undefined ? Number.NaN : Date.parse(state.endedAt);
+  const settled = state.deleted && asOf >= ended + archilSettleMs;
+
+  const why = !state.deleted
+    ? "; the sandbox still existed"
+    : settled
+      ? ""
+      : "; provisional: the meter may not have settled since the sandbox's last sample";
+
+  return {
+    kind: "billed",
+    usd: usage.cost,
+    scope: "sandbox-lifetime",
+    complete: settled,
+    confidence: settled ? "high" : "low",
+    note: `Provider-reported cost (${usage.vcpu_hours} vCPU-hours, ${usage.memory_gib_hours} GiB-hours), before allowances and prepaid credit; storage and egress excluded${why}`,
+  };
+}
+
+/** The fields of `GET /v1/sandboxes/{id}/info` the Maritime collector reads. It never resumes the sandbox. */
+export const maritimeInfoSchema = z.object({
+  id: z.string(),
+  state: z.string(),
+  createdAt: z.string(),
+  endedAt: z.string().nullable(),
+  runningSeconds: z.number().int().nonnegative(),
+  costSoFarUsd: z.string().nullable(),
+  storedBytes: z.number().int().nonnegative(),
+});
+
+export type MaritimeInfo = z.infer<typeof maritimeInfoSchema>;
+
+/** One running interval of `GET /v1/usage`. */
+export const maritimeUsageRecordSchema = z.object({
+  sandboxId: z.string(),
+  startedAt: z.string(),
+  endedAt: z.string().nullable(),
+  costUsd: z.string(),
+});
+
+export type MaritimeUsageRecord = z.infer<typeof maritimeUsageRecordSchema>;
+
+export const maritimeUsagePageSchema = z.object({
+  data: z.array(maritimeUsageRecordSchema),
+  nextCursor: z.string().nullable(),
+});
+
+/** A decimal USD amount as Maritime writes it (`"0.000038"`), or null when it is not one. */
+function usdOf(text: string | null): number | null {
+  if (text === null || !/^\d+(?:\.\d+)?$/.test(text)) return null;
+
+  const value = Number(text);
+
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** How many usage pages (100 intervals each) the collector reads before it gives up. */
+export const maritimeUsagePages = 100;
+
+/**
+ * The usage query for one sandbox: every interval overlapping its life, from an hour before Maritime's
+ * own `createdAt` to five minutes after its `endedAt` (or now, while it lives).
+ */
+export function maritimeUsageQuery(info: MaritimeInfo, now = Date.now(), cursor?: string) {
+  const created = Date.parse(info.createdAt);
+  const ended = info.endedAt === null ? now : Date.parse(info.endedAt);
+
+  if (!Number.isFinite(created) || !Number.isFinite(ended))
+    throw new Error("Maritime info has unreadable timestamps");
+
+  const query = new URLSearchParams({
+    from: new Date(created - 3_600_000).toISOString(),
+    to: new Date(ended + 5 * 60_000).toISOString(),
+    sandbox: info.id,
+    limit: "100",
+  });
+
+  if (cursor !== undefined) query.set("cursor", cursor);
+
+  return query;
+}
+
+/**
+ * One sandbox's cost from Maritime's info and every usage interval of it. Complete only when the sandbox
+ * has ended and it has intervals, every one with an end. No interval at all is $0 only when the info
+ * itself says the sandbox ended having run 0 seconds at $0; otherwise it is unavailable, since missing
+ * usage is not zero. A disagreeing running total in the info is noted, not used.
+ */
+export function decodeMaritime(
+  info: MaritimeInfo,
+  records: MaritimeUsageRecord[],
+  id: string,
+): Cost {
+  if (info.id !== id) throw new Error("Billing ID mismatch");
+
+  const costs = records.map((record) => {
+    if (record.sandboxId !== id) throw new Error("Billing ID mismatch");
+
+    const usd = usdOf(record.costUsd);
+
+    if (usd === null) throw new Error("Maritime usage cost is not a non-negative amount");
+
+    return usd;
+  });
+
+  const soFar = usdOf(info.costSoFarUsd);
+  const ended = info.state === "ended";
+  const neverRan = ended && info.runningSeconds === 0 && soFar === 0;
+
+  if (records.length === 0 && !neverRan)
+    return unavailable(
+      ended
+        ? `Maritime lists no usage for a sandbox that ran ${info.runningSeconds} seconds; not counted as $0`
+        : `Maritime lists no usage yet for a sandbox that is ${info.state}`,
+    );
+
+  const usd = costs.reduce((sum, cost) => sum + cost, 0);
+  const closed = records.every((record) => record.endedAt !== null);
+  // The plan's predicate: ended, every interval closed, and intervals listed (or the never-ran case above).
+  // The info's running total is not part of it: `/info` can report `costSoFarUsd: null` once ended.
+  const complete = ended && closed && (records.length > 0 || neverRan);
+  // Reported, never used to decide completeness: the info's total, when it has one, disagrees with the
+  // intervals beyond Maritime's precision (a millionth of a dollar).
+  const disagrees = soFar !== null && Math.abs(soFar - usd) > 0.000002 + usd * 0.01;
+
+  return {
+    kind: "metered",
+    usd,
+    scope: "sandbox-lifetime",
+    complete,
+    confidence: complete ? "medium" : "low",
+    note: complete
+      ? `Metered, not invoice: Maritime's ${records.length} running interval(s) of this sandbox (${info.runningSeconds} running seconds); disk while paused excluded${disagrees ? `; Maritime's info says $${info.costSoFarUsd} so far, the intervals sum to $${usd.toFixed(6)}` : ""}`
+      : !ended
+        ? `Partial: the sandbox is ${info.state}, so its intervals are not final`
+        : "Partial: an interval of this ended sandbox has no end yet",
+  };
+}
+
 export function decodeUpstash(raw: Json, id: string): Cost {
   const value = upstashSchema.parse(raw);
 
@@ -436,11 +622,14 @@ async function vercelSdk(): Promise<VercelModule> {
   return import(pathToFileURL(require.resolve("@vercel/sandbox")).href);
 }
 
-/** Reads and stops through the native SDK, which resolves OIDC or token credentials itself. Tests replace it. */
+/**
+ * Reads and stops through the native SDK with the adapter's credentials and scope: an explicit
+ * token's team and project, else OIDC. Tests replace it.
+ */
 export const vercelMeter = {
   async read(name: string): Promise<VercelMeter> {
     const { Sandbox } = await vercelSdk();
-    const box = await Sandbox.get({ name, resume: false });
+    const box = await Sandbox.get({ ...vercelConfig(), name, resume: false });
 
     return vercelMeterSchema.parse({
       name: box.name,
@@ -454,7 +643,7 @@ export const vercelMeter = {
   },
   async stop(name: string): Promise<void> {
     const { Sandbox } = await vercelSdk();
-    await (await Sandbox.get({ name, resume: false })).stop();
+    await (await Sandbox.get({ ...vercelConfig(), name, resume: false })).stop();
   },
 };
 
@@ -922,6 +1111,8 @@ export async function collectProvider(
     "modal",
     "vercel",
     "instabox",
+    "archil",
+    "maritime",
   ].includes(provider);
 
   let blocked = offline
@@ -1167,7 +1358,9 @@ export async function collectProvider(
           : unavailable("Event pagination limit; history incomplete");
       } else if (provider === "instabox") {
         const headers = { "X-API-Key": key ?? "" };
-        const base = env.INSTABOX_API_URL ?? "https://api.instabox.sh";
+        // From the same environment as the key, without trailing slashes as the adapter joins it:
+        // `//v1/machines/<id>` can answer 404 for a live machine, marking its accruing usage final.
+        const base = endpoint(env.INSTABOX_API_URL ?? "https://api.instabox.sh");
 
         // Deletion first: a machine already gone (404) when its usage is read has a final meter.
         const deleted = await transport(`${base}/v1/machines/${id}`, headers).then(
@@ -1184,6 +1377,59 @@ export async function collectProvider(
         );
 
         cost = decodeInstabox(usage, { deleted, started: row.startedAt !== null });
+      } else if (provider === "archil") {
+        const headers = { Authorization: `Bearer ${key ?? ""}` };
+        const base = archilControlUrl(env.ARCHIL_REGION);
+
+        // Deletion and Archil's own end of the last session first, so a usage read after them is
+        // known to be final. A sandbox already dropped (404) has no end time left: provisional.
+        const native = await transport(`${base}/api/sandboxes/${id}`, headers).then(
+          (raw) => {
+            const found = archilSandboxBody.parse(raw);
+
+            return { deleted: found.status === "deleted", endedAt: found.finishedAt };
+          },
+          (cause: unknown) => {
+            if (cause instanceof BillingHttpError && cause.status === 404)
+              return { deleted: true, endedAt: undefined };
+            throw cause;
+          },
+        );
+
+        cost = decodeArchil(await transport(`${base}/api/sandboxes/${id}/usage`, headers), native);
+      } else if (provider === "maritime") {
+        const headers = { Authorization: `Bearer ${key}` };
+        const root = (env.MARITIME_API_URL ?? "https://api.maritime.sh").replace(/\/+$/, "");
+
+        const info = maritimeInfoSchema.parse(
+          await transport(`${root}/v1/sandboxes/${id}/info`, headers),
+        );
+
+        const records: MaritimeUsageRecord[] = [];
+        let cursor: string | undefined;
+        let exhausted = false;
+
+        for (let page = 0; page < maritimeUsagePages; page++) {
+          const answer = maritimeUsagePageSchema.parse(
+            await transport(
+              `${root}/v1/usage?${maritimeUsageQuery(info, extra.now, cursor)}`,
+              headers,
+            ),
+          );
+
+          records.push(...answer.data);
+
+          if (answer.nextCursor === null) {
+            exhausted = true;
+            break;
+          }
+
+          cursor = answer.nextCursor;
+        }
+
+        cost = exhausted
+          ? decodeMaritime(info, records, row.id)
+          : unavailable("Maritime usage pagination limit; history incomplete");
       } else if (provider === "vercel") cost = await vercelCost(row.id, extra.usageDir);
       else cost = unavailable("No supported per-sandbox billing source");
       result.sandboxes.push({ id: row.id, source: spec.source, cost });

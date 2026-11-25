@@ -11,6 +11,7 @@ import { missingCredentials, templateOptions } from "../src/providers.js";
 import { provisionedAllocation } from "../src/provisioned-allocations.js";
 import { heldOpenProviders } from "../src/realistic/cli.js";
 import { providerSetup } from "../src/realistic/setup.js";
+import { bound } from "./native-fakes.js";
 import {
   createNamedStyneSnapshot,
   inspectSnapshot,
@@ -48,7 +49,7 @@ function styneApi(...answers: { status: number; json?: unknown }[]) {
   return calls;
 }
 
-const styneProvider = { ...memory(), name: "styne" };
+const styneProvider = bound({ ...memory(), name: "styne" }, { apiKey: "styne_test_key" });
 
 describe("Styne bench registration", () => {
   it("is a cloud provider with Styne's sizes and its base template's allocation", () => {
@@ -196,12 +197,14 @@ describe("Styne snapshots", () => {
       { status: 404, json: { error_code: "not_found" } },
     );
 
-    expect(await createNamedStyneSnapshot("vm1", "bench-r-1")).toEqual({ id: "bench-r-1" });
+    expect(await createNamedStyneSnapshot(styneProvider, "vm1", "bench-r-1")).toEqual({
+      id: "bench-r-1",
+    });
     expect(JSON.parse(calls[0]!.body ?? "")).toEqual({ name: "bench-r-1" });
     expect(calls[0]!.headers.get("idempotency-key")).toMatch(/^[0-9a-f-]{36}$/);
-    expect(await snapshotsFromSource("styne", "vm1", new Set(["bench-r-1"]))).toEqual([
-      { id: "bench-r-1", name: "bench-r-1" },
-    ]);
+    expect(
+      await snapshotsFromSource("styne", styneProvider, "vm1", new Set(["bench-r-1"])),
+    ).toEqual([{ id: "bench-r-1", name: "bench-r-1" }]);
 
     const clean = await snapshotCleaner("styne", styneProvider, "vm1");
     await clean("bench-r-1");

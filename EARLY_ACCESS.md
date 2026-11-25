@@ -1,6 +1,6 @@
-# Sandbox SDK 1.0: early access notes
+# Sandbox SDK: provider setup notes
 
-`@opencoredev/sandbox-sdk` 1.0 is one TypeScript API for cloud and local sandboxes. You create a sandbox, run commands, read and write files, start servers, and get preview URLs with the same calls on every provider. The provider is a single factory you pass to `createSandbox`, so supporting several providers comes down to choosing that factory at runtime.
+`@opencoredev/sandbox-sdk` is one TypeScript API for cloud and local sandboxes. You create a sandbox, run commands, read and write files, start servers, and get preview URLs with the same calls on every provider. The provider is a single factory you pass to `createSandbox`, so supporting several providers comes down to choosing that factory at runtime.
 
 If something breaks or reads wrong, tell us; the last section says what to include.
 
@@ -12,9 +12,9 @@ Install from npm:
 npm install @opencoredev/sandbox-sdk
 ```
 
-The docs for this version are at https://v2.sandbox-sdk.app/docs.
+The docs are at https://sandbox-sdk.app/docs.
 
-That is the whole install for E2B, Daytona, Freestyle, Superserve, Instabox, Styne, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Baseten, Upstash Box, Railway, Luxor, boxd, and agentOS also need a peer package; the [peer packages table](https://v2.sandbox-sdk.app/docs/reference/capabilities#peer-packages) names each one and the version range the SDK accepts. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Instabox, Maritime, Styne, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Baseten, Upstash Box, Railway, Luxor, boxd, agentOS and Beam also need a peer package; the [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) names each one and the version range the SDK accepts. They are optional peers, so npm will not add them for you. Node.js 22+ or Bun 1.3+, ESM only. Edge runtimes such as Cloudflare Workers are not supported.
 
 Check it works with no account and no Docker:
 
@@ -37,6 +37,7 @@ console.log((await box.run("cat hello.txt")).stdout); // "hello\n"
 | Modal          | `@opencoredev/sandbox-sdk/modal`      | `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET`; optional `MODAL_SANDBOX_REGION`                                      |
 | Baseten        | `@opencoredev/sandbox-sdk/baseten`    | `BASETEN_API_KEY`                                                                                             |
 | Instabox       | `@opencoredev/sandbox-sdk/instabox`   | `INSTABOX_API_KEY`; optional `INSTABOX_API_URL`                                                               |
+| Maritime       | `@opencoredev/sandbox-sdk/maritime`   | `MARITIME_API_KEY`; optional `MARITIME_API_URL`                                                               |
 | Styne          | `@opencoredev/sandbox-sdk/styne`      | `STYNE_API_KEY`; optional `STYNE_API_URL`                                                                     |
 | Upstash Box    | `@opencoredev/sandbox-sdk/upstash`    | `UPSTASH_BOX_API_KEY`; optional `UPSTASH_BOX_BASE_URL`                                                        |
 | Railway        | `@opencoredev/sandbox-sdk/railway`    | `RAILWAY_API_TOKEN`, `RAILWAY_ENVIRONMENT_ID`                                                                 |
@@ -46,11 +47,12 @@ console.log((await box.run("cat hello.txt")).stdout); // "hello\n"
 | Superserve     | `@opencoredev/sandbox-sdk/superserve` | `SUPERSERVE_API_KEY`                                                                                          |
 | Boat           | `@opencoredev/sandbox-sdk/boat`       | `BOAT_API_KEY`; optional `BOAT_API_BASE`                                                                      |
 | Sandboxer      | `@opencoredev/sandbox-sdk/sandboxer`  | `SANDBOXER_API_KEY`; optional `SANDBOXER_REGION` (`us-east` or `eu-central`, or pass `sandboxer({ region })`) |
+| Beam           | `@opencoredev/sandbox-sdk/beam`       | `BEAM_TOKEN` + `BEAM_WORKSPACE_ID`                                                                            |
 | Local (Docker) | `@opencoredev/sandbox-sdk/local`      | none; a running Docker Engine (`DOCKER_HOST` or `/var/run/docker.sock`)                                       |
 | agentOS        | `@opencoredev/sandbox-sdk/agentos`    | none                                                                                                          |
 | Memory         | `@opencoredev/sandbox-sdk/memory`     | none                                                                                                          |
 
-Every factory also takes its credential as an option, such as `e2b({ apiKey })`, so you can pass per-user keys instead of reading the environment. What each provider supports (pause, snapshots, size, network policy, idle and lifetime limits, ports, labels, key mode, and previews) is in the [capability matrix](https://v2.sandbox-sdk.app/docs/reference/capabilities). A script checks it against the adapters' source, so it stays current. The package README has the full API.
+Every factory also takes its credential as an option, such as `e2b({ apiKey })`, so you can pass per-user keys instead of reading the environment. What each provider supports (pause, snapshots, size, network policy, idle and lifetime limits, ports, labels, key mode, and previews) is in the [capability matrix](https://sandbox-sdk.app/docs/reference/capabilities). A script checks it against the adapters' source, so it stays current. The package README has the full API.
 
 ## Switch providers at runtime
 
@@ -123,20 +125,20 @@ You can also call `box.close()` or `box.destroy()` yourself. `reapSandboxes(prov
 
 ## Known limitations
 
-- No built-in provider supports `box.terminal()` yet.
-- `timeoutMs` (hard lifetime) and `idleTimeoutMs` work only where the provider can enforce them; elsewhere `createSandbox` fails with `unsupported`. The [capability matrix](https://v2.sandbox-sdk.app/docs/reference/capabilities) lists which providers support each one.
+- Only E2B supports `box.terminal()`.
+- `timeoutMs` (hard lifetime) and `idleTimeoutMs` work only where the provider can enforce them; elsewhere `createSandbox` fails with `unsupported`. The [capability matrix](https://sandbox-sdk.app/docs/reference/capabilities) lists which providers support each one.
 - Some providers need preview ports declared up front: `createSandbox(provider, { ports: [3000] })`. Always send `preview.headers` with requests; several providers put the access token there. The matrix's `ports` and Preview URL rows say which providers need each.
 - boxd routes one preview port at a time, the last one you requested.
 - agentOS has no preview URLs and no background processes (`start` fails with `unsupported`).
 - Memory runs a small fake shell (`echo`, `cat`, `printf`, `sleep`, `ls`, `printenv`) with no git and fake preview URLs. Use it for tests, not real workloads.
 - Local pulls `node:22-bookworm` on first use.
-- Live smoke on 2026-10-29 (create, `run`, file round-trip, streamed run, preview URL, destroy) passed on memory, local Docker, agentOS, E2B, Daytona, Vercel, Upstash Box, Boat, Tenki, boxd, Freestyle, Superserve and Sandboxer, with 0 sandboxes left afterwards. Railway was not run because we have no Railway credentials; its adapter passes the unit and contract tests but has not been checked live on this build. Superserve's default `superserve/node-22` template has no python3, so `run` fails with `unsupported` until you pass a template with python3 or set `installPython`.
+- Live smoke for 1.0 on 2026-10-29 (create, `run`, file round-trip, streamed run, preview URL, destroy) passed on memory, local Docker, agentOS, E2B, Daytona, Vercel, Upstash Box, Boat, Tenki, boxd, Freestyle, Superserve and Sandboxer, with 0 sandboxes left afterwards. Railway was not run because we have no Railway credentials; its adapter passes the unit and contract tests but has not been checked live on this build. Superserve's default `superserve/node-22` template has no python3, so `run` fails with `unsupported` until you pass a template with python3 or set `installPython`.
 
 ## Report issues
 
 Open an issue at https://github.com/opencoredev/sandbox-sdk/issues, or message Leo directly. Include:
 
-- the SDK version (for example `1.0.0`) and your runtime (Node.js or Bun version),
+- the SDK version (for example `1.2.0`) and your runtime (Node.js or Bun version),
 - the provider and the factory options you passed,
 - for a `SandboxError`: `code`, `message`, `hint`, `provider`, and `sandboxId`,
 - the smallest snippet that reproduces it.

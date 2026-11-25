@@ -33,7 +33,7 @@ import {
 export interface TenkiOptions {
   /** Defaults to TENKI_AUTH_TOKEN, then TENKI_API_KEY; required on first use. */
   apiKey?: string;
-  /** @deprecated Use apiKey. Removed in 1.0.0. */
+  /** @deprecated Use apiKey. Will be removed in 2.0.0. */
   authToken?: string;
   /** Defaults to TENKI_API_ENDPOINT, then TENKI_API_URL, then https://api.tenki.cloud. */
   baseUrl?: string;
@@ -56,6 +56,38 @@ export interface TenkiOptions {
 }
 
 export type TenkiCapability = "pause" | "snapshot" | "size" | "network-policy";
+
+/** The options that choose where a Tenki adapter connects and as whom. */
+export type TenkiConnection = Pick<TenkiOptions, "apiKey" | "authToken" | "baseUrl">;
+
+/** What a Tenki adapter builds its client with, in the shape `new TenkiSandbox(config)` takes. */
+export interface TenkiConfig {
+  readonly authToken: string;
+  /** `undefined` leaves the endpoint to `@tenkicloud/sandbox`: TENKI_API_ENDPOINT, then TENKI_API_URL. */
+  readonly baseUrl: string | undefined;
+}
+
+/**
+ * The token and endpoint `tenki(options)` uses, read from `options` and the environment as the
+ * adapter reads them: a non-blank TENKI_AUTH_TOKEN wins over TENKI_API_KEY. Throws `auth` when
+ * neither is set, as the adapter does. A client with the other variable's token sees another
+ * account's sandboxes.
+ * It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(options: TenkiConnection = {}): TenkiConfig {
+  const authToken =
+    options.apiKey ??
+    options.authToken ??
+    (process.env.TENKI_AUTH_TOKEN?.trim() || process.env.TENKI_API_KEY?.trim());
+
+  if (!authToken)
+    throw failure(
+      "Luxor API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey.",
+      "auth",
+    );
+
+  return { authToken, baseUrl: options.baseUrl };
+}
 
 export type TenkiProvider = Provider<NativeSession, TenkiCapability>;
 
@@ -318,23 +350,10 @@ export function createTenkiProvider<S extends TenkiSession>(
       )
         throw failure("waitTimeoutMs must be an integer from 1 to 900000", "invalid_argument");
 
-      const authToken =
-        options.apiKey ??
-        options.authToken ??
-        (process.env.TENKI_AUTH_TOKEN?.trim() || process.env.TENKI_API_KEY?.trim());
-
-      if (!authToken)
-        throw failure(
-          "Luxor API key is missing. Authentication is required. Set TENKI_API_KEY or TENKI_AUTH_TOKEN or pass apiKey.",
-          "auth",
-        );
-
+      const config = resolveConfig(options);
       const { TenkiSandbox } = await loadPeer("@tenkicloud/sandbox", "tenki", load);
 
-      return new TenkiSandbox({
-        authToken,
-        baseUrl: options.baseUrl,
-      });
+      return new TenkiSandbox(config);
     })());
   }
 

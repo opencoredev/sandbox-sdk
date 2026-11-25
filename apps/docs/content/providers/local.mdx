@@ -168,22 +168,23 @@ A custom size sets Docker's CPU quota and memory directly; fractional CPUs work.
 
 ## Configuration
 
-| Option        | Type           | Default                       | Env var       |
-| ------------- | -------------- | ----------------------------- | ------------- |
-| `image`       | `string`       | `"node:22-bookworm"`          |               |
-| `dockerHost`  | `string`       | `unix:///var/run/docker.sock` | `DOCKER_HOST` |
-| `platform`    | `string`       | Docker's platform             |               |
-| `user`        | `string`       | The image's user              |               |
-| `runtime`     | `string`       | Docker's default (`runc`)     |               |
-| `networkMode` | `string`       | `"bridge"`                    |               |
-| `mounts`      | `LocalMount[]` | None                          |               |
-| `pidsLimit`   | `number`       | No limit                      |               |
-| `shmSizeMb`   | `number`       | 64                            |               |
-| `capAdd`      | `string[]`     | None                          |               |
-| `capDrop`     | `string[]`     | None                          |               |
-| `securityOpt` | `string[]`     | None                          |               |
+| Option         | Type           | Default                       | Env var       |
+| -------------- | -------------- | ----------------------------- | ------------- |
+| `image`        | `string`       | `"node:22-bookworm"`          |               |
+| `dockerHost`   | `string`       | `unix:///var/run/docker.sock` | `DOCKER_HOST` |
+| `apiTimeoutMs` | `number`       | `600000` (10 minutes)         |               |
+| `platform`     | `string`       | Docker's platform             |               |
+| `user`         | `string`       | The image's user              |               |
+| `runtime`      | `string`       | Docker's default (`runc`)     |               |
+| `networkMode`  | `string`       | `"bridge"`                    |               |
+| `mounts`       | `LocalMount[]` | None                          |               |
+| `pidsLimit`    | `number`       | No limit                      |               |
+| `shmSizeMb`    | `number`       | 64                            |               |
+| `capAdd`       | `string[]`     | None                          |               |
+| `capDrop`      | `string[]`     | None                          |               |
+| `securityOpt`  | `string[]`     | None                          |               |
 
-The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, and GNU `sed`. `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
+The image needs `node`, `git`, `tar`, `setsid`, `nohup`, `mkfifo`, and GNU `sed`. Including `awk` enables streaming carry-window redaction for secrets over 512 bytes; without `awk`, incomplete lines are held whole up to 1 MiB (suppressing any single newline-less line past 1 MiB to `[REDACTED]` until the next newline or EOF) and newline-wrapped secrets are scrubbed in POSIX `sh`. `dockerHost` must be an absolute `unix://` socket; remote `tcp://` engines are rejected. `apiTimeoutMs` is the idle limit for one Docker Engine request; raise it when a large image pull goes quiet for longer. `box.native` is `{ id, client }`, the container ID and the SDK's Docker API client.
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -233,3 +234,4 @@ await using box = await createSandbox(provider);
 - [Running commands](/concepts/running-commands)
 - [Docker sandbox for AI agents in TypeScript](https://sandbox-sdk.app/blog/docker-sandbox-for-ai-agents), a walkthrough from a first command to a locked-down container
 - [E2B self-hosted: E2B Embed, or Docker instead](https://sandbox-sdk.app/blog/e2b-self-hosted), when a container is enough and when you need E2B Embed
+- [Node.js sandbox: vm, isolated-vm, Docker or a microVM](https://sandbox-sdk.app/blog/nodejs-sandbox), where a container sits among the ways to run untrusted code from Node

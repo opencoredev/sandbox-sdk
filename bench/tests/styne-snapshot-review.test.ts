@@ -5,6 +5,8 @@ import { expect, test, vi } from "vitest";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { reapRun } from "../src/recovery.js";
 import { parseV2 } from "../src/v2-config.js";
+import { fingerprintOf } from "../src/connections.js";
+import { bound } from "./native-fakes.js";
 
 test("Styne recovery deletes only this run's journaled snapshot", async () => {
   const out = await mkdtemp(join(tmpdir(), "styne-snapshot-review-"));
@@ -40,13 +42,14 @@ test("Styne recovery deletes only this run's journaled snapshot", async () => {
     verifiedAt: "2026-11-23T12:00:00.000Z",
   };
 
-  const provider = { ...memory(), name: "styne" };
+  const provider = bound({ ...memory(), name: "styne" });
 
   try {
     await writeFile(
       join(out, "ownership.json"),
       JSON.stringify({
         runId: run,
+        connectionFingerprints: { styne: await fingerprintOf(provider) },
         resources: [
           {
             provider: "styne",

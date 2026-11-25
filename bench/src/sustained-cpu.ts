@@ -718,7 +718,7 @@ export function labelsFor(setup: ProviderSetup, attempt: Attempt): Labels {
 
 /**
  * Loads a provider as the realistic harness does (`loadSlotProvider`): the same-machine template,
- * product and size, Modal's and Styne's factory lifetime, and `timeoutMs` on create where the
+ * product and size, Modal's, Maritime's and Styne's factory lifetime, and `timeoutMs` on create where the
  * adapter takes one, long enough for the whole burn.
  */
 export const openLiveSession: OpenSession = async (setup, plan) => {
@@ -729,7 +729,9 @@ export const openLiveSession: OpenSession = async (setup, plan) => {
     template: config.template ? { [setup.adapter]: config.template } : {},
     product: setup.product ? { [setup.adapter]: setup.product } : {},
     "lifetime-ms":
-      setup.adapter === "modal" || setup.adapter === "styne" ? { [setup.adapter]: lifetime } : {},
+      setup.adapter === "modal" || setup.adapter === "maritime" || setup.adapter === "styne"
+        ? { [setup.adapter]: lifetime }
+        : {},
   });
 
   if (loaded.kind !== "ready") return { kind: "skipped", note: loaded.note };

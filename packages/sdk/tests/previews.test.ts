@@ -138,3 +138,29 @@ test("preview paths leave the provider's cached preview untouched", async () => 
     await box.destroy();
   }
 });
+
+test("preview paths keep the provider's query credentials", async () => {
+  const provider = await shellProvider();
+
+  const box = await createSandbox({
+    ...provider,
+    previewUrl: async () => ({ url: "https://3000-sbx-a.example/?token=mut_provider" }),
+  });
+
+  try {
+    const probe = new URL((await box.preview(3000, { path: "/health?probe=1" })).url);
+    expect(probe.pathname).toBe("/health");
+    expect(probe.searchParams.get("probe")).toBe("1");
+    expect(probe.searchParams.getAll("token")).toEqual(["mut_provider"]);
+
+    const conflicting = new URL((await box.preview(3000, { path: "/api?token=caller&x=2" })).url);
+    expect(conflicting.searchParams.getAll("token")).toEqual(["mut_provider"]);
+    expect(conflicting.searchParams.get("x")).toBe("2");
+
+    expect((await box.preview(3000, { path: "/plain" })).url).toBe(
+      "https://3000-sbx-a.example/plain?token=mut_provider",
+    );
+  } finally {
+    await box.destroy();
+  }
+});

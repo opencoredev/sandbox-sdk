@@ -19,6 +19,7 @@ import { costPerTask } from "../src/task-cost.js";
 import { parseV2 } from "../src/v2-config.js";
 import type { ReportV2, Sample } from "../src/v2-model.js";
 import { runV2, summarize } from "../src/v2-runner.js";
+import { boundFake } from "./native-fakes.js";
 
 const gib = 1024 ** 3;
 const at = "2026-11-09T12:00:00.000Z";
@@ -206,7 +207,15 @@ describe("Modal publication pricing", () => {
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name: "modal", cloud: false, region: "us-east", provider: memory() }],
+        [
+          {
+            kind: "ready",
+            name: "modal",
+            cloud: false,
+            region: "us-east",
+            provider: boundFake(memory()),
+          },
+        ],
         parseV2([
           "--providers",
           "modal",

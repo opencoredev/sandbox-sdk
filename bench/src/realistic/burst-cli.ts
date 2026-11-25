@@ -82,7 +82,9 @@ const allProviders = [
   "modal",
   "baseten",
   "instabox",
+  "maritime",
   "beam",
+  "archil",
   "styne",
 ];
 

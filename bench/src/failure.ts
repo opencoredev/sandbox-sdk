@@ -57,6 +57,27 @@ export const failureOutcomeSchema = z.object({
 
 export type FailureOutcome = z.infer<typeof failureOutcomeSchema>;
 
+/**
+ * What a failure's typed evidence says about who refused it. An HTTP status decides whenever there
+ * is one: only 429 is a quota refusal, and 5xx is the provider's. The SDK code decides only when no
+ * status was recorded: `quota` is a refusal, `provider` or `unavailable` the provider's. Wording
+ * never decides, and an SDK code never overrides a status (an adapter may map a 507 to `quota`).
+ */
+export function failureSignal(
+  failure: Pick<FailureOutcome, "code" | "cause">,
+): "provider" | "quota" | "unknown" {
+  const status = failure.cause?.httpStatus;
+
+  if (status !== undefined)
+    return status === 429 ? "quota" : status >= 500 ? "provider" : "unknown";
+
+  if (failure.code === "quota") return "quota";
+
+  if (failure.code === "provider" || failure.code === "unavailable") return "provider";
+
+  return "unknown";
+}
+
 const nativeCode = z.union([z.string(), z.number().finite()]).transform(String);
 
 const metadataSchema = z.object({

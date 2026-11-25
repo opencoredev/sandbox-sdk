@@ -76,7 +76,7 @@ for await (const line of box.process("dev").lines()) {
 }
 ```
 
-Every line carries its own `cursor`, so you can resume from the exact line you stopped at with `lines({ after: line.cursor })`.
+Every line carries its own `cursor`, so you can resume from the exact line you stopped at with `lines({ after: line.cursor })`. Individual lines longer than 64 KiB are truncated to their trailing 64 KiB with a `[line truncated]` prefix; use `logs()` if you need full pages of a very long line.
 
 ## Reattach by name
 
@@ -112,7 +112,7 @@ console.log(exit.exitCode, exit.signal);
 await box.process("dev").stop();
 ```
 
-`wait()` resolves when the process exits. `stop()` sends SIGTERM, then SIGKILL after a grace period. Calling it on a process that already stopped does nothing.
+`wait()` resolves when the process exits. It gives up with a `timeout` error after 30 minutes, or after `timeoutMs` if you pass one, and with `aborted` when its `signal` fires; the process keeps running in both cases. `stop()` sends SIGTERM, then SIGKILL after a grace period. Calling it on a process that already stopped does nothing.
 
 ## Previews
 

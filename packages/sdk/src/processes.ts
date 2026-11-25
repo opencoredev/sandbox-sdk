@@ -3,16 +3,22 @@ import type { Provider, Preview, NativeProcess } from "./provider.js";
 import type { Files } from "./files.js";
 import { encodeChunk, decodePage } from "./logs.js";
 import { parseLineCursor, parseProcessRecord, parseRestartRecord } from "./core/process-records.js";
-import { SandboxError, invalid, isNotFound, type Redactor } from "./errors.js";
+import { SandboxError, invalid, isNotFound, waitDeadlineErrors, type Redactor } from "./errors.js";
+import { setLongTimeout } from "./retry.js";
 import { defaults, pathOf, chunkRedactor } from "./run.js";
 import {
   detachedLaunchScript,
   logPageScript,
+  maxLeftMarkerBytes,
+  maxSecretLineBytes,
   recordExit,
   recordSetupScript,
   redactionSedScript,
+  secretLinesText,
   supervisorScript,
 } from "./shell/process-records.js";
+
+export { waitDeadlineErrors };
 
 /** A stable process name for a command: its program name plus a short FNV-1a hash of the full command. */
 export function defaultProcessName(command: string): string {
@@ -69,10 +75,77 @@ export interface ProcessHandle {
   }): AsyncIterable<{ text: string; stream: "stdout" | "stderr"; cursor: string }>;
   stop(options?: { graceMs?: number }): Promise<void>;
   restart(): Promise<void>;
-  wait(): Promise<{ exitCode: number | null; signal: string | null }>;
+  /**
+   * Resolves `{ exitCode, signal }` once the process exits. Throws `timeout` after `timeoutMs`
+   * (default 30 minutes) or `aborted` when `signal` fires; the process keeps running either way.
+   */
+  wait(options?: WaitOptions): Promise<{ exitCode: number | null; signal: string | null }>;
 }
 
+export interface WaitOptions {
+  /** How long to wait for the exit before throwing `timeout`. Default: 30 minutes. */
+  timeoutMs?: number;
+  /** Stops waiting with an `aborted` error. The process is not stopped. */
+  signal?: AbortSignal;
+}
+
+/** The default {@link ProcessHandle.wait} deadline. */
+export const defaultWaitTimeoutMs = 30 * 60_000;
+const waitPollMs = { first: 25, max: 1000 };
+
 export const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Resolves after `ms`, or as soon as `signal` fires. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let cancelTimer: (() => void) | undefined;
+
+    const done = () => {
+      cancelTimer?.();
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+
+    cancelTimer = setLongTimeout(done, ms);
+
+    signal?.addEventListener("abort", done, { once: true });
+
+    if (signal?.aborted) done();
+  });
+}
+
+// Stream providers lack an atomic guest lock, so handles in the same runtime share reservations
+// keyed by provider instance and sandbox id.
+const streamReservations = new WeakMap<Provider, Map<string, Set<string>>>();
+
+function reserveStreamName(
+  provider: Provider,
+  sandboxId: string,
+  name: string,
+): (() => void) | null {
+  let bySandbox = streamReservations.get(provider);
+
+  if (!bySandbox) {
+    bySandbox = new Map();
+    streamReservations.set(provider, bySandbox);
+  }
+
+  let names = bySandbox.get(sandboxId);
+
+  if (!names) {
+    names = new Set();
+    bySandbox.set(sandboxId, names);
+  }
+
+  if (names.has(name)) return null;
+  names.add(name);
+
+  return () => {
+    names.delete(name);
+
+    if (names.size === 0) bySandbox.delete(sandboxId);
+  };
+}
 
 export function makeProcesses(
   provider: Provider,
@@ -84,8 +157,6 @@ export function makeProcesses(
   const root = provider.processRecordRoot ?? "/tmp/.sandbox-sdk/procs";
   const native = new Map<string, NativeProcess>();
   const handles = new Map<string, ProcessHandle>();
-  // Names this client is starting on a stream provider, whose records have no atomic guest check.
-  const starting = new Set<string>();
   // Stream providers run commands without a guest shell, so the core keeps their records with file calls.
   const streams = provider.processMode === "stream";
 
@@ -182,6 +253,15 @@ export function makeProcesses(
 
       // An absolute or protocol-relative path would hand the provider's headers to another host.
       if (target.origin !== base.origin) invalid("Preview path must stay on the preview's origin");
+
+      // A provider that authenticates by query string (Maritime's `?token=`) keeps it on every path, and
+      // a caller parameter of the same name never replaces it.
+      for (const name of new Set(base.searchParams.keys())) {
+        target.searchParams.delete(name);
+
+        for (const value of base.searchParams.getAll(name)) target.searchParams.append(name, value);
+      }
+
       access.url = target.toString();
     }
 
@@ -341,11 +421,19 @@ export function makeProcesses(
       }
 
       const after = Math.max(base, requested ?? base);
-      const decoded = decodePage(bytes, Math.max(0, after - base - start), budget, base + start);
+
+      const decoded = decodePage(
+        bytes,
+        Math.max(0, after - base - start),
+        budget,
+        base + start,
+        start + bytes.length < size,
+      );
+
       const offset = base + start + decoded.offset;
 
       return {
-        events: decoded.events.map((event) => ({ ...event, text: redactor.text(event.text) })),
+        events: decoded.events,
         nextCursor: String(offset),
         truncated: (requested ?? base) < base || offset < base + size,
       };
@@ -376,7 +464,26 @@ export function makeProcesses(
         const position = parseLineCursor(options.after);
         let cursor = position.offset;
         const pending = position.pending;
-        const checkpoint = (offset: string) => JSON.stringify({ v: 1, offset, ...pending });
+
+        const clampPending = (value: string) => {
+          const scrubbed = redactor.text(value);
+
+          if (Buffer.byteLength(scrubbed) <= 65_536) return scrubbed;
+          const tail = Buffer.from(scrubbed).subarray(-65_510);
+          let start = 0;
+
+          while (((tail[start] ?? 0) & 0xc0) === 0x80) start++;
+
+          return "[line truncated]" + tail.subarray(start).toString();
+        };
+
+        const checkpoint = (offset: string) =>
+          JSON.stringify({
+            v: 1,
+            offset,
+            stdout: clampPending(pending.stdout),
+            stderr: clampPending(pending.stderr),
+          });
 
         do {
           const page = await safe(() => readEvents({ after: cursor, maxBytes: 1_048_576 }));
@@ -386,15 +493,11 @@ export function makeProcesses(
             pending[event.stream] += event.text;
 
             if (Buffer.byteLength(pending[event.stream]) > 65_536) {
-              const tail = Buffer.from(pending[event.stream]).subarray(-65_510);
-              let start = 0;
-
-              while (((tail[start] ?? 0) & 0xc0) === 0x80) start++;
-              pending[event.stream] = "[line truncated]" + tail.subarray(start).toString();
+              pending[event.stream] = clampPending(pending[event.stream]);
             }
 
             if (pending[event.stream].endsWith("\n")) {
-              const text = pending[event.stream].slice(0, -1);
+              const text = redactor.text(pending[event.stream].slice(0, -1));
               pending[event.stream] = "";
               yield { text, stream: event.stream, cursor: checkpoint(event.cursor) };
             }
@@ -403,7 +506,7 @@ export function makeProcesses(
           if (!page.truncated && status !== "running" && status !== "starting") {
             for (const stream of ["stdout", "stderr"] satisfies ("stdout" | "stderr")[])
               if (pending[stream]) {
-                const text = pending[stream];
+                const text = redactor.text(pending[stream]);
                 pending[stream] = "";
                 yield { text, stream, cursor: checkpoint(cursor) };
               }
@@ -416,21 +519,52 @@ export function makeProcesses(
       },
       stop: (options = {}) =>
         safe(async () => {
-          const current = await info(name);
+          let current = await info(name);
+
+          // pid 0 with no exit: a start is between setup and launch. Give its launcher a moment to
+          // record the pid so the kill below reaches it; a launcher that runs later sees the exit.
+          for (
+            let waited = 0;
+            current.exitCode === null && current.pid === 0 && !native.get(name) && waited < 2000;
+            waited += 100
+          ) {
+            await delay(100);
+            current = await info(name);
+          }
+
           status = current.status;
 
-          if (current.exitCode !== null) return;
+          if (current.exitCode !== null) {
+            await provider.files
+              .remove(id, `${dir}/redact.sed`, { recursive: false })
+              .catch(() => {});
+            await provider.files
+              .remove(id, `${dir}/redact.txt`, { recursive: false })
+              .catch(() => {});
+            ready = false;
+
+            return;
+          }
+
           const hook = native.get(name);
 
           if (hook) await hook.stop({ graceMs: options.graceMs ?? 1000 });
-          else {
+          // pid 0: no launcher recorded a process, so there is no group to signal.
+          else if (current.pid > 0) {
             await exec(`kill -TERM -${current.pid} 2>/dev/null || true`);
             await delay(options.graceMs ?? 1000);
             await exec(`kill -KILL -${current.pid} 2>/dev/null || true`);
           }
 
           if (!(await files.exists(`${dir}/exit`))) await files.write(`${dir}/exit`, "143");
+          await provider.files
+            .remove(id, `${dir}/redact.sed`, { recursive: false })
+            .catch(() => {});
+          await provider.files
+            .remove(id, `${dir}/redact.txt`, { recursive: false })
+            .catch(() => {});
           status = "exited";
+          ready = false;
         }),
       restart: () =>
         safe(async () => {
@@ -440,20 +574,125 @@ export function makeProcesses(
             const current = await info(name);
             const record = parseRestartRecord(await files.read(`${dir}/restart.json`), name);
             await start(record.command ?? current.command, record.options);
+          } else if (streams && provider.startProcess) {
+            const release = reserveStreamName(provider, id, name);
+
+            if (!release) invalid(`Process ${name} is already running`);
+
+            try {
+              if ((await files.exists(`${dir}/spec.json`)) && !(await files.exists(`${dir}/exit`)))
+                invalid(`Process ${name} is already running`);
+
+              await launch();
+            } finally {
+              release();
+            }
           } else await launch();
         }),
-      wait: () =>
-        safe(async () => {
-          while (!(await files.exists(`${dir}/exit`))) await delay(25);
-          const current = await info(name);
-          status = current.status;
+      wait: (options = {}) => {
+        const timeoutMs = options.timeoutMs ?? defaultWaitTimeoutMs;
 
-          return {
-            exitCode: current.exitCode,
-            signal:
-              current.exitCode === 143 ? "SIGTERM" : current.exitCode === 137 ? "SIGKILL" : null,
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+          invalid("wait timeoutMs must be a positive, finite number");
+
+        const signal = options.signal;
+
+        const makeAbortedError = () =>
+          redactor.error(
+            new SandboxError(
+              `Process wait aborted. ${name} is still running. Call wait() again with a fresh signal, or stop() it.`,
+              { code: "aborted" },
+            ),
+            provider.name,
+            id,
+          );
+
+        const makeTimeoutError = () => {
+          const error = redactor.error(
+            new SandboxError(
+              `Process wait timed out. ${name} did not exit within ${timeoutMs} ms and is still running. Call wait() again with a larger timeoutMs, or stop() it.`,
+              { code: "timeout", retryable: true },
+            ),
+            provider.name,
+            id,
+          );
+
+          waitDeadlineErrors.add(error);
+
+          return error;
+        };
+
+        return new Promise((resolve, reject) => {
+          let settled = false;
+          let cancelTimer: (() => void) | undefined;
+
+          const finish = (cb: () => void) => {
+            if (settled) return;
+            settled = true;
+
+            cancelTimer?.();
+            signal?.removeEventListener("abort", onAbort);
+            cb();
           };
-        }),
+
+          const onAbort = () => finish(() => reject(makeAbortedError()));
+
+          if (signal?.aborted) {
+            onAbort();
+
+            return;
+          }
+
+          signal?.addEventListener("abort", onAbort, { once: true });
+          cancelTimer = setLongTimeout(() => finish(() => reject(makeTimeoutError())), timeoutMs);
+
+          const deadline = Date.now() + timeoutMs;
+
+          void (async () => {
+            try {
+              const result = await safe(async () => {
+                let pollMs = waitPollMs.first;
+
+                while (!settled && !(await files.exists(`${dir}/exit`))) {
+                  if (settled) return null;
+
+                  const left = deadline - Date.now();
+
+                  if (left <= 0) {
+                    finish(() => reject(makeTimeoutError()));
+
+                    return null;
+                  }
+
+                  await abortableDelay(Math.min(pollMs, left), signal);
+                  pollMs = Math.min(pollMs * 2, waitPollMs.max);
+                }
+
+                if (settled) return null;
+
+                const current = await info(name);
+
+                if (settled) return null;
+                status = current.status;
+
+                return {
+                  exitCode: current.exitCode,
+                  signal:
+                    current.exitCode === 143
+                      ? "SIGTERM"
+                      : current.exitCode === 137
+                        ? "SIGKILL"
+                        : null,
+                };
+              });
+
+              if (result !== null) finish(() => resolve(result));
+            } catch (error) {
+              finish(() => reject(error));
+            }
+          })();
+        });
+      },
     };
 
     handles.set(name, handle);
@@ -493,13 +732,14 @@ export function makeProcesses(
     // two concurrent starts could both pass the running check before either writes spec.json.
     if (!streams || !provider.startProcess) return startRecord(command, input);
 
-    if (starting.has(name)) return safe(() => invalid(`Process ${name} is already running`));
-    starting.add(name);
+    const release = reserveStreamName(provider, id, name);
+
+    if (!release) return safe(() => invalid(`Process ${name} is already running`));
 
     try {
       return await startRecord(command, input);
     } finally {
-      starting.delete(name);
+      release();
     }
   }
 
@@ -571,26 +811,44 @@ export function makeProcesses(
         if (streams && provider.startProcess) {
           controller?.state("starting");
           controller?.ready(false);
-          await files.write(`${dir}/spec.json`, spec);
-          await files.write(`${dir}/restart.json`, restart);
 
-          const priorBase = (await files.exists(`${dir}/base`))
-            ? Number(await files.read(`${dir}/base`)) + (await files.stat(`${dir}/out.log`)).size
-            : 0;
+          try {
+            await files.write(`${dir}/spec.json`, spec);
+            await files.write(`${dir}/restart.json`, restart, { mode: 0o600 });
 
-          await files.write(`${dir}/out.log`, "");
-          await files.write(`${dir}/base`, String(priorBase));
+            const priorBase = (await files.exists(`${dir}/base`))
+              ? Number(await files.read(`${dir}/base`)) + (await files.stat(`${dir}/out.log`)).size
+              : 0;
 
-          if (await files.exists(`${dir}/exit`)) await files.remove(`${dir}/exit`);
+            await files.write(`${dir}/out.log`, "");
+            await files.write(`${dir}/base`, String(priorBase));
+
+            if (await files.exists(`${dir}/exit`)) await files.remove(`${dir}/exit`);
+          } catch (error) {
+            controller?.state("failed");
+            controller?.ready(false);
+            await provider.files
+              .remove(id, `${dir}/spec.json`, { recursive: false })
+              .catch(() => {});
+            throw error;
+          }
         } else {
-          const result = await exec(
-            recordSetupScript({ dir, cwd: pathOf(options.cwd) }),
-            {},
-            Buffer.from(spec).toString("base64") +
-              "\n" +
-              Buffer.from(restart).toString("base64") +
-              "\n",
-          );
+          let result: Awaited<ReturnType<typeof exec>>;
+
+          try {
+            result = await exec(
+              recordSetupScript({ dir, cwd: pathOf(options.cwd) }),
+              {},
+              Buffer.from(spec).toString("base64") +
+                "\n" +
+                Buffer.from(restart).toString("base64") +
+                "\n",
+            );
+          } catch (error) {
+            controller?.state("failed");
+            controller?.ready(false);
+            throw error;
+          }
 
           if (result.exitCode === recordExit.running)
             invalid(`Process ${options.name} is already running`);
@@ -600,14 +858,14 @@ export function makeProcesses(
             launched = false;
             controller?.state("failed");
             controller?.ready(false);
-          } else if (result.timedOut || result.exitCode !== 0)
+          } else if (result.timedOut || result.exitCode !== 0) {
+            controller?.state("failed");
+            controller?.ready(false);
             throw new SandboxError(
               "Process setup failed. Could not prepare durable records. Check that /tmp is writable and retry.",
               { code: "provider" },
             );
-          else {
-            const sed = redactionSedScript(redactor.secrets);
-            await provider.files.write(id, sedPath, new TextEncoder().encode(sed));
+          } else {
             controller?.state("starting");
             controller?.ready(false);
           }
@@ -668,15 +926,37 @@ export function makeProcesses(
             void drain().catch(() => controller?.state("failed"));
           });
 
-          const hook = await provider.startProcess(id, {
-            command,
-            cwd: pathOf(options.cwd),
-            env: { ...env, ...options.env, ...defaults },
-            onChunk: (chunk) => filter.push(chunk),
-          });
+          let hook: Awaited<ReturnType<NonNullable<Provider["startProcess"]>>>;
+
+          try {
+            hook = await provider.startProcess(id, {
+              command,
+              cwd: pathOf(options.cwd),
+              env: { ...env, ...options.env, ...defaults },
+              onChunk: (chunk) => filter.push(chunk),
+            });
+          } catch (error) {
+            controller?.state("failed");
+            await provider.files
+              .remove(id, `${dir}/spec.json`, { recursive: false })
+              .catch(() => {});
+            throw error;
+          }
 
           native.set(options.name, hook);
-          await files.write(`${dir}/pid`, String(hook.pid));
+
+          try {
+            await files.write(`${dir}/pid`, String(hook.pid));
+          } catch (error) {
+            native.delete(options.name);
+            controller?.state("failed");
+            await hook.stop({ graceMs: 0 }).catch(() => {});
+            await provider.files
+              .remove(id, `${dir}/spec.json`, { recursive: false })
+              .catch(() => {});
+            throw error;
+          }
+
           const exited = hook.wait();
           // Only a race signal for start(); the chain below records a failed wait.
           hookExit = exited.then(
@@ -700,55 +980,127 @@ export function makeProcesses(
             });
         } else if (launched) {
           // No resident daemon: a detached process group writes durable records itself.
+          const maxLineBytes = maxSecretLineBytes(redactor.secrets);
+          const maxLeftBytes = maxLeftMarkerBytes(redactor.secrets);
+          const secretsPath = maxLineBytes > 512 ? `${dir}/redact.txt` : undefined;
+
           const wrapper = supervisorScript({
             dir,
             cwd: pathOf(options.cwd),
             command,
             sedPath,
+            holdBytes: maxLineBytes > 512 ? maxLineBytes + maxLeftBytes + 16 : 0,
+            secretsPath,
           });
 
-          if (provider.startProcess) {
-            const hook = await provider.startProcess(id, {
-              command: wrapper,
-              cwd: "/workspace",
-              env: { ...env, ...options.env, ...defaults },
-              onChunk() {},
-            });
+          // Set while the launch call is in flight, whose lost reply may hide a running supervisor.
+          let launching = false;
 
-            native.set(options.name, hook);
-            await files.write(`${dir}/pid`, String(hook.pid));
+          try {
+            const sed = redactionSedScript(redactor.secrets);
 
-            const exited = hook.wait().then((result) => {
-              early = result.exitCode ?? 137;
+            if (!provider.files.writeSupportsMode) {
+              await files.write(sedPath, sed, { mode: 0o600 });
 
-              return result;
-            });
-
-            // Only a race signal for start(); the chain below records a failed wait.
-            hookExit = exited.catch(() => {});
-            void exited
-              .then(async (result) => {
-                if (!(await files.exists(`${dir}/exit`)))
-                  await files.write(`${dir}/exit`, String(result.exitCode ?? 137));
-              })
-              .catch(async () => {
-                // Nothing awaits this chain. Record exit 1 if the sandbox still takes writes.
-                await files.write(`${dir}/exit`, "1").catch(() => {});
+              if (secretsPath) {
+                await files.write(secretsPath, secretLinesText(redactor.secrets), { mode: 0o600 });
+              }
+            } else {
+              await provider.files.write(id, sedPath, new TextEncoder().encode(sed), {
+                mode: 0o600,
               });
-          } else {
-            // Without readiness, wait up to ~100 ms in the guest for a command that exits at once.
-            let wire = "";
 
-            await exec(
-              detachedLaunchScript({ dir, supervisor: wrapper, waitForExit: !options.ready }),
-              options.env,
-              undefined,
-              (text) => {
-                wire += text;
-              },
-            );
+              if (secretsPath) {
+                await provider.files.write(
+                  id,
+                  secretsPath,
+                  new TextEncoder().encode(secretLinesText(redactor.secrets)),
+                  { mode: 0o600 },
+                );
+              }
+            }
 
-            if (/^\d+$/.test(wire.trim())) early = Number(wire.trim());
+            launching = true;
+
+            if (provider.startProcess) {
+              const hook = await provider.startProcess(id, {
+                command: wrapper,
+                cwd: "/workspace",
+                env: { ...env, ...options.env, ...defaults },
+                onChunk() {},
+              });
+
+              launching = false;
+              native.set(options.name, hook);
+
+              try {
+                await files.write(`${dir}/pid`, String(hook.pid));
+              } catch (error) {
+                // The supervisor runs; stop it so a retry cannot start a second copy.
+                native.delete(options.name);
+                controller?.state("failed");
+                await hook.stop({ graceMs: 0 }).catch(() => {});
+                throw error;
+              }
+
+              const exited = hook.wait().then((result) => {
+                early = result.exitCode ?? 137;
+
+                return result;
+              });
+
+              // Only a race signal for start(); the chain below records a failed wait.
+              hookExit = exited.catch(() => {});
+              void exited
+                .then(async (result) => {
+                  if (!(await files.exists(`${dir}/exit`)))
+                    await files.write(`${dir}/exit`, String(result.exitCode ?? 137));
+                })
+                .catch(async () => {
+                  // Nothing awaits this chain. Record exit 1 if the sandbox still takes writes.
+                  await files.write(`${dir}/exit`, "1").catch(() => {});
+                });
+            } else {
+              // Without readiness, wait up to ~100 ms in the guest for a command that exits at once.
+              let wire = "";
+
+              const launchResult = await exec(
+                detachedLaunchScript({ dir, supervisor: wrapper, waitForExit: !options.ready }),
+                options.env,
+                undefined,
+                (text) => {
+                  wire += text;
+                },
+              );
+
+              if (launchResult.timedOut || launchResult.exitCode !== 0) {
+                throw new SandboxError(
+                  "Process launch failed. Could not start the background supervisor.",
+                  { code: "provider" },
+                );
+              }
+
+              if (/^\d+$/.test(wire.trim())) early = Number(wire.trim());
+            }
+          } catch (error) {
+            native.delete(options.name);
+
+            // The supervisor may be running, so its records stay: a retry under this name then
+            // reports it as running instead of starting a second copy, and stop() clears them.
+            if (launching && error instanceof SandboxError && error.code === "outcome_unknown")
+              throw error;
+
+            controller?.state("failed");
+            await provider.files.remove(id, sedPath, { recursive: false }).catch(() => {});
+
+            if (secretsPath) {
+              await provider.files.remove(id, secretsPath, { recursive: false }).catch(() => {});
+            }
+
+            await provider.files
+              .remove(id, `${dir}/spec.json`, { recursive: false })
+              .catch(() => {});
+            throw error;
           }
         }
 
@@ -779,11 +1131,14 @@ export function makeProcesses(
 
           if (exited && page.truncated) continue;
 
-          if (exited)
+          if (exited) {
+            const current = await info(options.name);
+            controller?.state(current.status);
             throw new SandboxError(
-              `Process exited before readiness. Exit ${(await info(options.name)).exitCode}. Check the last logs: ${lastLines()}`,
+              `Process exited before readiness. Exit ${current.exitCode}. Check the last logs: ${lastLines()}`,
               { code: "process_exited" },
             );
+          }
 
           if ("log" in options.ready) {
             options.ready.log.lastIndex = 0;
@@ -854,7 +1209,23 @@ export function makeProcesses(
         for (let offset = 0; offset < directories.length; offset += 4) {
           const batch = directories.slice(offset, offset + 4);
           const names = batch.map((entry) => posix.basename(entry.path));
-          result.push(...(await Promise.all(names.map((name) => info(name)))));
+
+          const settled = await Promise.all(
+            names.map(async (name) => {
+              try {
+                return await info(name);
+              } catch (error) {
+                if (
+                  error instanceof SandboxError &&
+                  (await isAbsent(error, `${root}/${name}/spec.json`))
+                )
+                  return undefined;
+                throw error;
+              }
+            }),
+          );
+
+          for (const entry of settled) if (entry) result.push(entry);
         }
 
         return result;

@@ -2,32 +2,56 @@
 
 ## Report a vulnerability
 
-Email `security@opencore.dev` with a minimal reproduction, affected version and impact. Do not open a public issue before coordinated disclosure. Do not include production credentials, customer data, file contents or full authenticated preview URLs.
+Email `security@opencore.dev` with a minimal reproduction, the affected version and the impact. Do not open a public issue before coordinated disclosure. Do not include production credentials, customer data, file contents or full authenticated preview URLs.
+
+The full guide for users is the [Security page](https://sandbox-sdk.app/docs/reference/security) (`apps/docs/content/reference/security.mdx`). This file summarizes the same model for reviewers.
 
 ## Trust boundaries
 
-Sandbox SDK normalizes sandbox management APIs. It does not provide execution isolation. The selected provider supplies the security boundary, authentication model, network controls, persistence and runtime hardening.
+Sandbox SDK is a library over each provider's API. It adds no isolation layer of its own. The provider you choose supplies the security boundary, its authentication, its network controls and how it hardens the machine.
 
-The Local provider loads its installed `@rivet-dev/agentos-core` dependency and executes guest code in a VM created by `AgentOs.create()`. Guest processes do not run as host child processes. Local denies outbound networking and host bindings by default and supplies finite VM limits.
+| Boundary                                       | Who provides it                                                                                       |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Isolation between the sandbox and your servers | The provider: a microVM on E2B and Vercel Sandbox, Daytona's sandbox, a Docker container on `local()` |
+| Isolation between sandboxes                    | The provider                                                                                          |
+| Who may create and reach sandboxes             | Your provider credentials                                                                             |
+| Which user may use which sandbox               | Your app                                                                                              |
+| Outbound network                               | The provider, when you set `network`                                                                  |
 
-AgentOS is currently beta and undergoing security review. Applications remain responsible for host hardening, authentication, tenant isolation, persistence, quotas and appropriately scoped overrides. Do not weaken Local's AgentOS permission policy for untrusted workloads without reviewing the resulting boundary.
+`local()` runs each sandbox as a Docker container through the Docker Engine API on a local unix socket. A container shares the host kernel, so it is not a VM. The container joins Docker's `bridge` network by default, which allows outbound traffic; pass `network: "none"` to turn it off. Do not run untrusted code from strangers with `local()` on a machine that holds secrets.
 
-## Credentials and preview tokens
+`agentos()` is a separate provider. It runs commands in agentOS's virtual process table: JavaScript in V8 isolates and shell tools as WebAssembly over a virtual file system, inside your Node.js process. Its network is open unless you pass `network: "none"` or an allow list. agentOS is beta; review it before you rely on it for untrusted workloads.
 
-Pass credentials through provider factories or the official SDK environment variables. Sandbox SDK does not add telemetry and must not log commands, files, paths, environment variables, API keys, preview URLs, stdout or stderr.
+`memory()` is not a sandbox. Its handlers run in your process with your privileges. Use it only for tests.
 
-Authenticated preview tokens remain inside `ExposedPort.request()`. Serialized port objects omit request headers and redact sensitive query values. The original provider error remains available as `SandboxError.cause`; applications must avoid logging causes in untrusted contexts.
+## Network policy fails closed
 
-## Network and provider differences
+`network: "none"` and `network: { allow: [...] }` are enforced by the provider. When the provider cannot enforce what you asked, `createSandbox` throws a `SandboxError` with code `unsupported` instead of creating an open sandbox. A capability means the SDK can pass the setting through, not that every provider filters traffic the same way. Check the provider page before you rely on an allow list.
 
-Network access defaults and policy controls belong to each provider. A normalized capability indicates availability, not a universal security policy. Consult the provider page and official provider documentation before running sensitive workloads.
+## Credentials, secrets and errors
 
-Snapshots also differ: they may capture filesystems, templates or memory and may create new sandboxes instead of restoring in place. Do not assume snapshots remove secrets or running state.
+Provider factories read credentials from their arguments or the provider's own environment variables. Call the SDK from server code only. It adds no telemetry and sends nothing anywhere except to the provider you configured.
 
-## Cleanup guarantees
+Values passed as `secrets` to `createSandbox` become environment variables in the sandbox. The SDK redacts them from command results, process logs, agent tool results and error messages. Streaming redaction holds a bounded prefix (up to 1 MiB) across chunk boundaries so split secrets up to 1 MiB do not escape; if a held suffix exceeds 1 MiB, the held prefix is replaced with `[REDACTED]` and the result is marked truncated (subsequent chunks are processed normally, so any trailing remainder of a secret longer than 1 MiB is not suppressed after the cap trips). Code in the sandbox can still read its own environment, raw `box.files.read` is not redacted, and a transformed secret (for example base64) no longer matches.
 
-`stop()` is idempotent. A sandbox created with `await using` invokes `stop()` when its scope exits after success or failure. The callback-style `withSandbox()` helper provides the same scoped cleanup behavior and preserves the original callback error if cleanup also fails. Cleanup is best effort: provider outages, process failures or host termination can prevent it. Configure provider-side timeouts and resource expiration as a second line of defense.
+For background processes on providers with a guest shell, the process shim writes a `sed` program that holds each secret verbatim to `redact.sed` in the process's mode `700` record directory (by default `/tmp/.sandbox-sdk/procs/<name>/`). When any secret line exceeds 512 bytes, it also writes a companion `redact.txt` used with `awk` for boundary carry and wrapped-line matching. Guest images without `awk` fall back to pure POSIX `sh`, holding incomplete lines whole up to 1 MiB (suppressing any single newline-less line past 1 MiB to `[REDACTED]` until the next newline or EOF) and scrubbing newline-wrapped secrets against `redact.txt`. Both files are mode `600` and are removed when the process exits or is stopped. A process killed with SIGKILL, or a sandbox that dies, can leave them behind until the sandbox is destroyed. The sandbox already holds the same secrets in its environment, so this is not a new exposure, but snapshots taken while a process runs include those files.
+
+`SandboxError.cause` is a redacted string, never the provider's native error object, because native errors can carry credentials. URLs, auth headers, credential-shaped values and registered secrets are replaced with `[REDACTED]`. Treat `message` and `cause` as internal: log them, and show users the `code` and `hint`.
+
+## Previews
+
+`box.preview(port)` returns a `Preview` with a `url` and the `headers` to send with every request. A public preview URL is reachable by anyone who has it. A private preview needs the header from `preview.headers`; keep it on your server and proxy the preview. `local()` previews bind to `127.0.0.1` on the Docker host.
+
+## Snapshots
+
+A snapshot captures the file system, and on some providers memory. It does not remove secrets written to disk or environment variables baked into the image. Treat snapshot IDs as sensitive.
+
+## Cleanup
+
+`box.destroy()` deletes the sandbox at the provider. `box.close()` detaches the handle and leaves the sandbox running so a later call can reattach with its key or ID. Both are safe to call more than once. A sandbox created with `await using` calls `close()` when its scope exits if it has a `key`, and `destroy()` otherwise. If you abort a create with `signal` and the provider finishes it anyway, the SDK destroys the late sandbox.
+
+Cleanup is best effort: provider outages, process crashes or host termination can prevent it. Set `timeoutMs` and `idleTimeoutMs` where the provider supports them, and run `reapSandboxes` on a schedule as a second line of defense.
 
 ## What Sandbox SDK does not secure
 
-Sandbox SDK does not validate user code, prevent malicious commands, scan file contents or rotate credentials. Local supplies AgentOS isolation and a deny-by-default network policy, but applications still own operational controls and the risks of the beta runtime.
+The SDK does not validate user code, block malicious commands, scan files, rotate credentials, enforce quotas or decide which user owns which sandbox. Agent tool options such as `root`, `allow`, `deny` and `beforeRun` narrow what a model can do but are not a security boundary. Derive sandbox keys from the authenticated user, rate-limit sandbox creation, set lifetime limits and run a reaper.

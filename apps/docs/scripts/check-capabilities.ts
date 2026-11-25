@@ -33,6 +33,7 @@ import {
   createAgentosProvider,
   createRegistry,
 } from "../../../packages/sdk/src/providers/agentos/provider.ts";
+import { createArchilProvider } from "../../../packages/sdk/src/providers/archil/provider.ts";
 import { createBasetenProvider } from "../../../packages/sdk/src/providers/baseten/provider.ts";
 import { boat } from "../../../packages/sdk/src/providers/boat/index.ts";
 import { createBoxdProvider } from "../../../packages/sdk/src/providers/boxd/provider.ts";
@@ -41,6 +42,7 @@ import { e2b } from "../../../packages/sdk/src/providers/e2b/index.ts";
 import { freestyle } from "../../../packages/sdk/src/providers/freestyle/index.ts";
 import { instabox } from "../../../packages/sdk/src/providers/instabox/index.ts";
 import { local } from "../../../packages/sdk/src/providers/local/index.ts";
+import { maritime } from "../../../packages/sdk/src/providers/maritime/index.ts";
 import { createModalProvider } from "../../../packages/sdk/src/providers/modal/provider.ts";
 import { createRailwayProvider } from "../../../packages/sdk/src/providers/railway/provider.ts";
 import { sandboxer } from "../../../packages/sdk/src/providers/sandboxer/index.ts";
@@ -66,7 +68,7 @@ async function stubTransport(): Promise<never> {
 
 const realFetch = globalThis.fetch;
 
-/** E2B, Daytona, Freestyle, Instabox, Styne, Superserve, Boat and Sandboxer reach their API through the global
+/** E2B, Daytona, Freestyle, Instabox, Maritime, Styne, Superserve, Boat and Sandboxer reach their API through the global
  * fetch, so it stands in for them. */
 const stubFetch: typeof fetch = async () => {
   transportCalls += 1;
@@ -145,6 +147,14 @@ const subjects: readonly Subject[] = [
   {
     column: "Instabox",
     build: () => instabox({ apiKey: offlineKey, baseUrl: "https://offline.invalid" }),
+  },
+  {
+    column: "Archil",
+    build: () => createArchilProvider({ apiKey: offlineKey }, stubTransport),
+  },
+  {
+    column: "Maritime",
+    build: () => maritime({ apiKey: offlineKey, baseUrl: "https://offline.invalid" }),
   },
   { column: "Styne", build: () => styne({ apiKey: offlineKey }) },
   { column: "Memory", build: () => memory() },
@@ -362,6 +372,7 @@ const rows: readonly Row[] = [
       "Token header": [],
       "Bearer header": [],
       "Cookie header": [],
+      "Query token": [],
       No: [],
     },
     unchecked: "every Preview URL cell except Fake needs a live provider",

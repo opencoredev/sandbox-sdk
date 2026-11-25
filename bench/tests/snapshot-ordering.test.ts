@@ -8,6 +8,7 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import * as snapshots from "../src/snapshots.js";
 import { runV2 } from "../src/v2-runner.js";
 import { parseV2 } from "../src/v2-config.js";
+import { boundFake } from "./native-fakes.js";
 
 const dirs: string[] = [];
 
@@ -108,7 +109,7 @@ it.each(["e2b", "daytona", "superserve"])(
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name, cloud: false, region: null, provider }],
+        [{ kind: "ready", name, cloud: false, region: null, provider: boundFake(provider) }],
         parseV2([
           "--providers",
           name,
@@ -196,7 +197,7 @@ it.each(["e2b", "daytona", "superserve"])(
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name, cloud: false, region: null, provider }],
+        [{ kind: "ready", name, cloud: false, region: null, provider: boundFake(provider) }],
         parseV2([
           "--providers",
           name,
@@ -303,7 +304,7 @@ it.each(["daytona", "superserve"])(
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name, cloud: false, region: null, provider }],
+        [{ kind: "ready", name, cloud: false, region: null, provider: boundFake(provider) }],
         parseV2([
           "--providers",
           name,

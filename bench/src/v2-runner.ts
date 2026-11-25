@@ -9,6 +9,7 @@ import {
 import type { CreateInput, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { cpus, loadavg } from "node:os";
 import { readFile, mkdir } from "node:fs/promises";
+import { setTimeout as wait } from "node:timers/promises";
 import { journalFiles } from "./files.js";
 import { resolve, join } from "node:path";
 import { z } from "zod";
@@ -19,7 +20,7 @@ import {
   type LoadedProvider,
   type ReadyProvider,
 } from "./providers.js";
-import type { ReportV2, Sample, HostSample, Outcome } from "./v2-model.js";
+import type { ReportV2, Sample, HostSample, Outcome, ProviderBudget } from "./v2-model.js";
 import { PhaseClock, perfMetrics, filePayloads, firstByteAttempt } from "./measurement.js";
 import { collectMetadata, headroom } from "./publication.js";
 import {
@@ -30,11 +31,57 @@ import {
 } from "./fingerprint.js";
 import { estimateCost, budgetUSD, settledBudgetUSD } from "./pricing.js";
 import { pricedResources, reservationResources } from "./billed-resources.js";
-import { iterationBoundMs, scenarioNames } from "./scenarios.js";
+import {
+  accountCap,
+  cohortAggregate,
+  cohortBoundMs,
+  deleteAttemptMs,
+  cohortOnly,
+  isCohortKind,
+  isStressSelection,
+  iterationBoundMs,
+  parseCohortScenario,
+  scenarioNames,
+  selectedCohorts,
+  selectsScenario,
+  survivalEndBy,
+  type CohortKind,
+  type SurvivalPlan,
+} from "./scenarios.js";
+import {
+  cpuOverlap,
+  cpuPhaseEvidence,
+  cpuWork,
+  maxStepsPerSecond,
+  overlapThreshold,
+  newCpuSeed,
+  runStagedCpuProbe,
+  stageCpuProbe,
+  throughputSpread,
+  type CpuMemberTiming,
+  type CpuRun,
+  type CpuWork,
+  type StagedCpuProbe,
+} from "./cpu.js";
+import {
+  heartbeatCommand,
+  heartbeatDetails,
+  heartbeatWindow,
+  parseBootId,
+  survivalFailure,
+  type SurvivalVerdict,
+} from "./survival.js";
 import { roundRobin, schedule } from "./scheduler.js";
 import { shuffle, distribution, wilson } from "./v2-stats.js";
 import { performanceScript } from "./perf-script.js";
-import { DeadlineError, deadline, DeletionWork, PendingWork } from "./timing.js";
+import {
+  Barrier,
+  CohortGates,
+  DeadlineError,
+  deadline,
+  DeletionWork,
+  PendingWork,
+} from "./timing.js";
 import { command, Skip, uploadFixture, cloneCommand, previewText, replay } from "./workloads.js";
 import {
   autoStandby,
@@ -52,6 +99,7 @@ import {
   hasRunOwnership,
   verifyRunOwnership,
   writeOwnership,
+  assertJournalFree,
   type CleanupReview,
   proveSnapshotSource,
   type SnapshotProvenance,
@@ -62,11 +110,16 @@ import {
   undeletableSnapshots,
   createNamedDaytonaSnapshot,
   createNamedStyneSnapshot,
+  createNamedMaritimeSnapshot,
+  maritimeSnapshotName,
+  settleJournaledSnapshot,
+  settleMaritimeSave,
   snapshotsFromSource,
   deleteProvenSnapshot,
 } from "./snapshots.js";
 import { collectionPolicy } from "./collection-policy.js";
 import { isAbsent, lookupSandbox } from "./existence.js";
+import { journalFingerprint } from "./connections.js";
 import { captureVercelMeter } from "./billing/providers.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import { failureOutcome } from "./failure.js";
@@ -132,6 +185,42 @@ const downstream = new Map([
   ["preview-first-byte", ["edit-loop"]],
 ]);
 
+/** One cohort's shared state: K members start together, then the cohort writes its aggregate row. */
+interface CohortRun {
+  kind: CohortKind;
+  k: number;
+  /** Released once every member is created (or failed): cpu-burst work and survival windows start together. */
+  ready: Barrier;
+  /** Released once every member has finished its work; members keep their sandboxes until then. */
+  done: Barrier;
+  /** `performance.now()` when the cohort started admitting members: the survival deadline's base. */
+  startedAt: number;
+  /**
+   * Each member's successful CPU workload (cpu-burst): when its exec returned (`performance.now()`,
+   * taken before any report write), its phases on the host clock, and that clock's uncertainty.
+   */
+  cpu: (CpuMemberTiming & { returnedAt: number })[];
+  /** Each member's window verdict (survival). */
+  verdicts: SurvivalVerdict["kind"][];
+}
+
+/** The aggregate a finished cohort records. `finishedAt` is epoch milliseconds. */
+interface CohortRow {
+  outcome: Outcome;
+  durationMs: number;
+  unit: string;
+  finishedAt: number;
+  details: object;
+}
+
+interface CohortMember {
+  run: CohortRun;
+  gates: CohortGates;
+}
+
+const outcomeValues = (rows: readonly Sample[]) =>
+  rows.flatMap((s) => (s.outcome.kind === "sample" ? [s.outcome.value] : []));
+
 /** A burst cohort is a sample only when every sandbox became ready. */
 function burstOutcome(burst: {
   k: number;
@@ -153,11 +242,8 @@ function burstOutcome(burst: {
   return { kind: "failure", note, stage: `burst-${k}/all-ready`, elapsedMs: burst.durationMs };
 }
 
-const errorNote = (cause: unknown) =>
-  sanitize(cause instanceof Error ? cause.message : "Unknown failure");
-
 /** The snapshot IDs the ownership journal holds for one source sandbox of one provider. */
-function journaledSnapshots(
+export function journaledSnapshots(
   entries: Iterable<{ provider: string; id: string; kind: string; parent: string | null }>,
   provider: string,
   sourceId: string,
@@ -169,12 +255,26 @@ function journaledSnapshots(
   );
 }
 
+const errorNote = (cause: unknown) =>
+  sanitize(cause instanceof Error ? cause.message : "Unknown failure");
+
+/**
+ * Credential shapes no environment variable names: Maritime's account and server keys (`mk_`, `mlk_`),
+ * sandbox secrets (`mst_`) and URL tokens (`mut_`), and any `token=` query value, such as a preview URL's.
+ */
+const leakPatterns: [RegExp, string][] = [
+  [/(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
+  [/([?&;]token=)[^&#\s"'<>]+/gi, "$1[REDACTED]"],
+];
+
 export function sanitize(text: string) {
   let result = text;
 
   for (const [name, value] of Object.entries(process.env))
     if (/KEY|TOKEN|SECRET|PASSWORD/.test(name) && value && value.length > 5)
       result = result.replaceAll(value, "[REDACTED]");
+
+  for (const [pattern, replacement] of leakPatterns) result = result.replace(pattern, replacement);
 
   return result;
 }
@@ -270,13 +370,95 @@ export function summarize(
   });
 }
 
+/**
+ * The providers a run may create on: every ready one whose connection fingerprint the journal
+ * can record. One without is skipped with the reason, so no sandbox is ever created that a later
+ * reap would refuse to clean up.
+ */
+export async function fingerprinted(candidates: readonly LoadedProvider[]): Promise<{
+  loaded: LoadedProvider[];
+  connectionFingerprints: Record<string, string>;
+}> {
+  const connectionFingerprints: Record<string, string> = {};
+  const loaded: LoadedProvider[] = [];
+
+  for (const p of candidates) {
+    if (p.kind === "skipped") {
+      loaded.push(p);
+      continue;
+    }
+
+    const fingerprint = await journalFingerprint(p.provider);
+
+    if (fingerprint.kind === "unknown") {
+      loaded.push({
+        kind: "skipped",
+        name: p.name,
+        note: `No connection fingerprint for the run's journal (${fingerprint.reason}); skipped before any create, since a reap could not clean up its sandboxes`,
+      });
+      continue;
+    }
+
+    connectionFingerprints[p.name] = fingerprint.value;
+    loaded.push(p);
+  }
+
+  return { loaded, connectionFingerprints };
+}
+
+/**
+ * What a sandbox's iteration charged the budget for it: its life from `since` to `chargedUntil`,
+ * at `price` for a whole lifetime of a given length (billing minimum and creation fee included).
+ * `chargedUntil` is `since` when nothing was charged (a sandbox no iteration claimed) and
+ * `Infinity` while its iteration is still open. When `chargedUSD` is set, it holds the exact USD
+ * booked to the budget for this sandbox; otherwise the charged part is priced at `chargedUntil - since`.
+ */
+export type Charge = {
+  since: number;
+  chargedUntil: number;
+  chargedUSD?: number;
+  price: (lifetimeMs: number) => number | null;
+};
+
+/**
+ * What the budget still owes for a sandbox observed live until `end`: its whole observed life
+ * priced on the charge's basis, less what that basis already charged, never below zero. Pricing
+ * the time past `chargedUntil` as a lifetime of its own would charge the billing minimum and the
+ * creation fee a second time. Null when the life cannot be priced.
+ */
+export function chargeBeyond(charge: Charge, end: number): number | null {
+  if (end <= charge.chargedUntil) return 0;
+  const whole = charge.price(end - charge.since);
+
+  if (whole === null) return null;
+
+  const charged =
+    charge.chargedUSD !== undefined
+      ? charge.chargedUSD
+      : charge.chargedUntil > charge.since
+        ? charge.price(charge.chargedUntil - charge.since)
+        : 0;
+
+  // An unpriceable charged part is taken as nothing: the guard over-charges, never under.
+  return Math.max(0, whole - (charged ?? 0));
+}
+
 export async function runV2(
-  loaded: LoadedProvider[],
+  candidates: LoadedProvider[],
   config: ConfigV2,
   checkpoint: (report: ReportV2) => Promise<void>,
   metadata = collectMetadata(),
 ) {
+  // Each adapter's connection fingerprint, never the connection itself: an endpoint can carry a
+  // credential in its userinfo, path or query. `reap` reads only through an adapter whose
+  // connection, rebuilt from its environment, has the same fingerprint, so a provider whose
+  // fingerprint cannot be read now (Docker's /info failing, an unresolved connection) is skipped
+  // before its first create: its sandboxes could never be reaped after a crash.
+  const { loaded, connectionFingerprints } = await fingerprinted(candidates);
+
   await mkdir(resolve(config.out), { recursive: true });
+  // Before this run writes anything there: another run's journal must not be overwritten.
+  await assertJournalFree(join(resolve(config.out), "ownership.json"), config.run, config.force);
   await journalFiles.writeFile(
     join(resolve(config.out), "run.json"),
     JSON.stringify({ runId: config.run }),
@@ -334,8 +516,24 @@ export async function runV2(
       "Network: 25,000,000 bytes from speed.cloudflare.com including TLS; mean of five TCP connects to 1.1.1.1:443. Egress geography, CDN caches, shared host load and provider caches are uncontrolled.",
       "Costs are estimates, not invoices; marginal usage only, excludes subscriptions/credits/transfer/persistent snapshot retention. Cost per scenario allocates its measured duration; sandbox-lifetime records include setup and idle time and must not be summed with scenario allocations. Upstash/boxd allocated-resource estimates are upper bounds. Modal is priced on its requested allocation, never the guest view: exact when sized (request = limit), a lower bound on the default track (0.125 CPU / 128 MiB minimum request; billed burst usage above it is not counted), with Modal's region multiplier for a pinned region. Unknown resources yield null, never zero. Pricing retrieval dates are recorded per provider; EUR and USD remain separate with no cross-currency ranking.",
       "Budget admission reserves timeout × scenario count at observed or conservative default resources. Dollar budgets are estimates, not account spend caps; boxd uses conservative 2 USD/EUR for budget only. Failed/unknown creations count toward sandbox budget.",
+      "Reported budget spend prices every sandbox from its iteration's start until it was first observed gone: an exact native lookup found it absent or terminal. A delete acknowledgment is not a stop; after one, the harness looks the sandbox up every 0.1-1 s for up to the step timeout (at most 30 s), and once more after every provider's final sweep. Cleanup time past a reserve cannot be bounded: a sandbox still there when its reserve runs out is deleted by the run's final sweep and priced until it is seen gone. One never observed gone (including any on a provider with no exact lookup) is listed in budgets as an open liability, and every provider's budget is priced to one cutoff taken after all sweeps, just before the report is saved. An estimate over the dollar cap says so in the budget's stop note.",
     ],
   };
+
+  if (selectsScenario(config.scenarios, "cpu-sustained") || config.scenarios.includes("cpu-burst"))
+    report.methodology.push(
+      `CPU probe (probes/cpu.py): perf.py's CPython 32-bit LCG kernel from a fresh random seed per run, fixed work of segments x steps (cpu-sustained ${cpuWork.sustained.segments}x${cpuWork.sustained.steps}, cpu-burst ${cpuWork.burst.segments}x${cpuWork.burst.steps}) on one process, then on ceil(min(nproc, quota)) fork() workers (max 64) reporting over pipes. The script is written to the guest and the guest clock read before the run. A row fails unless every process's final LCG state equals the harness's own value for that seed, segment times add up to each phase, guest wall-clock spans match, no rate exceeds ${maxStepsPerSecond.toExponential(0)} steps/s, and the phases fit inside the exec the host timed. These checks reject wrong, stale or implausible replies; they cannot prove the guest executed the work, since the LCG has a closed form and the provider controls the guest's output. Rows: steps/s single and all-core (worker startup included), each segment's rate, consistency (slowest segment over median segment) and trend (last quarter of segments over first quarter), and the CPUs the guest sees (affinity, cgroup quota). Python version differences remain a confounder.`,
+    );
+
+  if (config.scenarios.includes("cpu-burst"))
+    report.methodology.push(
+      `CPU burst: K sandboxes created at once; each stages its probe, then once every member is ready (or failed) all dispatch the short CPU workload together. Each member's throughput is its own row; all-complete runs from that common start to the slowest member's exec return (timestamped before any report write) and is a sample only when all K complete. Overlap is proven from the host clock, never a guest wall clock: each member's throughput rows record its exec on the host clock (exec, from just before dispatch to its return) and each phase's length on the guest's own monotonic timer. A member ran single and then all-core inside its exec, so its single phase started no later than return - all - single and ended no earlier than dispatch + single (all-core: return - all and dispatch + single + all). The span from the latest such start to the earliest such end across members is a lower bound on the time every member ran that phase together, whatever any guest clock did; the aggregate records it per phase (provenMs, and provenFraction of the median member's phase), flags the cohort unless both fractions are at least ${overlapThreshold}, and marks it inconsistent when a member's phases are longer than its exec. Publication recomputes this from the members' rows. clockDriftMs, the change in a guest clock's offset from the host between a read at staging and one after the run, is recorded as a diagnostic and gates nothing. Per-sandbox spread: nearest-rank p50/p95, min/max, max/min and coefficient of variation.`,
+    );
+
+  if (config.scenarios.includes("survival"))
+    report.methodology.push(
+      `Burst survival: K sandboxes created at once; once every member is ready (or failed), each sends a heartbeat (${heartbeatCommand}) every ${config["survival-heartbeat-ms"]} ms and at the window's end (${config["survival-window-ms"]} ms), each bounded by the interval. A missed heartbeat triggers an exact read-only native lookup within the same bound. Exact lifecycle evidence decides: absent, terminal or a dead native state is death and a live native state is not, whatever the exec error; an SDK not_found decides only when no lookup answered; a changed boot ID is death. Any other miss marks the member unresponsive. Slots that pass while a miss is being handled are recorded as skipped, never sent late, and every heartbeat and lookup ends by one cohort deadline that keeps the cleanup reserve. Survival needs every slot answered, through the window's end. Create failures and heartbeats need a typed signal (SDK code quota or HTTP 429) to count as account limits; a proven death never does. An interrupted run's unfinished windows are skipped, not failures.`,
+    );
 
   let reportWrites = Promise.resolve();
 
@@ -381,18 +579,80 @@ export async function runV2(
   // The durable journal records cleanup candidates; live labels authorize deletion.
   const unsafeProviders = new Set<string>();
   const deletions = new DeletionWork();
+  /**
+   * Sandboxes whose iteration's cleanup reserve ran out before a deletion was confirmed. Their
+   * iteration touches them no more; the run's final sweep retries them, and they stay journaled
+   * for `bun bench reap` if that fails too.
+   */
+  const leftForReap = new Set<string>();
+
+  /**
+   * When each sandbox was first observed gone, by `provider/id`: an exact lookup found it absent
+   * or terminal. A delete acknowledgment is never a stop; until a lookup sees the sandbox gone it
+   * is an open liability.
+   */
+  const gone = new Map<string, number>();
+
+  /** Watches started by acknowledged deletes, each looking until its sandbox is observed gone. */
+  const watches = new Map<string, Promise<void>>();
+  const stopWatching = new AbortController();
+
+  /** One exact lookup; records the sandbox gone, at the lookup's return, if it found it absent. */
+  async function observeGone(p: ReadyProvider, id: string, timeoutMs: number) {
+    const key = `${p.name}/${id}`;
+
+    if (gone.has(key)) return true;
+    const evidence = await lookupSandbox(p.provider, id, Math.max(1, timeoutMs));
+
+    if (!isAbsent(evidence)) return false;
+
+    if (!gone.has(key)) gone.set(key, performance.now());
+
+    return true;
+  }
+
+  /**
+   * After a delete is acknowledged, look the sandbox up at once and then every 0.1-1 s until it
+   * is observed gone, for as long as the final sweep's listing wait (the step timeout, at most
+   * 30 s). Runs beside the iteration, so it changes no timing. A sandbox still unseen when the
+   * watch ends is looked up once more before the run prices its budgets.
+   */
+  function watchGone(p: ReadyProvider, id: string) {
+    const key = `${p.name}/${id}`;
+
+    if (gone.has(key) || watches.has(key)) return;
+    const end = performance.now() + Math.min(config["timeout-ms"], 30_000);
+
+    const watch = (async () => {
+      for (let delay = 0; ; delay = Math.min(1000, Math.max(100, delay * 2))) {
+        if (delay > 0) await wait(delay, undefined, { signal: stopWatching.signal });
+
+        const left = end - performance.now();
+
+        if (left <= 0 || (await observeGone(p, id, Math.min(config["timeout-ms"], left)))) return;
+      }
+    })()
+      .catch(() => {})
+      .finally(() => watches.delete(key));
+
+    watches.set(key, watch);
+  }
+
+  const charges = new Map<string, Charge>();
+  const runStart = performance.now();
   const restores = new RestoreCleanup();
 
-  const owned = new Map<
-    string,
-    {
-      provider: string;
-      id: string;
-      kind: "sandbox" | "snapshot" | "snapshot-source";
-      parent: string | null;
-      snapshotProof?: SnapshotProvenance;
-    }
-  >();
+  interface OwnedEntry {
+    provider: string;
+    id: string;
+    kind: "sandbox" | "snapshot" | "snapshot-source";
+    parent: string | null;
+    snapshotProof?: SnapshotProvenance;
+    /** The save's idempotency key, journaled before a Maritime save so an unanswered one can be settled. */
+    idempotencyKey?: string;
+  }
+
+  const owned = new Map<string, OwnedEntry>();
 
   // Per-attempt Apps (--app-per-attempt): journaled before any sandbox is allocated in them and
   // never removed, so recovery can list their sandboxes and billing can attribute their charges.
@@ -402,16 +662,49 @@ export async function runV2(
 
   let journal = Promise.resolve();
 
-  function persist() {
-    const data = JSON.stringify(
-      { runId: config.run, resources: [...owned.values()], apps: [...apps.values()] },
+  // Before any create, so a run that dies before its first create returns still leaves the
+  // fingerprints a reap needs for label recovery: reap refuses a connection the journal lacks.
+  if (loaded.some((p) => p.kind === "ready")) await persist();
+
+  function serializeJournal(override?: { key: string; value: OwnedEntry }) {
+    const resources = [...owned.entries()].map(([k, v]) =>
+      override && k === override.key ? override.value : v,
+    );
+
+    if (override && !owned.has(override.key)) resources.push(override.value);
+
+    return JSON.stringify(
+      { runId: config.run, connectionFingerprints, resources, apps: [...apps.values()] },
       null,
       2,
     );
+  }
 
-    journal = journal.then(() => writeOwnership(join(runDir, "ownership.json"), data));
+  function persist() {
+    const next = journal.then(() =>
+      writeOwnership(join(runDir, "ownership.json"), serializeJournal()),
+    );
 
-    return journal;
+    journal = next.catch(() => {});
+
+    return next;
+  }
+
+  /**
+   * Persist a confirmed snapshot entry (without `idempotencyKey`) to disk BEFORE mutating `owned`.
+   * If a concurrent timeout or rename failure interrupts the write, `owned` keeps the pending
+   * `idempotencyKey` entry intact so neither cleanup nor recovery can skip persisting or send DELETE
+   * while `ownership.json` on disk still carries the save key.
+   */
+  function persistConfirmedSnapshot(key: string, value: OwnedEntry) {
+    const next = journal.then(async () => {
+      await writeOwnership(join(runDir, "ownership.json"), serializeJournal({ key, value }));
+      owned.set(key, value);
+    });
+
+    journal = next.catch(() => {});
+
+    return next;
   }
 
   function review(
@@ -432,9 +725,25 @@ export async function runV2(
       });
   }
 
-  async function resolveAbsent(p: ReadyProvider, id: string) {
-    await deletions.wait(p.name, id, Math.min(config["timeout-ms"] / 2, 30_000));
-    const evidence = await lookupSandbox(p.provider, id, config["timeout-ms"]);
+  /** Milliseconds left before `endBy` (`performance.now()`), or unbounded without one. */
+  const leftUntil = (endBy: number | undefined) =>
+    endBy === undefined ? Infinity : endBy - performance.now();
+
+  async function resolveAbsent(p: ReadyProvider, id: string, endBy?: number) {
+    if (leftUntil(endBy) <= 0) return false;
+    await deletions.wait(
+      p.name,
+      id,
+      Math.min(config["timeout-ms"] / 2, 30_000, Math.max(0, leftUntil(endBy))),
+    );
+
+    if (leftUntil(endBy) <= 0) return false;
+
+    const evidence = await lookupSandbox(
+      p.provider,
+      id,
+      Math.min(config["timeout-ms"], leftUntil(endBy)),
+    );
 
     if (!isAbsent(evidence)) {
       for (const item of report.cleanupReview ?? [])
@@ -451,6 +760,8 @@ export async function runV2(
       id,
       evidence,
     );
+
+    if (!gone.has(`${p.name}/${id}`)) gone.set(`${p.name}/${id}`, performance.now());
     restores.mark(p.name, id, "destroyed");
     owned.delete(`${p.name}/${id}`);
     await persist();
@@ -464,15 +775,48 @@ export async function runV2(
       if (entry.provider === p.name && entry.kind === "sandbox") await resolveAbsent(p, entry.id);
   }
 
+  /**
+   * The iteration's cleanup reserve ran out before a deletion was confirmed: leave the sandbox
+   * journaled for `bun bench reap`, stop admitting more on this provider, and say so.
+   */
+  function reserveExhausted(loaded: ReadyProvider, id: string) {
+    leftForReap.add(`${loaded.name}/${id}`);
+    review(
+      loaded.name,
+      id,
+      "Cleanup reserve exhausted before deletion was confirmed; retried by the run's final sweep, else journaled for `bun bench reap`",
+    );
+
+    for (const item of report.cleanupReview ?? [])
+      if (item.provider === loaded.name && item.id === id && item.kind === "sandbox")
+        item.status = "unresolved";
+    const state = states.get(loaded.name);
+
+    if (state) state.stop ??= "Cleanup reserve exhausted; no more sandboxes admitted";
+
+    return new Error(`Cleanup reserve exhausted for ${id}; run bun bench reap`);
+  }
+
+  /**
+   * Verify ownership and delete, retrying a failed delete up to three times. With `endBy` (a
+   * stress sandbox's reserve, as `performance.now()`), an attempt starts only while a whole one
+   * (`deleteAttemptMs`) still fits and every wait is cut to the time left, so retries never hold
+   * the sandbox past what admission charged; a sandbox still there is left for `reap`.
+   */
   async function remove(
     loaded: ReadyProvider,
     id: string,
     measurement?: { clock: PhaseClock; phases: Record<string, number> },
+    endBy?: number,
   ) {
     if (restores.blocksSource(loaded.name, id))
       throw new Error("Restore cleanup unresolved; source retained");
 
+    const stepMs = () => Math.min(config["timeout-ms"], leftUntil(endBy));
+
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (leftUntil(endBy) < deleteAttemptMs(config["timeout-ms"]))
+        throw reserveExhausted(loaded, id);
       const verifyStart = performance.now();
       let verified: boolean;
 
@@ -483,8 +827,9 @@ export async function runV2(
             loaded.provider,
             id,
             config.run,
-            config["timeout-ms"],
-            config["ownership-visibility-ms"],
+            stepMs(),
+            config["ownership-visibility-ms"] &&
+              Math.min(config["ownership-visibility-ms"], stepMs()),
           ));
       } finally {
         if (measurement)
@@ -493,7 +838,10 @@ export async function runV2(
       }
 
       if (!verified) {
-        if (await resolveAbsent(loaded, id)) return;
+        if (await resolveAbsent(loaded, id, endBy)) return;
+
+        // Cut short by the reserve, verification proves nothing either way.
+        if (leftUntil(endBy) <= 0) throw reserveExhausted(loaded, id);
         restores.mark(loaded.name, id, "quarantined");
         review(
           loaded.name,
@@ -541,13 +889,15 @@ export async function runV2(
         }
 
         try {
-          await deadline(config["timeout-ms"], () =>
+          await deadline(stepMs(), () =>
             deletions.start(loaded.name, id, () => loaded.provider.destroy(id)),
           );
         } finally {
           measurement?.clock.finish();
         }
 
+        // Acknowledged, not yet observed gone: the stop time is the first lookup that finds it so.
+        watchGone(loaded, id);
         restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
 
@@ -572,7 +922,9 @@ export async function runV2(
         return;
       } catch (e) {
         if (e instanceof DeadlineError) {
-          if (await resolveAbsent(loaded, id)) return;
+          if (await resolveAbsent(loaded, id, endBy)) return;
+
+          if (leftUntil(endBy) <= 0) throw reserveExhausted(loaded, id);
           review(loaded.name, id, "Deletion deadline expired; exact existence remains unresolved");
 
           for (const item of report.cleanupReview ?? [])
@@ -588,16 +940,17 @@ export async function runV2(
 
   const costSuite = config.scenarios.length === 1 && config.scenarios[0] === "cost";
 
+  const survivalPlan: SurvivalPlan = {
+    windowMs: config["survival-window-ms"],
+    intervalMs: config["survival-heartbeat-ms"],
+  };
+
   function selected(scenario: string) {
     return config.scenarios.includes("all") || config.scenarios.includes(scenario);
   }
 
-  async function iteration(
-    p: ReadyProvider,
-    index: number,
-    burst = 0,
-    barrier?: () => Promise<void>,
-  ) {
+  async function iteration(p: ReadyProvider, index: number, cohort?: CohortMember) {
+    const prefix = cohort ? `${cohort.run.kind}-${cohort.run.k}` : null;
     const foundState = states.get(p.name);
 
     if (!foundState) return;
@@ -644,11 +997,73 @@ export async function runV2(
 
     const budgetMax = config["provider-max-sandboxes"][p.name] ?? config["max-sandboxes"];
     const dollarsMax = config["provider-max-dollars"][p.name] ?? config["max-dollars"];
+
+    // The longest this iteration may hold a sandbox. Admission charges a reserve for it, and
+    // cleanup ends by it (`cleanupEndBy`), so the charge never outgrows the reserve.
+    const boundMs = costSuite
+      ? timeout * 4
+      : cohort
+        ? cohortBoundMs(cohort.run.kind, timeout, survivalPlan)
+        : iterationBoundMs(timeout, config.scenarios);
+
+    // Stress sandboxes (cpu-burst and survival members, cpu-sustained iterations) reserve their
+    // cleanup steps; the publication suites keep their published cleanup unchanged.
+    const stress =
+      cohort?.run.kind === "cpu-burst" ||
+      cohort?.run.kind === "survival" ||
+      (!cohort && config.scenarios.includes("cpu-sustained"));
+
+    const cleanupEndBy = stress ? lifeStart + boundMs : undefined;
+
+    /** Remove one of this iteration's sandboxes; a stress sandbox's cleanup ends by its reserve. */
+    const removeOwn = (id: string) => remove(p, id, undefined, cleanupEndBy);
+
+    const priceFor = (targetFp: Fingerprint | null) => {
+      const basis = reservationResources(p.name, targetFp ?? state.fp, allocation.requestedSize);
+
+      return (ms: number) => {
+        const usd = estimateCost(p.name, ms, basis, p.region);
+
+        return usd === null ? null : budgetUSD(p.name, usd);
+      };
+    };
+
+    // Priced once the iteration ends; starts unbooked with a captured fallback basis so a
+    // late-settling create never escapes final reconciliation.
+    const sourceCharge: Charge = {
+      since: lifeStart,
+      chargedUntil: lifeStart,
+      chargedUSD: 0,
+      price: priceFor(null),
+    };
+
+    let currentRestoreCharge: Charge | undefined;
+
+    const restoreCharges: {
+      charge: Charge;
+      end: number;
+      durationMs: number;
+      fingerprint: Fingerprint | null;
+      cost: number | null;
+    }[] = [];
+
+    /** Record a sandbox this iteration created, for cleanup and for pricing. */
+    const own = (id: string, sandboxCharge: Charge = sourceCharge) => {
+      ids.add(id);
+      charges.set(`${p.name}/${id}`, sandboxCharge);
+    };
+
+    /** A cleanup wait: the step timeout, cut to what is left of a stress sandbox's reserve. */
+    const cleanupMs = () =>
+      cleanupEndBy === undefined
+        ? timeout
+        : Math.max(0, Math.min(timeout, cleanupEndBy - performance.now()));
+
     reserve = budgetUSD(
       p.name,
       estimateCost(
         p.name,
-        costSuite ? timeout * 4 : burst ? timeout * 2 : iterationBoundMs(timeout),
+        boundMs,
         reservationResources(p.name, state.fp, allocation.requestedSize),
         p.region,
       ) ?? dollarsMax,
@@ -666,11 +1081,13 @@ export async function runV2(
     if (stop) {
       state.stop = stop;
 
-      const skipped = burst
-        ? [`burst-${burst}/cold`]
+      const skipped = prefix
+        ? [`${prefix}/cold`]
         : [
             "cold",
-            ...(config.scenarios.includes("all") ? scenarioNames : config.scenarios),
+            ...(config.scenarios.includes("all")
+              ? scenarioNames
+              : config.scenarios.filter((name) => !isCohortKind(name))),
             "destroy",
           ];
 
@@ -683,7 +1100,7 @@ export async function runV2(
           reason: stop,
         });
       report.budgets[p.name] = { created: state.created, estimatedUSD: state.estimatedUSD, stop };
-      await barrier?.();
+      await cohort?.gates.done();
 
       return;
     }
@@ -694,7 +1111,7 @@ export async function runV2(
 
     // This iteration's own App, for the cold create and its restores. Bursts share the default App.
     const app =
-      !burst && config["app-per-attempt"].some((name) => name === p.name)
+      !cohort && config["app-per-attempt"].some((name) => name === p.name)
         ? attemptApp(config.run, index)
         : undefined;
 
@@ -724,6 +1141,16 @@ export async function runV2(
             let restore: RestoreAttempt | undefined;
             // This create, journaled in its App before submission (per-attempt Apps).
             let allocation: { app: JournalApp; id: string } | undefined;
+            const callStart = performance.now();
+
+            const callCharge: Charge = input.from
+              ? (currentRestoreCharge ?? {
+                  since: callStart,
+                  chargedUntil: callStart,
+                  chargedUSD: 0,
+                  price: priceFor(fp),
+                })
+              : sourceCharge;
 
             return pending.track(
               (async () => {
@@ -807,7 +1234,7 @@ export async function runV2(
                 if (restore) restores.identify(restore, info.id, "alive");
                 createEvidence.sandboxId = info.id;
                 createEvidence.stage = "ownership-persist";
-                ids.add(info.id);
+                own(info.id, callCharge);
 
                 if (input.from) restoredId = info.id;
                 owned.set(`${p.name}/${info.id}`, {
@@ -829,7 +1256,7 @@ export async function runV2(
                 }
 
                 if (input.signal?.aborted) {
-                  await remove(p, info.id);
+                  await removeOwn(info.id);
                   ids.delete(info.id);
                   throw new Error("Late create cleaned up");
                 }
@@ -909,7 +1336,7 @@ export async function runV2(
 
                     if (restore) restores.identify(restore, nativeId, "alive");
                     createEvidence.sandboxId = nativeId;
-                    ids.add(nativeId);
+                    own(nativeId, callCharge);
 
                     if (allocation) allocated(allocation.app, allocation.id, nativeId);
 
@@ -924,7 +1351,7 @@ export async function runV2(
                     await persist();
 
                     try {
-                      await remove(p, nativeId);
+                      await removeOwn(nativeId);
                       ids.delete(nativeId);
                       createEvidence.cleanupOutcome = "succeeded";
                     } catch {
@@ -944,7 +1371,7 @@ export async function runV2(
         if (key === "destroy")
           return (id: string) =>
             pending.track(
-              remove(p, id).then(() => {
+              removeOwn(id).then(() => {
                 ids.delete(id);
               }),
             );
@@ -973,7 +1400,7 @@ export async function runV2(
         ...allocation,
         provider: p.name,
         iteration: index,
-        scenario: burst ? `burst-${burst}/${scenario}` : scenario,
+        scenario: prefix ? `${prefix}/${scenario}` : scenario,
         unit,
         startedAt: clock?.startedAt ?? startedAt,
         finishedAt: clock?.finishedAt ?? new Date().toISOString(),
@@ -1024,7 +1451,7 @@ export async function runV2(
         scenario,
         async () => {
           try {
-            await remove(p, id, { clock, phases });
+            await remove(p, id, { clock, phases }, cleanupEndBy);
           } finally {
             // Modal: the row times a confirmed stop; these split it into the request and the stop.
             const timing = destroyTimings.get(`${p.name}/${id}`);
@@ -1044,6 +1471,9 @@ export async function runV2(
         },
         phases,
         clock,
+        null,
+        // A stress sandbox's retries run inside its remaining reserve, never on in the background.
+        cleanupEndBy === undefined ? timeout : Math.max(1, cleanupEndBy - performance.now()),
       );
     }
 
@@ -1053,6 +1483,8 @@ export async function runV2(
       phaseValues: Record<string, number> = {},
       clock?: PhaseClock,
       failureDetails: F | null = null,
+      /** The step's deadline, and the drain after a failure; a stress destroy runs to its reserve. */
+      limitMs = timeout,
     ) {
       const start = performance.now(),
         at = new Date().toISOString(),
@@ -1084,7 +1516,7 @@ export async function runV2(
       }
 
       try {
-        const result = await deadline(timeout, (signal) =>
+        const result = await deadline(limitMs, (signal) =>
           pending.track(action(AbortSignal.any([signal, stopping.signal]))),
         );
 
@@ -1129,13 +1561,15 @@ export async function runV2(
           if (["cold", "reconnect", "pause-resume", "snapshot"].includes(scenario))
             blockedBy ??= scenario;
 
-          if (scenario === "fingerprint") dependencies.set("perf", scenario);
+          // Probes sized from the fingerprint's CPU count cannot run without it.
+          if (scenario === "fingerprint")
+            for (const sized of ["perf", "cpu-sustained", "cpu"]) dependencies.set(sized, scenario);
 
           for (const target of downstream.get(scenario) ?? [])
             dependencies.set(target, dependencies.get(scenario) ?? scenario);
         }
 
-        if (!(await pending.drain(timeout))) {
+        if (!(await pending.drain(Math.min(timeout, limitMs)))) {
           unsafe = true;
           unsafeProviders.add(p.name);
           state.stop = "Timed-out work did not drain; stopped for cleanup safety";
@@ -1159,6 +1593,198 @@ export async function runV2(
         }
 
         return { kind: "unsuccessful" as const, sample };
+      }
+    }
+
+    /** Whether a sample belongs to this iteration's namespace: main rows, or this cohort's members. */
+    function sameNamespace(scenario: string) {
+      const parsed = parseCohortScenario(scenario);
+
+      if (!prefix) return parsed === null;
+
+      return parsed !== null && !parsed.aggregate && `${parsed.kind}-${parsed.k}` === prefix;
+    }
+
+    /**
+     * Stage a CPU probe run: a fresh seed, the worker count from the fingerprint, the script
+     * written into the guest and the guest clock read. Bounded by the step timeout.
+     */
+    async function stageCpu(active: Sandbox, work: CpuWork): Promise<StagedCpuProbe> {
+      if (p.name === "memory") throw new Skip("Memory is an offline fake");
+
+      if (!fp) throw new Error("Fingerprint required to size the all-core run");
+      const workers = Math.min(64, Math.ceil(resources(fp).cpu));
+
+      return deadline(timeout, (signal) =>
+        pending.track(
+          stageCpuProbe(active, { work, seed: newCpuSeed(), workers }, timeout, signal),
+        ),
+      );
+    }
+
+    /**
+     * Run a staged CPU probe (probes/cpu.py) and publish its probe row plus two throughput
+     * rows, `<scenario>-single` and `<scenario>-all`, like perf's derived metrics. A staging
+     * failure fails the probe row. `onReturn` sees the run as soon as its exec returns.
+     */
+    async function cpuScenario(
+      active: Sandbox,
+      scenario: string,
+      staging: Promise<StagedCpuProbe>,
+      onReturn: (ran: CpuRun) => void = () => {},
+    ) {
+      const probe = await measure(scenario, async (signal) => {
+        // measure's deadline started just now: the diagnostic clock read must end before it.
+        const endBy = performance.now() + timeout;
+
+        const ran = await runStagedCpuProbe(active, await staging, timeout, {
+          signal,
+          endBy,
+          track: (work) => pending.track(work),
+        });
+
+        onReturn(ran);
+
+        return { ...ran.result, seed: ran.result.probe.seed, ran };
+      });
+
+      const source = probe.sample;
+
+      for (const phase of ["single", "all"] as const) {
+        const outcome: Outcome =
+          probe.kind === "success"
+            ? {
+                kind: "sample",
+                value:
+                  phase === "single"
+                    ? probe.result.singleOpsPerSecond
+                    : probe.result.allOpsPerSecond,
+              }
+            : source.outcome;
+
+        const details =
+          probe.kind === "success"
+            ? {
+                work: { segments: probe.result.probe.segments, steps: probe.result.probe.steps },
+                seed: probe.result.seed,
+                workers: phase === "single" ? 1 : probe.result.workers,
+                consistency: probe.result[phase],
+                guestVcpus: probe.result.guestVcpus,
+                ...cpuPhaseEvidence(probe.result.ran, phase),
+                cpus: probe.result.probe.cpus,
+                python: probe.result.probe.python,
+              }
+            : null;
+
+        const clock = new PhaseClock();
+        clock.start = 0;
+        clock.end = source.durationMs;
+        clock.startedAt = source.startedAt;
+        clock.finishedAt = source.finishedAt;
+        await add(
+          `${scenario}-${phase}`,
+          "ops/s",
+          outcome,
+          0,
+          source.startedAt,
+          source.hostBefore,
+          details,
+          {},
+          clock,
+          source.durationMs,
+          source.hostAfter,
+        );
+      }
+
+      return probe;
+    }
+
+    /**
+     * A cohort member's work once every member is created: nothing for a readiness burst, the
+     * short CPU workload for cpu-burst, the heartbeat window for survival.
+     */
+    async function cohortWork({ run, gates }: CohortMember, active: Sandbox) {
+      // A cpu-burst member stages its probe before the common start, so a slow upload or clock
+      // read cannot delay its CPU phases relative to the others.
+      const staging = run.kind === "cpu-burst" ? stageCpu(active, cpuWork.burst) : null;
+
+      await staging?.catch(() => {});
+      await gates.ready();
+
+      if (stopping.signal.aborted) return;
+
+      switch (run.kind) {
+        case "burst":
+          return;
+        case "cpu-burst": {
+          // Staged before the barrier, below; only the exec dispatch follows the common start.
+          await cpuScenario(
+            active,
+            "cpu",
+            staging ?? Promise.reject(new Error("CPU probe not staged")),
+            (ran) =>
+              run.cpu.push({
+                returnedAt: ran.returnedAt,
+                exec: ran.exec,
+                singleSeconds: ran.result.singleSeconds,
+                allSeconds: ran.result.allSeconds,
+              }),
+          );
+
+          return;
+        }
+
+        case "survival": {
+          const before = await host(),
+            at = new Date().toISOString(),
+            start = performance.now();
+
+          const result = await heartbeatWindow({
+            plan: survivalPlan,
+            heartbeat: async (signal) =>
+              parseBootId(await command(active, heartbeatCommand, timeout, signal)),
+            lookup: (ms) => lookupSandbox(p.provider, active.id, ms),
+            heartbeatTimeoutMs: timeout,
+            // One deadline for the whole cohort, leaving its cleanup steps reserved.
+            endBy: survivalEndBy(run.startedAt, timeout, survivalPlan),
+            stop: stopping.signal,
+            sanitize,
+            track: (work) => pending.track(work),
+          });
+
+          run.verdicts.push(result.verdict.kind);
+
+          const outcome: Outcome =
+            result.verdict.kind === "survived"
+              ? { kind: "sample", value: result.elapsedMs }
+              : result.verdict.kind === "interrupted"
+                ? { kind: "skipped", note: "Run interrupted before the window ended" }
+                : (survivalFailure(result, `${prefix}/window`) ?? {
+                    kind: "failure",
+                    note: "Heartbeat window failed",
+                  });
+
+          await add(
+            "window",
+            "ms",
+            outcome,
+            start,
+            at,
+            before,
+            { ...heartbeatDetails(result), plan: survivalPlan },
+            {},
+            undefined,
+            result.elapsedMs,
+          );
+
+          return;
+        }
+
+        default: {
+          const exhaustive: never = run.kind;
+
+          return exhaustive;
+        }
       }
     }
 
@@ -1208,7 +1834,12 @@ export async function runV2(
         state.fp = fp;
 
         for (const sample of report.samples)
-          if (sample.provider === p.name && sample.iteration === index && !sample.fingerprint) {
+          if (
+            sample.provider === p.name &&
+            sample.iteration === index &&
+            !sample.fingerprint &&
+            sameNamespace(sample.scenario)
+          ) {
             sample.fingerprint = fp;
             sample.estimatedCost = estimateCost(p.name, sample.durationMs, priced(fp), p.region);
           }
@@ -1216,7 +1847,11 @@ export async function runV2(
         return fp;
       });
 
-      if (burst) return;
+      if (cohort) {
+        await cohortWork(cohort, active);
+
+        return;
+      }
 
       const groups = shuffle(
         [
@@ -1231,6 +1866,8 @@ export async function runV2(
           "app",
           "tool-replay",
           "pip-install",
+          // Appended only when selected, so runs without it keep their seeded order.
+          ...(selectsScenario(config.scenarios, "cpu-sustained") ? ["cpu-sustained"] : []),
         ],
         config.seed + index,
       );
@@ -1280,13 +1917,23 @@ export async function runV2(
           });
 
           if (!targets.slice(1).some(selected)) continue;
-          const preview = await measure("preview-provisioning", () => active.preview(3000));
+          // The preview's URL and headers can carry its credentials (Maritime's `?token=`, Styne's and
+          // Boat's auth headers), so they stay in this variable: the measured result, which the runner
+          // writes to samples.ndjson and the merged output, is nothing.
+          let access: { url: string; headers?: Record<string, string> } | undefined;
+
+          const preview = await measure("preview-provisioning", async () => {
+            access = await active.preview(3000);
+
+            return null;
+          });
+
           await measure("dev-server", async () => {
-            if (preview.kind !== "success")
+            if (preview.kind !== "success" || !access)
               throw new Error("Preview provisioning did not return a URL");
 
             const h = await active.start("npm run dev", {
-              env: { BENCH_PREVIEW_HOST: new URL(preview.result.url).hostname },
+              env: { BENCH_PREVIEW_HOST: new URL(access.url).hostname },
               name: "bench-vite",
               cwd: "/workspace/bench-app",
               ready: { log: /Local:/ },
@@ -1303,8 +1950,8 @@ export async function runV2(
               const result = await measure(
                 "preview-first-byte",
                 async (signal) => {
-                  if (preview.kind !== "success") throw new Error("Preview unavailable");
-                  await firstByteAttempt(preview.result, signal, clock, (work) => {
+                  if (preview.kind !== "success" || !access) throw new Error("Preview unavailable");
+                  await firstByteAttempt(access, signal, clock, (work) => {
                     void pending.track(work);
                   });
 
@@ -1351,6 +1998,9 @@ export async function runV2(
 
           let snapshotId: string | undefined;
           let snapshotReady = false;
+          // A Maritime save's idempotency key, journaled with its name before the request.
+          let saveKey: string | undefined;
+          let pendingKeylessWrite: Promise<void> | undefined;
           let clean: ((id: string) => Promise<void>) | undefined;
           let snapshotProof: SnapshotProvenance | undefined;
 
@@ -1399,7 +2049,7 @@ export async function runV2(
                 );
               };
 
-              if (["daytona", "superserve", "styne"].includes(p.name)) {
+              if (["daytona", "superserve", "maritime", "styne"].includes(p.name)) {
                 owned.set(`${p.name}/snapshot-source/${active.id}`, {
                   provider: p.name,
                   id: active.id,
@@ -1417,6 +2067,21 @@ export async function runV2(
                     kind: "snapshot",
                     parent: active.id,
                     snapshotProof,
+                  });
+                }
+
+                // Maritime: the name, the source and the save's idempotency key, so a save whose answer is
+                // lost is settled by replaying it, never forgotten on a first 404.
+                if (p.name === "maritime") {
+                  snapshotId = maritimeSnapshotName(config.run);
+                  saveKey = crypto.randomUUID();
+                  owned.set(`${p.name}/snapshot/${snapshotId}`, {
+                    provider: p.name,
+                    id: snapshotId,
+                    kind: "snapshot",
+                    parent: active.id,
+                    snapshotProof,
+                    idempotencyKey: saveKey,
                   });
                 }
 
@@ -1457,22 +2122,47 @@ export async function runV2(
                 snap = !snapshotId
                   ? await p.provider.snapshot(active.id)
                   : p.name === "styne"
-                    ? await createNamedStyneSnapshot(active.id, snapshotId)
-                    : await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId);
+                    ? await createNamedStyneSnapshot(p.provider, active.id, snapshotId)
+                    : p.name === "maritime" && saveKey
+                      ? await createNamedMaritimeSnapshot(
+                          p.provider,
+                          active.id,
+                          snapshotId,
+                          saveKey,
+                        )
+                      : await createNamedDaytonaSnapshot(p.provider, active.id, snapshotId);
               } finally {
                 snapshotClock.finish();
               }
 
               snapshotId = snap.id;
-              snapshotReady = true;
-              owned.set(`${p.name}/snapshot/${snap.id}`, {
+
+              const snapKey = `${p.name}/snapshot/${snap.id}`;
+
+              const confirmed: OwnedEntry = {
                 provider: p.name,
                 id: snap.id,
                 kind: "snapshot",
                 parent: active.id,
                 snapshotProof,
-              });
-              await persist();
+              };
+
+              if (owned.get(snapKey)?.idempotencyKey !== undefined) {
+                // A journaled save key (Maritime): disk drops the key before memory does, so a failed
+                // write keeps the key for settling and never lets cleanup DELETE behind it.
+                const write = persistConfirmedSnapshot(snapKey, confirmed);
+
+                pendingKeylessWrite = write;
+                await write;
+              } else {
+                // No save key, and the ID learned only now (E2B and most others): in memory first, so
+                // cleanup and the final sweep find the snapshot even when the journal write fails.
+                owned.set(snapKey, confirmed);
+                await persist();
+              }
+
+              snapshotReady = true;
+              saveKey = undefined;
 
               if (signal.aborted) {
                 await clean?.(snap.id);
@@ -1509,6 +2199,15 @@ export async function runV2(
             const id = snapshotId;
             let restored: Sandbox | undefined;
             const restoreStart = performance.now();
+
+            const restoreCharge: Charge = {
+              since: restoreStart,
+              chargedUntil: restoreStart,
+              chargedUSD: 0,
+              price: priceFor(fp),
+            };
+
+            currentRestoreCharge = restoreCharge;
 
             try {
               if (snapshotReady) {
@@ -1586,7 +2285,8 @@ export async function runV2(
                 }
 
                 await measureDestroy("restore-destroy", restoreId);
-                const restoredMs = performance.now() - restoreStart;
+                const restoreEnd = performance.now();
+                const restoredMs = restoreEnd - restoreStart;
                 restoredDurationMs += restoredMs;
 
                 const cost = estimateCost(
@@ -1597,6 +2297,13 @@ export async function runV2(
                 );
 
                 restoredCost = restoredCost === null || cost === null ? null : restoredCost + cost;
+                restoreCharges.push({
+                  charge: restoreCharge,
+                  end: restoreEnd,
+                  durationMs: restoredMs,
+                  fingerprint: restoredFingerprint,
+                  cost,
+                });
 
                 for (const sample of report.samples) {
                   if (
@@ -1650,9 +2357,48 @@ export async function runV2(
                 // A restore that is still quarantined must be resolved/deleted before its snapshot.
                 const pendingRestore = createEvidence.unverifiedSandboxId;
 
-                if (pendingRestore) await remove(p, pendingRestore);
+                if (pendingRestore) await removeOwn(pendingRestore);
 
-                if (restoredId && owned.has(`${p.name}/${restoredId}`)) await remove(p, restoredId);
+                if (restoredId && owned.has(`${p.name}/${restoredId}`)) await removeOwn(restoredId);
+
+                if (pendingKeylessWrite) {
+                  await pendingKeylessWrite;
+                  snapshotReady = true;
+                  saveKey = undefined;
+                }
+
+                // A Maritime save that never confirmed may still land: settle it first. Only a refused
+                // save, or a source gone with no snapshot, drops the journal entry without a delete; an
+                // unsettled one throws and stays journaled for recovery.
+                if (p.name === "maritime" && !snapshotReady && saveKey) {
+                  const settled = await settleMaritimeSave({
+                    provider: p.provider,
+                    sandboxId: active.id,
+                    name: id,
+                    idempotencyKey: saveKey,
+                    timeoutMs: timeout,
+                  });
+
+                  if (settled === "absent") {
+                    owned.delete(`${p.name}/snapshot/${id}`);
+                    await persist();
+
+                    return;
+                  }
+
+                  // Confirmed on the server: persist the keyless entry BEFORE deleting so a
+                  // dropped delete response cannot replay POST /save later.
+                  const current = owned.get(`${p.name}/snapshot/${id}`);
+
+                  if (current?.idempotencyKey !== undefined) {
+                    const { idempotencyKey: _, ...withoutKey } = current;
+                    await persistConfirmedSnapshot(`${p.name}/snapshot/${id}`, withoutKey);
+                  }
+
+                  snapshotReady = true;
+                  saveKey = undefined;
+                }
+
                 await clean?.(id);
                 report.cleanupReview = report.cleanupReview?.filter(
                   (r) => !(r.provider === p.name && r.id === id && r.kind === "snapshot"),
@@ -1660,8 +2406,18 @@ export async function runV2(
                 owned.delete(`${p.name}/snapshot/${id}`);
                 await persist();
               });
+              currentRestoreCharge = undefined;
             }
           }
+
+          continue;
+        }
+
+        if (group === "cpu-sustained") {
+          const staging = stageCpu(active, cpuWork.sustained);
+
+          await staging.catch(() => {});
+          await cpuScenario(active, "cpu-sustained", staging);
 
           continue;
         }
@@ -1896,16 +2652,16 @@ export async function runV2(
         );
       }
     } finally {
-      await barrier?.();
+      await cohort?.gates.done();
 
-      if (!(await pending.drain(timeout))) {
+      if (!(await pending.drain(cleanupMs()))) {
         unsafeProviders.add(p.name);
         state.stop = "Pending work could not drain; no further sandboxes scheduled";
       }
 
       if (createEvidence.unverifiedSandboxId) {
         try {
-          await remove(p, createEvidence.unverifiedSandboxId);
+          await removeOwn(createEvidence.unverifiedSandboxId);
         } catch {
           /* Keep unresolved quarantine. */
         }
@@ -1920,7 +2676,7 @@ export async function runV2(
               (v.kind === "snapshot-source" && v.id === id)),
         );
 
-        if (!isSource) await measureDestroy("destroy", id);
+        if (!isSource && !leftForReap.has(`${p.name}/${id}`)) await measureDestroy("destroy", id);
       }
 
       for (const source of [...owned.values()].filter(
@@ -1949,7 +2705,13 @@ export async function runV2(
             await deadline(timeout, async (signal) => {
               for (;;) {
                 if (signal.aborted) throw new Error("Snapshot source recovery deadline expired");
-                const snapshots = await snapshotsFromSource(p.name, source.id, journaled);
+
+                const snapshots = await snapshotsFromSource(
+                  p.name,
+                  p.provider,
+                  source.id,
+                  journaled,
+                );
 
                 if (!snapshots.length) break;
 
@@ -1998,6 +2760,7 @@ export async function runV2(
       for (const id of ids) {
         if (
           !owned.has(`${p.name}/${id}`) ||
+          leftForReap.has(`${p.name}/${id}`) ||
           restores.blocksSource(p.name, id) ||
           [...owned.values()].some(
             (v) =>
@@ -2010,7 +2773,7 @@ export async function runV2(
         await measureDestroy("destroy", id);
       }
 
-      if (!(await pending.drain(timeout))) {
+      if (!(await pending.drain(cleanupMs()))) {
         unsafeProviders.add(p.name);
         state.stop = "Cleanup could not drain";
       }
@@ -2022,7 +2785,19 @@ export async function runV2(
           if (index === reconnectedHandles.length - 1) await reconnectedTo?.close();
           await previous.close();
         });
-      const duration = performance.now() - lifeStart;
+      const sourceEnd = performance.now();
+      const duration = sourceEnd - lifeStart;
+
+      const sourcePrice = priceFor(fp);
+      sourceCharge.chargedUntil = sourceEnd;
+      sourceCharge.price = sourcePrice;
+
+      const restorePrices = restoreCharges.map((r) => priceFor(r.fingerprint ?? fp));
+
+      for (const [i, r] of restoreCharges.entries()) {
+        r.charge.chargedUntil = r.end;
+        r.charge.price = restorePrices[i] ?? sourcePrice;
+      }
 
       const sourceCost = estimateCost(p.name, duration, priced(fp), p.region);
 
@@ -2032,32 +2807,77 @@ export async function runV2(
       // A lower-bound estimate would under-charge the guard, so it charges the reservation's resources.
       const lowerBound = pricedResources(p.name, fp, allocation.requestedSize)?.bound === "lower";
 
-      if (cost !== null && lowerBound)
-        state.estimatedUSD += budgetUSD(
-          p.name,
-          estimateCost(
-            p.name,
-            duration + restoredDurationMs,
-            reservationResources(p.name, fp, allocation.requestedSize),
-            p.region,
-          ) ?? reserve,
+      if (cost !== null && lowerBound) {
+        const sourceBooked = sourcePrice(duration);
+
+        const restoreBooked = restoreCharges.map((r, i) =>
+          (restorePrices[i] ?? sourcePrice)(r.durationMs),
         );
-      else if (cost !== null) state.estimatedUSD += budgetUSD(p.name, cost);
-      else if (p.cloud) {
+
+        if (sourceBooked !== null && restoreBooked.every((usd) => usd !== null)) {
+          sourceCharge.chargedUSD = sourceBooked;
+          state.estimatedUSD += sourceBooked;
+
+          for (const [i, r] of restoreCharges.entries()) {
+            const booked = restoreBooked[i] ?? 0;
+            r.charge.chargedUSD = booked;
+            state.estimatedUSD += booked;
+          }
+        } else {
+          sourceCharge.chargedUSD = reserve;
+          state.estimatedUSD += reserve;
+
+          for (const r of restoreCharges) r.charge.chargedUSD = 0;
+        }
+      } else if (cost !== null) {
+        const sourceBooked = sourceCost === null ? 0 : budgetUSD(p.name, sourceCost);
+        sourceCharge.chargedUSD = sourceBooked;
+        state.estimatedUSD += sourceBooked;
+
+        for (const r of restoreCharges) {
+          const booked = r.cost === null ? 0 : budgetUSD(p.name, r.cost);
+          r.charge.chargedUSD = booked;
+          state.estimatedUSD += booked;
+        }
+      } else if (p.cloud) {
         // An unpriced iteration (usually a failed create) is charged for its measured
         // duration at conservative resources; it must not end the provider's run.
-        const settled = settledBudgetUSD(
+        const sourceSettled = settledBudgetUSD(
           p.name,
-          duration + restoredDurationMs,
+          duration,
           fp ? resources(fp) : null,
           state.fp ? resources(state.fp) : null,
         );
 
-        if (settled !== null) state.estimatedUSD += settled;
-        else {
+        const restoreSettled = restoreCharges.map((r) =>
+          settledBudgetUSD(
+            p.name,
+            r.durationMs,
+            r.fingerprint ? resources(r.fingerprint) : null,
+            fp ? resources(fp) : state.fp ? resources(state.fp) : null,
+          ),
+        );
+
+        if (sourceSettled !== null && restoreSettled.every((usd) => usd !== null)) {
+          sourceCharge.chargedUSD = sourceSettled;
+          state.estimatedUSD += sourceSettled;
+
+          for (const [i, r] of restoreCharges.entries()) {
+            const booked = restoreSettled[i] ?? 0;
+            r.charge.chargedUSD = booked;
+            state.estimatedUSD += booked;
+          }
+        } else {
+          sourceCharge.chargedUSD = reserve;
           state.estimatedUSD += reserve;
+
+          for (const r of restoreCharges) r.charge.chargedUSD = 0;
           state.stop ??= "Unknown cost/resources; reserved estimate charged to budget";
         }
+      } else {
+        sourceCharge.chargedUSD = 0;
+
+        for (const r of restoreCharges) r.charge.chargedUSD = 0;
       }
 
       const lifetime = await add(
@@ -2089,11 +2909,17 @@ export async function runV2(
 
   const jobs = roundRobin(
     ready.map((p) => p.name),
-    costSuite ? config["cost-runs"] : Math.max(config.runs, config["workload-runs"] ?? config.runs),
+    // A stress run has no workloads: an iteration past `runs` would create a sandbox and probe
+    // nothing, and a refused create there would count as a sustained failure.
+    costSuite
+      ? config["cost-runs"]
+      : isStressSelection(config.scenarios)
+        ? config.runs
+        : Math.max(config.runs, config["workload-runs"] ?? config.runs),
   );
 
   await schedule(
-    config.scenarios.includes("burst") && !config.scenarios.includes("all") ? [] : jobs,
+    cohortOnly(config.scenarios) ? [] : jobs,
     { global: config.concurrency, perProvider: costSuite ? 1 : config["provider-concurrency"] },
     async (job) => {
       const p = ready.find((p) => p.name === job.provider);
@@ -2107,127 +2933,344 @@ export async function runV2(
     },
   );
 
-  // Burst cohorts are isolated from normal iterations. K is bounded by configured account limits.
-  for (let cohortIndex = 0; cohortIndex < config["burst-cohorts"]; cohortIndex++)
-    for (const k of costSuite ? [] : config.bursts)
-      for (const p of ready) {
-        const scenario = `burst-${k}/all-ready`;
+  /** The aggregate row a finished cohort writes from its members' rows. */
+  function cohortRow(
+    run: CohortRun,
+    rows: readonly Sample[],
+    timing: { at: string; start: number; cohortIndex: number },
+  ): CohortRow {
+    const { kind, k } = run;
+    const prefix = `${kind}-${k}`;
+    const cold = rows.filter((s) => s.scenario === `${prefix}/cold`);
+    const attempted = cold.length;
+    const readyCount = outcomeValues(cold).length;
+    const base = { k, cohort: timing.cohortIndex, attempted };
 
-        const excluded = collectionPolicy().notRun.find(
-          (rule) =>
-            rule.provider === p.name &&
-            (rule.track ?? "default") === config.track &&
-            rule.suite === "burst" &&
-            (rule.scenario === scenario || rule.scenario === `burst-${k}/*`),
-        );
-
-        if (excluded) {
-          const info = report.providers.find((v) => v.name === p.name);
-
-          if (info) info.note += `; ${scenario} documented not-run: ${excluded.reason}`;
-          continue;
-        }
-
-        const configured =
-          config["account-limits"][p.name] ??
-          { boxd: 50, e2b: 20, upstash: 10, freestyle: 10, tenki: 5, baseten: 10, instabox: 25 }[
-            p.name
-          ] ??
-          10;
-
-        const account = Math.min(configured, p.name === "boxd" ? 50 : configured);
-
-        const existing = await deadline(config["timeout-ms"], () => p.provider.list({}))
-          .then((v) => v.length)
-          .catch(() => account);
-
-        if (k > Math.min(account - existing, config.concurrency)) {
-          const reason = `Burst ${k} admission stopped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
-          report.admissionStopped?.push({
-            provider: p.name,
-            scenario,
-            iteration: cohortIndex,
-            track: config.track,
-            reason,
-          });
-          const info = report.providers.find((v) => v.name === p.name);
-
-          if (info)
-            info.note += `; burst ${k} skipped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
-          continue;
-        }
-
-        const start = performance.now();
-
-        const at = new Date().toISOString(),
-          before = await host();
-
-        const offset = report.samples.length;
-        let arrived = 0;
-        let release = () => {};
-
-        const gate = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-
-        const barrier = async () => {
-          if (++arrived === k) release();
-          await gate;
-        };
-
-        await Promise.all(
-          Array.from({ length: k }, (_, i) => iteration(p, cohortIndex * k + i, k, barrier)),
-        );
-        const cohort = report.samples.slice(offset).filter((s) => s.scenario === `burst-${k}/cold`);
-        const success = cohort.filter((s) => s.outcome.kind === "sample").length;
-        const cohortHostAfter = await host();
-
+    switch (kind) {
+      case "burst": {
         const readyAt =
-          success === k ? Math.max(...cohort.map((s) => Date.parse(s.finishedAt))) : Date.now();
+          readyCount === k ? Math.max(...cold.map((s) => Date.parse(s.finishedAt))) : Date.now();
 
         const readyMs =
-          success === k
+          readyCount === k
             ? Math.max(
-                ...cohort.map(
+                ...cold.map(
                   (s) =>
                     Date.parse(s.finishedAt) -
-                    Date.parse(at) -
+                    Date.parse(timing.at) -
                     (s.phases.ownershipPersistMs ?? 0) -
                     (s.phases.ownershipVerifyMs ?? 0),
                 ),
               )
-            : readyAt - Date.parse(at);
+            : readyAt - Date.parse(timing.at);
 
-        const durationMs = success === k ? readyMs : performance.now() - start;
-        report.samples.push({
-          track: config.track,
-          requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
-          template: config.template[p.name] ?? null,
-          product: config.product[p.name] ?? null,
-          provider: p.name,
-          iteration: cohortIndex,
-          scenario: `burst-${k}/all-ready`,
+        const durationMs = readyCount === k ? readyMs : performance.now() - timing.start;
+
+        return {
           unit: "ms",
-          startedAt: at,
-          finishedAt: new Date(readyAt).toISOString(),
+          finishedAt: readyAt,
           durationMs,
-          sandboxId: null,
-          outcome: burstOutcome({
-            k,
-            success,
-            attempted: cohort.length,
-            readyMs,
-            durationMs,
-          }),
-          phases: {},
-          hostBefore: before,
-          hostAfter: cohortHostAfter,
-          headroom: headroom(before, cohortHostAfter),
-          fingerprint: null,
-          estimatedCost: null,
-          details: { k, cohort: cohortIndex, success, attempted: cohort.length },
-        });
+          outcome: burstOutcome({ k, success: readyCount, attempted, readyMs, durationMs }),
+          details: { k, cohort: timing.cohortIndex, success: readyCount, attempted },
+        };
       }
+
+      case "cpu-burst": {
+        const single = outcomeValues(rows.filter((s) => s.scenario === `${prefix}/cpu-single`));
+        const all = outcomeValues(rows.filter((s) => s.scenario === `${prefix}/cpu-all`));
+        const released = run.ready.releasedAt;
+
+        // From the moment every member was released together to the slowest member's return,
+        // each timestamped as its exec returned, before its rows were written.
+        const allCompleteMs =
+          single.length === k && released !== null && run.cpu.length === k
+            ? Math.max(...run.cpu.map((m) => m.returnedAt)) - released
+            : null;
+
+        // Whether the members provably ran their CPU phases together, from the host clock alone.
+        const overlap = run.cpu.length >= 2 ? cpuOverlap(run.cpu) : null;
+
+        const durationMs = allCompleteMs ?? performance.now() - timing.start;
+        const note = `${single.length}/${k} completed the CPU workload; ${readyCount}/${k} ready; ${attempted} attempted (budgets may prevent admission)`;
+
+        // A probe skipped as inapplicable (the offline memory fake) makes the cohort no observation.
+        const skippedProbe = rows.some(
+          (s) => s.scenario === `${prefix}/cpu` && s.outcome.kind === "skipped",
+        );
+
+        const outcome: Outcome =
+          allCompleteMs !== null
+            ? { kind: "sample", value: allCompleteMs }
+            : attempted < k || skippedProbe
+              ? { kind: "skipped", note }
+              : {
+                  kind: "failure",
+                  note,
+                  stage: `${prefix}/${cohortAggregate[kind]}`,
+                  elapsedMs: durationMs,
+                };
+
+        return {
+          unit: "ms",
+          finishedAt: Date.now(),
+          durationMs,
+          outcome,
+          details: {
+            ...base,
+            work: cpuWork.burst,
+            ready: readyCount,
+            completed: single.length,
+            allCompleteMs,
+            overlap,
+            single: throughputSpread(single),
+            all: throughputSpread(all),
+          },
+        };
+      }
+
+      case "survival": {
+        const count = (verdict: SurvivalVerdict["kind"]) =>
+          run.verdicts.filter((v) => v === verdict).length;
+
+        const tally = {
+          survived: count("survived"),
+          died: count("died"),
+          unresponsive: count("unresponsive"),
+          interrupted: count("interrupted"),
+          createFailed: attempted - readyCount,
+          // Created, but stopped before its window (the run was interrupted while waiting).
+          noWindow: readyCount - run.verdicts.length,
+        };
+
+        const note = `${tally.survived}/${k} survived ${survivalPlan.windowMs} ms; ${attempted} attempted`;
+
+        const outcome: Outcome =
+          attempted < k
+            ? { kind: "skipped", note: `${note} (budgets may prevent admission)` }
+            : tally.interrupted || tally.noWindow
+              ? { kind: "skipped", note: `${note}; run interrupted before every window ended` }
+              : { kind: "sample", value: tally.survived };
+
+        return {
+          unit: "sandboxes",
+          finishedAt: Date.now(),
+          durationMs: performance.now() - timing.start,
+          outcome,
+          details: { ...base, ...tally, plan: survivalPlan },
+        };
+      }
+
+      default: {
+        const exhaustive: never = kind;
+
+        return exhaustive;
+      }
+    }
+  }
+
+  /** One isolated cohort on one provider: admission, K members together, then the aggregate row. */
+  async function runCohort(p: ReadyProvider, kind: CohortKind, k: number, cohortIndex: number) {
+    const prefix = `${kind}-${k}`;
+    const scenario = `${prefix}/${cohortAggregate[kind]}`;
+
+    const excluded = collectionPolicy().notRun.find(
+      (rule) =>
+        rule.provider === p.name &&
+        (rule.track ?? "default") === config.track &&
+        rule.suite === kind &&
+        (rule.scenario === scenario || rule.scenario === `${prefix}/*`),
+    );
+
+    if (excluded) {
+      const info = report.providers.find((v) => v.name === p.name);
+
+      if (info) info.note += `; ${scenario} documented not-run: ${excluded.reason}`;
+
+      return;
+    }
+
+    const account = accountCap(p.name, config["account-limits"]);
+
+    const existing = await deadline(config["timeout-ms"], () => p.provider.list({}))
+      .then((v) => v.length)
+      .catch(() => account);
+
+    if (k > Math.min(account - existing, config.concurrency)) {
+      const reason = `${kind === "burst" ? "Burst" : kind} ${k} admission stopped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
+      report.admissionStopped?.push({
+        provider: p.name,
+        scenario,
+        iteration: cohortIndex,
+        track: config.track,
+        reason,
+      });
+      const info = report.providers.find((v) => v.name === p.name);
+
+      if (info)
+        info.note += `; ${kind} ${k} skipped: account cap ${account}, ${existing} existing SDK sandboxes, global concurrency ${config.concurrency}`;
+
+      return;
+    }
+
+    const start = performance.now();
+
+    const at = new Date().toISOString(),
+      before = await host();
+
+    const offset = report.samples.length;
+
+    const run: CohortRun = {
+      kind,
+      k,
+      ready: new Barrier(k),
+      done: new Barrier(k),
+      startedAt: start,
+      cpu: [],
+      verdicts: [],
+    };
+
+    await Promise.all(
+      Array.from({ length: k }, (_, i) =>
+        iteration(p, cohortIndex * k + i, { run, gates: new CohortGates(run.ready, run.done) }),
+      ),
+    );
+
+    const cohortHostAfter = await host();
+    const row = cohortRow(run, report.samples.slice(offset), { at, start, cohortIndex });
+
+    report.samples.push({
+      track: config.track,
+      requestedSize: config.size[p.name] ?? (p.name === "local" ? "medium" : null),
+      template: config.template[p.name] ?? null,
+      product: config.product[p.name] ?? null,
+      provider: p.name,
+      iteration: cohortIndex,
+      scenario,
+      unit: row.unit,
+      startedAt: at,
+      finishedAt: new Date(row.finishedAt).toISOString(),
+      durationMs: row.durationMs,
+      sandboxId: null,
+      outcome: row.outcome,
+      phases: {},
+      hostBefore: before,
+      hostAfter: cohortHostAfter,
+      headroom: headroom(before, cohortHostAfter),
+      fingerprint: null,
+      estimatedCost: null,
+      details: row.details,
+    });
+  }
+
+  // Cohorts are isolated from normal iterations and from each other. K is bounded by account limits.
+  const kinds = costSuite ? [] : selectedCohorts(config.scenarios, config.bursts);
+
+  // Cohort indices count per kind and K, so a K listed twice (`--bursts 1,1`) gives distinct cohorts.
+  const cohortIndices = new Map<string, number>();
+
+  for (let round = 0; round < config["burst-cohorts"]; round++)
+    for (const kind of kinds)
+      for (const k of config.bursts) {
+        const key = `${kind}-${k}`;
+        const cohortIndex = cohortIndices.get(key) ?? 0;
+        cohortIndices.set(key, cohortIndex + 1);
+
+        for (const p of ready) await runCohort(p, kind, k, cohortIndex);
+      }
+
+  /**
+   * Charge the budget for every sandbox's life past what its iteration charged: to the first
+   * observation that it was gone, or, when it was never observed gone, to `cutoff`, listing it as
+   * an open liability. `cutoff` is one timestamp for every provider, taken after every sweep. A
+   * sandbox no iteration claimed (found only by its label, or in review) is priced from the run's
+   * start. A total over the dollar cap is stated in the stop note.
+   */
+  function priceBeyondCharges(
+    p: ReadyProvider,
+    swept: ReadonlySet<string>,
+    remaining: ReadonlySet<string>,
+    cutoff: number,
+  ) {
+    const state = states.get(p.name);
+
+    if (!state) return;
+    const requestedSize = config.size[p.name] ?? (p.name === "local" ? "medium" : null);
+
+    const unclaimed: Charge = {
+      since: runStart,
+      chargedUntil: runStart,
+      chargedUSD: 0,
+      price: (ms) => {
+        const usd = estimateCost(
+          p.name,
+          ms,
+          reservationResources(p.name, state.fp, requestedSize),
+          p.region,
+        );
+
+        return usd === null ? null : budgetUSD(p.name, usd);
+      },
+    };
+
+    const sandboxes = new Map([...charges].filter(([key]) => key.startsWith(`${p.name}/`)));
+
+    // Listed or journaled at the sweep, or in review (its ownership or its deletion unresolved):
+    // priced even when no iteration claimed it.
+    const unresolved = new Set([
+      ...remaining,
+      ...(report.cleanupReview ?? []).flatMap((r) =>
+        r.provider === p.name && r.kind === "sandbox" ? [r.id] : [],
+      ),
+    ]);
+
+    for (const id of [...swept, ...unresolved]) {
+      const key = `${p.name}/${id}`;
+      sandboxes.set(key, sandboxes.get(key) ?? unclaimed);
+    }
+
+    const open: { id: string; liveMs: number }[] = [];
+    let unpriced = false;
+
+    for (const [key, charge] of sandboxes) {
+      const id = key.slice(p.name.length + 1);
+      const end = gone.get(key) ?? cutoff;
+
+      // Never observed gone, whatever its delete returned: still a liability at the cutoff.
+      if (!gone.has(key)) open.push({ id, liveMs: Math.round(cutoff - charge.since) });
+
+      const usd = chargeBeyond(charge, end);
+
+      if (usd === null) unpriced = true;
+      else state.estimatedUSD += usd;
+    }
+
+    const capUSD = config["provider-max-dollars"][p.name] ?? config["max-dollars"];
+    const notes = [state.stop];
+
+    if (unpriced) notes.push("cost of cleanup past the reserve unknown");
+
+    // Compared with a relative margin, so float noise never reads as an overrun.
+    if (state.estimatedUSD > capUSD * (1 + 1e-9))
+      notes.push(`estimated USD ${state.estimatedUSD} is over the ${capUSD} cap`);
+
+    if (open.length)
+      notes.push(
+        `${open.length} sandbox(es) not observed gone at return; their cost grows until reaped`,
+      );
+
+    const budget: ProviderBudget = {
+      created: state.created,
+      estimatedUSD: state.estimatedUSD,
+      stop: notes.filter((n) => n !== null).join("; ") || null,
+      capUSD,
+    };
+
+    if (open.length) budget.openLiabilities = open;
+    report.budgets[p.name] = budget;
+  }
+
+  /** What each provider's final sweep found, priced once every sweep is done. */
+  const swept = new Map<string, { ids: Set<string>; remaining: Set<string> }>();
 
   for (const p of ready) {
     const errors: string[] = [];
@@ -2285,6 +3328,7 @@ export async function runV2(
         .flatMap((v) => (v.kind === "snapshot-source" ? [v.id] : v.parent ? [v.parent] : [])),
     );
 
+    // Sandboxes whose reserve ran out are retried too: one left running costs more than a delete.
     for (const id of ids)
       if (!sourceIds.has(id)) {
         try {
@@ -2309,16 +3353,31 @@ export async function runV2(
       try {
         if (restores.blocksSnapshot(p.name, item.id) || restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
-        await deleteProvenSnapshot(
-          p.name,
-          p.provider,
-          item.id,
-          item.parent,
-          item.snapshotProof,
-          config.run,
-          config["timeout-ms"],
-          await snapshotCleaner(p.name, p.provider, item.parent ?? ""),
-        );
+
+        if (
+          (await settleJournaledSnapshot(p.name, p.provider, item, config["timeout-ms"])) ===
+          "exists"
+        ) {
+          let confirmed = item;
+
+          if (item.idempotencyKey !== undefined) {
+            const { idempotencyKey: _, ...withoutKey } = item;
+            confirmed = withoutKey;
+            await persistConfirmedSnapshot(`${p.name}/snapshot/${item.id}`, confirmed);
+          }
+
+          await deleteProvenSnapshot(
+            p.name,
+            p.provider,
+            confirmed.id,
+            confirmed.parent,
+            confirmed.snapshotProof,
+            config.run,
+            config["timeout-ms"],
+            await snapshotCleaner(p.name, p.provider, confirmed.parent ?? ""),
+          );
+        }
+
         owned.delete(`${p.name}/snapshot/${item.id}`);
         report.cleanupReview = report.cleanupReview?.filter(
           (r) => !(r.provider === p.name && r.id === item.id && r.kind === "snapshot"),
@@ -2344,16 +3403,16 @@ export async function runV2(
         const journaled = journaledSnapshots(owned.values(), p.name, item.id);
 
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, item.id, journaled),
+          snapshotsFromSource(p.name, p.provider, item.id, journaled),
         )) {
-          owned.set(`${p.name}/snapshot/${snapshot.id}`, {
+          await persistConfirmedSnapshot(`${p.name}/snapshot/${snapshot.id}`, {
             provider: p.name,
             id: snapshot.id,
             kind: "snapshot",
             parent: item.id,
             snapshotProof: proof,
           });
-          await persist();
+
           await deleteProvenSnapshot(
             p.name,
             p.provider,
@@ -2473,6 +3532,7 @@ export async function runV2(
       remaining: [...remaining],
       error: errors.length ? errors.join("; ") : null,
     });
+    swept.set(p.name, { ids, remaining });
   }
 
   for (const sample of report.samples) {
@@ -2531,11 +3591,40 @@ export async function runV2(
     Object.fromEntries(report.providers.map((p) => [p.name, p.configuredRegion])),
   );
   await persist();
-  await save();
   await journalFiles.writeFile(
     join(runDir, "samples.ndjson"),
     report.samples.map((s) => JSON.stringify(s) + "\n").join(""),
   );
+
+  // Each still-unseen deleted sandbox gets one more exact lookup, then every budget is priced to
+  // one cutoff: a sandbox one provider left live kept running while the others cleaned up.
+  // The watches stop here (a lookup in flight finishes); the round is bounded like the sweep's
+  // listing wait, and a sandbox it cannot see gone stays open.
+  stopWatching.abort();
+  await Promise.all(watches.values());
+  const lookupsEnd = performance.now() + Math.min(config["timeout-ms"], 30_000);
+
+  await Promise.all(
+    ready.map(async (p) => {
+      for (const key of charges.keys()) {
+        const left = Math.min(config["timeout-ms"], lookupsEnd - performance.now());
+
+        if (left <= 0) return;
+
+        if (key.startsWith(`${p.name}/`) && !gone.has(key))
+          await observeGone(p, key.slice(p.name.length + 1), left).catch(() => false);
+      }
+    }),
+  );
+  const cutoff = performance.now();
+
+  for (const p of ready) {
+    const sweep = swept.get(p.name);
+
+    if (sweep) priceBeyondCharges(p, sweep.ids, sweep.remaining, cutoff);
+  }
+
+  await save();
   process.off("SIGINT", requestStop);
   process.off("SIGTERM", requestStop);
 

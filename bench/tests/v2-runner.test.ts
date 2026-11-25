@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 import { it, expect, vi } from "vitest";
 import { parseV2 } from "../src/v2-config.js";
+import { boundFake } from "./native-fakes.js";
 
 it("runs the actual v2 memory consumer, stops at its creation budget, and preserves unrelated resources", async () => {
   const { memory } = await import("@opencoredev/sandbox-sdk/memory");
@@ -18,7 +19,15 @@ it("runs the actual v2 memory consumer, stops at its creation budget, and preser
 
   try {
     const report = await runV2(
-      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      [
+        {
+          kind: "ready",
+          name: "memory",
+          cloud: false,
+          region: null,
+          provider: boundFake(provider),
+        },
+      ],
       parseV2([
         "--providers",
         "memory",
@@ -133,7 +142,15 @@ it("does not delete returned IDs when live ownership cannot be verified", async 
 
   try {
     const report = await runV2(
-      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      [
+        {
+          kind: "ready",
+          name: "memory",
+          cloud: false,
+          region: null,
+          provider: boundFake(provider),
+        },
+      ],
       parseV2([
         "--providers",
         "memory",
@@ -208,7 +225,7 @@ it("retains the source until snapshot cleanup can complete", async () => {
 
   try {
     const report = await runV2(
-      [{ kind: "ready", name: "local", cloud: false, region: null, provider }],
+      [{ kind: "ready", name: "local", cloud: false, region: null, provider: boundFake(provider) }],
       parseV2([
         "--providers",
         "local",
@@ -294,7 +311,7 @@ it.each(["daytona", "superserve"])(
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name, cloud: false, region: null, provider }],
+        [{ kind: "ready", name, cloud: false, region: null, provider: boundFake(provider) }],
         parseV2([
           "--providers",
           name,
@@ -358,7 +375,15 @@ it("recovers a named snapshot using recorded source proof despite stale sandbox 
 
   try {
     const report = await runV2(
-      [{ kind: "ready", name: "daytona", cloud: false, region: null, provider }],
+      [
+        {
+          kind: "ready",
+          name: "daytona",
+          cloud: false,
+          region: null,
+          provider: boundFake(provider),
+        },
+      ],
       parseV2([
         "--providers",
         "daytona",
@@ -426,7 +451,15 @@ it.each(["returned-id", "native-failure", "first-command", "burst", "cleanup-dra
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+        [
+          {
+            kind: "ready",
+            name: "memory",
+            cloud: false,
+            region: null,
+            provider: boundFake(provider),
+          },
+        ],
         parseV2([
           "--providers",
           "memory",
@@ -525,7 +558,15 @@ it.each(["default", "same-spec"])(
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+        [
+          {
+            kind: "ready",
+            name: "memory",
+            cloud: false,
+            region: null,
+            provider: boundFake(provider),
+          },
+        ],
         parseV2([
           "--providers",
           "memory",
@@ -622,7 +663,15 @@ it.each([false, true])(
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name: "tenki", cloud: false, region: null, provider }],
+        [
+          {
+            kind: "ready",
+            name: "tenki",
+            cloud: false,
+            region: null,
+            provider: boundFake(provider),
+          },
+        ],
         parseV2([
           "--providers",
           "tenki",
@@ -704,7 +753,7 @@ it("skips Beam's snapshot scenario, whose snapshots cannot be deleted, before ta
 
   try {
     const report = await runV2(
-      [{ kind: "ready", name: "beam", cloud: false, region: null, provider }],
+      [{ kind: "ready", name: "beam", cloud: false, region: null, provider: boundFake(provider) }],
       parseV2([
         "--providers",
         "beam",
@@ -734,6 +783,68 @@ it("skips Beam's snapshot scenario, whose snapshots cannot be deleted, before ta
     ).toEqual([]);
     expect(taken).toEqual([]);
     expect(report.cleanup).toEqual([{ provider: "beam", remaining: [], error: null }]);
+  } finally {
+    vi.restoreAllMocks();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("skips Archil's snapshot scenario as unsupported: the adapter has no snapshot", async () => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2 } = await import("../src/v2-runner.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
+  expect(directory.startsWith(resolve(tmpdir()) + "/")).toBe(true);
+  const backing = memory();
+
+  // Archil's capabilities, none of them snapshot (terminal left out: the fake has none).
+  const provider = {
+    ...backing,
+    capabilities: new Set<import("@opencoredev/sandbox-sdk/provider").Capability>([
+      "pause",
+      "network-policy",
+      "size",
+    ]),
+    pause: async () => {},
+    resume: async () => {},
+  } satisfies import("@opencoredev/sandbox-sdk/provider").Provider;
+
+  try {
+    const report = await runV2(
+      [
+        {
+          kind: "ready",
+          name: "archil",
+          cloud: false,
+          region: null,
+          provider: boundFake(provider),
+        },
+      ],
+      parseV2([
+        "--providers",
+        "archil",
+        "--runs",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "snapshot",
+        "--out",
+        directory,
+      ]),
+      async () => {},
+    );
+
+    const setup = report.samples.find((s) => s.scenario === "snapshot-setup");
+
+    expect(setup?.outcome).toMatchObject({ kind: "skipped", note: "Provider has no snapshot" });
+    expect(
+      report.samples.filter(
+        (s) => s.scenario.startsWith("snapshot") && s.outcome.kind === "failure",
+      ),
+    ).toEqual([]);
+    expect(report.cleanup).toEqual([{ provider: "archil", remaining: [], error: null }]);
   } finally {
     vi.restoreAllMocks();
     await rm(directory, { recursive: true, force: true });
@@ -817,7 +928,7 @@ it("records Instabox's blocked tcp-ms as documented not-run, not a failure, and 
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name, cloud: false, region: null, provider }],
+        [{ kind: "ready", name, cloud: false, region: null, provider: boundFake(provider) }],
         parseV2([
           "--providers",
           name,
