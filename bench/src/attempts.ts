@@ -20,6 +20,7 @@ export const cloudProviders = [
   "maritime",
   "beam",
   "archil",
+  "styne",
 ];
 
 export const mainTests = [

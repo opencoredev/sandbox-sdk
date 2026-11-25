@@ -85,6 +85,7 @@ const allProviders = [
   "maritime",
   "beam",
   "archil",
+  "styne",
 ];
 
 const listingSchema = z.object({

@@ -39,8 +39,8 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  * use, from the SDK's `resolveConfig`. The harness reads, snapshots and cleans up through the
  * connection of the exact adapter instance that created the sandboxes. A read sent to another
  * endpoint, account, team or project answers 404 for a sandbox that is running, which would be
- * recorded as absence. Archil, Local, Maritime, Modal and Railway have no `resolveConfig`; their
- * connection is read here from the same options and variables their adapters read.
+ * recorded as absence. Archil, Local, Maritime, Modal, Railway and Styne have no `resolveConfig`;
+ * their connection is read here from the same options and variables their adapters read.
  */
 export interface Connections {
   archil: ArchilConfig;
@@ -56,6 +56,7 @@ export interface Connections {
   maritime: MaritimeConfig;
   modal: ModalConfig;
   railway: RailwayConfig;
+  styne: StyneConfig;
   superserve: SuperserveConfig;
   tenki: TenkiConfig;
   upstash: UpstashConfig;
@@ -77,6 +78,15 @@ export interface ArchilConfig {
  * API host without trailing slashes. The control plane is `${baseUrl}/v1`.
  */
 export interface MaritimeConfig {
+  readonly apiKey: string;
+  readonly baseUrl: string;
+}
+
+/**
+ * What `styne()` sends its requests with (`createStyneProvider`): the key, trimmed, and the API
+ * host without trailing slashes.
+ */
+export interface StyneConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
 }
@@ -159,6 +169,18 @@ function maritimeConfig(options: ConnectionOptions): MaritimeConfig {
   };
 }
 
+/** As the Styne adapter resolves it: options, then STYNE_API_KEY and STYNE_API_URL. */
+function styneConfig(options: ConnectionOptions): StyneConfig {
+  const apiKey = (options.apiKey ?? process.env.STYNE_API_KEY)?.trim();
+
+  if (!apiKey) throw Object.assign(new Error("Styne API key is missing"), { code: "auth" });
+
+  return {
+    apiKey,
+    baseUrl: endpoint(options.baseUrl ?? process.env.STYNE_API_URL ?? "https://api.styne.ai"),
+  };
+}
+
 /** The local adapter's socket: `dockerHost`, then DOCKER_HOST, then Docker's default socket. */
 function localConfig(options: ConnectionOptions): LocalConfig {
   const host = options.dockerHost ?? process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock";
@@ -228,6 +250,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
           authType: options.authType,
         },
       };
+    case "styne":
+      return { name, config: styneConfig(options) };
     case "superserve":
       return { name, config: superserveConfig(options) };
     case "tenki":
@@ -272,6 +296,8 @@ function byName(connection: Connection): Partial<Connections> {
       return { modal: connection.config };
     case "railway":
       return { railway: connection.config };
+    case "styne":
+      return { styne: connection.config };
     case "superserve":
       return { superserve: connection.config };
     case "tenki":

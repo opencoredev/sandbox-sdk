@@ -91,6 +91,22 @@ export const pricing: PriceTable = {
     notes:
       "Published virtual machine rates: $0.0055/vCPU-hour and $0.00275/GiB-hour of memory, per second while running, no minimum, at any size from 1 to 16 vCPU and 1 to 64 GiB; disk is included while running (small 2/4 = $0.022/hour, medium 4/8 $0.044, large 8/16 $0.088, xlarge 16/32 $0.176). A paused (asleep) sandbox costs $0.08/GB-month of disk and no compute, which these estimates leave out. Plan fee and its equal monthly usage credit ($100 on Growth) excluded.",
   },
+  styne: {
+    ...base,
+    cpuSecond: 0,
+    memoryGiBSecond: 0,
+    diskGiBSecond: 0,
+    tiers: [
+      { cpu: 2, memoryGiB: 4, hourly: 0.016 },
+      { cpu: 4, memoryGiB: 8, hourly: 0.032 },
+      { cpu: 8, memoryGiB: 16, hourly: 0.064 },
+      { cpu: 16, memoryGiB: 32, hourly: 0.128 },
+    ],
+    retrieved: "2026-11-23",
+    source: "https://docs.styne.ai/billing",
+    notes:
+      "Published per-size rates from 2026-11-20 after the plan's included VM hours: small (2 vCPU, 4 GB) $0.016/hour, default (4, 8) $0.032, large (8, 16) $0.064, xlarge (16, 32) $0.128, metered per second while running; disk comes with the size; paused or sleeping VMs cost $0 and snapshot storage is $0 today. Estimates only: Styne has no per-sandbox billing API (GET /v1/run/usage is daily account totals). Plan fees ($20, $99, $499 a month) and their included hours excluded.",
+  },
   superserve: {
     ...base,
     cpuSecond: 0.0504 / 3600,
@@ -336,6 +352,8 @@ export const defaultCompute: ComputeTable = {
   instabox: { cpu: 4, memoryGiB: 8 },
   // Maritime's default size, small.
   maritime: { cpu: 2, memoryGiB: 4 },
+  // Styne's base template: the default size, 4 vCPU / 8 GiB.
+  styne: { cpu: 4, memoryGiB: 8 },
   // Beam's TypeScript SDK default: 1 CPU, 128 MiB.
   beam: { cpu: 1, memoryGiB: 0.125 },
   // Archil's default: 1 vCPU, 2048 MiB.

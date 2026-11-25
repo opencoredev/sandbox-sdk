@@ -196,6 +196,15 @@ const sources = new Map<string, BillingSource>(
         "A sandbox with no usage interval counts as $0 only when Maritime's info says it ended with 0 running seconds and $0 so far; otherwise its cost is unavailable, never zero.",
       ],
     },
+    styne: {
+      source: "No per-sandbox billing endpoint (GET /v1/run/usage is daily account totals)",
+      granularity: "not available per sandbox",
+      delay: "unknown",
+      key: "STYNE_API_KEY",
+      notes: [
+        "GET /v1/run/usage reports the account's running seconds and cost per day and product, not per sandbox, so no sandbox gets a cost from it. Estimates use the published per-size rates. No fabricated cost.",
+      ],
+    },
     beam: {
       source: "No verified public billing endpoint",
       granularity: "not available",

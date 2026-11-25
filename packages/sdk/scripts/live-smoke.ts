@@ -83,6 +83,10 @@ const registry = {
     env: [["MARITIME_API_KEY"]],
     load: async () => (await import("../src/providers/maritime/index.js")).maritime(),
   },
+  styne: {
+    env: [["STYNE_API_KEY"]],
+    load: async () => (await import("../src/providers/styne/index.js")).styne(),
+  },
   boxd: {
     env: [["BOXD_API_KEY"]],
     load: async () => (await import("../src/providers/boxd/index.js")).boxd(),

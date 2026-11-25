@@ -147,6 +147,10 @@
       "types": "./dist/providers/maritime/index.d.ts",
       "default": "./dist/providers/maritime/index.js"
     },
+    "./styne": {
+      "types": "./dist/providers/styne/index.d.ts",
+      "default": "./dist/providers/styne/index.js"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

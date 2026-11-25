@@ -392,6 +392,29 @@ export const providerSetups: readonly ProviderSetup[] = [
       default: { vcpu: 1, provisioned: size(1, 2, 0), tooSmall: {} },
     },
   },
+  {
+    // Styne (2026-11-23): the base template is Styne's default size, 4 vCPU / 8 GiB with a 51 GiB
+    // root disk (df on /workspace), Debian 12 with glibc, Node.js, Python 3 and git, so both tracks
+    // run the same machine; same-machine asks for 4/8 explicitly. Styne counts `timeoutMs` in
+    // running time: it puts a sandbox to sleep only when nothing started in it runs, and the clock
+    // and the meter stop while it sleeps. So a held-open idle with a process still running counts
+    // toward the lifetime and one with nothing running does not, and either way the lifetime bounds
+    // the billable time the spend guard reserves. https://docs.styne.ai/pause-tiers
+    name: "styne",
+    adapter: "styne",
+    product: null,
+    lifetime: true,
+    pricingKey: "styne",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 51),
+        tooSmall: {},
+      },
+      default: { vcpu: 4, provisioned: size(4, 8, 51), tooSmall: {} },
+    },
+  },
 ];
 
 /** The size an attempt of `profile` provisions: its track's, plus a profile volume's disk. */
