@@ -743,6 +743,9 @@ export function createMicrosandboxProvider(
             await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
             continue;
           }
+
+          if (entry.createdAt === undefined && service.createdAt !== undefined)
+            entry.createdAt = service.createdAt;
         } else if (
           entry.createdAt !== undefined &&
           service.createdAt !== undefined &&

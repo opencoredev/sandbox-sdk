@@ -222,12 +222,17 @@ export async function reapRun(
     // the bench's tier label must match too, in every listing and in each exact ownership check.
     const tier = microsandboxTier(p.name);
 
+    // Service slugs already verified and deleted/conflicted by the adapter during this reap, so a
+    // transient rename failure in the settlement hook still retires the entry in the Service sweep.
+    const settledServicesInRun = new Set<string>();
+
     // Retire Service entries as soon as the adapter confirms deletion or foreign conflict during
     // destroy(), before the sandbox itself is deleted and before the Service sweep runs.
     if (tier !== undefined && takesAttemptHooks(p.provider)) {
       p.provider.setAttemptHooks({
         serviceSettled: async ({ slug, outcome }) => {
           if (outcome !== "deleted" && outcome !== "conflict") return;
+          settledServicesInRun.add(slug);
 
           if (!journal) return;
 
@@ -521,6 +526,11 @@ export async function reapRun(
 
     for (const entry of services) {
       try {
+        if (settledServicesInRun.has(entry.id)) {
+          await forget(entry);
+          continue;
+        }
+
         const outcome = await deadline(config["timeout-ms"], () =>
           cleanService({
             id: entry.id,

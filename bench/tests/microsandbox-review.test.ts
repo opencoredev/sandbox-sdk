@@ -1828,4 +1828,90 @@ describe("independent review reproductions", () => {
       reviewedIds: [],
     });
   });
+
+  test("R7-1 reap retires a pending Service after verified deletion and a one-shot journal rename failure", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const sandbox = fake.sandboxes.get(source.id);
+
+    if (!sandbox) throw new Error("Owned sandbox is missing");
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    await p.previewUrl(source.id, 3000);
+    await journal([
+      { provider: "microsandbox", id: source.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: slug,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "pending",
+      },
+    ]);
+    const ownershipPath = join(out, "ownership.json");
+    const realRename = journalFiles.rename;
+    let failedOnce = false;
+
+    const rename = vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (to === ownershipPath && !failedOnce) {
+        const ids = z
+          .object({ resources: z.array(z.object({ id: z.string() })) })
+          .parse(JSON.parse(await readFile(from, "utf8")))
+          .resources.map((r) => r.id);
+
+        if (ids.includes(source.id) && !ids.includes(slug)) {
+          failedOnce = true;
+          throw new Error("simulated one-shot Service settlement rename failure");
+        }
+      }
+
+      await realRename(from, to);
+    });
+
+    expect(await reap()).toBe(false);
+    expect(failedOnce).toBe(true);
+    expect(fake.services.has(slug)).toBe(false);
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    rename.mockRestore();
+    expect(await reap()).toBe(false);
+    expect(
+      z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
+        .resources,
+    ).toEqual([]);
+  });
+
+  test("R7-2 SDK destroy retries detachment using created_at seen on the attached exact read", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const { pathname } = new URL(String(input));
+
+      if (pathname === "/v1/services" && init?.method === "POST") {
+        const response = await realFetch(input, init);
+
+        const { created_at: _, ...body } = z
+          .looseObject({ created_at: z.string() })
+          .parse(await response.json());
+
+        return Response.json(body, { status: response.status });
+      }
+
+      if (pathname === "/v1/services" && init?.method === "GET")
+        return Response.json({ error: "list unavailable" }, { status: 503 });
+
+      return realFetch(input, init);
+    });
+
+    await p.previewUrl(source.id, 3000);
+    fake.faults.serviceDeleteFails = true;
+    await expect(p.destroy(source.id)).rejects.toThrow("could not be removed");
+    expect(fake.services.get(slug)?.status).toBe("detached");
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    fetchMock.mockRestore();
+    fake.faults.serviceDeleteFails = false;
+    await p.destroy(source.id);
+    expect(fake.services.has(slug)).toBe(false);
+  });
 });
