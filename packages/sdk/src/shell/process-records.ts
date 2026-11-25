@@ -113,9 +113,8 @@ export function logPageScript(input: {
  * own, no symlink, and writable by no other user, so nobody can swap a path between its check and its
  * use; it follows no symlink, and the exit is created only where no file or link stands. */
 export function bootRepairScript(): string {
-  // Writable by its group only when that group is this user's own, and never by everyone.
   const owned = (path: string) =>
-    `[ -d "${path}" ] && [ ! -L "${path}" ] && [ -O "${path}" ] && perm=$(stat -c %A "${path}") && case "$perm" in d???????-?) true ;; *) false ;; esac && { [ -G "${path}" ] || case "$perm" in d????-????) true ;; *) false ;; esac; }`;
+    `[ -d "${path}" ] && [ ! -L "${path}" ] && [ -O "${path}" ] && case "$(stat -c %A "${path}")" in d????-??-?) true ;; *) false ;; esac`;
 
   const stale = `${owned("$d")} && [ -f "$d/spec.json" ] && [ ! -L "$d/spec.json" ] && [ ! -e "$d/exit" ] && [ ! -L "$d/exit" ] && t=$(stat -c %Y "$d/spec.json") && [ "$t" -lt "$boot" ]`;
 

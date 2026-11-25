@@ -660,14 +660,14 @@ describe("Services (previewUrl) and destroy", () => {
     await p.destroy(box.id);
   });
 
-  test("a lost Service answer is read back", async () => {
+  test("a lost Service answer is read back for its URL, but never owned", async () => {
     const p = provider();
     const box = await p.create({ labels: {} });
     fake.faults.serviceDrop = true;
     const { url } = await p.previewUrl(box.id, 4000);
     expect(url).toContain("-p4000");
-    await p.destroy(box.id);
-    expect([...fake.services.keys()].some((s) => s.endsWith("-p4000"))).toBe(false);
+    await expect(p.destroy(box.id)).rejects.toThrow(/-p4000\).*nothing proves this client made/);
+    expect([...fake.services.keys()].some((s) => s.endsWith("-p4000"))).toBe(true);
   });
 
   test("destroy deletes the sandbox even when a Service cannot be removed, keeps the slug and reports it", async () => {

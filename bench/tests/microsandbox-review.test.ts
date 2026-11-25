@@ -690,6 +690,15 @@ describe("independent review reproductions", () => {
 
   const journalText = () => readFile(join(out, "ownership.json"), "utf8");
 
+  /** A Service nothing proves is the run's, after a reap: still there and still journaled for review. */
+  const leftForReview = async (slug: string) => ({
+    kept: fake.services.has(slug),
+    journaled: z
+      .object({ resources: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await journalText()))
+      .resources.some((r) => r.id === slug),
+  });
+
   test("R3 a transient Service 404 cannot retire its pre-POST journal entry", async () => {
     const slug = "sbx-0000000000000000-p3000";
     await journal([
@@ -702,7 +711,8 @@ describe("independent review reproductions", () => {
       status: "enabled",
     });
     await reap();
-    expect(fake.services.has(slug)).toBe(false);
+    // The Service that lands later is attached, but nothing proves it is this run's create.
+    expect(await leftForReview(slug)).toEqual({ kept: true, journaled: true });
   });
 
   test("R4 a Service refused with 409 must not authorize deletion of its detached slug", async () => {
@@ -2109,17 +2119,14 @@ describe("independent review reproductions", () => {
       await realRename(from, to);
     });
 
-    // The failed write lands in the Service sweep now, so the first reap leaves the Service for review.
+    // A pending entry is never proof, so no reap deletes the Service: it stays journaled for review.
     expect(await reap()).toBe(true);
-    expect(failedOnce).toBe(true);
     rename.mockRestore();
-    expect(await reap()).toBe(false);
-    expect(fake.services.has(slug)).toBe(false);
-    expect(fake.sandboxes.has(source.id)).toBe(false);
-    expect(
-      z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
-        .resources,
-    ).toEqual([]);
+    expect(await reap()).toBe(true);
+    expect({
+      sandbox: fake.sandboxes.has(source.id),
+      ...(await leftForReview(slug)),
+    }).toEqual({ sandbox: false, kept: true, journaled: true });
   });
 
   test("R7-2 SDK destroy never takes an attached read's created_at as its own Service's identity", async () => {
@@ -2207,9 +2214,8 @@ describe("independent review reproductions", () => {
       await realRename(from, to);
     });
 
+    // The snapshot and sandbox go; the pending Service is never proof, so it is kept and named.
     await reap();
-    expect(failures).toBe(1);
-    expect(fake.services.has(slug)).toBe(false);
     expect(fake.snapshots.has(snapshot.id)).toBe(false);
     expect(fake.sandboxes.has(source.id)).toBe(false);
     rename.mockRestore();
@@ -2223,9 +2229,8 @@ describe("independent review reproductions", () => {
     expect({
       retryFailed,
       reviewedIds: results.cleanupReview.map((item) => item.id),
-      journal: z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
-        .resources,
-    }).toEqual({ retryFailed: false, reviewedIds: [], journal: [] });
+      ...(await leftForReview(slug)),
+    }).toEqual({ retryFailed: true, reviewedIds: [slug], kept: true, journaled: true });
   });
 
   test("R8-2 fresh reap removes a verified pending Service after one DELETE failure", async () => {
@@ -2268,9 +2273,12 @@ describe("independent review reproductions", () => {
       return realFetch(input, init);
     });
 
+    // A pending Service is never proof, so no DELETE is sent for it, failing or not.
     await reap();
-    expect(failures).toBe(1);
-    expect(fake.sandboxes.has(source.id)).toBe(false);
+    expect({ failures, sandbox: fake.sandboxes.has(source.id) }).toEqual({
+      failures: 0,
+      sandbox: false,
+    });
     fetchMock.mockRestore();
 
     const retryFailed = await reap();
@@ -2281,11 +2289,9 @@ describe("independent review reproductions", () => {
 
     expect({
       retryFailed,
-      serviceStatus: fake.services.get(slug)?.status,
       reviewedIds: results.cleanupReview.map((item) => item.id),
-      journal: z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
-        .resources,
-    }).toEqual({ retryFailed: false, serviceStatus: undefined, reviewedIds: [], journal: [] });
+      ...(await leftForReview(slug)),
+    }).toEqual({ retryFailed: true, reviewedIds: [slug], kept: true, journaled: true });
   });
 
   test("R9-1 fresh reap recovers pending Service after a failed promotion rename before DELETE", async () => {
@@ -2375,8 +2381,8 @@ describe("independent review reproductions", () => {
       return realFetch(input, init);
     });
 
+    // A reap never promotes a pending entry from what it reads, so nothing is renamed or deleted.
     await reap();
-    expect(renameFailures).toBe(1);
     wire.mockRestore();
     rename.mockRestore();
 
@@ -2388,21 +2394,23 @@ describe("independent review reproductions", () => {
 
     expect({
       failed,
-      serviceStatus: fake.services.get(slug)?.status,
+      renameFailures,
+      deleteFailures,
       reviewedIds: results.cleanupReview.map((item) => item.id),
-      journal: z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
-        .resources,
+      ...(await leftForReview(slug)),
       unprovenDeletes,
     }).toEqual({
-      failed: false,
-      serviceStatus: undefined,
-      reviewedIds: [],
-      journal: [],
+      failed: true,
+      renameFailures: 0,
+      deleteFailures: 0,
+      reviewedIds: [slug],
+      kept: true,
+      journaled: true,
       unprovenDeletes: [],
     });
   });
 
-  test("R9-2 runV2 persists newly learned attached timestamp before DELETE when POST omitted created_at", async () => {
+  test("R9-2 runV2 never learns an attached timestamp as proof when POST omitted created_at", async () => {
     const p = adapter();
     const create = p.create.bind(p);
     let slug = "";
@@ -2476,23 +2484,20 @@ describe("independent review reproductions", () => {
       ]),
       async () => {},
     );
+    // A create answer without created_at leaves no identity to match, so the timestamp a later read
+    // shows is never learned as proof and no DELETE is sent.
     expect(timestamp).toBeDefined();
-    expect(proofs[0]).toEqual({
-      id: slug,
-      serviceState: "created",
-      serviceCreatedAt: timestamp,
-    });
+    expect(proofs).toEqual([]);
     wire.mockRestore();
     await writeFile(join(out, "results.json"), JSON.stringify({ runId: run }));
 
     const failed = await reap();
 
-    expect({
-      failed,
-      serviceStatus: fake.services.get(slug)?.status,
-      journal: z.object({ resources: z.array(z.unknown()) }).parse(JSON.parse(await journalText()))
-        .resources,
-    }).toEqual({ failed: false, serviceStatus: undefined, journal: [] });
+    expect({ failed, ...(await leftForReview(slug)) }).toEqual({
+      failed: true,
+      kept: true,
+      journaled: true,
+    });
   });
 
   test("R10-1 runV2 proves Service on disk before DELETE after a preview settlement rename failure", async () => {
@@ -2602,7 +2607,7 @@ describe("independent review reproductions", () => {
     ]);
   });
 
-  test("R10-2 reap waits for stalled promotion write before fallback Service sweep DELETE", async () => {
+  test("R10-2 reap sends no fallback Service sweep DELETE for a pending entry it cannot prove", async () => {
     const p = adapter();
     const source = await p.create({ labels: labels() });
     const sandbox = fake.sandboxes.get(source.id);
@@ -2669,14 +2674,14 @@ describe("independent review reproductions", () => {
       return realFetch(input, init);
     });
 
+    // No reap promotes a pending entry from a read, so no promotion write and no DELETE happen.
     await reap();
-    expect(renameFailures).toBe(1);
-    expect(deletes).toEqual([
-      {
-        proof: { id: slug, kind: "service", serviceState: "created", serviceCreatedAt: timestamp },
-        promotionInFlight: false,
-      },
-    ]);
+    expect({ renameFailures, deletes, ...(await leftForReview(slug)) }).toEqual({
+      renameFailures: 0,
+      deletes: [],
+      kept: true,
+      journaled: true,
+    });
   });
 
   test.each([true, false])(
@@ -2828,7 +2833,7 @@ describe("independent review reproductions", () => {
     },
   );
 
-  test("R12 fresh reap persists pending attached Service proof even when filtered Service list fails", async () => {
+  test("R12 fresh reap keeps an attached Service only a pending entry names, even when filtered Service list fails", async () => {
     const creator = adapter();
     const source = await creator.create({ labels: labels() });
     const ownership = join(out, "ownership.json");
@@ -2908,21 +2913,20 @@ describe("independent review reproductions", () => {
 
     const retryFailed = await reap();
 
+    // Attachment never promotes the pending entry: only the sandbox is deleted, and the Service
+    // stays journaled as pending for review.
     expect({
+      firstDelete,
       proofAtFirstDelete,
       retryFailed,
-      serviceAfterRetry: fake.services.get(slug)?.status,
+      serviceAfterRetry: fake.services.get(slug)?.createdAt,
       stillJournaled: (await readProof())?.serviceState,
     }).toEqual({
-      proofAtFirstDelete: {
-        id: slug,
-        kind: "service",
-        serviceState: "created",
-        serviceCreatedAt: createdAt,
-      },
-      retryFailed: false,
-      serviceAfterRetry: undefined,
-      stillJournaled: undefined,
+      firstDelete: sandboxPath,
+      proofAtFirstDelete: { id: slug, kind: "service", serviceState: "pending" },
+      retryFailed: true,
+      serviceAfterRetry: createdAt,
+      stillJournaled: "pending",
     });
   });
 
@@ -2972,14 +2976,14 @@ describe("independent review reproductions", () => {
     expect(fake.sandboxes.has(source.id)).toBe(true);
     wire.mockRestore();
     await finalizePost?.();
-    expect(await reap()).toBe(false);
-    expect(fake.sandboxes.has(source.id)).toBe(false);
-    expect(fake.services.has(slug)).toBe(false);
-    expect(
-      z
-        .object({ resources: z.array(z.unknown()) })
-        .parse(JSON.parse(await readFile(ownership, "utf8"))).resources,
-    ).toEqual([]);
+    // The late create lands attached, but nothing proves it is this run's: the sandbox goes, and the
+    // Service stays journaled for review.
+    expect(await reap()).toBe(true);
+    expect({
+      sandbox: fake.sandboxes.has(source.id),
+      ...(await leftForReview(slug)),
+      ownership: (await readFile(ownership, "utf8")).includes(slug),
+    }).toEqual({ sandbox: false, kept: true, journaled: true, ownership: true });
   });
 
   test("R14-1 runV2 holds parent sandbox while a pending Service create returns 404 so a late POST remains recoverable", async () => {
@@ -3048,9 +3052,13 @@ describe("independent review reproductions", () => {
     wire.mockRestore();
 
     if (finalizePost && !postAccepted) await finalizePost();
-    expect(await reap()).toBe(false);
-    expect(fake.sandboxes.has(boxId)).toBe(false);
-    expect(fake.services.has(slug)).toBe(false);
+    // The late create lands attached, but nothing proves it is this run's: it is kept for review.
+    expect(await reap()).toBe(true);
+    expect({ sandbox: fake.sandboxes.has(boxId), ...(await leftForReview(slug)) }).toEqual({
+      sandbox: false,
+      kept: true,
+      journaled: true,
+    });
   }, 15_000);
 
   test("R14-2 superseded 409 base slug does not block sandbox cleanup after retry retires and sandbox DELETE fails once", async () => {
@@ -3256,9 +3264,13 @@ describe("independent review reproductions", () => {
       JSON.stringify({ ...parsed, resources: withoutOldRetry }),
     );
 
-    expect(await reap()).toBe(false);
-    expect(fake.sandboxes.has(boxId)).toBe(false);
-    expect(fake.services.has(slug)).toBe(false);
+    // The base slug's late create lands attached, but nothing proves it is this run's: kept for review.
+    expect(await reap()).toBe(true);
+    expect({ sandbox: fake.sandboxes.has(boxId), ...(await leftForReview(slug)) }).toEqual({
+      sandbox: false,
+      kept: true,
+      journaled: true,
+    });
   }, 15_000);
 
   test("R15-2 a failed pre-POST Service journal write does not leave a phantom pending entry blocking cleanup", async () => {
@@ -3819,5 +3831,49 @@ describe("PR88 security review, second round", () => {
       redactMicrosandbox("x KEYmsb_pat_1y z", "KEYmsb_p"),
       redactMicrosandbox("short k9 key", "k9"),
     ]).toEqual(["x [redacted] z", "short [redacted] key"]);
+  });
+});
+
+describe("PR88 security review, third round", () => {
+  const realFetch = globalThis.fetch.bind(globalThis);
+
+  test("PR88-S2 cleanService never deletes an attached Service whose live read lacks the recorded timestamp", async () => {
+    fake.services.set("no-stamp-slug", {
+      slug: "no-stamp-slug",
+      target: { sandbox: "ours", port: 3000 },
+      status: "enabled",
+    });
+
+    // The live read carries no created_at at all.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const response = await realFetch(input, init);
+
+      if (new URL(String(input)).pathname !== "/v1/services/no-stamp-slug") return response;
+
+      return Response.json(
+        z
+          .looseObject({})
+          .parse(JSON.parse((await response.text()).replaceAll(/"created_at":"[^"]*",?/g, ""))),
+        { status: response.status },
+      );
+    });
+
+    const outcome = await cleanService(
+      { apiKey: key, baseUrl: fake.url },
+      {
+        id: "no-stamp-slug",
+        parent: null,
+        sandboxName: "ours",
+        state: "created",
+        createdAt: "2026-11-25T09:00:00.000Z",
+        superseded: false,
+      },
+    );
+
+    expect({ outcome: outcome.kind, kept: fake.services.has("no-stamp-slug") }).toEqual({
+      outcome: "pending",
+      kept: true,
+    });
+    fake.services.delete("no-stamp-slug");
   });
 });

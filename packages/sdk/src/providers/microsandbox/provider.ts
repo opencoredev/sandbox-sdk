@@ -976,6 +976,8 @@ export function createMicrosandboxProvider(
           throw error;
         }
 
+        if (service.slug !== slug) throw fail("the Service read answered another slug", "provider");
+
         // Never a Service that now targets another sandbox, or one, attached or detached, whose
         // creation timestamp does not prove it is the same Service instance this adapter owned.
         if (service.target !== null) {
@@ -990,8 +992,8 @@ export function createMicrosandboxProvider(
             continue;
           }
 
-          // Without the creation timestamp this client saw, the live one proves nothing.
-          if (entry.createdAt === undefined) {
+          // Without the creation timestamp this client saw, matched by the live one, nothing is proven.
+          if (entry.createdAt === undefined || service.createdAt !== entry.createdAt) {
             ownedServices.get(id)?.delete(slug);
             unproven.push(slug);
             continue;
@@ -1558,15 +1560,19 @@ export function createMicrosandboxProvider(
     }
 
     let created: MicrosandboxService;
+    // Only a 201 is this client's own create. A 200 answers with a Service that was already there,
+    // and a lost answer read back proves nothing about who made what it finds.
+    let answer: "made" | "existing" | "lost";
 
     try {
-      created = parseService(
-        await http.json({
-          method: "POST",
-          path: "/services",
-          body: { slug, target: { sandbox: sandboxName, port } },
-        }),
-      );
+      const response = await http.request({
+        method: "POST",
+        path: "/services",
+        body: { slug, target: { sandbox: sandboxName, port } },
+      });
+
+      created = parseService(response.json());
+      answer = response.status === 201 ? "made" : "existing";
     } catch (error) {
       if (neverSent(error) || (refused(error) && statusOf(error) !== 409)) {
         // The refusal is what the caller sees; a journal that could not record it keeps the entry
@@ -1594,6 +1600,20 @@ export function createMicrosandboxProvider(
       }
 
       created = found;
+      answer = "lost";
+    }
+
+    if (answer === "existing" || created.slug !== slug) {
+      await release("conflict");
+
+      return created;
+    }
+
+    // Unproven: the journal keeps its entry pending for review, and memory never claims it.
+    if (answer === "lost") {
+      if (!earlierLost) owned.delete(slug);
+
+      return created;
     }
 
     if (created.target?.sandbox === sandboxName) {

@@ -1208,27 +1208,6 @@ export async function runV2(
               throw new Error(
                 `Pending Service ${svc.id} is still unresolved (404); retaining sandbox ${id} so a late create cannot detach without proof`,
               );
-
-            if (probed.kind === "attached") {
-              if (probed.createdAt === undefined)
-                throw new Error(
-                  `Attached Service ${svc.id} lacks creation timestamp; retaining sandbox ${id} for retry`,
-                );
-              const svcKey = `${loaded.name}/service/${svc.id}`;
-              const current = owned.get(svcKey);
-
-              if (
-                current !== undefined &&
-                (current.serviceState !== "created" ||
-                  current.serviceCreatedAt !== probed.createdAt)
-              ) {
-                await persistConfirmedSnapshot(svcKey, {
-                  ...current,
-                  serviceState: "created",
-                  serviceCreatedAt: current.serviceCreatedAt ?? probed.createdAt,
-                });
-              }
-            }
           }
 
           // A reserve spent on the probes sends no DELETE; the sandbox is left for the reap.
@@ -3964,20 +3943,6 @@ export async function runV2(
           state: entry.serviceState ?? "pending",
           createdAt: entry.serviceCreatedAt,
           superseded: isServiceSuperseded(services, idx),
-          onVerified: async (verifiedCreatedAt) => {
-            const key = `${p.name}/service/${entry.id}`;
-            const current = owned.get(key);
-
-            if (current === undefined) return;
-            const nextCreatedAt = current.serviceCreatedAt ?? verifiedCreatedAt;
-
-            if (current.serviceState === "created" && current.serviceCreatedAt === nextCreatedAt)
-              return;
-            const updated = { ...current, serviceState: "created" as const };
-
-            if (nextCreatedAt !== undefined) updated.serviceCreatedAt = nextCreatedAt;
-            await persistConfirmedSnapshot(key, updated);
-          },
         });
 
         if (outcome.kind === "pending") {

@@ -183,20 +183,27 @@ slug is reused only when it is `enabled` and targets this sandbox's name and
 this port; otherwise, and on a 409 (the slug belongs to someone else), the
 adapter uses `<slug>-<4 hex>` once and never touches the other Service. The
 slug is passed to the `service` hook and kept in memory before
-`POST /v1/services { slug, target: { sandbox: name, port } }`. A lost answer is
-settled with `GET /v1/services/{slug}`.
+`POST /v1/services { slug, target: { sandbox: name, port } }`. Only a `201` (what
+the live API answers for a new Service, per the 2026-11-25 probe) is this
+client's own Service: memory then keeps its `created_at` as its identity.
+A `200` (a Service that was already there, reused) is settled as a conflict
+and never owned. A lost answer is read back with `GET /v1/services/{slug}`, but
+what that finds is never owned either: its journal entry stays pending for
+review.
 
-`destroy(id)` gathers candidate Services from memory and from
-`GET /v1/services?sandbox={name}`, keeps only slugs of the adapter's shape for
-this ID that still target this sandbox (or nothing, once it is detached),
-deletes each (404 is gone), and then always runs
+`destroy(id)` deletes only the Services memory owns, each only while it still
+targets this sandbox (or nothing, once it is detached) and its live
+`created_at` matches the one memory kept (404 is gone), and then always runs
 `DELETE /v1/sandboxes/{id}`, even when a Service could not be removed. A
 Service that failed stays in memory and the call fails after the sandbox is
-deleted, so destroying again finishes it. A Service listing that fails, or a
-sandbox name that cannot be read (not a 404), is reported the same way, after
-the delete. The ID is remembered before the DELETE is sent, and the next destroy reads the whole Service
-list for detached slugs of this ID's shape that memory cannot prove. It names
-them in its error and never deletes them. Microsandbox accepts a DELETE before it finishes, so an accepted
+deleted, so destroying again finishes it. `GET /v1/services?sandbox={name}`
+only names Services at this ID's slugs that memory cannot prove, such as one
+another client made or one whose answer was lost; the call names them in its
+error after the delete and never deletes them. A Service listing that fails,
+or a sandbox name that cannot be read (not a 404), is reported the same way.
+The ID is remembered before the DELETE is sent, and the next destroy reads the
+whole Service list for detached slugs of this ID's shape that memory cannot
+prove, which are named the same way. Microsandbox accepts a DELETE before it finishes, so an accepted
 delete is confirmed by reading `GET /v1/sandboxes/{id}` until it answers 404,
 on its own 60-second deadline; a sandbox that still reads then fails with
 `outcome_unknown`, as does a failed create whose cleanup it was.

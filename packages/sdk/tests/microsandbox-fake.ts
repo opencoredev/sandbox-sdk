@@ -509,7 +509,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
     }
 
     for (const dir of ["workspace", "tmp/.sandbox-sdk", "tmp/sdk-bare", "proc"])
-      await mkdir(join(root, dir), { recursive: true });
+      await mkdir(join(root, dir), { recursive: true, mode: 0o755 });
     const start = url.searchParams.get("start") === "true";
 
     const sandbox: FakeSandbox = {
@@ -896,9 +896,16 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
           `btime ${Math.floor(sandbox.bootedAt / 1000)}\n`,
         );
 
+        // A guest's umask (022), whatever the host's, so the directories commands make are as private.
         const child = spawn(
-          cmd,
-          options.argv.map((part) => mapped(sandbox, part)),
+          "sh",
+          [
+            "-c",
+            'umask 022; exec "$@"',
+            "sh",
+            cmd,
+            ...options.argv.map((part) => mapped(sandbox, part)),
+          ],
           {
             cwd: cwd === "/" ? sandbox.root : cwd,
             env: { ...process.env, ...sandbox.env, ...options.vars },

@@ -202,11 +202,6 @@ export interface ServiceEntry {
    * here is someone else's.
    */
   superseded: boolean;
-  /**
-   * Called before DELETE when a live attached read proves this Service belongs to `sandboxName` and
-   * the journal entry is still `pending` or lacks `createdAt`, so the durable journal upgrades first.
-   */
-  onVerified?: (createdAt: string | undefined) => void | Promise<void>;
 }
 
 /** Whether `other` is a retry slug the adapter makes after `slug` was taken: `<slug>-<4 hex>`. */
@@ -346,17 +341,23 @@ export async function cleanService(
     )
       return { kind: "foreign" };
 
+    // Attachment alone proves nothing: only the confirmed create's timestamp, matched live, does.
     if (
       entry.state !== "created" ||
-      (entry.createdAt === undefined && service.created_at !== undefined)
+      entry.createdAt === undefined ||
+      service.created_at !== entry.createdAt
     )
-      await entry.onVerified?.(service.created_at);
+      return {
+        kind: "pending",
+        reason:
+          "Attached Service lacks a confirmed create whose timestamp it matches, so nothing proves it is this run's: it is kept for review; delete it yourself if this run made it",
+      };
   } else if (service.status === "detached" && !entry.superseded) {
     if (entry.state !== "created")
       return {
         kind: "pending",
         reason:
-          "Detached Service has an unsettled create; ownership cannot be proven, so it is kept for review",
+          "Detached Service has an unsettled create, so nothing proves it is this run's: it is kept for review; delete it yourself if this run made it",
       };
 
     if (entry.createdAt === undefined || service.created_at === undefined)

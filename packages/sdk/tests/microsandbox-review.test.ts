@@ -1733,3 +1733,126 @@ test("PR88 security review: the boot repair touches nothing under a directory ot
 
   expect(after.stdout).toBe("kept");
 });
+
+test("PR88 security review: a Service the create answers with 200, already there, is never owned", async () => {
+  let hide = true;
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const path = new URL(input).pathname;
+
+      // The lookup before the create misses it, so the create meets a Service already there.
+      if (hide && init.method === "GET" && path.startsWith("/v1/services/")) {
+        hide = false;
+
+        return new Response(JSON.stringify({ error: { code: "service_not_found" } }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id: sandbox } = await p.create({ labels: labels() });
+  const sandboxName = fake.sandboxes.get(sandbox)?.name ?? "";
+  const slug = `sbx-${sandbox.replaceAll("-", "").slice(0, 16)}-p3000`;
+
+  fake.services.set(slug, {
+    slug,
+    target: { sandbox: sandboxName, port: 3000 },
+    status: "enabled",
+    createdAt: "2026-11-25T08:00:00.000Z",
+  });
+
+  await p.previewUrl(sandbox, 3000);
+  await p.destroy(sandbox).catch(() => {});
+
+  expect(fake.services.has(slug)).toBe(true);
+  fake.services.delete(slug);
+});
+
+test("PR88 security review: a live Service read without the recorded timestamp is never deleted", async () => {
+  let strip = false;
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const response = await realFetch(input, init);
+
+      if (!strip || init.method !== "GET" || !new URL(input).pathname.startsWith("/v1/services/"))
+        return response;
+
+      return new Response((await response.text()).replaceAll(/"created_at":"[^"]*",?/g, ""), {
+        status: response.status,
+        headers: response.headers,
+      });
+    },
+  });
+
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  await p.previewUrl(sandbox, 3000);
+  strip = true;
+
+  const slug = [...fake.services.keys()].find((s) => s.endsWith("-p3000")) ?? "";
+
+  await p.destroy(sandbox).catch(() => {});
+
+  expect(fake.services.has(slug)).toBe(true);
+  fake.services.delete(slug);
+});
+
+test("PR88 security review: a Service read that answers another slug deletes nothing", async () => {
+  let swap = false;
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const response = await realFetch(input, init);
+
+      if (!swap || init.method !== "GET" || !new URL(input).pathname.startsWith("/v1/services/"))
+        return response;
+
+      return new Response(
+        (await response.text()).replace(/"slug":"[^"]*"/, '"slug":"someone-else"'),
+        {
+          status: response.status,
+          headers: response.headers,
+        },
+      );
+    },
+  });
+
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  await p.previewUrl(sandbox, 3000);
+  swap = true;
+
+  const slug = [...fake.services.keys()].find((s) => s.endsWith("-p3000")) ?? "";
+
+  await p.destroy(sandbox).catch(() => {});
+
+  expect(fake.services.has(slug)).toBe(true);
+  fake.services.delete(slug);
+});
+
+test("PR88 security review: the boot repair touches nothing under a directory its group can write", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  const plant = [
+    "mkdir -p /tmp/.sandbox-sdk/runs/old",
+    "touch -d '1 hour ago' /tmp/.sandbox-sdk/runs/old",
+    "chmod 775 /tmp/.sandbox-sdk/runs",
+  ].join(" && ");
+
+  expect((await exec(p, sandbox, plant)).exitCode).toBe(0);
+
+  const after = await exec(
+    p,
+    sandbox,
+    `sh -c ${quote(bootRepairScript())}; [ -e /tmp/.sandbox-sdk/runs/old ] && printf kept || printf removed; chmod 755 /tmp/.sandbox-sdk/runs`,
+  );
+
+  expect(after.stdout).toBe("kept");
+});

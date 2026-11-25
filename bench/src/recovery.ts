@@ -637,14 +637,6 @@ export async function reapRun(
               throw new Error(
                 `Pending Service ${svc.id} is still unresolved (404); retaining sandbox ${id} so a late create cannot detach without proof`,
               );
-
-            if (probed.kind === "attached") {
-              if (probed.createdAt === undefined)
-                throw new Error(
-                  `Attached Service ${svc.id} lacks creation timestamp; retaining sandbox ${id} for retry`,
-                );
-              await persistServicePromotion([svc], probed.createdAt);
-            }
           }
         }
 
@@ -740,9 +732,6 @@ export async function reapRun(
             state: entry.serviceState ?? "pending",
             createdAt: entry.serviceCreatedAt,
             superseded: isServiceSuperseded(services, idx),
-            onVerified: async (verifiedCreatedAt) => {
-              await persistServicePromotion([entry], verifiedCreatedAt);
-            },
           }),
         );
 
