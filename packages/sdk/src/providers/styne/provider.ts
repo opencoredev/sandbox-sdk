@@ -719,9 +719,16 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
                   : "outcome_unknown";
 
             if (code === "outcome_unknown") await killGroup(id, tag, pid).catch(() => {});
-            throw fail(`the command stream failed${frame.code ? ` (${frame.code})` : ""}`, code, {
-              sandboxId: id,
-            });
+
+            // Only a code Styne documents is named, and only when redaction leaves it as it is.
+            const shown =
+              mapped !== undefined &&
+              frame.code !== undefined &&
+              http.redact(frame.code) === frame.code
+                ? ` (${frame.code})`
+                : "";
+
+            throw fail(`the command stream failed${shown}`, code, { sandboxId: id });
           }
 
           case "other":

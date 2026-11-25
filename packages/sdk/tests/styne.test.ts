@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SandboxError } from "../src/errors.js";
 import type { ExecInput } from "../src/provider.js";
@@ -265,6 +266,25 @@ describe("styne exec", () => {
     const run = input();
     expect(await provider().exec(id, run)).toEqual({ exitCode: null, timedOut: true });
     expect(run.chunks).toEqual(["stdout:before\n"]);
+  });
+
+  test("a stream error line names only a documented code, never one that echoes the key", async () => {
+    server.on(
+      "POST /sandboxes/{id}/exec",
+      { stream: frames({ error: { code: 500, error_code: apiKey } }) },
+      { stream: frames({ error: { code: 500, error_code: "made_up_code" } }) },
+      { stream: frames({ error: { code: 429, error_code: "quota_exceeded" } }) },
+    );
+    const echoed = await rejection(provider().exec(id, input()));
+    const unknown = await rejection(provider().exec(id, input()));
+    const known = await rejection(provider().exec(id, input()));
+
+    expect(echoed.code).toBe("provider");
+    expect(
+      [echoed.message, String(echoed), JSON.stringify(echoed), inspect(echoed)].join(),
+    ).not.toContain(apiKey);
+    expect(unknown.message).not.toContain("made_up_code");
+    expect(known.message).toContain("(quota_exceeded)");
   });
 
   test("a signal exit reads as 128 + the signal", async () => {

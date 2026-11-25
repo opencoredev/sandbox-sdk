@@ -232,7 +232,7 @@ describe("guest output in a stop reason", () => {
     for (const text of written) expect(text).not.toContain(secret.slice(-8));
   });
 
-  it("redacts before truncating guest stdout that is not JSON", () => {
+  it("never quotes guest stdout that is not JSON", () => {
     vi.stubEnv("SUSTAINED_REVIEW_TOKEN", secret);
 
     const check = verifySegment({
@@ -246,7 +246,7 @@ describe("guest output in a stop reason", () => {
 
     expect(check).toEqual({
       kind: "invalid",
-      reason: `Output is not JSON: ${"y".repeat(190)}[REDACTED]`,
+      reason: `Output is not JSON (${190 + secret.length} characters)`,
     });
   });
 });
