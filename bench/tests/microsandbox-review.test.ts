@@ -907,7 +907,7 @@ describe("independent review reproductions", () => {
     expect(fake.sandboxes.has(other.id)).toBe(true);
   });
 
-  test("R2-1 runV2 keeps a pending Service journaled when its sandbox is deleted before the Service appears", async () => {
+  test("R2-1 runV2 keeps a pending Service and its parent sandbox journaled while the Service returns 404", async () => {
     const p = adapter();
     const create = p.create.bind(p);
     let slug = "";
@@ -954,13 +954,14 @@ describe("independent review reproductions", () => {
       async () => {},
     );
     expect(attempted).toBe(true);
-    expect(fake.sandboxes.size).toBe(0);
+    expect(fake.sandboxes.size).toBe(1);
 
     const resources = z
       .object({ resources: z.array(z.looseObject({ id: z.string(), kind: z.string() })) })
       .parse(JSON.parse(await journalText())).resources;
 
     expect(resources.some((item) => item.kind === "service" && item.id === slug)).toBe(true);
+    expect(resources.some((item) => item.kind === "sandbox")).toBe(true);
   });
 
   test("R2-2 does not delete a detached conflicting Service if the 409 settlement could not be persisted", async () => {
@@ -2737,5 +2738,166 @@ describe("independent review reproductions", () => {
         .object({ resources: z.array(z.unknown()) })
         .parse(JSON.parse(await readFile(ownership, "utf8"))).resources,
     ).toEqual([]);
+  });
+
+  test("R14-1 runV2 holds parent sandbox while a pending Service create returns 404 so a late POST remains recoverable", async () => {
+    const provider = adapter();
+    const create = provider.create.bind(provider);
+    let boxId = "";
+    let slug = "";
+    let postAccepted = false;
+    let finalizePost: (() => Promise<void>) | undefined;
+
+    const wire = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (method === "POST" && url.pathname === "/v1/services") {
+        finalizePost = async () => {
+          const accepted = await realFetch(input, { ...init, signal: null });
+          await accepted.body?.cancel();
+          expect(accepted.status).toBe(201);
+          postAccepted = true;
+        };
+
+        throw new TypeError("connection lost while Service POST was in flight");
+      }
+
+      if (method === "DELETE" && url.pathname === `/v1/sandboxes/${boxId}`) {
+        if (finalizePost && !postAccepted) await finalizePost();
+      }
+
+      return realFetch(input, init);
+    });
+
+    provider.create = async (input) => {
+      const result = await create(input);
+      boxId = result.id;
+      slug = `sbx-${boxId.replaceAll("-", "").slice(0, 16)}-p3000`;
+      await expect(provider.previewUrl(boxId, 3000)).rejects.toThrow();
+
+      return result;
+    };
+
+    await runV2(
+      loaded(provider),
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--run",
+        run,
+        "--out",
+        out,
+        "--runs",
+        "1",
+        "--max-sandboxes",
+        "4",
+        "--bursts",
+        "",
+        "--ownership-visibility-ms",
+        "100",
+        "--timeout-ms",
+        "5000",
+        "--scenarios",
+        "cold",
+      ]),
+      async () => {},
+    );
+    wire.mockRestore();
+
+    if (finalizePost && !postAccepted) await finalizePost();
+    expect(await reap()).toBe(false);
+    expect(fake.sandboxes.has(boxId)).toBe(false);
+    expect(fake.services.has(slug)).toBe(false);
+  });
+
+  test("R14-2 superseded 409 base slug does not block sandbox cleanup after retry retires and sandbox DELETE fails once", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    const sandboxPath = `/v1/sandboxes/${source.id}`;
+    const servicePath = `/v1/services/${slug}`;
+
+    const initialEntries: {
+      provider: string;
+      id: string;
+      kind: string;
+      parent: string | null;
+      sandboxName?: string;
+      serviceState?: "pending" | "created";
+      serviceCreatedAt?: string;
+    }[] = [{ provider: "microsandbox", id: source.id, kind: "sandbox", parent: null }];
+
+    fake.services.set(slug, { slug, target: null, status: "detached" });
+
+    const wire = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementationOnce(async () =>
+        Response.json({ error: { code: "service_not_found" } }, { status: 404 }),
+      );
+
+    p.setAttemptHooks({
+      service: async ({ sandboxId, sandboxName, slug: attemptSlug }) => {
+        initialEntries.push({
+          provider: "microsandbox",
+          id: attemptSlug,
+          kind: "service",
+          parent: sandboxId,
+          sandboxName,
+          serviceState: "pending",
+        });
+        await journal(initialEntries);
+      },
+      serviceSettled: async ({ slug: settledSlug, outcome, createdAt }) => {
+        if (outcome === "conflict") throw new Error("simulated failed conflict journal write");
+        const found = initialEntries.find((entry) => entry.id === settledSlug);
+
+        if (found) {
+          found.serviceState = "created";
+          found.serviceCreatedAt = createdAt;
+        }
+
+        await journal(initialEntries);
+      },
+    });
+
+    await expect(p.previewUrl(source.id, 3000)).rejects.toThrow(
+      "simulated failed conflict journal write",
+    );
+    await p.previewUrl(source.id, 3000);
+
+    const retry = initialEntries.find((entry) => entry.id.startsWith(`${slug}-`));
+
+    if (!retry) throw new Error("expected retry slug");
+
+    const removedByOwner = await realFetch(`${fake.url}${servicePath}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${key}` },
+    });
+
+    expect(removedByOwner.status).toBe(204);
+
+    let rejectedSandboxDelete = false;
+    wire.mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (method === "DELETE" && url.pathname === sandboxPath && !rejectedSandboxDelete) {
+        rejectedSandboxDelete = true;
+
+        return Response.json({ error: { code: "internal_error" } }, { status: 500 });
+      }
+
+      return realFetch(input, init);
+    });
+
+    await reap();
+    expect(rejectedSandboxDelete).toBe(true);
+    expect(fake.sandboxes.has(source.id)).toBe(true);
+    expect(fake.services.has(retry.id)).toBe(false);
+
+    expect(await reap()).toBe(false);
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    expect(fake.services.has(retry.id)).toBe(false);
   });
 });

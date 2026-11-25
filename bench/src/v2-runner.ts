@@ -79,6 +79,7 @@ import {
   cleanService,
   isDefiniteRefusal,
   isRetrySlug,
+  probePendingService,
   settleAllocationAttempt,
   tierLabel,
   type ServiceState,
@@ -459,6 +460,8 @@ export async function runV2(
     serviceState?: ServiceState;
     /** The server `created_at` of a confirmed Microsandbox Service create. */
     serviceCreatedAt?: string;
+    /** True once a retry slug proved this base slug hit a foreign 409 conflict. */
+    serviceSuperseded?: boolean;
     /** A Microsandbox capture's name; equal to `id` while the capture is unconfirmed. */
     snapshotName?: string;
   }
@@ -540,6 +543,14 @@ export async function runV2(
         await persist();
       },
       service: async (attempt) => {
+        for (const other of owned.values())
+          if (
+            other.provider === name &&
+            other.kind === "service" &&
+            other.parent === attempt.sandboxId &&
+            isRetrySlug(attempt.slug, other.id)
+          )
+            other.serviceSuperseded = true;
         owned.set(`${name}/service/${attempt.slug}`, {
           provider: name,
           id: attempt.slug,
@@ -570,8 +581,31 @@ export async function runV2(
           return;
         }
 
+        const newlySuperseded: OwnedEntry[] = [];
+
+        for (const other of owned.values()) {
+          if (
+            other.provider === name &&
+            other.kind === "service" &&
+            other.parent === entry.parent &&
+            isRetrySlug(entry.id, other.id) &&
+            other.serviceSuperseded !== true
+          ) {
+            other.serviceSuperseded = true;
+            newlySuperseded.push(other);
+          }
+        }
+
         owned.delete(key);
-        await persist();
+
+        try {
+          await persist();
+        } catch (error) {
+          owned.set(key, entry);
+
+          for (const other of newlySuperseded) delete other.serviceSuperseded;
+          throw error;
+        }
       },
       snapshot: async (attempt) => {
         captureNames.set(attempt.sandboxId, attempt.name);
@@ -762,6 +796,57 @@ export async function runV2(
       }
 
       try {
+        if (microsandboxTier(loaded.name) !== undefined) {
+          await journal;
+
+          const allServices = [...owned.values()].filter(
+            (r) => r.provider === loaded.name && r.kind === "service",
+          );
+
+          const unprovenServices = allServices.filter(
+            (r) =>
+              r.parent === id &&
+              r.sandboxName !== undefined &&
+              r.serviceSuperseded !== true &&
+              (r.serviceState !== "created" || r.serviceCreatedAt === undefined) &&
+              !allServices.some(
+                (other) => other.parent === r.parent && isRetrySlug(other.id, r.id),
+              ),
+          );
+
+          for (const svc of unprovenServices) {
+            const probed = await deadline(config["timeout-ms"], () =>
+              probePendingService(svc.id, svc.sandboxName!),
+            );
+
+            if (probed.kind === "not-found" && svc.serviceState !== "created")
+              throw new Error(
+                `Pending Service ${svc.id} is still unresolved (404); retaining sandbox ${id} so a late create cannot detach without proof`,
+              );
+
+            if (probed.kind === "attached") {
+              if (probed.createdAt === undefined)
+                throw new Error(
+                  `Attached Service ${svc.id} lacks creation timestamp; retaining sandbox ${id} for retry`,
+                );
+              const svcKey = `${loaded.name}/service/${svc.id}`;
+              const current = owned.get(svcKey);
+
+              if (
+                current !== undefined &&
+                (current.serviceState !== "created" ||
+                  current.serviceCreatedAt !== probed.createdAt)
+              ) {
+                await persistConfirmedSnapshot(svcKey, {
+                  ...current,
+                  serviceState: "created",
+                  serviceCreatedAt: probed.createdAt,
+                });
+              }
+            }
+          }
+        }
+
         if (measurement) {
           const { clock } = measurement;
 
@@ -2859,9 +2944,11 @@ export async function runV2(
           sandboxName: entry.sandboxName,
           state: entry.serviceState ?? "pending",
           createdAt: entry.serviceCreatedAt,
-          superseded: services.some(
-            (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
-          ),
+          superseded:
+            entry.serviceSuperseded === true ||
+            services.some(
+              (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
+            ),
           onVerified: async (verifiedCreatedAt) => {
             const key = `${p.name}/service/${entry.id}`;
             const current = owned.get(key);
@@ -2884,6 +2971,14 @@ export async function runV2(
           continue;
         }
 
+        for (const other of owned.values())
+          if (
+            other.provider === p.name &&
+            other.kind === "service" &&
+            other.parent === entry.parent &&
+            isRetrySlug(entry.id, other.id)
+          )
+            other.serviceSuperseded = true;
         owned.delete(`${p.name}/service/${entry.id}`);
         await persist();
       } catch (e) {

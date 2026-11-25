@@ -62,6 +62,8 @@ const resource = z.object({
   serviceState: z.enum(["pending", "created"]).optional(),
   /** Server `created_at` from a confirmed Microsandbox Service create. */
   serviceCreatedAt: z.string().optional(),
+  /** True once a retry slug proved this base slug hit a foreign 409 conflict. */
+  serviceSuperseded: z.boolean().optional(),
   /** A Microsandbox capture's name; equal to `id` while unconfirmed. */
   snapshotName: z.string().optional(),
 });
@@ -332,8 +334,24 @@ export async function reapRun(
       if (journal) {
         const hadEntry = journal.resources.includes(entry);
         let addedSettled = false;
+        const newlySuperseded: z.infer<typeof resource>[] = [];
 
         if (hadEntry) journal.resources = journal.resources.filter((r) => r !== entry);
+
+        if (entry.kind === "service") {
+          for (const other of journal.resources) {
+            if (
+              other.provider === entry.provider &&
+              other.kind === "service" &&
+              other.parent === entry.parent &&
+              isRetrySlug(entry.id, other.id) &&
+              other.serviceSuperseded !== true
+            ) {
+              other.serviceSuperseded = true;
+              newlySuperseded.push(other);
+            }
+          }
+        }
 
         if (
           entry.kind === "service" &&
@@ -348,6 +366,8 @@ export async function reapRun(
           await persistJournal();
         } catch (error) {
           if (hadEntry && !journal.resources.includes(entry)) journal.resources.push(entry);
+
+          for (const other of newlySuperseded) delete other.serviceSuperseded;
 
           if (addedSettled)
             journal.settledServices = journal.settledServices.filter(
@@ -525,6 +545,7 @@ export async function reapRun(
             (r) =>
               r.parent === id &&
               r.sandboxName !== undefined &&
+              r.serviceSuperseded !== true &&
               (r.serviceState !== "created" || r.serviceCreatedAt === undefined) &&
               !allServices.some(
                 (other) => other.parent === r.parent && isRetrySlug(other.id, r.id),
@@ -642,9 +663,11 @@ export async function reapRun(
             sandboxName: entry.sandboxName,
             state: entry.serviceState ?? "pending",
             createdAt: entry.serviceCreatedAt,
-            superseded: services.some(
-              (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
-            ),
+            superseded:
+              entry.serviceSuperseded === true ||
+              services.some(
+                (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
+              ),
             onVerified: async (verifiedCreatedAt) => {
               await persistServicePromotion([entry], verifiedCreatedAt);
             },

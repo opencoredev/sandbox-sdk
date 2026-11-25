@@ -235,9 +235,10 @@ export async function probePendingService(
  * is detached after a confirmed create (`state === "created"`) and nothing says the slug was taken.
  * A detached Service whose create is still `pending` cannot be distinguished from a pre-existing
  * detached Service whose 409 settlement failed to persist, so it stays `pending` for review. One
- * targeting anything else, or a detached one at a superseded slug, is never touched. Runs whether or
- * not the sandbox still exists. `gone` once a read confirms 404 for a Service the adapter confirmed
- * it made; a 404 for a pending create stays `pending`, because the create may still land.
+ * targeting anything else, or a detached or missing one at a superseded slug, is never touched.
+ * Runs whether or not the sandbox still exists. `gone` once a read confirms 404 for a Service the
+ * adapter confirmed it made; `foreign` on 404 when the slug was superseded after a 409 conflict; a
+ * 404 for an unsuperseded pending create stays `pending`, because the create may still land.
  */
 export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome> {
   const path = `/services/${encodeURIComponent(entry.id)}`;
@@ -245,6 +246,8 @@ export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome>
 
   if (read.status === 404) {
     await read.body?.cancel();
+
+    if (entry.superseded) return { kind: "foreign" };
 
     return entry.state === "created"
       ? { kind: "gone" }
