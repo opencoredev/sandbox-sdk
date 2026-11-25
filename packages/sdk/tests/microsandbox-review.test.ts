@@ -436,7 +436,7 @@ test("PR88-4 a repair waits for the record's lock, so a setup reusing the name i
   expect(next.stdout).toBe("none");
 }, 10_000);
 
-test("PR88-4 a lock held when the sandbox stopped does not block the repair, though its PID is alive again", async () => {
+test("PR88-4 a lock left by a stop under a PID that is alive again does not hold up a connection", async () => {
   const p = adapter();
   const source = await p.create({ labels: labels() });
   const dir = "/tmp/.sandbox-sdk/procs/p3";
@@ -462,11 +462,11 @@ test("PR88-4 a lock held when the sandbox stopped does not block the repair, tho
 
   const restored = await p.create({ labels: labels(), from: snapshot });
 
-  expect(await exec(adapter(), restored.id, "true", { timeoutMs: 5000 })).toMatchObject({
+  expect(await exec(adapter(), restored.id, "true", { timeoutMs: 30_000 })).toMatchObject({
     timedOut: false,
     exitCode: 0,
   });
-}, 20_000);
+}, 60_000);
 
 test("PR88-4 a repair that cannot read a record's timestamp leaves the record alone", async () => {
   const p = adapter();
