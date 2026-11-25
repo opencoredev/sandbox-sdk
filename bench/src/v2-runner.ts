@@ -49,6 +49,7 @@ import {
   recordAbsentResolution,
   recordVerifiedRelease,
   UnverifiedOwnershipError,
+  DeletionUnconfirmedError,
   hasRunOwnership,
   verifyRunOwnership,
   writeOwnership,
@@ -77,8 +78,10 @@ import {
   attemptLabel,
   cleanService,
   isDefiniteRefusal,
+  isRetrySlug,
   settleAllocationAttempt,
   tierLabel,
+  type ServiceState,
 } from "./microsandbox.js";
 import { microsandboxTier } from "./providers.js";
 import type { MicrosandboxHooks } from "@opencoredev/sandbox-sdk/microsandbox";
@@ -452,6 +455,8 @@ export async function runV2(
     attemptedAt?: string;
     /** The sandbox name a Microsandbox Service targets. */
     sandboxName?: string;
+    /** A Microsandbox Service's create: `pending` until the adapter confirms it made the Service. */
+    serviceState?: ServiceState;
     /** A Microsandbox capture's name; equal to `id` while the capture is unconfirmed. */
     snapshotName?: string;
   }
@@ -539,7 +544,20 @@ export async function runV2(
           kind: "service",
           parent: attempt.sandboxId,
           sandboxName: attempt.sandboxName,
+          serviceState: "pending",
         });
+        await persist();
+      },
+      // A confirmed create marks the slug the run's; a 409 or other refusal drops it before any other
+      // slug is tried, so a slug that was someone else's never stays journaled as the run's.
+      serviceSettled: async ({ slug, outcome }) => {
+        const key = `${name}/service/${slug}`;
+        const entry = owned.get(key);
+
+        if (entry === undefined) return;
+
+        if (outcome === "created") owned.set(key, { ...entry, serviceState: "created" });
+        else owned.delete(key);
         await persist();
       },
       snapshot: async (attempt) => {
@@ -563,13 +581,10 @@ export async function runV2(
 
   /**
    * Settles a Microsandbox create journaled by name: a sandbox carrying its marker joins the journal as a
-   * sandbox and leaves the attempt; one never made (404 past the settlement window) drops it. `true`
-   * while it is still unresolved, which keeps it, and a restore's snapshot and source, journaled.
+   * sandbox and leaves the attempt. `pending` while it is still unresolved (a name 404 included, however
+   * old), which keeps it, and a restore's snapshot and source, journaled.
    */
-  async function settleAttempt(
-    p: ReadyProvider,
-    entry: OwnedEntry,
-  ): Promise<string | "pending" | null> {
+  async function settleAttempt(p: ReadyProvider, entry: OwnedEntry): Promise<string | "pending"> {
     const tier = microsandboxTier(p.name);
 
     if (tier === undefined) return "pending";
@@ -590,20 +605,18 @@ export async function runV2(
     }
 
     owned.delete(`${p.name}/allocation-attempt/${entry.id}`);
-
-    if (outcome.kind === "sandbox")
-      owned.set(`${p.name}/${outcome.id}`, {
-        provider: p.name,
-        id: outcome.id,
-        kind: "sandbox",
-        parent: null,
-      });
+    owned.set(`${p.name}/${outcome.id}`, {
+      provider: p.name,
+      id: outcome.id,
+      kind: "sandbox",
+      parent: null,
+    });
     report.cleanupReview = report.cleanupReview?.filter(
       (r) => !(r.provider === p.name && r.id === entry.id && r.kind === "allocation-attempt"),
     );
     await persist();
 
-    return outcome.kind === "sandbox" ? outcome.id : null;
+    return outcome.id;
   }
 
   function review(
@@ -656,6 +669,19 @@ export async function runV2(
       if (entry.provider === p.name && entry.kind === "sandbox") await resolveAbsent(p, entry.id);
   }
 
+  /** Polls the exact lookup until it reads absent, within the run's timeout; false if it never does. */
+  async function confirmGone(loaded: ReadyProvider, id: string) {
+    const end = performance.now() + config["timeout-ms"];
+
+    for (let backoffMs = 100; ; backoffMs = Math.min(backoffMs * 2, 2000)) {
+      if (isAbsent(await lookupSandbox(loaded.provider, id, config["timeout-ms"]))) return true;
+      const left = end - performance.now();
+
+      if (left <= 0) return false;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(backoffMs, left)));
+    }
+  }
+
   async function remove(
     loaded: ReadyProvider,
     id: string,
@@ -677,6 +703,7 @@ export async function runV2(
             config.run,
             config["timeout-ms"],
             config["ownership-visibility-ms"],
+            { tier: microsandboxTier(loaded.name) },
           ));
       } finally {
         if (measurement)
@@ -740,6 +767,22 @@ export async function runV2(
           measurement?.clock.finish();
         }
 
+        // Microsandbox finishes a DELETE asynchronously: until an exact read confirms the sandbox is
+        // gone, it stays journaled and keeps a restore's snapshot and source.
+        if (microsandboxTier(loaded.name) !== undefined && !(await confirmGone(loaded, id))) {
+          restores.mark(loaded.name, id, "quarantined");
+          review(
+            loaded.name,
+            id,
+            "Deletion accepted, but the sandbox still reads; kept until an exact read confirms it is gone",
+          );
+
+          for (const item of report.cleanupReview ?? [])
+            if (item.provider === loaded.name && item.id === id && item.kind === "sandbox")
+              item.status = "unresolved";
+          throw new DeletionUnconfirmedError(id);
+        }
+
         restores.mark(loaded.name, id, "destroyed");
         owned.delete(`${loaded.name}/${id}`);
 
@@ -768,6 +811,8 @@ export async function runV2(
 
         return;
       } catch (e) {
+        if (e instanceof DeletionUnconfirmedError) throw e;
+
         if (e instanceof DeadlineError) {
           if (await resolveAbsent(loaded, id)) return;
           review(loaded.name, id, "Deletion deadline expired; exact existence remains unresolved");
@@ -1012,6 +1057,7 @@ export async function runV2(
                     config.run,
                     timeout,
                     config["ownership-visibility-ms"],
+                    { tier: microsandboxTier(p.name) },
                   );
                 } finally {
                   const ownershipVerifyMs = performance.now() - ownershipCheckStart;
@@ -1123,6 +1169,7 @@ export async function runV2(
                         config.run,
                         timeout,
                         config["ownership-visibility-ms"],
+                        { tier: microsandboxTier(p.name) },
                       ));
 
                     if (!verified) {
@@ -1610,6 +1657,7 @@ export async function runV2(
                 config.run,
                 timeout,
                 config["ownership-visibility-ms"],
+                { tier: microsandboxTier(p.name) },
               );
             } finally {
               phases.ownershipVerifyMs = performance.now() - verifyStart;
@@ -2609,14 +2657,20 @@ export async function runV2(
     );
 
     const journaled = [...apps.values()].filter((app) => app.provider === p.name);
+    // A Microsandbox tier sweeps only sandboxes carrying its own tier label (the adapter already lists
+    // only its own compute.type), so a sandbox labelled for the other tier is never this run's to delete.
+    const tier = microsandboxTier(p.name);
+
+    const sweepLabels: Record<string, string> =
+      tier === undefined
+        ? { "sandbox-bench-run": config.run }
+        : { "sandbox-bench-run": config.run, [tierLabel]: tier };
 
     try {
-      const listed = await deadline(config["timeout-ms"], () =>
-        p.provider.list({ "sandbox-bench-run": config.run }),
-      );
+      const listed = await deadline(config["timeout-ms"], () => p.provider.list(sweepLabels));
 
       for (const item of listed)
-        if (hasRunOwnership(item, config.run)) {
+        if (hasRunOwnership(item, config.run, tier)) {
           ids.add(item.id);
           // A sandbox whose create response was lost joins its App's journal entry.
           reconcileDiscovered(journaled, p.name, item);
@@ -2681,13 +2735,22 @@ export async function runV2(
         if (restores.blocksSnapshot(p.name, item.id) || restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
 
-        if ((await settleJournaledSnapshot(p.name, item, config["timeout-ms"])) === "exists") {
+        const settled = await settleJournaledSnapshot(p.name, item, config["timeout-ms"]);
+
+        if (settled.kind === "exists") {
           let confirmed = item;
 
           if (item.idempotencyKey !== undefined) {
             const { idempotencyKey: _, ...withoutKey } = item;
             confirmed = withoutKey;
             await persistConfirmedSnapshot(`${p.name}/snapshot/${item.id}`, confirmed);
+          }
+
+          // A Microsandbox capture journaled by name: the managed ID settlement found joins the
+          // journal before the delete, so a by-name 404 never drops a live snapshot.
+          if (settled.id !== item.id) {
+            confirmed = { ...confirmed, id: settled.id };
+            await persistConfirmedSnapshot(`${p.name}/snapshot/${settled.id}`, confirmed);
           }
 
           await deleteProvenSnapshot(
@@ -2700,6 +2763,7 @@ export async function runV2(
             config["timeout-ms"],
             await snapshotCleaner(p.name, p.provider, confirmed.parent ?? ""),
           );
+          owned.delete(`${p.name}/snapshot/${confirmed.id}`);
         }
 
         owned.delete(`${p.name}/snapshot/${item.id}`);
@@ -2772,15 +2836,28 @@ export async function runV2(
     }
 
     // Microsandbox Services journaled before they were made, whether or not their sandbox is gone.
-    for (const entry of [...owned.values()].filter(
+    const services = [...owned.values()].filter(
       (v) => v.provider === p.name && v.kind === "service",
-    )) {
+    );
+
+    for (const entry of services) {
       try {
-        await cleanService({
+        const outcome = await cleanService({
           id: entry.id,
           parent: entry.parent,
           sandboxName: entry.sandboxName,
+          state: entry.serviceState ?? "pending",
+          superseded: services.some(
+            (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
+          ),
         });
+
+        if (outcome.kind === "pending") {
+          review(p.name, entry.id, outcome.reason, "service");
+          errors.push(outcome.reason);
+          continue;
+        }
+
         owned.delete(`${p.name}/service/${entry.id}`);
         await persist();
       } catch (e) {
@@ -2822,15 +2899,13 @@ export async function runV2(
         if (budget <= 0) break;
 
         const [after, pending] = await deadline(budget, () =>
-          Promise.all([
-            p.provider.list({ "sandbox-bench-run": config.run }),
-            pendingForRun(p.provider, config.run),
-          ]),
+          Promise.all([p.provider.list(sweepLabels), pendingForRun(p.provider, config.run)]),
         );
 
         remaining.clear();
 
-        for (const item of after) if (hasRunOwnership(item, config.run)) remaining.add(item.id);
+        for (const item of after)
+          if (hasRunOwnership(item, config.run, tier)) remaining.add(item.id);
 
         for (const item of pending) remaining.add(item.id);
 

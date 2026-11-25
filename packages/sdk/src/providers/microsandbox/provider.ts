@@ -108,6 +108,17 @@ export interface MicrosandboxHooks {
     slug: string;
     port: number;
   }): void | Promise<void>;
+  /**
+   * After that `POST /v1/services` settles. `created`: the Service at `slug` was made for this sandbox.
+   * `refused`: a 4xx (or never sent) made nothing. `conflict`: a 409, so the slug is someone else's and
+   * must never be deleted as this sandbox's; the adapter then tries another slug. Not called when the
+   * outcome stays unknown, so a journal entry for it stays pending.
+   */
+  serviceSettled?(outcome: {
+    sandboxId: string;
+    slug: string;
+    outcome: "created" | "refused" | "conflict";
+  }): void | Promise<void>;
 }
 
 export interface MicrosandboxOptions {
@@ -167,6 +178,8 @@ export type MicrosandboxNative = NativeApi<MicrosandboxPlane, MicrosandboxSandbo
 export type MicrosandboxProvider = Provider<MicrosandboxNative, MicrosandboxCapability> & {
   /** Account-level calls, such as `api.request("GET", "/snapshots")`. */
   readonly api: NativeApi<MicrosandboxPlane, MicrosandboxClientSdk>;
+  /** The {@link MicrosandboxOptions.computeType} this adapter creates and lists on; undefined for the account default. */
+  readonly computeType: MicrosandboxComputeType | undefined;
   /** Replaces the {@link MicrosandboxHooks}. For harnesses that journal allocations before they are made. */
   setAttemptHooks(hooks: MicrosandboxHooks | undefined): void;
 };
@@ -197,6 +210,9 @@ const missingGraceMs = 15_000;
 const captureMs = 600_000;
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The largest value of an OpenAPI `int32` field, such as `CloudSandboxResources.vcpus`. */
+const int32Max = 2_147_483_647;
 
 /** The deterministic slug prefix of every Service the adapter makes for sandbox `id`. */
 const slugBase = (id: string) => `sbx-${id.replaceAll("-", "").slice(0, 16).toLowerCase()}`;
@@ -241,12 +257,15 @@ function resourcesOf(size: CreateInput["size"], restore: boolean): JsonObject | 
 
   if (isString(size)) return { ...presets[size] };
 
-  if (!Number.isSafeInteger(size.cpu) || size.cpu < 1)
-    throw fail(`cpu must be a whole number of at least 1, not ${size.cpu}`, "invalid_argument");
-
-  if (!Number.isSafeInteger(size.memoryMb) || size.memoryMb < 128)
+  if (!Number.isSafeInteger(size.cpu) || size.cpu < 1 || size.cpu > int32Max)
     throw fail(
-      `memoryMb must be a whole number of at least 128, not ${size.memoryMb}`,
+      `cpu must be a whole number from 1 to ${int32Max}, not ${size.cpu}`,
+      "invalid_argument",
+    );
+
+  if (!Number.isSafeInteger(size.memoryMb) || size.memoryMb < 128 || size.memoryMb > int32Max)
+    throw fail(
+      `memoryMb must be a whole number from 128 to ${int32Max}, not ${size.memoryMb}`,
       "invalid_argument",
     );
   const resources: JsonObject = { vcpus: size.cpu, memory_mib: size.memoryMb };
@@ -259,9 +278,14 @@ function resourcesOf(size: CreateInput["size"], restore: boolean): JsonObject | 
         "unsupported",
       );
 
-    if (!Number.isFinite(size.diskGb) || size.diskGb <= 0)
-      throw fail(`diskGb must be a positive number, not ${size.diskGb}`, "invalid_argument");
-    resources.disk_size_mib = Math.round(size.diskGb * 1024);
+    const diskMib = Math.round(size.diskGb * 1024);
+
+    if (!Number.isFinite(size.diskGb) || size.diskGb <= 0 || diskMib < 1 || diskMib > int32Max)
+      throw fail(
+        `diskGb must be a positive number of at most ${int32Max} MiB, not ${size.diskGb}`,
+        "invalid_argument",
+      );
+    resources.disk_size_mib = diskMib;
   }
 
   return resources;
@@ -600,14 +624,23 @@ export function createMicrosandboxProvider(
     return untilRunning(id, deadline, signal);
   }
 
+  /** Records Service `slug` of sandbox `id` as this adapter's, so a later destroy still finds it once detached. */
+  function ownService(id: string, slug: string, sandboxName: string) {
+    const owned = ownedServices.get(id) ?? new Map<string, string>();
+    owned.set(slug, sandboxName);
+    ownedServices.set(id, owned);
+
+    return owned;
+  }
+
   /**
    * Deletes the Services this adapter made for sandbox `id`. Candidates come from memory (which survives
    * a detached sandbox) and from the cloud's list filtered by the sandbox's name; each must match the
    * adapter's own slug shape for this ID and still target this sandbox (or nothing) before it is deleted.
-   * Returns the slugs whose deletion failed.
+   * A listed one joins memory, so if its delete fails, the next destroy retries it after the sandbox is
+   * gone and the list no longer shows it. Returns the slugs whose deletion failed.
    */
   async function removeServices(id: string, sandboxName: string | undefined, deadline: Deadline) {
-    const candidates = new Map(ownedServices.get(id) ?? []);
     const failed: string[] = [];
 
     if (sandboxName !== undefined)
@@ -623,7 +656,7 @@ export function createMicrosandboxProvider(
 
           for (const service of answer.data)
             if (isOwnedSlug(service.slug, id) && service.target?.sandbox === sandboxName)
-              candidates.set(service.slug, sandboxName);
+              ownService(id, service.slug, sandboxName);
           cursor = answer.nextCursor;
 
           if (cursor === undefined) break;
@@ -632,7 +665,8 @@ export function createMicrosandboxProvider(
         // The list is a second source; memory still names what this adapter made.
       }
 
-    for (const [slug, target] of candidates) {
+    // Deleting the entry being visited is safe while iterating a Map.
+    for (const [slug, target] of ownedServices.get(id) ?? new Map<string, string>()) {
       if (!isOwnedSlug(slug, id)) continue;
 
       try {
@@ -687,15 +721,16 @@ export function createMicrosandboxProvider(
   /**
    * Deletes a sandbox: its adapter-owned Services first, then the sandbox itself, which always runs even
    * when a Service could not be removed. A 404 is gone. A failed Service is kept in memory for the next
-   * try and reported after the sandbox is deleted.
+   * try and reported after the sandbox is deleted. The name lookup, the Services and the sandbox delete
+   * each get their own `budgetMs` deadline, started when that step starts: a Service step that uses up
+   * its time never stops the sandbox delete from being sent.
    */
   async function destroy(id: string, budgetMs = cleanupMs) {
-    const deadline = createDeadline(budgetMs);
     let sandboxName = names.get(id);
 
     if (sandboxName === undefined)
       try {
-        sandboxName = (await readSandbox(id, { deadline })).name;
+        sandboxName = (await readSandbox(id, { deadline: createDeadline(budgetMs) })).name;
       } catch {
         // Gone, or unreadable: the Services in memory are still removed, and the delete still runs.
       }
@@ -703,13 +738,17 @@ export function createMicrosandboxProvider(
     let failedServices: string[] = [];
 
     try {
-      failedServices = await removeServices(id, sandboxName, deadline);
+      failedServices = await removeServices(id, sandboxName, createDeadline(budgetMs));
     } catch {
       failedServices = [...(ownedServices.get(id)?.keys() ?? [])];
     }
 
     try {
-      await http.request({ method: "DELETE", ...sandboxPath(id), deadline });
+      await http.request({
+        method: "DELETE",
+        ...sandboxPath(id),
+        deadline: createDeadline(budgetMs),
+      });
     } catch (error) {
       if (!isGone(error)) throw error;
     } finally {
@@ -1071,12 +1110,11 @@ export function createMicrosandboxProvider(
   async function createService(id: string, sandboxName: string, slug: string, port: number) {
     // Journaled before the request: a lost answer may still have made it.
     await hooks.service?.({ sandboxId: id, sandboxName, slug, port });
-    const owned = ownedServices.get(id) ?? new Map<string, string>();
-    owned.set(slug, sandboxName);
-    ownedServices.set(id, owned);
+    const owned = ownService(id, slug, sandboxName);
+    let created: MicrosandboxService;
 
     try {
-      return parseService(
+      created = parseService(
         await http.json({
           method: "POST",
           path: "/services",
@@ -1086,21 +1124,37 @@ export function createMicrosandboxProvider(
     } catch (error) {
       if (neverSent(error) || (refused(error) && statusOf(error) !== 409)) {
         owned.delete(slug);
+
+        // The refusal is what the caller sees; a journal that could not record it keeps the entry
+        // pending, which recovery settles.
+        try {
+          await hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "refused" });
+        } catch {
+          // Reported through `error` below.
+        }
+
         throw error;
       }
 
-      // A 409: the slug belongs to someone else (never touched). Anything else: read what was made.
+      // A 409: the slug belongs to someone else, never touched, and the journal is told before any
+      // other slug is tried. Anything else: read what was made.
       if (statusOf(error) === 409) {
         owned.delete(slug);
+        await hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "conflict" });
 
         return "taken" as const;
       }
 
       const found = await readService(slug).catch(() => undefined);
 
-      if (found !== undefined) return found;
-      throw error;
+      if (found === undefined) throw error;
+      created = found;
     }
+
+    if (created.target?.sandbox === sandboxName)
+      await hooks.serviceSettled?.({ sandboxId: id, slug, outcome: "created" });
+
+    return created;
   }
 
   async function previewUrl(id: string, port: number) {
@@ -1433,6 +1487,7 @@ export function createMicrosandboxProvider(
       "network-policy",
     ]),
     api,
+    computeType,
 
     setAttemptHooks(next) {
       hooks = next ?? {};

@@ -188,11 +188,30 @@ describe("Microsandbox existence: read-only, failed is present", () => {
       });
 
       const { memory } = await import("@opencoredev/sandbox-sdk/memory");
-      const evidence = await lookupSandbox({ ...memory(), name: "microsandbox-shared" }, id, 5000);
+      // A Microsandbox adapter on the Standard tier, as far as the lookup reads it.
+      const standard = { ...memory(), name: "microsandbox", computeType: "standard" };
+      const evidence = await lookupSandbox(standard, id, 5000);
 
       expect(evidence.result).toBe(expected);
       expect(methods).toEqual([`GET /v1/sandboxes/${id}`]);
     });
+
+  it("a sandbox on the other tier, or an adapter with no tier, is never present", async () => {
+    vi.stubEnv("MSB_API_KEY", "msb_test_key_123456");
+    const id = "00000000-0000-0000-0000-0000000000b2";
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ id, name: "sbx-x", status: "running", compute: { type: "standard" } }),
+    );
+
+    const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const shared = { ...memory(), name: "microsandbox", computeType: "shared" };
+
+    expect((await lookupSandbox(shared, id, 5000)).result).toBe("unavailable");
+    expect((await lookupSandbox({ ...memory(), name: "microsandbox" }, id, 5000)).result).toBe(
+      "unavailable",
+    );
+  });
 });
 
 describe("Microsandbox billing: rated per row, never a false zero, always provisional", () => {

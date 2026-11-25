@@ -443,6 +443,8 @@ export function decodeMicrosandbox(input: {
   id: string;
   rows: readonly MicrosandboxUsageRow[];
   workloadUsd: number | undefined;
+  /** Why `costs.workloads` could not be read, when it could not: the rows are rated without the cross-check. */
+  crossCheckFailure?: string;
 }): Cost {
   const own = input.rows.filter((row) => row.sandbox_id === input.id);
 
@@ -467,13 +469,18 @@ export function decodeMicrosandbox(input: {
   const disagrees =
     input.workloadUsd !== undefined && Math.abs(input.workloadUsd - usd) > 0.000002 + usd * 0.01;
 
+  const unchecked =
+    input.crossCheckFailure === undefined
+      ? ""
+      : `; not cross-checked, because /v1/billing/usage could not be read (${input.crossCheckFailure})`;
+
   return {
     kind: "metered",
     usd,
     scope: "window",
     complete: false,
     confidence: "low",
-    note: `Provisional, metered not invoice: ${own.length} daily usage row(s) of this sandbox at ${tiers} rates; running time only, so a stopped sandbox's disk is excluded${disagrees ? `; Microsandbox's costs.workloads says $${input.workloadUsd?.toFixed(6)}, the rows rate to $${usd.toFixed(6)}` : ""}`,
+    note: `Provisional, metered not invoice: ${own.length} daily usage row(s) of this sandbox at ${tiers} rates; running time only, so a stopped sandbox's disk is excluded${disagrees ? `; Microsandbox's costs.workloads says $${input.workloadUsd?.toFixed(6)}, the rows rate to $${usd.toFixed(6)}` : ""}${unchecked}`,
   };
 }
 
@@ -1305,14 +1312,28 @@ export async function collectProvider(
         await transport(`${root}/v1/billing/usage/sandbox?${query}`, headers),
       );
 
-      const summary = microsandboxSummarySchema.parse(
-        await transport(`${root}/v1/billing/usage?${query}`, headers),
-      );
+      // The invoice preview is an optional cross-check: when it cannot be read, the usage rows are
+      // still rated, provisional as always, and say the cross-check did not happen.
+      let summary: z.infer<typeof microsandboxSummarySchema> | undefined;
+      let crossCheckFailure: string | undefined;
+
+      try {
+        summary = microsandboxSummarySchema.parse(
+          await transport(`${root}/v1/billing/usage?${query}`, headers),
+        );
+      } catch (error) {
+        crossCheckFailure = errorNote(error);
+      }
+
+      const unchecked =
+        crossCheckFailure === undefined
+          ? ""
+          : ` The costs.workloads cross-check could not be read (${crossCheckFailure}).`;
 
       result.account = {
         window,
-        incomplete: summary.costs?.incomplete ?? null,
-        note: "Account usage rows for the run window, read once; daily rows can include activity outside this run. Not a net invoice.",
+        incomplete: summary?.costs?.incomplete ?? null,
+        note: `Account usage rows for the run window, read once; daily rows can include activity outside this run. Not a net invoice.${unchecked}`,
       };
 
       for (const row of rows)
@@ -1322,7 +1343,8 @@ export async function collectProvider(
           cost: decodeMicrosandbox({
             id: row.id,
             rows: breakdown.rows,
-            workloadUsd: summary.costs?.workloads[row.id],
+            workloadUsd: summary?.costs?.workloads[row.id],
+            crossCheckFailure,
           }),
         });
 

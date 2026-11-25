@@ -347,6 +347,24 @@ const lookupKeys = new Map([
   ["microsandbox-shared", "MSB_API_KEY"],
 ]);
 
+/**
+ * The compute tier a Microsandbox adapter creates and lists on (its `computeType`), read structurally
+ * because the bench holds it as a plain `Provider`. Undefined for any other adapter, or one on the
+ * account's default tier.
+ */
+export function adapterComputeTier(provider: Provider): "standard" | "shared" | undefined {
+  const tier = "computeType" in provider ? provider.computeType : undefined;
+
+  return tier === "standard" || tier === "shared" ? tier : undefined;
+}
+
+/** The fields of a Microsandbox `SandboxResponse` the exact lookup reads, `compute.type` included. */
+const microsandboxInfo = z.object({
+  id: z.string(),
+  status: z.string(),
+  compute: z.object({ type: z.string() }).nullish(),
+});
+
 /** Microsandbox's control plane, as the adapter resolves it. */
 export function microsandboxBase() {
   return `${(process.env.MSB_API_URL?.trim() || "https://api.microsandbox.dev").replace(/\/+$/, "")}/v1`;
@@ -522,6 +540,11 @@ export async function lookupSandbox(
 
         case "microsandbox":
         case "microsandbox-shared": {
+          // Both tiers' adapters share one name, so the tier comes from the adapter itself.
+          const tier = adapterComputeTier(provider);
+
+          if (tier === undefined) throw new Error("Native lookup compute tier unknown");
+
           // GET only: it never starts, stops or changes the sandbox. A deleted one reads 404.
           const response = await fetch(
             `${microsandboxBase()}/sandboxes/${encodeURIComponent(id)}`,
@@ -531,7 +554,13 @@ export async function lookupSandbox(
           if (!response.ok)
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
 
-          return nativeInfo.parse(await response.json());
+          const sandbox = microsandboxInfo.parse(await response.json());
+
+          // A sandbox on the other tier is never this adapter's evidence, present or not.
+          if (sandbox.compute?.type !== tier)
+            throw new Error("Native lookup compute tier mismatch");
+
+          return { id: sandbox.id, status: sandbox.status };
         }
 
         case "instabox": {

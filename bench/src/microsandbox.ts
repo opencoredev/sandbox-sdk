@@ -21,12 +21,16 @@ const allocLabel = "sandbox-sdk-alloc";
 const sourceLabel = "sandbox-sdk-source";
 
 /**
- * How long a journaled create that reads 404 by name stays unresolved: a create can be slow to appear,
- * and an attempt is cleared on absence only after this long.
+ * How long after it was journaled an unresolved create is reported as stale. Never a proof of absence:
+ * OpenAPI promises no time by which an accepted create shows up by name, so a 404 keeps the attempt
+ * (and a restore's snapshot and source) for review however old it is.
  */
 export const attemptSettlementMs = 15 * 60_000;
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether `id` is a managed snapshot ID (a UUID), not a snapshot name. */
+export const isMicrosandboxSnapshotId = (id: string) => uuidPattern.test(id);
 
 export class MicrosandboxHttpError extends Error {
   constructor(
@@ -93,15 +97,13 @@ export interface AllocationAttempt {
   attemptedAt: string | undefined;
 }
 
-export type AttemptOutcome =
-  | { kind: "sandbox"; id: string }
-  | { kind: "absent" }
-  | { kind: "pending"; reason: string };
+export type AttemptOutcome = { kind: "sandbox"; id: string } | { kind: "pending"; reason: string };
 
 /**
  * What a journaled create became, read by its name. Only a sandbox carrying the attempt's allocation
- * marker, on the expected tier, is the run's. A 404 is absence only once the attempt is older than
- * {@link attemptSettlementMs}; until then, and for an unresolved spec or another marker, it stays pending.
+ * marker, on the expected tier, is the run's. A name lookup never proves the create made nothing: a 404
+ * stays pending however old the attempt is, as do an unresolved spec and another marker. An attempt is
+ * retired only by a confirmed sandbox here or by the adapter's definite refusal while it ran.
  */
 export async function settleAllocationAttempt(
   entry: AllocationAttempt,
@@ -114,10 +116,14 @@ export async function settleAllocationAttempt(
   if (response.status === 404) {
     await response.body?.cancel();
     const at = entry.attemptedAt === undefined ? Number.NaN : Date.parse(entry.attemptedAt);
+    const stale = Number.isFinite(at) && now - at >= attemptSettlementMs;
 
-    return Number.isFinite(at) && now - at >= attemptSettlementMs
-      ? { kind: "absent" }
-      : { kind: "pending", reason: "Create not found by name yet; it may still appear" };
+    return {
+      kind: "pending",
+      reason: stale
+        ? "Create still not found by name after 15 minutes; a 404 does not prove it was never made, so it is kept for review"
+        : "Create not found by name yet; it may still appear",
+    };
   }
 
   if (!response.ok) {
@@ -143,26 +149,57 @@ export async function settleAllocationAttempt(
   return { kind: "sandbox", id: sandbox.id };
 }
 
+/**
+ * What the journal knows of a Service's create. `pending`: journaled before its POST, outcome unknown.
+ * `created`: the adapter confirmed it made this Service for the sandbox. A 409 or other refusal removes
+ * the entry instead, so a slug that was someone else's is never left looking like the run's.
+ */
+export type ServiceState = "pending" | "created";
+
 /** A journaled Service: its slug, the sandbox it was made for, and that sandbox's name. */
 export interface ServiceEntry {
   id: string;
   parent: string | null;
   sandboxName: string | undefined;
+  state: ServiceState;
+  /**
+   * The journal also holds a later slug the adapter tried for the same sandbox and port
+   * (`<slug>-<4 hex>`). The adapter tries one only after this slug was taken, so a detached Service
+   * here is someone else's.
+   */
+  superseded: boolean;
 }
+
+/** Whether `other` is a retry slug the adapter makes after `slug` was taken: `<slug>-<4 hex>`. */
+export const isRetrySlug = (other: string, slug: string) =>
+  other.startsWith(`${slug}-`) && /^-[0-9a-f]{4}$/.test(other.slice(slug.length));
+
+export type ServiceOutcome =
+  | { kind: "gone" }
+  | { kind: "foreign" }
+  | { kind: "pending"; reason: string };
 
 /**
  * Deletes a journaled Service when it is still the run's: it targets the journaled sandbox name, or it
- * is detached (its sandbox was deleted). One targeting anything else is never touched. Runs whether or
- * not the sandbox still exists. `gone` once a read confirms 404.
+ * is detached (its sandbox was deleted) and nothing says the slug was taken. One targeting anything
+ * else, or a detached one at a superseded slug, is never touched. Runs whether or not the sandbox still
+ * exists. `gone` once a read confirms 404 for a Service the adapter confirmed it made; a 404 for a
+ * pending create stays `pending`, because the create may still land.
  */
-export async function cleanService(entry: ServiceEntry): Promise<"gone" | "foreign"> {
+export async function cleanService(entry: ServiceEntry): Promise<ServiceOutcome> {
   const path = `/services/${encodeURIComponent(entry.id)}`;
   const read = await microsandboxFetch(path);
 
   if (read.status === 404) {
     await read.body?.cancel();
 
-    return "gone";
+    return entry.state === "created"
+      ? { kind: "gone" }
+      : {
+          kind: "pending",
+          reason:
+            "Service create unsettled and not found yet; it may still appear, so its journal entry is kept",
+        };
   }
 
   if (!read.ok) {
@@ -178,9 +215,9 @@ export async function cleanService(entry: ServiceEntry): Promise<"gone" | "forei
     entry.sandboxName !== undefined &&
     (service.target !== null && service.target !== undefined
       ? service.target.sandbox === entry.sandboxName
-      : service.status === "detached");
+      : service.status === "detached" && !entry.superseded);
 
-  if (!ours) return "foreign";
+  if (!ours) return { kind: "foreign" };
   const removed = await microsandboxFetch(path, { method: "DELETE" });
   await removed.body?.cancel();
 
@@ -195,7 +232,7 @@ export async function cleanService(entry: ServiceEntry): Promise<"gone" | "forei
       check.status,
     );
 
-  return "gone";
+  return { kind: "gone" };
 }
 
 /** A snapshot by managed ID (a UUID) or by name; undefined on a 404. */
@@ -275,29 +312,50 @@ async function findOperation(snapshotName: string) {
   return undefined;
 }
 
+/** A settled capture: the managed snapshot it made, by the UUID cleanup must use, or nothing. */
+export type CaptureOutcome = { kind: "exists"; managedId: string } | { kind: "absent" };
+
+/** The managed ID of a snapshot read back, or undefined when it is not in managed storage. */
+const managedIdOf = (snapshot: MicrosandboxSnapshot) =>
+  snapshot.location.type === "managed" ? snapshot.location.id : undefined;
+
 /**
- * Whether a capture journaled by name before its request made a snapshot. `exists` when the snapshot
- * reads by name, or its operation succeeded with a snapshot that still reads; `absent` only when the
- * operation failed, or succeeded with a snapshot since deleted. Anything else (a 404 with no operation,
- * a queued or running one) throws, so the entry stays for recovery: an unresolved 404 never clears it.
+ * Whether a capture journaled by name before its request made a snapshot, and its managed ID. `exists`
+ * when the snapshot reads by name, or its operation succeeded with a snapshot that still reads by that
+ * ID; `absent` only when the operation failed, or succeeded with a snapshot whose ID now reads 404.
+ * Anything else (a 404 with no operation, a queued or running one, a snapshot with no managed ID)
+ * throws, so the entry stays for recovery: an unresolved 404 never clears it.
  */
 export async function settleMicrosandboxCapture(
   snapshotName: string,
   timeoutMs: number,
-): Promise<"exists" | "absent"> {
+): Promise<CaptureOutcome> {
   const end = Date.now() + Math.min(timeoutMs, 60_000);
   let reason = "Capture unresolved";
 
   for (let attempt = 0; ; attempt++) {
-    if ((await readMicrosandboxSnapshot(snapshotName)) !== undefined) return "exists";
+    const named = await readMicrosandboxSnapshot(snapshotName);
+
+    if (named !== undefined) {
+      const managedId = managedIdOf(named);
+
+      if (managedId === undefined)
+        throw new Error("Capture's snapshot has no managed ID; journal entry kept");
+
+      return { kind: "exists", managedId };
+    }
+
     const op = await findOperation(snapshotName);
 
-    if (op?.status === "failed") return "absent";
+    if (op?.status === "failed") return { kind: "absent" };
 
     if (op?.status === "succeeded") {
-      const id = op.result?.location.id;
+      const id = op.result === null || op.result === undefined ? undefined : managedIdOf(op.result);
 
-      if (id !== undefined) return (await readMicrosandboxSnapshot(id)) ? "exists" : "absent";
+      if (id !== undefined)
+        return (await readMicrosandboxSnapshot(id))
+          ? { kind: "exists", managedId: id }
+          : { kind: "absent" };
       reason = "Capture succeeded but its result is unreadable";
     } else
       reason =

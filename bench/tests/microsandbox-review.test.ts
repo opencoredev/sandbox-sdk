@@ -4,11 +4,12 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, test, vi } from "vitest";
 import { z } from "zod";
 import {
   microsandbox,
   type MicrosandboxHooks,
+  type MicrosandboxOptions,
   type MicrosandboxProvider,
 } from "@opencoredev/sandbox-sdk/microsandbox";
 
@@ -23,7 +24,12 @@ import {
   settleAllocationAttempt,
   settleMicrosandboxCapture,
 } from "../src/microsandbox.js";
+import { collectProvider } from "../src/billing/providers.js";
+import { lookupSandbox } from "../src/existence.js";
+import { mergeSources, type MergeSource } from "../src/merge.js";
+import { createRawMicrosandbox } from "../src/microsandbox-raw.js";
 import { snapshotProvenanceSchema } from "../src/ownership.js";
+import { siteData } from "../src/site-data.js";
 import { reapRun } from "../src/recovery.js";
 import { deleteProvenSnapshot, inspectSnapshot } from "../src/snapshots.js";
 import { parseV2 } from "../src/v2-config.js";
@@ -188,14 +194,14 @@ describe("runV2 journals every Microsandbox allocation before it is sent", () =>
 });
 
 describe("allocation attempts: settled by name, by marker and tier", () => {
-  it("reads a fresh 404 as pending and an old one as absent", async () => {
+  it("reads a 404 as pending however old the attempt is", async () => {
     adapter();
     const attempt = { id: "sbx-never-made", allocId: "a-1", attemptedAt: new Date().toISOString() };
 
     expect(await settleAllocationAttempt(attempt, "standard")).toMatchObject({ kind: "pending" });
     expect(
       await settleAllocationAttempt(attempt, "standard", Date.now() + attemptSettlementMs + 1),
-    ).toEqual({ kind: "absent" });
+    ).toMatchObject({ kind: "pending", reason: expect.stringMatching(/15 minutes/) });
   });
 
   it("admits only the attempt's marker on the attempt's tier", async () => {
@@ -383,11 +389,19 @@ describe("Services: cleaned independently of their sandbox, never another's", ()
       status: "enabled",
     });
 
-    expect(await cleanService({ id: "x-slug", parent: null, sandboxName: "ours" })).toBe("foreign");
+    const entry = (id: string, state: "pending" | "created") => ({
+      id,
+      parent: null,
+      sandboxName: "ours",
+      state,
+      superseded: false,
+    });
+
+    expect(await cleanService(entry("x-slug", "created"))).toEqual({ kind: "foreign" });
     expect(fake.services.has("x-slug")).toBe(true);
-    expect(await cleanService({ id: "absent-slug", parent: null, sandboxName: "ours" })).toBe(
-      "gone",
-    );
+    expect(await cleanService(entry("absent-slug", "created"))).toEqual({ kind: "gone" });
+    // An unsettled create that reads 404 may still land: it stays pending, never gone.
+    expect(await cleanService(entry("absent-slug", "pending"))).toMatchObject({ kind: "pending" });
     fake.services.delete("x-slug");
   });
 });
@@ -407,13 +421,13 @@ describe("captures journaled by name: settled, never cleared on an unresolved 40
     provider.setAttemptHooks({ snapshot: (a) => void (name = a.name) });
     fake.faults.operationFails = true;
     await expect(provider.snapshot!(box.id)).rejects.toMatchObject({ code: "provider" });
-    expect(await settleMicrosandboxCapture(name, 5000)).toBe("absent");
+    expect(await settleMicrosandboxCapture(name, 5000)).toEqual({ kind: "absent" });
 
     const { id } = await provider.snapshot!(box.id);
 
-    expect(await settleMicrosandboxCapture(name, 5000)).toBe("exists");
+    expect(await settleMicrosandboxCapture(name, 5000)).toEqual({ kind: "exists", managedId: id });
     await provider.deleteSnapshot!(id);
-    expect(await settleMicrosandboxCapture(name, 5000)).toBe("absent");
+    expect(await settleMicrosandboxCapture(name, 5000)).toEqual({ kind: "absent" });
     await provider.destroy(box.id);
   });
 
@@ -519,5 +533,368 @@ describe("definite refusals", () => {
 
     for (const code of ["outcome_unknown", "provider", "timeout", "unavailable", undefined])
       expect(isDefiniteRefusal(code)).toBe(false);
+  });
+});
+
+// GPT-6.2 Sol's independent review (2026-11-24): its reproductions, kept verbatim as regressions, each
+// against a fresh fake and output directory. The adapter-only ones are in
+// packages/sdk/tests/microsandbox-review.test.ts.
+describe("independent review reproductions", () => {
+  const run = "independent-review";
+  const id = "00000000-0000-0000-0000-0000000000b2";
+  let fake: MicrosandboxFake;
+  let out: string;
+  const realFetch = globalThis.fetch.bind(globalThis);
+
+  beforeEach(async () => {
+    fake = await microsandboxFake();
+    out = await mkdtemp(join(tmpdir(), "msb-independent-"));
+    vi.stubEnv("MSB_API_KEY", key);
+    vi.stubEnv("MSB_API_URL", fake.url);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    await fake.close();
+    await rm(out, { recursive: true, force: true });
+  });
+
+  function adapter(options: MicrosandboxOptions = {}) {
+    return microsandbox({
+      apiKey: key,
+      baseUrl: fake.url,
+      computeType: "standard",
+      peer: async () => fake.peer,
+      ...options,
+    });
+  }
+
+  function capture(provider: ReturnType<typeof adapter>, id: string) {
+    if (!provider.snapshot) throw new Error("Snapshot support is required for this fixture");
+
+    return provider.snapshot(id);
+  }
+
+  function loaded(provider = adapter()) {
+    return [
+      { kind: "ready", name: "microsandbox", cloud: true, region: null, provider },
+    ] satisfies Parameters<typeof reapRun>[0];
+  }
+
+  const proof = (sourceId: string) => ({
+    sourceId,
+    runLabel: run,
+    sdkLabel: "1",
+    verifiedAt: new Date().toISOString(),
+  });
+
+  const labels = (tier = "standard") => ({
+    "sandbox-bench-run": run,
+    "sandbox-sdk": "1",
+    "sandbox-bench-tier": tier,
+  });
+
+  const reap = () =>
+    reapRun(
+      loaded(),
+      parseV2(["--providers", "microsandbox", "--run", run, "--out", out, "--timeout-ms", "1000"]),
+      (s) => s,
+    );
+
+  const journal = (resources: unknown[]) =>
+    writeFile(join(out, "ownership.json"), JSON.stringify({ runId: run, resources }));
+
+  const journalText = () => readFile(join(out, "ownership.json"), "utf8");
+
+  test("R3 a transient Service 404 cannot retire its pre-POST journal entry", async () => {
+    const slug = "sbx-0000000000000000-p3000";
+    await journal([
+      { provider: "microsandbox", id: slug, kind: "service", parent: id, sandboxName: "sbx-owner" },
+    ]);
+    await reap();
+    fake.services.set(slug, { slug, target: null, status: "detached" });
+    await reap();
+    expect(fake.services.has(slug)).toBe(false);
+  });
+
+  test("R4 a Service refused with 409 must not authorize deletion of its detached slug", async () => {
+    const p = adapter();
+    const { id: sandbox } = await p.create({ labels: labels() });
+    const slug = "sbx-" + sandbox.replaceAll("-", "").slice(0, 16) + "-p3000";
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () =>
+      Response.json({ error: { code: "service_not_found" } }, { status: 404 }),
+    );
+    fake.services.set(slug, { slug, target: null, status: "detached" });
+    const attempted: unknown[] = [];
+    p.setAttemptHooks({
+      service: (attempt) => {
+        attempted.push({
+          provider: "microsandbox",
+          id: attempt.slug,
+          kind: "service",
+          parent: attempt.sandboxId,
+          sandboxName: attempt.sandboxName,
+        });
+      },
+    });
+    const preview = await p.previewUrl(sandbox, 3000);
+    expect(new URL(preview.url).pathname).not.toBe("/svc/" + slug);
+    expect(fake.services.has(slug)).toBe(true);
+    await journal(attempted);
+    await reap();
+    expect(fake.services.has(slug)).toBe(true);
+  });
+
+  test("R5 recovery uses the managed ID when the succeeded operation is visible and the name is not indexed", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    let name = "";
+    p.setAttemptHooks({
+      snapshot: (attempt) => {
+        name = attempt.name;
+      },
+    });
+    const snapshot = await capture(p, source.id);
+    await p.destroy(source.id);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (new URL(String(input)).pathname === "/v1/snapshots/by-name/" + name) {
+        return Response.json({ error: { code: "snapshot_not_found" } }, { status: 404 });
+      }
+
+      return realFetch(input, init);
+    });
+    await journal([
+      {
+        provider: "microsandbox",
+        id: name,
+        kind: "snapshot",
+        parent: source.id,
+        snapshotProof: proof(source.id),
+        snapshotName: name,
+      },
+    ]);
+    await reap();
+    expect(
+      fake.requests.some((r) => r.method === "GET" && r.path === "/v1/snapshots/" + snapshot.id),
+    ).toBe(true);
+    expect({
+      stored: fake.snapshots.has(snapshot.id),
+      journaled: (await journalText()).includes(name),
+    }).toEqual({ stored: false, journaled: false });
+  });
+
+  test("R6 restore dependencies survive a sandbox DELETE acknowledgement while the restore is still readable", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const snapshot = await capture(p, source.id);
+    const restored = await p.create({ labels: labels(), from: snapshot.id });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (
+        init?.method === "DELETE" &&
+        new URL(String(input)).pathname === "/v1/sandboxes/" + restored.id
+      ) {
+        return Response.json({ message: "deletion accepted" });
+      }
+
+      return realFetch(input, init);
+    });
+    await journal([
+      { provider: "microsandbox", id: restored.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: source.id,
+        kind: "snapshot-source",
+        parent: null,
+        snapshotProof: proof(source.id),
+      },
+      {
+        provider: "microsandbox",
+        id: snapshot.id,
+        kind: "snapshot",
+        parent: source.id,
+        snapshotProof: proof(source.id),
+      },
+    ]);
+    await reap();
+    expect(fake.sandboxes.has(restored.id)).toBe(true);
+    expect({
+      snapshotExists: fake.snapshots.has(snapshot.id),
+      sourceExists: fake.sandboxes.has(source.id),
+    }).toEqual({ snapshotExists: true, sourceExists: true });
+  });
+
+  test("R7 the current-run sweep requires the benchmark tier label as well as compute.type", async () => {
+    const p = adapter();
+    const other = await p.create({ labels: labels("shared") });
+    await runV2(
+      loaded(p),
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--run",
+        run,
+        "--out",
+        out,
+        "--runs",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "cold",
+        "--timeout-ms",
+        "3000",
+        "--ownership-visibility-ms",
+        "100",
+      ]),
+      async () => {},
+    );
+    expect(fake.sandboxes.has(other.id)).toBe(true);
+  });
+
+  test("R8 an existence response on the other compute tier is not attributed to this adapter", async () => {
+    const shared = adapter({ computeType: "shared" });
+    const other = await adapter().create({ labels: labels() });
+    const evidence = await lookupSandbox(shared, other.id, 1000);
+    expect(evidence.result).not.toBe("present");
+  });
+
+  test("R9 an old journal and one name 404 do not prove the restore was never allocated", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const snapshot = await capture(p, source.id);
+    const restoreName = "sbx-restore-hidden";
+    await journal([
+      {
+        provider: "microsandbox",
+        id: restoreName,
+        kind: "allocation-attempt",
+        parent: snapshot.id,
+        sourceId: source.id,
+        allocId: "attempt-marker",
+        attemptedAt: new Date(Date.now() - attemptSettlementMs - 1000).toISOString(),
+      },
+      {
+        provider: "microsandbox",
+        id: source.id,
+        kind: "snapshot-source",
+        parent: null,
+        snapshotProof: proof(source.id),
+      },
+      {
+        provider: "microsandbox",
+        id: snapshot.id,
+        kind: "snapshot",
+        parent: source.id,
+        snapshotProof: proof(source.id),
+      },
+    ]);
+    await reap();
+    expect({
+      journaled: (await journalText()).includes(restoreName),
+      snapshot: fake.snapshots.has(snapshot.id),
+      source: fake.sandboxes.has(source.id),
+    }).toEqual({ journaled: true, snapshot: true, source: true });
+  });
+
+  test("R10 a failed invoice cross-check leaves valid per-sandbox metering provisional", async () => {
+    const costs = await collectProvider(
+      "microsandbox",
+      [
+        {
+          provider: "microsandbox",
+          id,
+          startedAt: "2026-11-24T10:00:00.000Z",
+          finishedAt: "2026-11-24T10:01:00.000Z",
+          scenarios: new Set(),
+          confirmedStopAt: null,
+          app: null,
+        },
+      ],
+      { MSB_API_KEY: key },
+      async (url) => {
+        if (new URL(url).pathname === "/v1/billing/usage")
+          throw new Error("invoice preview unavailable");
+
+        return {
+          rows: [
+            {
+              sandbox_id: id,
+              compute_type: "standard",
+              day: "2026-11-24T00:00:00Z",
+              vcpu_seconds: 3600,
+              mem_mib_seconds: 0,
+              disk_mib_seconds: 0,
+            },
+          ],
+          sandboxes: [],
+        };
+      },
+    );
+
+    expect(costs.sandboxes[0]?.cost).toMatchObject({
+      kind: "metered",
+      usd: 0.048,
+      complete: false,
+      confidence: "low",
+    });
+  });
+
+  test("R12 both published tier rates include their per-GiB disk charge", () => {
+    const fixture: MergeSource = {
+      schemaVersion: 2,
+      runId: run,
+      timestamp: "2026-11-24T00:00:00Z",
+      finishedAt: "2026-11-24T01:00:00Z",
+      config: { seed: 45, scenarios: ["cold"], bursts: [] },
+      metadata: { harnessCommit: "h", sdkCommit: "s" },
+      host: { cpu: "test", os: "linux", runtime: "bun" },
+      providers: ["microsandbox", "microsandbox-shared"].map((name) => ({
+        name,
+        configuredRegion: null,
+        note: "test",
+      })),
+      budgets: {},
+      cleanup: [],
+      methodology: [],
+      pricing: {},
+      samples: [],
+    };
+
+    const rows = siteData(mergeSources([fixture], [])).providers;
+    expect(rows.map((row) => ({ id: row.id, rates: row.rates }))).toMatchObject([
+      {
+        id: "microsandbox",
+        rates: { vcpuHour: 0.048, memoryGiBHour: 0.003, diskGiBHour: 0.0000625 },
+      },
+      {
+        id: "microsandbox-shared",
+        rates: { vcpuHour: 0.007, memoryGiBHour: 0.000375, diskGiBHour: 0.0000625 },
+      },
+    ]);
+  });
+
+  test("R14 the raw overhead path rejects a response from the other compute tier", async () => {
+    fake.faults.compute = "shared";
+    await expect(
+      createRawMicrosandbox({
+        computeType: "standard",
+        labels: labels(),
+        peer: {
+          RemoteContext: class {
+            sandboxes = { get: async () => ({ exec: async () => ({ code: 0 }) }) };
+          },
+        },
+        admit: () => {},
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("R15 a journaled sandbox with the wrong tier label is ineligible for deletion", async () => {
+    const p = adapter();
+    const other = await p.create({ labels: labels("shared") });
+    await journal([{ provider: "microsandbox", id: other.id, kind: "sandbox", parent: null }]);
+    await reap();
+    expect(fake.sandboxes.has(other.id)).toBe(true);
   });
 });

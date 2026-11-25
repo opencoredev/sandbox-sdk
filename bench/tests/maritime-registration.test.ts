@@ -316,11 +316,11 @@ describe("Maritime snapshots journaled before the save", () => {
         { id: "snap-1", parent: "sbx-src", idempotencyKey: "key-1" },
         5000,
       ),
-    ).resolves.toBe("absent");
+    ).resolves.toEqual({ kind: "absent" });
     // A confirmed save keeps no key: it goes straight to the proven delete.
     await expect(
       settleJournaledSnapshot("maritime", { id: "snap-1", parent: "sbx-src" }, 5000),
-    ).resolves.toBe("exists");
+    ).resolves.toEqual({ kind: "exists", id: "snap-1" });
   });
 
   it("an accepted save that never shows keeps its journal entry", async () => {

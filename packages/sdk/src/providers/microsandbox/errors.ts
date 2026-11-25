@@ -95,9 +95,82 @@ function detail(cause: unknown, redact: (text: string) => string): string | unde
   return scrub(redact(cause.message), 300);
 }
 
-/** The `microsandbox` peer's `MicrosandboxError.code`, read structurally (minifiers rename classes). */
+/**
+ * Every `MicrosandboxErrorCode` the `microsandbox` 0.8.1 peer declares (`dist/errors.d.ts`). Only these
+ * reach a message: a `code` is read off whatever the peer threw, so any other string is untrusted text.
+ */
+const knownPeerCodes: ReadonlySet<string> = new Set([
+  "agentClient",
+  "bootStart",
+  "execFailed",
+  "invalidCursor",
+  "missedRotation",
+  "networkBuilder",
+  "snapshotAlreadyExists",
+  "snapshotImageMissing",
+  "snapshotIntegrity",
+  "snapshotMigration",
+  "snapshotNotFound",
+  "snapshotSandboxRunning",
+  "windowsHostSetup",
+  "io",
+  "http",
+  "cloudHttp",
+  "libkrunfwNotFound",
+  "runtimeNotInstalled",
+  "runtimeIncomplete",
+  "database",
+  "invalidConfig",
+  "noDefaultCommand",
+  "sandboxNotFound",
+  "sandboxAlreadyExists",
+  "sandboxReplaced",
+  "sandboxStillRunning",
+  "sandboxNotRunning",
+  "sandboxStopTimedOut",
+  "runtime",
+  "json",
+  "protocol",
+  "nix",
+  "execTimeout",
+  "stopTimeout",
+  "resizeTimeout",
+  "resizeWait",
+  "terminal",
+  "sandboxFsOps",
+  "imageNotFound",
+  "imageInUse",
+  "volumeNotFound",
+  "volumeAlreadyExists",
+  "serviceNotFound",
+  "serviceAlreadyExists",
+  "service",
+  "image",
+  "patchFailed",
+  "snapshotSourceRecovery",
+  "snapshotImport",
+  "snapshotVerification",
+  "snapshotRemovalRecovery",
+  "snapshotGroupRemovalRecovery",
+  "metricsDisabled",
+  "metricsUnavailable",
+  "unsupportedOperation",
+  "unsupported",
+  "modificationNotConfirmed",
+  "custom",
+]);
+
+/**
+ * The `microsandbox` peer's `MicrosandboxError.code`, read structurally (minifiers rename classes). Only
+ * a code the peer declares is returned; anything else could be any text and is undefined.
+ */
 export function peerCode(cause: unknown): string | undefined {
-  return isObject(cause) && "code" in cause && isString(cause.code) ? cause.code : undefined;
+  return isObject(cause) &&
+    "code" in cause &&
+    isString(cause.code) &&
+    knownPeerCodes.has(cause.code)
+    ? cause.code
+    : undefined;
 }
 
 /**

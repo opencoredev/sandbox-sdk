@@ -346,17 +346,23 @@ describe("create reconciliation (spec.labels only, by name, fresh deadline)", ()
     await p.destroy(box.id);
   });
 
-  test("a 503 is settled across transient 404s and unresolved specs", async () => {
-    fake.faults.createAnswer = 503;
-    fake.faults.byNameMissing = 3;
-    fake.faults.specNull = 2;
-    const p = provider();
-    const box = await p.create({ labels: { lost: "503" } });
-    const lookups = fake.requests.filter((r) => r.path.includes("/by-name/"));
-    expect(lookups.length).toBeGreaterThanOrEqual(4);
-    expect(posts("/v1/sandboxes?")).toHaveLength(1);
-    await p.destroy(box.id);
-  });
+  // Two 404s and one unresolved spec cover both retry reasons with 1.75 s of the adapter's backoff
+  // (250 + 500 + 1000 ms); the explicit budget keeps it clear of any default per-test limit.
+  test(
+    "a 503 is settled across transient 404s and unresolved specs",
+    { timeout: 15_000 },
+    async () => {
+      fake.faults.createAnswer = 503;
+      fake.faults.byNameMissing = 2;
+      fake.faults.specNull = 1;
+      const p = provider();
+      const box = await p.create({ labels: { lost: "503" } });
+      const lookups = fake.requests.filter((r) => r.path.includes("/by-name/"));
+      expect(lookups.length).toBeGreaterThanOrEqual(4);
+      expect(posts("/v1/sandboxes?")).toHaveLength(1);
+      await p.destroy(box.id);
+    },
+  );
 
   test("an unreadable answer is settled by name", async () => {
     fake.faults.createAnswer = "unreadable";

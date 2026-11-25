@@ -19,7 +19,7 @@ import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot, settleJournaledSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
-import { cleanService, settleAllocationAttempt, tierLabel } from "./microsandbox.js";
+import { cleanService, isRetrySlug, settleAllocationAttempt, tierLabel } from "./microsandbox.js";
 import { microsandboxTier } from "./providers.js";
 import { recordStop, stopJournalFile } from "./stops.js";
 import {
@@ -48,6 +48,8 @@ const resource = z.object({
   attemptedAt: z.string().optional(),
   /** The sandbox name a Microsandbox Service targets. */
   sandboxName: z.string().optional(),
+  /** A Microsandbox Service's create: `created` once confirmed; absent (older journals) is `pending`. */
+  serviceState: z.enum(["pending", "created"]).optional(),
   /** A Microsandbox capture's name; equal to `id` while unconfirmed. */
   snapshotName: z.string().optional(),
 });
@@ -152,8 +154,25 @@ export async function reapRun(
       return true;
     };
 
+    /** Polls the exact lookup until it reads absent, within the run's timeout; false if it never does. */
+    const confirmGone = async (id: string) => {
+      const end = performance.now() + config["timeout-ms"];
+
+      for (let backoffMs = 100; ; backoffMs = Math.min(backoffMs * 2, 2000)) {
+        if (isAbsent(await lookupSandbox(p.provider, id, config["timeout-ms"]))) return true;
+        const left = end - performance.now();
+
+        if (left <= 0) return false;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(backoffMs, left)));
+      }
+    };
+
     // Restores still tagged pending: owned by the exact tag read that listed them (Modal).
     const pendingOwned = new Set<string>();
+
+    // A Microsandbox tier sweeps only its own tier's sandboxes: the adapter checks compute.type, and
+    // the bench's tier label must match too, in every listing and in each exact ownership check.
+    const tier = microsandboxTier(p.name);
 
     const owned = async (id: string) =>
       pendingOwned.has(id) ||
@@ -163,6 +182,7 @@ export async function reapRun(
         config.run,
         config["timeout-ms"],
         config["ownership-visibility-ms"],
+        { tier },
       );
 
     const forget = async (entry: z.infer<typeof resource>) => {
@@ -196,16 +216,13 @@ export async function reapRun(
     const journaled = (journal?.apps ?? []).filter((app) => app.provider === p.name);
     let reconciled = false;
 
-    // A Microsandbox tier sweeps only its own tier's sandboxes: the adapter checks compute.type, and
-    // the bench's tier label must match too.
-    const tier = microsandboxTier(p.name);
     const runLabels = { "sandbox-bench-run": config.run, "sandbox-sdk": "1" };
 
     const sweepLabels = tier === undefined ? runLabels : { ...runLabels, [tierLabel]: tier };
 
     try {
       for (const info of await deadline(config["timeout-ms"], () => p.provider.list(sweepLabels)))
-        if (hasRunOwnership(info, config.run)) {
+        if (hasRunOwnership(info, config.run, tier)) {
           candidates.add(info.id);
           // A sandbox whose create response was lost joins its App's journal entry.
           reconciled = reconcileDiscovered(journaled, p.name, info) || reconciled;
@@ -239,8 +256,8 @@ export async function reapRun(
     }
 
     // Microsandbox creates journaled before they were sent: a sandbox carrying the attempt's marker
-    // becomes a candidate, one never made (404 past the settlement window) goes, and anything else stays
-    // under review, keeping a restore's snapshot and source.
+    // becomes a candidate, and anything else (a 404 however old, an unresolved spec, another marker)
+    // stays under review, keeping a restore's snapshot and source.
     let attemptsUnresolved = false;
 
     for (const entry of (journal?.resources ?? []).filter(
@@ -267,19 +284,16 @@ export async function reapRun(
           continue;
         }
 
+        candidates.add(outcome.id);
+
         if (journal) {
           journal.resources = journal.resources.filter((r) => r !== entry);
-
-          if (outcome.kind === "sandbox") {
-            candidates.add(outcome.id);
-            journal.resources.push({
-              provider: p.name,
-              id: outcome.id,
-              kind: "sandbox",
-              parent: null,
-            });
-          }
-
+          journal.resources.push({
+            provider: p.name,
+            id: outcome.id,
+            kind: "sandbox",
+            parent: null,
+          });
           reconciled = true;
         }
       } catch (error) {
@@ -326,6 +340,19 @@ export async function reapRun(
         await deadline(config["timeout-ms"], () =>
           deletions.start(p.name, id, () => p.provider.destroy(id)),
         );
+
+        // Microsandbox finishes a DELETE asynchronously: the sandbox, and so a restore's hold on its
+        // snapshot and source, stays journaled until an exact read confirms it is gone.
+        if (tier !== undefined && !(await confirmGone(id))) {
+          review(
+            p.name,
+            id,
+            "sandbox",
+            "Deletion accepted, but the sandbox still reads; kept until an exact read confirms it is gone",
+          );
+
+          return;
+        }
 
         // Billing settles a Modal App only after its sandbox's confirmed stop.
         await recordStop({
@@ -377,17 +404,29 @@ export async function reapRun(
 
     // Microsandbox Services journaled before they were made, deleted whether or not their sandbox is
     // gone, and only while they target that sandbox or nothing; others are never touched.
-    for (const entry of (journal?.resources ?? []).filter(
+    const services = (journal?.resources ?? []).filter(
       (r) => r.provider === p.name && r.kind === "service",
-    )) {
+    );
+
+    for (const entry of services) {
       try {
-        await deadline(config["timeout-ms"], () =>
+        const outcome = await deadline(config["timeout-ms"], () =>
           cleanService({
             id: entry.id,
             parent: entry.parent,
             sandboxName: entry.sandboxName,
+            state: entry.serviceState ?? "pending",
+            superseded: services.some(
+              (other) => other.parent === entry.parent && isRetrySlug(other.id, entry.id),
+            ),
           }),
         );
+
+        if (outcome.kind === "pending") {
+          review(p.name, entry.id, entry.kind, outcome.reason);
+          continue;
+        }
+
         await forget(entry);
       } catch (error) {
         review(
@@ -481,12 +520,17 @@ export async function reapRun(
         if (restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
 
-        if ((await settleJournaledSnapshot(p.name, entry, config["timeout-ms"])) === "exists") {
+        const settled = await settleJournaledSnapshot(p.name, entry, config["timeout-ms"]);
+
+        if (settled.kind === "exists") {
           let confirmed = entry;
 
-          if (entry.idempotencyKey !== undefined) {
+          // A Maritime save's key goes once it settles; a Microsandbox capture's name gives way to the
+          // managed ID settlement confirmed, journaled before the delete so a by-name 404 can never
+          // drop the snapshot it found.
+          if (entry.idempotencyKey !== undefined || settled.id !== entry.id) {
             const { idempotencyKey: _, ...withoutKey } = entry;
-            confirmed = withoutKey;
+            confirmed = { ...withoutKey, id: settled.id };
 
             if (journal) {
               const previousResources = [...journal.resources];
@@ -560,7 +604,8 @@ export async function reapRun(
           ]);
 
           // A pending restore still running is a leftover like any other.
-          const left = [...listed.filter((s) => hasRunOwnership(s, config.run)), ...pending];
+          const left = [...listed.filter((s) => hasRunOwnership(s, config.run, tier)), ...pending];
+
           count = left.length;
 
           if (

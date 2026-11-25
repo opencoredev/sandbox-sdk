@@ -14,6 +14,7 @@ const sandboxRecord = z.object({
   id: z.string(),
   name: z.string(),
   status: z.string(),
+  compute: z.object({ type: z.string() }).nullish(),
   spec: z.object({ labels: z.record(z.string(), z.string()).default({}) }).nullish(),
 });
 
@@ -142,6 +143,14 @@ export async function createRawMicrosandbox(input: {
     created = undefined;
 
     if (record?.spec && record.spec.labels[rawOwnerLabel] === owner) {
+      // This create's sandbox on the other tier would time the wrong machine: it is deleted, never used.
+      if (record.compute?.type !== input.computeType) {
+        await box(record.id).destroy();
+        throw new Error(
+          `Microsandbox sandbox runs on ${record.compute?.type ?? "an unknown"} compute, not ${input.computeType}; it was deleted`,
+        );
+      }
+
       if (admitted === undefined) {
         admitted = box(record.id);
         input.admit(admitted);

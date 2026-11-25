@@ -4,11 +4,22 @@ import { journalFiles } from "./files.js";
 import { dirname } from "node:path";
 import type { Provider, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { deadline } from "./timing.js";
-import { isAbsent, type LookupEvidence } from "./existence.js";
+import { adapterComputeTier, isAbsent, type LookupEvidence } from "./existence.js";
+import { tierLabel } from "./microsandbox.js";
+
+/** A Microsandbox tier whose sandboxes a run owns only with the matching tier label and compute type. */
+export type ComputeTier = "standard" | "shared";
 
 export class UnverifiedOwnershipError extends Error {
   constructor(readonly unverifiedSandboxId: string) {
     super("Resource ownership unverified; see cleanupReview");
+  }
+}
+
+/** A Microsandbox DELETE was accepted, but an exact read still finds the sandbox; it stays journaled. */
+export class DeletionUnconfirmedError extends Error {
+  constructor(readonly sandboxId: string) {
+    super("Deletion accepted, but the sandbox still reads; see cleanupReview");
   }
 }
 
@@ -102,19 +113,36 @@ export function recordVerifiedRelease(
   }
 }
 
-export function hasRunOwnership(info: Pick<SandboxInfo, "labels">, run: string) {
-  return info.labels["sandbox-bench-run"] === run && info.labels["sandbox-sdk"] === "1";
+/**
+ * The run's labels on a listed sandbox. With `tier` (a Microsandbox tier), its bench tier label must
+ * name that tier too: a sandbox labelled for the other tier is never this tier's to delete.
+ */
+export function hasRunOwnership(
+  info: Pick<SandboxInfo, "labels">,
+  run: string,
+  tier?: ComputeTier,
+) {
+  return (
+    info.labels["sandbox-bench-run"] === run &&
+    info.labels["sandbox-sdk"] === "1" &&
+    (tier === undefined || info.labels[tierLabel] === tier)
+  );
 }
 
 /** Listing is read-only; only the exact ID's live labels can establish ownership.
- * Newly created sandboxes may need bounded control-plane visibility retries. */
+ * Newly created sandboxes may need bounded control-plane visibility retries. With `tier`, the tier
+ * label must match and the adapter must list on that compute tier: it checks each listed sandbox's
+ * `compute.type` against its own, so a sandbox on the other tier is never listed as owned. */
 export async function verifyRunOwnership(
   provider: Provider,
   id: string,
   run: string,
   timeoutMs: number,
   visibilityBudgetMs = 0,
+  { tier }: { tier?: ComputeTier } = {},
 ) {
+  // An adapter on another (or the default) tier could list either tier's sandboxes.
+  if (tier !== undefined && adapterComputeTier(provider) !== tier) return false;
   const end = performance.now() + Math.min(timeoutMs, visibilityBudgetMs || timeoutMs);
   let backoffMs = 100;
 
@@ -126,13 +154,14 @@ export async function verifyRunOwnership(
 
       const exact = matches.find((info) => info.id === id);
 
-      if (exact && hasRunOwnership(exact, run)) return true;
+      if (exact && hasRunOwnership(exact, run, tier)) return true;
 
       if (
         exact &&
         ((exact.labels["sandbox-bench-run"] !== undefined &&
           exact.labels["sandbox-bench-run"] !== run) ||
-          (exact.labels["sandbox-sdk"] !== undefined && exact.labels["sandbox-sdk"] !== "1"))
+          (exact.labels["sandbox-sdk"] !== undefined && exact.labels["sandbox-sdk"] !== "1") ||
+          (tier !== undefined && exact.labels[tierLabel] !== tier))
       )
         return false;
     } catch {
@@ -163,8 +192,9 @@ export async function proveSnapshotSource(
   run: string,
   timeoutMs: number,
   visibilityBudgetMs: number,
+  { tier }: { tier?: ComputeTier } = {},
 ): Promise<SnapshotProvenance> {
-  if (!(await verifyRunOwnership(provider, sourceId, run, timeoutMs, visibilityBudgetMs)))
+  if (!(await verifyRunOwnership(provider, sourceId, run, timeoutMs, visibilityBudgetMs, { tier })))
     throw new UnverifiedOwnershipError(sourceId);
 
   return { sourceId, runLabel: run, sdkLabel: "1", verifiedAt: new Date().toISOString() };
