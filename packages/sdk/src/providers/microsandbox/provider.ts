@@ -70,6 +70,17 @@ import {
 
 export type { MicrosandboxComputeType } from "./api.js";
 
+export type {
+  MicrosandboxModule,
+  PeerContext as MicrosandboxPeerContext,
+  PeerContextOptions as MicrosandboxPeerContextOptions,
+  PeerExecEvent as MicrosandboxPeerExecEvent,
+  PeerExecHandle as MicrosandboxPeerExecHandle,
+  PeerExecOptions as MicrosandboxPeerExecOptions,
+  PeerFs as MicrosandboxPeerFs,
+  PeerSandbox as MicrosandboxPeerSandbox,
+} from "./exec.js";
+
 /** Microsandbox's API surface on `box.native` and `provider.api`: the control plane, `/v1` on the API host. */
 export type MicrosandboxPlane = "control";
 
@@ -118,6 +129,11 @@ export interface MicrosandboxOptions {
   requestTimeoutMs?: number;
   /** See {@link MicrosandboxHooks}. Also settable later with `provider.setAttemptHooks`. */
   hooks?: MicrosandboxHooks;
+  /**
+   * How to load the `microsandbox` package. Default: `() => import("microsandbox")`. Pass your own
+   * import when a bundler needs it spelled out, or a stand-in for tests.
+   */
+  peer?: () => Promise<MicrosandboxModule>;
   /** For tests. */
   fetch?: Fetch;
 }

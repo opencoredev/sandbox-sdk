@@ -60,6 +60,8 @@ export interface FakeOperation {
   status: "queued" | "in_progress" | "succeeded" | "failed";
   pendingReads: number;
   snapshotId: string | undefined;
+  /** The finished snapshot as the operation reported it; kept after the snapshot is deleted. */
+  result: JsonValue | undefined;
   fails: boolean;
 }
 
@@ -378,8 +380,6 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
   }
 
   function operationView(op: FakeOperation): JsonValue {
-    const snapshot = op.snapshotId === undefined ? undefined : snapshots.get(op.snapshotId);
-
     return {
       id: op.id,
       kind: "disk",
@@ -387,7 +387,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       error: op.status === "failed" ? { code: "capture_failed", message: "failed" } : null,
-      result: op.status === "succeeded" && snapshot ? snapshotView(snapshot) : null,
+      result: op.status === "succeeded" ? (op.result ?? null) : null,
       snapshot_name: op.snapshotName,
       sandbox_id: op.sandboxId,
       sandbox_name: sandboxes.get(op.sandboxId)?.name ?? "",
@@ -430,6 +430,9 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
     });
     op.snapshotId = id;
     op.status = "succeeded";
+    const made = snapshots.get(id);
+
+    op.result = made === undefined ? undefined : snapshotView(made);
   }
 
   const pendingLabels = new Map<string, Record<string, string>>();
@@ -703,6 +706,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
           status: "queued",
           pendingReads: faults.operationPendingReads ?? 0,
           snapshotId: undefined,
+          result: undefined,
           fails: faults.operationFails === true,
         };
 
@@ -718,6 +722,13 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
 
         return json(response, 202, operationView(op));
       }
+
+      if (a === undefined && method === "GET")
+        return json(response, 200, {
+          data: [...snapshots.values()].map(snapshotView),
+          has_more: false,
+          next_cursor: null,
+        });
 
       if (a === "by-name" && b !== undefined) {
         const snapshot = [...snapshots.values()].find((s) => s.name === b);

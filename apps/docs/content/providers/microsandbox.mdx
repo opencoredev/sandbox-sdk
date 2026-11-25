@@ -142,6 +142,7 @@ Standard compute bills $0.048 per vCPU-hour, $0.003 per GiB-hour of memory and $
 | `image`            | `string`                   | `node:22-bookworm`             |               |
 | `timeoutMs`        | `number`                   | 1 hour                         |               |
 | `requestTimeoutMs` | `number`                   | 60 seconds                     |               |
+| `peer`             | `() => Promise<module>`    | `() => import("microsandbox")` |               |
 
 ## Limitations
 

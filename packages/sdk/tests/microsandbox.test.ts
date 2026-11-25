@@ -3,6 +3,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { tokenPattern } from "../src/providers/microsandbox/api.js";
 import { peerError } from "../src/providers/microsandbox/errors.js";
+import { microsandbox } from "../src/providers/microsandbox/index.js";
 import type {
   MicrosandboxModule,
   PeerExecEvent,
@@ -209,6 +210,24 @@ describe("peer gate (fail before allocate)", () => {
     expect(error).toMatchObject({ code: "unavailable" });
     expect(error.message).toContain("Keep microsandbox external");
     expect(fake.requests).toEqual([]);
+  });
+
+  test("the peer option replaces the default import of microsandbox", async () => {
+    const loads: string[] = [];
+
+    const p = microsandbox({
+      apiKey,
+      baseUrl: fake.url,
+      peer: async () => {
+        loads.push("peer");
+
+        return fake.peer;
+      },
+    });
+
+    const box = await p.create({ labels: {} });
+    expect(loads).toEqual(["peer"]);
+    await p.destroy(box.id);
   });
 
   test("the RemoteContext gets this adapter's url, key, timeout and tier", async () => {

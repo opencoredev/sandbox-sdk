@@ -9,8 +9,16 @@ export type {
   MicrosandboxClientSdk,
   MicrosandboxComputeType,
   MicrosandboxHooks,
+  MicrosandboxModule,
   MicrosandboxNative,
   MicrosandboxOptions,
+  MicrosandboxPeerContext,
+  MicrosandboxPeerContextOptions,
+  MicrosandboxPeerExecEvent,
+  MicrosandboxPeerExecHandle,
+  MicrosandboxPeerExecOptions,
+  MicrosandboxPeerFs,
+  MicrosandboxPeerSandbox,
   MicrosandboxPlane,
   MicrosandboxProvider,
   MicrosandboxSandboxSdk,
@@ -22,5 +30,5 @@ export type {
  * and files go through the optional peer `microsandbox`, which `create` loads before allocating anything.
  */
 export function microsandbox(options: MicrosandboxOptions = {}): MicrosandboxProvider {
-  return createMicrosandboxProvider(options, () => import("microsandbox"));
+  return createMicrosandboxProvider(options, options.peer ?? (() => import("microsandbox")));
 }
