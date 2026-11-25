@@ -245,9 +245,12 @@ export function parseSnapshot(raw: JsonValue | undefined): MicrosandboxSnapshot 
   };
 }
 
-/** Whether a snapshot was captured from `sandboxId`: its own `sandbox_id`, or the adapter's source label. */
+/**
+ * Whether a snapshot was captured from `sandboxId`: its own `sandbox_id`, or, only when the server
+ * reports none, the adapter's source label, which any caller can set.
+ */
 export const capturedFrom = (snapshot: MicrosandboxSnapshot, sandboxId: string) =>
-  snapshot.sandboxId === sandboxId || snapshot.labels[sourceLabel] === sandboxId;
+  (snapshot.sandboxId ?? snapshot.labels[sourceLabel]) === sandboxId;
 
 /** `CloudSnapshotOperationStatus`. */
 export type OperationStatus = "queued" | "in_progress" | "succeeded" | "failed";

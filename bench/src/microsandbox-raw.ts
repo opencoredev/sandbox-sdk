@@ -8,6 +8,16 @@ import { z } from "zod";
 import type { MicrosandboxConfig } from "./connections.js";
 import { microsandboxFetch } from "./microsandbox.js";
 
+/**
+ * `text` without the configured key or anything shaped like a Microsandbox credential (an organization
+ * key, `msb_...`, or a personal access token, `msb_pat_...`), so it can be shown or saved.
+ */
+export function redactMicrosandbox(text: string, apiKey: string) {
+  const keyless = apiKey.length >= 8 ? text.split(apiKey).join("[redacted]") : text;
+
+  return keyless.replace(/msb_(?:pat_)?[A-Za-z0-9_-]+/g, "[redacted]");
+}
+
 /** The label the raw create stores its owner marker in. */
 export const rawOwnerLabel = "sdk-overhead-owner";
 
@@ -74,15 +84,27 @@ export async function createRawMicrosandbox(input: {
   const box = (id: string): RawMicrosandboxBox => ({
     id,
     exec: async () => {
-      const context = new input.peer.RemoteContext({
-        url: connection.baseUrl,
-        apiKey: connection.apiKey,
-        computeType: input.computeType,
-      });
+      let code: number;
 
-      const result = await (await context.sandboxes.get(name)).exec("true");
+      try {
+        const context = new input.peer.RemoteContext({
+          url: connection.baseUrl,
+          apiKey: connection.apiKey,
+          computeType: input.computeType,
+        });
 
-      if (result.code !== 0) throw new Error(`exit ${result.code}`);
+        code = (await (await context.sandboxes.get(name)).exec("true")).code;
+      } catch (error) {
+        // The peer's own error may echo its request, key included; only its redacted text leaves.
+        throw new Error(
+          redactMicrosandbox(
+            error instanceof Error ? error.message : String(error),
+            connection.apiKey,
+          ),
+        );
+      }
+
+      if (code !== 0) throw new Error(`exit ${code}`);
     },
     destroy: async () => {
       const response = await microsandboxFetch(connection, `/sandboxes/${encodeURIComponent(id)}`, {
@@ -162,7 +184,9 @@ export async function createRawMicrosandbox(input: {
       if (record.status === "running") return admitted;
 
       if (!["created", "starting"].includes(record.status))
-        throw new Error(`Microsandbox sandbox did not start (${record.status})`);
+        throw new Error(
+          `Microsandbox sandbox did not start (${redactMicrosandbox(record.status, connection.apiKey)})`,
+        );
     }
 
     if (Date.now() > deadline) throw new Error("Microsandbox sandbox did not start in time");

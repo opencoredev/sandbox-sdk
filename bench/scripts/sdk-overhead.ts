@@ -18,7 +18,11 @@ import {
   rawRequestMs,
 } from "../src/maritime-raw.js";
 import { microsandboxConfig } from "../src/connections.js";
-import { createRawMicrosandbox, type RawPeer } from "../src/microsandbox-raw.js";
+import {
+  createRawMicrosandbox,
+  redactMicrosandbox,
+  type RawPeer,
+} from "../src/microsandbox-raw.js";
 import { adapterSpec } from "../src/providers.js";
 
 type Sdk = typeof Core;
@@ -1235,9 +1239,12 @@ function stats(samples: readonly number[]): Stats | null {
 const delta = (a: Stats | null, b: Stats | null) =>
   a && b ? Math.round((a.median - b.median) * 10) / 10 : null;
 
-/** A caught failure as report text. */
+/** A caught failure as report text, redacted before it is cut so no partial key survives. */
 const message = (cause: unknown) =>
-  (cause instanceof Error ? cause.message : String(cause)).slice(0, 300);
+  redactMicrosandbox(
+    cause instanceof Error ? cause.message : String(cause),
+    process.env.MSB_API_KEY?.trim() ?? "",
+  ).slice(0, 300);
 
 /** Waits for an operation whose result the timing does not use. */
 async function discard<T>(result: PromiseLike<T>): Promise<void> {

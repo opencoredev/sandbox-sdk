@@ -2,6 +2,7 @@
 // Cloud (packages/sdk/tests/microsandbox-fake.ts) and the real adapter: every allocation is journaled
 // before it is sent, and cleanup and recovery settle what a lost answer left.
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, test, vi } from "vitest";
@@ -19,8 +20,10 @@ import {
 } from "../../packages/sdk/tests/microsandbox-fake.js";
 import {
   attemptSettlementMs,
+  capturedFrom,
   cleanService,
   isDefiniteRefusal,
+  microsandboxFetch,
   settleAllocationAttempt,
   settleMicrosandboxCapture,
 } from "../src/microsandbox.js";
@@ -3601,4 +3604,148 @@ describe("PR88 merge review: recovery reads through the run adapter's connection
       journal: (await readJournal(out)).resources,
     }).toEqual({ service: false, journal: [] });
   }, 60_000);
+});
+
+describe("PR88 security review", () => {
+  const securityLabels = () => ({
+    "sandbox-bench-run": crypto.randomUUID(),
+    "sandbox-sdk": "1",
+    "sandbox-bench-tier": "standard",
+  });
+
+  test("PR88-S1 the key never goes over plain http to a host off this machine", async () => {
+    const sent = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("sent"));
+
+    const outcome = await microsandboxFetch(
+      { apiKey: key, baseUrl: "http://api.microsandbox.example" },
+      "/sandboxes",
+    ).catch((error: Error) => error.message);
+
+    expect({ outcome, sent: sent.mock.calls.length }).toEqual({
+      outcome: "Microsandbox API URL must use https; plain http is allowed only for loopback",
+      sent: 0,
+    });
+  });
+
+  test("PR88-S1 an existence probe never follows a redirect to another origin's 404", async () => {
+    let followed = 0;
+
+    const elsewhere = createServer((_request, response) => {
+      followed++;
+      response.writeHead(404, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: { code: "sandbox_not_found" } }));
+    });
+
+    await new Promise<void>((resolve) => elsewhere.listen(0, "127.0.0.1", resolve));
+    const target = `http://127.0.0.1:${z.object({ port: z.number() }).parse(elsewhere.address()).port}`;
+
+    const redirector = createServer((request, response) => {
+      response.writeHead(302, { Location: `${target}${request.url ?? "/"}` });
+      response.end();
+    });
+
+    await new Promise<void>((resolve) => redirector.listen(0, "127.0.0.1", resolve));
+    const baseUrl = `http://127.0.0.1:${z.object({ port: z.number() }).parse(redirector.address()).port}`;
+
+    try {
+      const p = bound(
+        microsandbox({
+          apiKey: key,
+          baseUrl,
+          computeType: "standard",
+          peer: async () => fake.peer,
+        }),
+        { apiKey: key, baseUrl },
+      );
+
+      const evidence = await lookupSandbox(p, crypto.randomUUID(), 2000);
+
+      expect({ result: evidence.result, followed }).toEqual({
+        result: expect.not.stringMatching(/^not-found$/),
+        followed: 0,
+      });
+    } finally {
+      elsewhere.close();
+      redirector.close();
+    }
+  });
+
+  test("PR88-S2 cleanService never deletes an attached Service made again at its slug", async () => {
+    fake.services.set("re-made-slug", {
+      slug: "re-made-slug",
+      target: { sandbox: "ours", port: 3000 },
+      status: "enabled",
+      createdAt: "2026-11-25T10:00:00.000Z",
+    });
+
+    const outcome = await cleanService(
+      { apiKey: key, baseUrl: fake.url },
+      {
+        id: "re-made-slug",
+        parent: null,
+        sandboxName: "ours",
+        state: "created",
+        createdAt: "2026-11-25T09:00:00.000Z",
+        superseded: false,
+      },
+    );
+
+    expect({ outcome, kept: fake.services.has("re-made-slug") }).toEqual({
+      outcome: { kind: "foreign" },
+      kept: true,
+    });
+    fake.services.delete("re-made-slug");
+  });
+
+  test("PR88-S3 a raw-path peer error reaches the report without the key", async () => {
+    let box: RawMicrosandboxBox | undefined;
+
+    box = await createRawMicrosandbox({
+      connection: { apiKey: key, baseUrl: fake.url },
+      computeType: "standard",
+      labels: securityLabels(),
+      peer: {
+        RemoteContext: class {
+          sandboxes = {
+            get: async () => {
+              throw new Error(`401 for Bearer ${key}, token msb_pat_0123456789abcdef`);
+            },
+          };
+        },
+      },
+      admit: (admitted) => {
+        box = admitted;
+      },
+    });
+
+    try {
+      const shown = await box.exec().then(
+        () => "",
+        (error: Error) => error.message,
+      );
+
+      expect({
+        key: shown.includes(key),
+        pat: shown.includes("msb_pat_"),
+        redacted: shown.includes("[redacted]"),
+      }).toEqual({ key: false, pat: false, redacted: true });
+    } finally {
+      await box.destroy();
+    }
+  });
+
+  test("PR88-S5 a caller-set source label never outweighs the snapshot's own sandbox_id", () => {
+    const snapshot = (sandboxId: string | null) => ({
+      name: "n",
+      location: { type: "managed", id: crypto.randomUUID() },
+      sandbox_id: sandboxId,
+      labels: { "sandbox-sdk-source": "ours" },
+    });
+
+    expect([
+      capturedFrom(snapshot("theirs"), "ours"),
+      capturedFrom(snapshot(null), "ours"),
+      capturedFrom(snapshot("ours"), "ours"),
+    ]).toEqual([false, true, true]);
+  });
 });

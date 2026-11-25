@@ -108,15 +108,22 @@ export function logPageScript(input: {
  * setup that reuses the name since the boot is never marked killed, and any client can run this at
  * any time. The lock is only tried: this script never breaks or waits out a lock it does not hold,
  * and the whole scan gives up on contended records after about a second, leaving them as they
- * are. A timestamp that cannot be read proves nothing, so that record is left as it is too. */
+ * are. A timestamp that cannot be read proves nothing, so that record is left as it is too. /tmp is
+ * writable by anything in the guest, so no symlink is followed and nothing another user owns is
+ * written or removed: the exit is created only where no file or link stands. */
 export function bootRepairScript(): string {
-  const stale = `[ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && t=$(stat -c %Y "$d/spec.json") && [ "$t" -lt "$boot" ]`;
+  const owned = (path: string) => `[ -d "${path}" ] && [ ! -L "${path}" ] && [ -O "${path}" ]`;
+
+  const stale = `${owned("$d")} && [ -f "$d/spec.json" ] && [ ! -L "$d/spec.json" ] && [ ! -e "$d/exit" ] && [ ! -L "$d/exit" ] && t=$(stat -c %Y "$d/spec.json") && [ "$t" -lt "$boot" ]`;
+
+  const root = "/tmp/.sandbox-sdk";
 
   return [
     `boot=$(sed -n 's/^btime //p' /proc/stat)`,
     `[ -n "$boot" ] || exit 1`,
+    `${owned(root)} || exit 0`,
     `tries=0`,
-    `for d in /tmp/.sandbox-sdk/procs/*`,
+    `${owned(`${root}/procs`)} && for d in ${root}/procs/*`,
     `do ${stale} || continue`,
     `until mkdir "$d/lock" 2>/dev/null`,
     `do tries=$((tries+1))`,
@@ -126,13 +133,13 @@ export function bootRepairScript(): string {
     // An entry for this shell, so a waiter sees a live owner rather than an abandoned lock.
     `marked=0`,
     `if : > "$d/lock/$$" && ${stale}`,
-    `then printf 137 > "$d/exit" || marked=1`,
+    `then (set -C; printf 137 > "$d/exit") || marked=1`,
     `fi`,
     `rm "$d/lock/$$" 2>/dev/null && rmdir "$d/lock"`,
     `[ "$marked" -eq 0 ] || exit 1`,
     `done`,
-    `for m in /tmp/.sandbox-sdk/runs/*`,
-    `do [ -e "$m" ] && [ "$(stat -c %Y "$m")" -lt "$boot" ] && rm -rf "$m"`,
+    `${owned(`${root}/runs`)} && for m in ${root}/runs/*`,
+    `do [ -e "$m" ] && [ ! -L "$m" ] && [ -O "$m" ] && [ "$(stat -c %Y "$m")" -lt "$boot" ] && rm -rf "$m"`,
     `done`,
     `true`,
   ].join("; ");

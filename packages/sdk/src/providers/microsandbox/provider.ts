@@ -879,8 +879,11 @@ export function createMicrosandboxProvider(
     let listed =
       sandboxName === undefined ||
       (await listServices(sandboxName, (service) => {
-        if (isOwnedSlug(service.slug, id) && service.target?.sandbox === sandboxName)
-          ownService(id, service.slug, sandboxName, service.createdAt);
+        if (!isOwnedSlug(service.slug, id) || service.target?.sandbox !== sandboxName) return;
+
+        // A listing never replaces the creation timestamp memory holds: that is the Service's identity.
+        const known = ownedServices.get(id)?.get(service.slug)?.createdAt;
+        ownService(id, service.slug, sandboxName, known ?? service.createdAt);
       }));
 
     if (unlisted.has(id)) {
@@ -973,10 +976,15 @@ export function createMicrosandboxProvider(
           throw error;
         }
 
-        // Never a Service that now targets another sandbox, or a detached Service whose creation
-        // timestamp does not prove it is the same Service instance this adapter owned.
+        // Never a Service that now targets another sandbox, or one, attached or detached, whose
+        // creation timestamp does not prove it is the same Service instance this adapter owned.
         if (service.target !== null) {
-          if (service.target.sandbox !== entry.target) {
+          if (
+            service.target.sandbox !== entry.target ||
+            (entry.createdAt !== undefined &&
+              service.createdAt !== undefined &&
+              service.createdAt !== entry.createdAt)
+          ) {
             ownedServices.get(id)?.delete(slug);
             await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
             continue;
@@ -1977,8 +1985,8 @@ export function createMicrosandboxProvider(
       }
     };
 
-    if (uuidPattern.test(snapshotId) && (await remove("/snapshots/{id}", { id: snapshotId })))
-      return true;
+    // A managed ID that is gone is never retried as a name: another snapshot may carry that name.
+    if (uuidPattern.test(snapshotId)) return remove("/snapshots/{id}", { id: snapshotId });
 
     return remove("/snapshots/by-name/{name}", { name: snapshotId });
   }

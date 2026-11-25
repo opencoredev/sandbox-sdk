@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createSandbox, reapSandboxes } from "../src/index.js";
 import { Redactor, type SandboxError } from "../src/errors.js";
-import { parseSandbox, tokenPattern } from "../src/providers/microsandbox/api.js";
+import { capturedFrom, parseSandbox, tokenPattern } from "../src/providers/microsandbox/api.js";
 import { peerError } from "../src/providers/microsandbox/errors.js";
 import {
   execute,
@@ -1548,4 +1548,83 @@ test("PR88 merge review: two snapshots of one sandbox take turns, so neither res
     ).length,
     running: fake.sandboxes.get(id)?.status,
   }).toEqual({ outcomes: ["fulfilled", "fulfilled"], stored: 2, running: "running" });
+});
+
+test("PR88 security review: destroy never deletes an attached Service made again at its slug", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  await p.previewUrl(sandbox, 3000);
+
+  const service = [...fake.services.values()].find((s) => s.slug.endsWith("-p3000"));
+
+  if (service === undefined) throw new Error("no fake Service");
+
+  // Someone deleted the adapter's Service and made another at the same slug and target.
+  service.createdAt = "2001-01-01T00:00:00.000Z";
+
+  await p.destroy(sandbox).catch(() => {});
+
+  expect(fake.services.has(service.slug)).toBe(true);
+  fake.services.delete(service.slug);
+});
+
+test("PR88 security review: a managed snapshot ID that is gone is never deleted as a name", async () => {
+  const p = adapter();
+  const taken = crypto.randomUUID();
+  const other = crypto.randomUUID();
+
+  fake.snapshots.set(other, {
+    id: other,
+    name: taken,
+    sandboxId: crypto.randomUUID(),
+    labels: {},
+    root: join(process.env.TMPDIR ?? "/tmp", `pr88-absent-${other}`),
+  });
+
+  const deleted = await p.deleteSnapshot?.(taken);
+
+  expect({ deleted, kept: fake.snapshots.has(other) }).toEqual({ deleted: false, kept: true });
+  fake.snapshots.delete(other);
+});
+
+test("PR88 security review: a caller-set source label never outweighs the snapshot's own sandbox_id", () => {
+  const snapshot = (sandboxId: string | undefined) => ({
+    name: "n",
+    location: { type: "managed" as const, id: crypto.randomUUID() },
+    sandboxId,
+    labels: { "sandbox-sdk-source": "ours" },
+  });
+
+  expect([
+    capturedFrom(snapshot("theirs"), "ours"),
+    capturedFrom(snapshot(undefined), "ours"),
+    capturedFrom(snapshot("ours"), "ours"),
+  ]).toEqual([false, true, true]);
+});
+
+test("PR88 security review: the boot repair follows no symlink planted under /tmp", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+
+  const plant = [
+    "mkdir -p /workspace/victim /tmp/.sandbox-sdk/procs/p6",
+    "echo kept > /workspace/victim/keep",
+    "touch -d '1 hour ago' /workspace/victim/keep",
+    "rm -rf /tmp/.sandbox-sdk/runs",
+    "ln -s /workspace/victim /tmp/.sandbox-sdk/runs",
+    "echo '{}' > /tmp/.sandbox-sdk/procs/p6/spec.json",
+    "touch -d '1 hour ago' /tmp/.sandbox-sdk/procs/p6/spec.json",
+    "ln -s /workspace/planted /tmp/.sandbox-sdk/procs/p6/exit",
+  ].join(" && ");
+
+  expect((await exec(p, sandbox, plant)).exitCode).toBe(0);
+
+  const after = await exec(
+    p,
+    sandbox,
+    `sh -c ${quote(bootRepairScript())}; cat /workspace/victim/keep 2>/dev/null || printf gone; [ -e /workspace/planted ] && printf ' planted' || printf ' clean'`,
+  );
+
+  expect(after.stdout).toBe("kept\n clean");
 });

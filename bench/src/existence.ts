@@ -20,6 +20,7 @@ import {
   modalClientParams,
   type ModalClientParams,
 } from "./connections.js";
+import { microsandboxFetch } from "./microsandbox.js";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -690,12 +691,11 @@ export async function lookupSandbox(
           if (tier === undefined) throw new Error("Native lookup compute tier unknown");
 
           // GET only: it never starts, stops or changes the sandbox. A deleted one reads 404.
-          const { apiKey, baseUrl } = connectionOf(provider, "microsandbox");
-
-          const response = await fetch(`${baseUrl}/v1/sandboxes/${encodeURIComponent(id)}`, {
-            headers: { Authorization: `Bearer ${apiKey}` },
-            signal,
-          });
+          const response = await microsandboxFetch(
+            connectionOf(provider, "microsandbox"),
+            `/sandboxes/${encodeURIComponent(id)}`,
+            { signal },
+          );
 
           if (!response.ok)
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });

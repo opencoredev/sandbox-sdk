@@ -41,12 +41,29 @@ export class MicrosandboxHttpError extends Error {
   }
 }
 
-/** One control-plane request through the run adapter's own connection, bounded. */
-export function microsandboxFetch(
+/** Hosts where plain HTTP keeps the bearer on this machine: the loopback test fakes. */
+const loopbackHosts: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * One control-plane request through the run adapter's own connection, bounded. The key goes only to
+ * an https origin, or a loopback one over http, and never follows a redirect to another.
+ */
+export async function microsandboxFetch(
   connection: MicrosandboxConfig,
   path: string,
   init: RequestInit = {},
 ) {
+  const base = new URL(connection.baseUrl);
+
+  if (base.username || base.password)
+    throw new Error("Microsandbox API URL must not carry credentials");
+
+  if (
+    base.protocol !== "https:" &&
+    !(base.protocol === "http:" && loopbackHosts.has(base.hostname))
+  )
+    throw new Error("Microsandbox API URL must use https; plain http is allowed only for loopback");
+
   const headers = new Headers(init.headers);
 
   headers.set("Authorization", `Bearer ${connection.apiKey}`);
@@ -315,7 +332,14 @@ export async function cleanService(
   if (entry.sandboxName === undefined) return { kind: "foreign" };
 
   if (service.target !== null && service.target !== undefined) {
-    if (service.target.sandbox !== entry.sandboxName) return { kind: "foreign" };
+    // A Service made again at this slug since the journaled create is another instance.
+    if (
+      service.target.sandbox !== entry.sandboxName ||
+      (entry.createdAt !== undefined &&
+        service.created_at !== undefined &&
+        service.created_at !== entry.createdAt)
+    )
+      return { kind: "foreign" };
 
     if (
       entry.state !== "created" ||
@@ -389,9 +413,12 @@ export async function readMicrosandboxSnapshot(
   return snapshot;
 }
 
-/** Whether a snapshot was captured from `sourceId`: its own `sandbox_id` or the adapter's source label. */
+/**
+ * Whether a snapshot was captured from `sourceId`: its own `sandbox_id`, or, only when the server
+ * reports none, the adapter's source label, which any caller can set.
+ */
 export const capturedFrom = (snapshot: MicrosandboxSnapshot, sourceId: string) =>
-  snapshot.sandbox_id === sourceId || snapshot.labels[sourceLabel] === sourceId;
+  recordedSource(snapshot) === sourceId;
 
 /** The source a snapshot records: `sandbox_id`, else the adapter's source label. */
 export const recordedSource = (snapshot: MicrosandboxSnapshot) =>
