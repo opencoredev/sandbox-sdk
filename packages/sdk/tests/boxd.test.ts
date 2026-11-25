@@ -1219,6 +1219,38 @@ describe("boxd failure evidence", () => {
     }
   });
 
+  test("a URL that begins with a sandbox secret is still scrubbed whole", async () => {
+    const box = await createSandbox(factory(), { secrets: { STORE: "https://storage.example" } });
+    const machines = box.native.client.machines;
+
+    const resume = vi
+      .spyOn(machines, "resume")
+      .mockRejectedValueOnce(
+        Object.assign(
+          new Error("upload to https://storage.example/object?X-Amz-Signature=sig123 failed"),
+          { name: "ConflictError", grpcCode: 9 },
+        ),
+      );
+
+    try {
+      await box.pause();
+
+      const error = await box.resume().then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+
+      const cause = String(error instanceof SandboxError ? error.cause : "");
+
+      expect(cause).toContain("[URL REDACTED]");
+      expect(cause).not.toContain("sig123");
+      expect(cause).not.toContain("storage.example");
+    } finally {
+      resume.mockRestore();
+      await box.destroy();
+    }
+  });
+
   test("a guest call never keeps boxd's text, which can echo user paths", () => {
     const error = boxdError(
       Object.assign(new Error("read /workspace/private.txt: input/output error"), {

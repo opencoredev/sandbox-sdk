@@ -807,8 +807,10 @@ export class Redactor {
 }
 
 /** Credential-shaped text in native messages: URLs (which can carry tokens), auth headers, and key=value pairs. */
+const urlPattern = /https?:\/\/[^\s"'<>]+/gi;
+
 const credentialPatterns: [RegExp, string][] = [
-  [/https?:\/\/[^\s"'<>]+/gi, "[URL REDACTED]"],
+  [urlPattern, "[URL REDACTED]"],
   [
     /(\bauthorization["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n;]+)/gi,
     "$1[REDACTED]",
@@ -1021,7 +1023,10 @@ export function evidenceCause(
   return cause;
 }
 
-/** A cause's text for {@link Redactor.error}: adapter evidence with its unscrubbed fields restored. */
+/**
+ * A cause's text for {@link Redactor.error}: adapter evidence with its unscrubbed fields restored.
+ * URLs go first, since redacting a secret that begins a URL would hide the URL from the scrub.
+ */
 function causeText(cause: unknown): string {
   if (!(cause instanceof Error)) return String(cause);
   const unscrubbed = unscrubbedEvidence.get(cause);
@@ -1029,9 +1034,12 @@ function causeText(cause: unknown): string {
   if (unscrubbed === undefined) return cause.message;
   const fields = evidenceFields(cause.message);
 
-  return fields === undefined
-    ? cause.message
-    : JSON.stringify({ ...Object.fromEntries(fields), ...unscrubbed });
+  if (fields === undefined || unscrubbed.providerMessage === undefined) return cause.message;
+
+  return JSON.stringify({
+    ...Object.fromEntries(fields),
+    providerMessage: unscrubbed.providerMessage.replace(urlPattern, "[URL REDACTED]"),
+  });
 }
 
 /** A redact function for values an adapter knows, such as its API key. Empty values are skipped. */
