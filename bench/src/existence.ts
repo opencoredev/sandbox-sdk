@@ -416,6 +416,9 @@ const memoryNotFound = z.object({ code: z.literal("not_found") });
 /** Maritime's error body: `{ code }`, such as `sandbox_not_found`. */
 const maritimeErrorBody = z.object({ code: z.string() });
 
+/** Maritime's sandbox answer: its `state` is the only field that says whether it ended. */
+const maritimeSandbox = z.object({ id: z.string(), state: z.string() });
+
 /** The fields the bench reads from Docker's container inspect. */
 const dockerContainer = z.object({
   Id: z.string(),
@@ -601,8 +604,10 @@ export async function lookupSandbox(
           // GET only: it never resumes a paused sandbox. An ended one reads `state: "ended"`.
           const { apiKey, baseUrl } = connectionOf(provider, "maritime");
 
+          // A redirect would answer from somewhere other than the fingerprinted endpoint.
           const response = await fetch(`${baseUrl}/v1/sandboxes/${encodeURIComponent(id)}`, {
             headers: { Authorization: `Bearer ${apiKey}` },
+            redirect: "error",
             signal,
           });
 
@@ -622,8 +627,9 @@ export async function lookupSandbox(
 
           if (!response.ok)
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+          const sandbox = maritimeSandbox.parse(await response.json());
 
-          return nativeInfo.parse(await response.json());
+          return { id: sandbox.id, state: sandbox.state };
         }
 
         case "instabox": {

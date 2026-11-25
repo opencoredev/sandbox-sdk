@@ -1168,3 +1168,63 @@ describe("Maritime exact reads decide absence only from Maritime's own codes", (
     expect(redirects).toEqual(["error"]);
   });
 });
+
+describe("round 2: Maritime reads never follow redirects, and a skipped reap with owed cleanup fails", () => {
+  it("an exact lookup refuses redirects and needs Maritime's own state field", async () => {
+    const redirects: (RequestRedirect | undefined)[] = [];
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      redirects.push(init?.redirect);
+
+      return Response.json({ id: "sbx-src", status: "terminated" });
+    });
+
+    const lookup = await lookupSandbox(
+      bound(maritime(), { apiKey: "mk_test_key" }),
+      "sbx-src",
+      5000,
+    );
+
+    expect(redirects).toEqual(["error"]);
+    expect(lookup.result).toBe("unavailable");
+  });
+
+  it("snapshot reads refuse redirects too", async () => {
+    const redirects: (RequestRedirect | undefined)[] = [];
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      redirects.push(init?.redirect);
+
+      return Response.json({ code: "snapshot_not_found" }, { status: 404 });
+    });
+
+    await inspectSnapshot(
+      "maritime",
+      bound(maritime(), { apiKey: "mk_test_key" }),
+      "sbx-src",
+      "snap-1",
+    );
+
+    expect(redirects).toEqual(["error"]);
+  });
+
+  it("reapRun fails and keeps the journal when a provider with journaled entries cannot load", async () => {
+    const out = await directory("bench-maritime-skip-");
+
+    const journal = JSON.stringify({
+      runId: "maritime-run",
+      resources: [{ provider: "maritime", id: "sbx-src", kind: "sandbox", parent: null }],
+    });
+
+    await writeFile(join(out, "ownership.json"), journal);
+
+    const failed = await reapRun(
+      [{ kind: "skipped", name: "maritime", note: "Missing credentials: MARITIME_API_KEY" }],
+      parseV2(["--providers", "maritime", "--run", "maritime-run", "--out", out]),
+      (s) => s,
+    );
+
+    expect(failed).toBe(true);
+    expect(await readFile(join(out, "ownership.json"), "utf8")).toBe(journal);
+  });
+});

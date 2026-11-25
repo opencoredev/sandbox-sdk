@@ -128,6 +128,13 @@ export async function reapRun(
   for (const p of providers) {
     if (p.kind === "skipped") {
       process.stderr.write(`SKIP ${p.name}: ${p.note}\n`);
+
+      // Its journaled cleanup is still owed: the entries stay and the reap fails.
+      if (
+        (journal?.resources ?? []).some((r) => r.provider === p.name) ||
+        (journal?.apps ?? []).some((app) => app.provider === p.name)
+      )
+        failed = true;
       continue;
     }
 
