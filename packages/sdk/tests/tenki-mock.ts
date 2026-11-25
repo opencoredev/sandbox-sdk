@@ -14,7 +14,7 @@ import type {
   ProcessRunResult,
   Session,
   TenkiSandbox,
-} from "@tenkicloud/sandbox";
+} from "@luxorai/sandbox";
 import { isObject, isString } from "../src/shared/narrow.js";
 import {
   createTenkiProvider,

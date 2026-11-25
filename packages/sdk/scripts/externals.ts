@@ -17,7 +17,7 @@ export const externalPackages: readonly string[] = [
   "@daytona/toolbox-api-client",
   "@rivet-dev/agentos-core",
   "@superserve/sdk",
-  "@tenkicloud/sandbox",
+  "@luxorai/sandbox",
   "@upstash/box",
   "@vercel/sandbox",
   "@vercel/oidc",

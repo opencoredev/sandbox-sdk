@@ -8,7 +8,7 @@ const native = vi.hoisted(() => ({ get: vi.fn(), status: vi.fn() }));
 
 beforeEach(() => {
   fakeNativeModules({
-    "@tenkicloud/sandbox": {
+    "@luxorai/sandbox": {
       TenkiSandbox: class {
         get = native.get;
         getSnapshot = vi.fn();
@@ -240,7 +240,7 @@ it("loads all eight installed native SDKs with Bun's import conditions and no ne
 
   const source = `globalThis.fetch=async()=>{throw new Error("Network forbidden")};
  const {nativeModules}=await import(${JSON.stringify(moduleURL)});
- for(const name of ["e2b","@daytonaio/sdk","@upstash/box","@boatdev/sdk","@boxd-sh/sdk","freestyle","@tenkicloud/sandbox","@superserve/sdk"]){await nativeModules.load(name); console.log(name);}`;
+ for(const name of ["e2b","@daytonaio/sdk","@upstash/box","@boatdev/sdk","@boxd-sh/sdk","freestyle","@luxorai/sandbox","@superserve/sdk"]){await nativeModules.load(name); console.log(name);}`;
 
   const output = spawnSync("bun", ["-e", source], { encoding: "utf8", timeout: 10000 });
   expect(output.status, output.stderr).toBe(0);

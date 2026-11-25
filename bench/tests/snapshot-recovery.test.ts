@@ -202,7 +202,7 @@ it.each(["e2b", "daytona", "boxd", "tenki", "freestyle", "superserve"])(
           snapshots = { get, delete: vi.fn() };
         },
       },
-      "@tenkicloud/sandbox": {
+      "@luxorai/sandbox": {
         TenkiSandbox: class {
           get = vi.fn();
           getSnapshot = get;

@@ -1,4 +1,4 @@
-import type { ProcessRunResult } from "@tenkicloud/sandbox";
+import type { ProcessRunResult } from "@luxorai/sandbox";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { cleanupTenki, MockSession, MockTenki, tenki, tenkiState } from "./tenki-mock.js";
 import { createSandbox, connectSandbox } from "../src/index.js";

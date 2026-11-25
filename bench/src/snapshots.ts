@@ -47,7 +47,7 @@ async function freestyleSnapshots(provider: Provider) {
 }
 
 async function tenkiClient(provider: Provider) {
-  const { TenkiSandbox } = await nativeModules.load("@tenkicloud/sandbox");
+  const { TenkiSandbox } = await nativeModules.load("@luxorai/sandbox");
 
   return new TenkiSandbox(connectionOf(provider, "tenki"));
 }

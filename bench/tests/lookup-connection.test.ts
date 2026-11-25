@@ -373,7 +373,7 @@ describe("lookups use the explicit options the adapter was built with, not the e
       };
     });
 
-    fakeNativeModules({ "@tenkicloud/sandbox": { TenkiSandbox } });
+    fakeNativeModules({ "@luxorai/sandbox": { TenkiSandbox } });
 
     const adapter = await load("tenki", { apiKey: "live-token", baseUrl: "https://live.invalid" });
 

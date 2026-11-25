@@ -9,7 +9,7 @@ import type * as Core from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Boxd } from "@boxd-sh/sdk";
 import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
-import type { TenkiSandbox } from "@tenkicloud/sandbox";
+import type { TenkiSandbox } from "@luxorai/sandbox";
 import type { Archil as ArchilClient } from "disk";
 import {
   createRawMaritime,
@@ -118,7 +118,7 @@ const nativePackages = {
   upstash: "@upstash/box",
   boxd: "@boxd-sh/sdk",
   freestyle: "freestyle",
-  tenki: "@tenkicloud/sandbox",
+  tenki: "@luxorai/sandbox",
   superserve: "@superserve/sdk",
   baseten: "@basetenlabs/sandbox",
   instabox: "@insforge/instabox-sdk",
@@ -828,7 +828,7 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
   }
 
   if (name === "tenki") {
-    const m: typeof import("@tenkicloud/sandbox") = await import(nativeUrl("@tenkicloud/sandbox"));
+    const m: typeof import("@luxorai/sandbox") = await import(nativeUrl("@luxorai/sandbox"));
 
     const client = (nativeClients.tenki ??= new m.TenkiSandbox({
       authToken: process.env.TENKI_AUTH_TOKEN ?? process.env.TENKI_API_KEY,
