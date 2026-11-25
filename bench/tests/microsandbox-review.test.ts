@@ -2435,4 +2435,153 @@ describe("independent review reproductions", () => {
       },
     ]);
   });
+
+  test.each([true, false])(
+    "R11 persists known Service identity before DELETE after preview rename failure (exactGetFails=%s)",
+    async (failRead) => {
+      const ownership = join(out, "ownership.json");
+      const p = adapter();
+      const destroy = p.destroy.bind(p);
+      let sourceId = "";
+      let slug = "";
+      let timestamp: string | undefined;
+      let promotionFailures = 0;
+      let cleanupFaults = 0;
+      let startedCleanup = false;
+      let proofAtMutation: unknown;
+
+      const readProof = async (file: Parameters<typeof readFile>[0]) =>
+        z
+          .object({
+            resources: z.array(
+              z.object({
+                kind: z.string(),
+                id: z.string(),
+                serviceState: z.enum(["pending", "created"]).optional(),
+                serviceCreatedAt: z.string().optional(),
+              }),
+            ),
+          })
+          .parse(JSON.parse(await readFile(file, "utf8")))
+          .resources.find((r) => r.id === slug);
+
+      const rename = journalFiles.rename;
+      vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+        if (to === ownership && slug && promotionFailures === 0) {
+          const entry = await readProof(from);
+
+          if (entry?.serviceState === "created" && entry.serviceCreatedAt !== undefined) {
+            promotionFailures++;
+            throw new Error("one-shot preview settlement rename failure");
+          }
+        }
+
+        await rename(from, to);
+      });
+
+      p.destroy = async (sandboxId) => {
+        if (sourceId === "") {
+          sourceId = sandboxId;
+          slug = `sbx-${sandboxId.replaceAll("-", "").slice(0, 16)}-p3000`;
+          await expect(p.previewUrl(sandboxId, 3000)).rejects.toThrow(
+            "one-shot preview settlement rename failure",
+          );
+          const service = fake.services.get(slug);
+
+          if (!service || service.createdAt === undefined) throw new Error("Service missing");
+          timestamp = service.createdAt;
+
+          if (!failRead) {
+            service.target = null;
+            service.status = "detached";
+          }
+
+          startedCleanup = true;
+        }
+
+        return destroy(sandboxId);
+      };
+
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        if (startedCleanup) {
+          const url = new URL(String(input));
+          const servicePath = `/v1/services/${slug}`;
+          const sandboxPath = `/v1/sandboxes/${sourceId}`;
+
+          if (cleanupFaults === 0 && url.pathname === servicePath) {
+            if (failRead && init?.method === "GET") {
+              cleanupFaults++;
+
+              return Response.json(
+                { error: "one-shot exact Service GET failure" },
+                { status: 500 },
+              );
+            }
+
+            if (!failRead && init?.method === "DELETE") {
+              cleanupFaults++;
+              proofAtMutation = await readProof(ownership);
+
+              return Response.json({ error: "one-shot Service DELETE failure" }, { status: 500 });
+            }
+          }
+
+          if (
+            failRead &&
+            proofAtMutation === undefined &&
+            (url.pathname === sandboxPath || url.pathname === servicePath) &&
+            init?.method === "DELETE" &&
+            fake.services.has(slug)
+          )
+            proofAtMutation = await readProof(ownership);
+        }
+
+        return realFetch(input, init);
+      });
+
+      await runV2(
+        loaded(p),
+        parseV2([
+          "--providers",
+          "microsandbox",
+          "--run",
+          run,
+          "--out",
+          out,
+          "--runs",
+          "1",
+          "--max-sandboxes",
+          "4",
+          "--bursts",
+          "",
+          "--ownership-visibility-ms",
+          "100",
+          "--timeout-ms",
+          "5000",
+          "--scenarios",
+          "cold",
+        ]),
+        async () => {},
+      );
+      vi.restoreAllMocks();
+      const failed = await reap();
+
+      expect({
+        proofAtMutation,
+        failed,
+        serviceAfterReap: fake.services.get(slug)?.status,
+        stillJournaled: (await readProof(ownership))?.serviceState,
+      }).toEqual({
+        proofAtMutation: {
+          id: slug,
+          kind: "service",
+          serviceState: "created",
+          serviceCreatedAt: timestamp,
+        },
+        failed: false,
+        serviceAfterReap: undefined,
+        stillJournaled: undefined,
+      });
+    },
+  );
 });

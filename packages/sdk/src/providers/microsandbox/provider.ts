@@ -755,6 +755,36 @@ export function createMicrosandboxProvider(
       >()) {
       if (!isOwnedSlug(slug, id)) continue;
 
+      const syncIdentity = async () => {
+        const needsSync =
+          !entry.confirmed ||
+          (entry.createdAt !== undefined && entry.confirmedAt !== entry.createdAt);
+
+        if (!needsSync) return true;
+
+        const persisted = await notifyServiceCleanup(
+          { sandboxId: id, slug, outcome: "created", createdAt: entry.createdAt },
+          deadline,
+        );
+
+        if (!persisted) {
+          failed.push(slug);
+          unpersistedIdentity.push(slug);
+
+          return false;
+        }
+
+        entry.confirmed = true;
+        entry.confirmedAt = entry.createdAt;
+
+        return true;
+      };
+
+      // If we already know this Service's creation timestamp (from create, reuse, or filtered list),
+      // persist it before the exact GET so a transient GET 500 or an already-detached read cannot
+      // proceed to DELETE without durable proof on disk.
+      if (entry.createdAt !== undefined && !(await syncIdentity())) continue;
+
       try {
         let service: MicrosandboxService;
 
@@ -788,25 +818,7 @@ export function createMicrosandboxProvider(
           if (entry.createdAt === undefined && service.createdAt !== undefined)
             entry.createdAt = service.createdAt;
 
-          const needsIdentitySync =
-            !entry.confirmed ||
-            (entry.createdAt !== undefined && entry.confirmedAt !== entry.createdAt);
-
-          if (needsIdentitySync) {
-            const persisted = await notifyServiceCleanup(
-              { sandboxId: id, slug, outcome: "created", createdAt: entry.createdAt },
-              deadline,
-            );
-
-            if (!persisted) {
-              failed.push(slug);
-              unpersistedIdentity.push(slug);
-              continue;
-            }
-
-            entry.confirmed = true;
-            entry.confirmedAt = entry.createdAt;
-          }
+          if (!(await syncIdentity())) continue;
         } else if (
           entry.createdAt !== undefined &&
           service.createdAt !== undefined &&
@@ -817,6 +829,8 @@ export function createMicrosandboxProvider(
           continue;
         } else if (entry.createdAt === undefined || service.createdAt === undefined) {
           failed.push(slug);
+          continue;
+        } else if (!(await syncIdentity())) {
           continue;
         }
 
