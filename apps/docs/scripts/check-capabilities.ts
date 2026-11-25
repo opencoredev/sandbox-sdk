@@ -43,6 +43,7 @@ import { freestyle } from "../../../packages/sdk/src/providers/freestyle/index.t
 import { instabox } from "../../../packages/sdk/src/providers/instabox/index.ts";
 import { local } from "../../../packages/sdk/src/providers/local/index.ts";
 import { maritime } from "../../../packages/sdk/src/providers/maritime/index.ts";
+import { createMicrosandboxProvider } from "../../../packages/sdk/src/providers/microsandbox/provider.ts";
 import { createModalProvider } from "../../../packages/sdk/src/providers/modal/provider.ts";
 import { createRailwayProvider } from "../../../packages/sdk/src/providers/railway/provider.ts";
 import { sandboxer } from "../../../packages/sdk/src/providers/sandboxer/index.ts";
@@ -154,6 +155,14 @@ const subjects: readonly Subject[] = [
   {
     column: "Maritime",
     build: () => maritime({ apiKey: offlineKey, baseUrl: "https://offline.invalid" }),
+  },
+  {
+    column: "Microsandbox",
+    build: () =>
+      createMicrosandboxProvider(
+        { apiKey: offlineKey, baseUrl: "https://offline.invalid" },
+        stubTransport,
+      ),
   },
   { column: "Memory", build: () => memory() },
 ];

@@ -103,27 +103,28 @@ The same tools come for Mastra (`/mastra`), the OpenAI Agents SDK (`/openai`) an
 
 ## Providers
 
-| Provider                                                               | Import                                | Install                       |
-| ---------------------------------------------------------------------- | ------------------------------------- | ----------------------------- |
-| [E2B](https://sandbox-sdk.app/docs/providers/e2b)                      | `@opencoredev/sandbox-sdk/e2b`        | nothing                       |
-| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)              | `@opencoredev/sandbox-sdk/daytona`    | nothing                       |
-| [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel)        | `@opencoredev/sandbox-sdk/vercel`     | `@vercel/sandbox`             |
-| [Modal](https://sandbox-sdk.app/docs/providers/modal)                  | `@opencoredev/sandbox-sdk/modal`      | `modal`                       |
-| [Baseten](https://sandbox-sdk.app/docs/providers/baseten)              | `@opencoredev/sandbox-sdk/baseten`    | `@basetenlabs/sandbox`        |
-| [Instabox](https://sandbox-sdk.app/docs/providers/instabox)            | `@opencoredev/sandbox-sdk/instabox`   | nothing                       |
-| [Maritime](https://sandbox-sdk.app/docs/providers/maritime)            | `@opencoredev/sandbox-sdk/maritime`   | nothing                       |
-| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)          | `@opencoredev/sandbox-sdk/upstash`    | `@upstash/box`                |
-| [Railway](https://sandbox-sdk.app/docs/providers/railway)              | `@opencoredev/sandbox-sdk/railway`    | `railway`                     |
-| [Luxor](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`      | `@tenkicloud/sandbox`         |
-| [boxd](https://sandbox-sdk.app/docs/providers/boxd)                    | `@opencoredev/sandbox-sdk/boxd`       | `@boxd-sh/sdk`                |
-| [Freestyle](https://sandbox-sdk.app/docs/providers/freestyle)          | `@opencoredev/sandbox-sdk/freestyle`  | nothing                       |
-| [Superserve](https://sandbox-sdk.app/docs/providers/superserve)        | `@opencoredev/sandbox-sdk/superserve` | nothing                       |
-| [Boat](https://sandbox-sdk.app/docs/providers/boat)                    | `@opencoredev/sandbox-sdk/boat`       | nothing                       |
-| [Sandboxer](https://sandbox-sdk.app/docs/providers/sandboxer)          | `@opencoredev/sandbox-sdk/sandboxer`  | nothing                       |
-| Beam                                                                   | `@opencoredev/sandbox-sdk/beam`       | `@beamcloud/beam-js`          |
-| [Docker on your machine](https://sandbox-sdk.app/docs/providers/local) | `@opencoredev/sandbox-sdk/local`      | nothing; needs Docker running |
-| [agentOS](https://sandbox-sdk.app/docs/providers/agentos)              | `@opencoredev/sandbox-sdk/agentos`    | `@rivet-dev/agentos-core`     |
-| Memory, for tests                                                      | `@opencoredev/sandbox-sdk/memory`     | nothing                       |
+| Provider                                                               | Import                                  | Install                       |
+| ---------------------------------------------------------------------- | --------------------------------------- | ----------------------------- |
+| [E2B](https://sandbox-sdk.app/docs/providers/e2b)                      | `@opencoredev/sandbox-sdk/e2b`          | nothing                       |
+| [Daytona](https://sandbox-sdk.app/docs/providers/daytona)              | `@opencoredev/sandbox-sdk/daytona`      | nothing                       |
+| [Vercel Sandbox](https://sandbox-sdk.app/docs/providers/vercel)        | `@opencoredev/sandbox-sdk/vercel`       | `@vercel/sandbox`             |
+| [Modal](https://sandbox-sdk.app/docs/providers/modal)                  | `@opencoredev/sandbox-sdk/modal`        | `modal`                       |
+| [Baseten](https://sandbox-sdk.app/docs/providers/baseten)              | `@opencoredev/sandbox-sdk/baseten`      | `@basetenlabs/sandbox`        |
+| [Instabox](https://sandbox-sdk.app/docs/providers/instabox)            | `@opencoredev/sandbox-sdk/instabox`     | nothing                       |
+| [Maritime](https://sandbox-sdk.app/docs/providers/maritime)            | `@opencoredev/sandbox-sdk/maritime`     | nothing                       |
+| [Microsandbox](https://sandbox-sdk.app/docs/providers/microsandbox)    | `@opencoredev/sandbox-sdk/microsandbox` | `microsandbox`                |
+| [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)          | `@opencoredev/sandbox-sdk/upstash`      | `@upstash/box`                |
+| [Railway](https://sandbox-sdk.app/docs/providers/railway)              | `@opencoredev/sandbox-sdk/railway`      | `railway`                     |
+| [Luxor](https://sandbox-sdk.app/docs/providers/tenki)                  | `@opencoredev/sandbox-sdk/tenki`        | `@tenkicloud/sandbox`         |
+| [boxd](https://sandbox-sdk.app/docs/providers/boxd)                    | `@opencoredev/sandbox-sdk/boxd`         | `@boxd-sh/sdk`                |
+| [Freestyle](https://sandbox-sdk.app/docs/providers/freestyle)          | `@opencoredev/sandbox-sdk/freestyle`    | nothing                       |
+| [Superserve](https://sandbox-sdk.app/docs/providers/superserve)        | `@opencoredev/sandbox-sdk/superserve`   | nothing                       |
+| [Boat](https://sandbox-sdk.app/docs/providers/boat)                    | `@opencoredev/sandbox-sdk/boat`         | nothing                       |
+| [Sandboxer](https://sandbox-sdk.app/docs/providers/sandboxer)          | `@opencoredev/sandbox-sdk/sandboxer`    | nothing                       |
+| Beam                                                                   | `@opencoredev/sandbox-sdk/beam`         | `@beamcloud/beam-js`          |
+| [Docker on your machine](https://sandbox-sdk.app/docs/providers/local) | `@opencoredev/sandbox-sdk/local`        | nothing; needs Docker running |
+| [agentOS](https://sandbox-sdk.app/docs/providers/agentos)              | `@opencoredev/sandbox-sdk/agentos`      | `@rivet-dev/agentos-core`     |
+| Memory, for tests                                                      | `@opencoredev/sandbox-sdk/memory`       | nothing                       |
 
 [Compare providers](https://sandbox-sdk.app/docs/providers) for credentials, capabilities and preview rules. To add your own, implement `Provider` from `@opencoredev/sandbox-sdk/provider` and test it with `runConformance` from `@opencoredev/sandbox-sdk/testing`.
 
