@@ -42,7 +42,13 @@ bun add @opencoredev/sandbox-sdk microsandbox
   </Tab>
 </Tabs>
 
-`microsandbox` loads a native addon from a platform package (`@superradcompany/microsandbox-linux-x64-gnu` and so on), so keep optional dependencies enabled, and keep `microsandbox` external when you bundle. Create an organization API key (`msb_...`) in Microsandbox and set `MSB_API_KEY`, or pass `microsandbox({ apiKey })`.
+`microsandbox` loads a native addon from a platform package (`@superradcompany/microsandbox-linux-x64-gnu` and so on), so keep optional dependencies enabled, and keep `microsandbox` external when you bundle. `microsandbox@0.8.1`'s manifest doesn't list its platform packages, so on that version install yours next to it, at the same version:
+
+```bash
+npm install @superradcompany/microsandbox-linux-x64-gnu@0.8.1
+```
+
+Create an organization API key (`msb_...`) in Microsandbox and set `MSB_API_KEY`, or pass `microsandbox({ apiKey })`.
 
 ## Quickstart
 
@@ -158,6 +164,8 @@ Standard compute bills $0.048 per vCPU-hour, $0.003 per GiB-hour of memory and $
 - `createSandbox` loads `microsandbox` before it sends anything, so a missing package or native addon fails with `unavailable` and no sandbox is made.
 - A create asks Microsandbox to start the sandbox and wait until it runs, and carries a unique name and an allocation marker in its labels. When its answer is lost, the adapter looks the sandbox up by name, and it only returns or deletes a sandbox carrying this call's marker; when nothing turns up, the create fails with `outcome_unknown` naming the sandbox.
 - At create, `/workspace` is made. If that step fails, the adapter deletes the sandbox before it throws.
+- Microsandbox finishes a delete after accepting it, so `destroy()` returns once the sandbox no longer reads, and fails with `outcome_unknown` if it still does after a minute.
+- A key lookup that finds only a stopped sandbox (its lifetime or idle timeout ended) starts it again before returning it. Processes that the stop ended, and those in a sandbox restored from a snapshot, read as exited.
 - Your `labels` become Microsandbox labels, and a key is stored as the `sandbox-sdk-key` label.
 - `box.native` calls Microsandbox's API on the `control` plane, and `box.native.sdk(() => import("microsandbox"))` returns a `RemoteContext` with your key and the sandbox from `context.sandboxes.get`.
 - Errors keep only Microsandbox's HTTP status and error code, and never the API key or any `msb_` token.

@@ -768,6 +768,69 @@ describe("independent review reproductions", () => {
     expect(evidence.result).not.toBe("present");
   });
 
+  test("PR88-6 a promoted allocation attempt clears its name-keyed review, across a failed results.json write", async () => {
+    const p = adapter();
+    let attempt: { name: string; allocId: string } | undefined;
+    p.setAttemptHooks({
+      create: ({ name, allocId }) => {
+        attempt = { name, allocId };
+      },
+    });
+    const { id: sandbox } = await p.create({ labels: labels() });
+
+    if (attempt === undefined) throw new Error("the create hook did not run");
+    await journal([
+      {
+        provider: "microsandbox",
+        id: attempt.name,
+        kind: "allocation-attempt",
+        parent: null,
+        allocId: attempt.allocId,
+        attemptedAt: new Date().toISOString(),
+      },
+    ]);
+
+    // Microsandbox cannot be read: the attempt goes under review, and its sandbox stays.
+    const unreadable = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) =>
+        new URL(String(input)).pathname.startsWith("/v1/sandboxes")
+          ? Response.json({ error: { code: "internal_error" } }, { status: 500 })
+          : realFetch(input, init),
+      );
+
+    expect(await reap()).toBe(true);
+    unreadable.mockRestore();
+    expect(fake.sandboxes.has(sandbox)).toBe(true);
+    expect(await readFile(join(out, "results.json"), "utf8")).toContain(attempt.name);
+
+    // The next reap promotes the attempt and deletes its sandbox, but results.json cannot be written.
+    const realRename = journalFiles.rename;
+
+    const rename = vi
+      .spyOn(journalFiles, "rename")
+      .mockImplementation((from, to) =>
+        to === join(out, "results.json")
+          ? Promise.reject(new Error("simulated results write failure"))
+          : realRename(from, to),
+      );
+
+    await expect(reap()).rejects.toThrow("simulated results write failure");
+    rename.mockRestore();
+    expect(fake.sandboxes.has(sandbox)).toBe(false);
+
+    const failed = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
+
+    expect({ failed, reviewedIds: results.cleanupReview.map((item) => item.id) }).toEqual({
+      failed: false,
+      reviewedIds: [],
+    });
+  });
+
   test("R9 an old journal and one name 404 do not prove the restore was never allocated", async () => {
     const p = adapter();
     const source = await p.create({ labels: labels() });

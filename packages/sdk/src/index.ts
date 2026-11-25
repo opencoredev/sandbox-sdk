@@ -572,6 +572,9 @@ async function sandboxActivity(provider: Provider, id: string): Promise<"idle" |
 
     // Reading a sleeping sandbox would wake it; one that went to sleep since listing is left alone.
     if (provider.readsMetadataOnlyWhenRunning && info.state !== "running") return "busy";
+
+    // A stopped sandbox runs nothing, and probing it would fail or start it again.
+    if (info.state === "stopped") return "idle";
     const { makeHandle } = await import("./handle.js");
     box = await makeHandle(provider, info, false, {}, new Redactor(), false);
   } catch (error) {

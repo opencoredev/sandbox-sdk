@@ -104,6 +104,7 @@ export async function reapRun(
     apps: JournalApp[];
     settledSnapshots: z.infer<typeof settledSnapshotSchema>[];
     settledServices: z.infer<typeof settledServiceSchema>[];
+    settledAttempts: z.infer<typeof settledServiceSchema>[];
   } | null = null;
 
   try {
@@ -117,6 +118,8 @@ export async function reapRun(
         settledSnapshots: z.array(settledSnapshotSchema).default([]),
         // Settled Microsandbox Service reviews kept until results.json clears.
         settledServices: z.array(settledServiceSchema).default([]),
+        // Microsandbox allocation attempts promoted to sandboxes, kept until results.json clears.
+        settledAttempts: z.array(settledServiceSchema).default([]),
       })
       .parse(JSON.parse(await readFile(path, "utf8")));
   } catch (error) {
@@ -438,6 +441,7 @@ export async function reapRun(
           apps: [],
           settledSnapshots: [],
           settledServices: [],
+          settledAttempts: [],
         };
 
         if (
@@ -484,6 +488,14 @@ export async function reapRun(
 
         candidates.add(outcome.id);
 
+        // A review an earlier reap left under the attempt's name is settled: the sandbox entry,
+        // keyed by ID, carries the cleanup from here. The marker outlives a failed results.json write.
+        const settled = reviews.filter(
+          (r) => r.provider === p.name && r.kind === "allocation-attempt" && r.id === entry.id,
+        );
+
+        for (const item of settled) reviews.splice(reviews.indexOf(item), 1);
+
         if (journal) {
           journal.resources = journal.resources.filter((r) => r !== entry);
           journal.resources.push({
@@ -492,6 +504,12 @@ export async function reapRun(
             kind: "sandbox",
             parent: null,
           });
+
+          if (
+            settled.length > 0 &&
+            !journal.settledAttempts.some((s) => s.provider === p.name && s.id === entry.id)
+          )
+            journal.settledAttempts.push({ provider: p.name, id: entry.id });
           reconciled = true;
         }
       } catch (error) {
@@ -507,6 +525,18 @@ export async function reapRun(
     }
 
     if (journal && reconciled) await persistJournal();
+
+    // An attempt an earlier reap promoted, whose review results.json kept because its write failed.
+    for (const item of Array.from(reviews))
+      if (
+        item.provider === p.name &&
+        item.kind === "allocation-attempt" &&
+        journal?.settledAttempts.some((s) => s.provider === p.name && s.id === item.id) &&
+        !journal.resources.some(
+          (r) => r.provider === p.name && r.kind === "allocation-attempt" && r.id === item.id,
+        )
+      )
+        reviews.splice(reviews.indexOf(item), 1);
 
     const deleteCandidate = async (id: string) => {
       if (!(await owned(id))) {
@@ -529,6 +559,7 @@ export async function reapRun(
             apps: [],
             settledSnapshots: [],
             settledServices: [],
+            settledAttempts: [],
           };
 
           if (
@@ -1048,8 +1079,13 @@ export async function reapRun(
     await writeOwnership(join(config.out, "results.json"), JSON.stringify(record, null, 2) + "\n");
   }
 
-  // Once results.json is durably written, drop settled snapshot/service markers whose reviews cleared.
-  if (journal && (journal.settledSnapshots.length > 0 || journal.settledServices.length > 0)) {
+  // Once results.json is durably written, drop settled markers whose reviews cleared.
+  if (
+    journal &&
+    (journal.settledSnapshots.length > 0 ||
+      journal.settledServices.length > 0 ||
+      journal.settledAttempts.length > 0)
+  ) {
     const retainedSnapshots = journal.settledSnapshots.filter((alias) =>
       reviews.some(
         (r) =>
@@ -1065,12 +1101,21 @@ export async function reapRun(
       ),
     );
 
+    const retainedAttempts = journal.settledAttempts.filter((settled) =>
+      reviews.some(
+        (r) =>
+          r.provider === settled.provider && r.kind === "allocation-attempt" && r.id === settled.id,
+      ),
+    );
+
     if (
       retainedSnapshots.length !== journal.settledSnapshots.length ||
-      retainedServices.length !== journal.settledServices.length
+      retainedServices.length !== journal.settledServices.length ||
+      retainedAttempts.length !== journal.settledAttempts.length
     ) {
       journal.settledSnapshots = retainedSnapshots;
       journal.settledServices = retainedServices;
+      journal.settledAttempts = retainedAttempts;
       await persistJournal();
     }
   }

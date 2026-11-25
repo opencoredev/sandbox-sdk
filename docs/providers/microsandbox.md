@@ -110,7 +110,11 @@ The sandbox's ID is its immutable `SandboxResponse.id`; the adapter keeps
 `list()` and `find()` page `GET /v1/sandboxes?labels=<JSON>` and filter again
 locally: every label must match, and with `computeType` only sandboxes on that
 tier count, so a standard client never sees a shared sandbox. `find()` skips
-`failed` sandboxes.
+`failed` sandboxes and prefers a running one. A stopped one (its lifetime or
+idle timeout ended; a `stopping` one is waited out first) is started again and
+the records of processes its stop ended are marked exited before `find()`
+returns it. A restore runs the same invalidation before `/workspace` setup, as
+does the restart after a snapshot.
 
 ## Commands
 
@@ -122,6 +126,12 @@ with `stdinBytes(Buffer.from(stdin, "utf8"))` when `stdin` is set, else
 chunks never mixes with the other stream, and chunks are emitted in arrival
 order. The exit code comes from the `exited` event, or `wait()` when the
 stream ends first.
+
+The guest agent lookup (`sandboxes.get`, and the name read behind it) runs
+inside the command's timeout and abort: one that fires first reports
+`{ exitCode: null, timedOut: true }`, as nothing was started. Each read of the
+stream races the stop with one removable abort listener, so a long stream never
+adds reactions to a shared promise.
 
 A timeout or abort before `execStreamWith` hands back its handle leaves the
 start unknown: the late handle is killed and waited for when it arrives, and
@@ -162,7 +172,13 @@ this ID that still target this sandbox (or nothing, once it is detached),
 deletes each (404 is gone), and then always runs
 `DELETE /v1/sandboxes/{id}`, even when a Service could not be removed. A
 Service that failed stays in memory and the call fails after the sandbox is
-deleted, so destroying again finishes it.
+deleted, so destroying again finishes it. A Service listing that fails is
+reported the same way, after the delete: the ID is remembered, and the next
+destroy also reads the whole Service list for this ID's slugs among detached
+Services. Microsandbox accepts a DELETE before it finishes, so an accepted
+delete is confirmed by reading `GET /v1/sandboxes/{id}` until it answers 404,
+on its own 60-second deadline; a sandbox that still reads then fails with
+`outcome_unknown`, as does a failed create whose cleanup it was.
 
 ## Snapshots
 

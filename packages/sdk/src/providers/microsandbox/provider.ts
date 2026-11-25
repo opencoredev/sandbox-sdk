@@ -347,6 +347,12 @@ function seconds(ms: number, option: string, min: number) {
 /** Run once in a new sandbox, also one restored from a snapshot: the SDK works in /workspace. */
 const setupCommand = "mkdir -p /workspace";
 
+/**
+ * A stop ends every guest process but leaves its record on the disk, which a restore or a restart
+ * keeps: records without an exit are marked killed, and the run markers of commands that ended go.
+ */
+const invalidate = `for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/runs; true`;
+
 /** @internal The adapter behind `microsandbox()`. `load` imports `microsandbox`; tests pass a fixture. */
 export function createMicrosandboxProvider(
   options: MicrosandboxOptions,
@@ -378,6 +384,13 @@ export function createMicrosandboxProvider(
       }
     >
   >();
+
+  /**
+   * Sandboxes whose Service listing failed during a destroy that still deleted them, with their names.
+   * Their Services may now be detached, which the sandbox-filtered list no longer shows, so the next
+   * destroy of the ID looks for this ID's own slugs among the detached ones.
+   */
+  const unlisted = new Map<string, string>();
 
   /** Public Service URLs per sandbox ID and port. */
   const previews = new Map<string, string>();
@@ -621,6 +634,29 @@ export function createMicrosandboxProvider(
     }
   }
 
+  /**
+   * Reads sandbox `id` until it answers 404: Microsandbox accepts a DELETE before it finishes, and the
+   * sandbox stays readable, and findable by key, until then. `outcome_unknown` when it still reads at
+   * `deadline`.
+   */
+  async function untilGone(id: string, deadline: Deadline) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await http.json({ method: "GET", ...sandboxPath(id), deadline });
+      } catch (error) {
+        if (isGone(error)) return;
+      }
+
+      if (deadline.remaining() <= 0)
+        throw fail(
+          "the delete was accepted, but the sandbox still exists; destroy it again to confirm it is gone",
+          "outcome_unknown",
+          { sandboxId: id },
+        );
+      await delay(Math.min(2000, 250 * 2 ** attempt, deadline.remaining()));
+    }
+  }
+
   /** Starts a stopped or created sandbox and waits for it to run. A 409 (already starting) is waited out. */
   async function start(id: string, deadline: Deadline, signal?: AbortSignal) {
     handles.delete(id);
@@ -637,6 +673,14 @@ export function createMicrosandboxProvider(
     }
 
     return untilRunning(id, deadline, signal);
+  }
+
+  /** Starts a sandbox a stop ended and marks the processes the stop killed as exited. */
+  async function revive(id: string, deadline: Deadline, signal?: AbortSignal) {
+    const sandbox = await start(id, deadline, signal);
+    await shell(id, invalidate, 60_000);
+
+    return sandbox;
   }
 
   /** Records Service `slug` of sandbox `id` as this adapter's, so a later destroy still finds it once detached. */
@@ -714,33 +758,55 @@ export function createMicrosandboxProvider(
    * a detached sandbox) and from the cloud's list filtered by the sandbox's name; each must match the
    * adapter's own slug shape for this ID and still target this sandbox (or nothing) before it is deleted.
    * A listed one joins memory, so if its delete fails, the next destroy retries it after the sandbox is
-   * gone and the list no longer shows it. Returns the slugs whose deletion failed.
+   * gone and the list no longer shows it. After a destroy whose listing failed (see {@link unlisted}),
+   * the whole list is read for this ID's detached slugs too. Returns the slugs whose deletion failed,
+   * and whether every listing answered.
    */
   async function removeServices(id: string, sandboxName: string | undefined, deadline: Deadline) {
     const failed: string[] = [];
     const unpersistedIdentity: string[] = [];
 
-    if (sandboxName !== undefined)
+    /** Adopts the listed Services with this ID's slugs that `matches` accepts; false when the list failed. */
+    const discover = async (
+      sandbox: string | undefined,
+      target: string,
+      matches: (service: MicrosandboxService) => boolean,
+    ) => {
       try {
         let cursor: string | undefined;
 
         for (let page = 0; page < 100; page++) {
-          const query = { sandbox: sandboxName, limit: 100, cursor };
+          const query = { sandbox, limit: 100, cursor };
 
           const answer = parseServicePage(
             await http.json({ method: "GET", path: "/services", query, deadline }),
           );
 
           for (const service of answer.data)
-            if (isOwnedSlug(service.slug, id) && service.target?.sandbox === sandboxName)
-              ownService(id, service.slug, sandboxName, service.createdAt);
+            if (isOwnedSlug(service.slug, id) && matches(service))
+              ownService(id, service.slug, target, service.createdAt);
           cursor = answer.nextCursor;
 
           if (cursor === undefined) break;
         }
+
+        return true;
       } catch {
-        // The list is a second source; memory still names what this adapter made.
+        return false;
       }
+    };
+
+    const lost = unlisted.get(id);
+
+    const listed =
+      (sandboxName === undefined ||
+        (await discover(sandboxName, sandboxName, (s) => s.target?.sandbox === sandboxName))) &&
+      (lost === undefined || (await discover(undefined, lost, (s) => s.target === null)));
+
+    const known = sandboxName ?? lost;
+
+    if (known !== undefined && listed) unlisted.delete(id);
+    else if (known !== undefined) unlisted.set(id, known);
 
     // Deleting the entry being visited is safe while iterating a Map.
     for (const [slug, entry] of ownedServices.get(id) ??
@@ -854,7 +920,7 @@ export function createMicrosandboxProvider(
 
     if (ownedServices.get(id)?.size === 0) ownedServices.delete(id);
 
-    return { failed, unpersistedIdentity };
+    return { failed, unpersistedIdentity, listed };
   }
 
   /**
@@ -862,7 +928,9 @@ export function createMicrosandboxProvider(
    * when a Service could not be removed. A 404 is gone. A failed Service is kept in memory for the next
    * try and reported after the sandbox is deleted. The name lookup, the Services and the sandbox delete
    * each get their own `budgetMs` deadline, started when that step starts: a Service step that uses up
-   * its time never stops the sandbox delete from being sent.
+   * its time never stops the sandbox delete from being sent. An accepted delete is confirmed by reading
+   * the ID until it answers 404, on a deadline of its own. A Service listing that failed is reported
+   * after the sandbox is deleted, never as success.
    */
   async function destroy(id: string, budgetMs = cleanupMs) {
     let sandboxName = names.get(id);
@@ -876,11 +944,13 @@ export function createMicrosandboxProvider(
 
     let failedServices: string[] = [];
     let unpersistedIdentity: string[] = [];
+    let listed = true;
 
     try {
       const outcome = await removeServices(id, sandboxName, createDeadline(budgetMs));
       failedServices = outcome.failed;
       unpersistedIdentity = outcome.unpersistedIdentity;
+      listed = outcome.listed;
     } catch {
       failedServices = [...(ownedServices.get(id)?.keys() ?? [])];
     }
@@ -892,21 +962,33 @@ export function createMicrosandboxProvider(
         { sandboxId: id },
       );
 
+    let accepted = false;
+
     try {
       await http.request({
         method: "DELETE",
         ...sandboxPath(id),
         deadline: createDeadline(budgetMs),
       });
+      accepted = true;
     } catch (error) {
       if (!isGone(error)) throw error;
     } finally {
       forget(id);
     }
 
+    if (accepted) await untilGone(id, createDeadline(budgetMs));
+
     if (failedServices.length > 0)
       throw fail(
         `the sandbox was deleted, but ${failedServices.length} of its Services (${failedServices.join(", ")}) could not be removed; destroy again to retry`,
+        "provider",
+        { sandboxId: id },
+      );
+
+    if (!listed)
+      throw fail(
+        "the sandbox was deleted, but its Services could not be listed, so some may be left detached; destroy again to retry",
         "provider",
         { sandboxId: id },
       );
@@ -1153,7 +1235,13 @@ export function createMicrosandboxProvider(
         sandbox = await untilRunning(id, deadline, input.signal);
 
       const guest = await handle(id);
-      await shell(id, setupCommand, 60_000, guest);
+      // A restore's disk holds the records of processes its source's stop ended.
+      await shell(
+        id,
+        ref === undefined ? setupCommand : `${invalidate}; ${setupCommand}`,
+        60_000,
+        guest,
+      );
 
       if (input.signal?.aborted) throw fail("creation aborted", "aborted", { sandboxId: id });
     } catch (error) {
@@ -1173,18 +1261,16 @@ export function createMicrosandboxProvider(
 
   async function exec(id: string, input: ExecInput) {
     if (input.signal?.aborted) return { exitCode: null, timedOut: true };
-    const sandbox = await handle(id);
 
-    return execute({ sandbox, exec: input, sandboxId: id, redact });
+    return execute({ sandbox: handle(id), exec: input, sandboxId: id, redact });
   }
 
   /** A short command for the adapter itself: its stdout, or a failure on a non-zero exit. */
   async function shell(id: string, command: string, timeoutMs = 120_000, known?: PeerSandbox) {
     let stdout = "";
-    const sandbox = known ?? (await handle(id));
 
     const result = await execute({
-      sandbox,
+      sandbox: known === undefined ? handle(id) : Promise.resolve(known),
       sandboxId: id,
       redact,
       exec: {
@@ -1352,7 +1438,7 @@ export function createMicrosandboxProvider(
   /** Restarts a source sandbox that was running before a snapshot; never throws. */
   async function restart(id: string): Promise<boolean> {
     try {
-      await start(id, createDeadline(readyMs));
+      await revive(id, createDeadline(readyMs));
 
       return true;
     } catch {
@@ -1655,11 +1741,32 @@ export function createMicrosandboxProvider(
 
     create: createSandbox,
 
-    async find(key) {
+    async find(key, findOptions) {
       // A failed sandbox never runs again: a key that names only those makes a new sandbox.
-      const first = (await listSandboxes({ [keyLabel]: key })).find((s) => s.status !== "failed");
+      const usable = (await listSandboxes({ [keyLabel]: key })).filter(
+        (s) => s.status !== "failed",
+      );
 
-      return first ? toInfo(first) : undefined;
+      const running = usable.find((s) => toInfo(s).state === "running");
+
+      if (running !== undefined) return toInfo(running);
+
+      // Its lifetime or idle timeout stopped it, keeping its disk: started again, so the key's
+      // sandbox runs commands. One deleted meanwhile makes a new sandbox.
+      const stopped = usable[0];
+
+      if (stopped === undefined) return undefined;
+      const deadline = createDeadline(readyMs);
+
+      try {
+        if (stopped.status === "stopping" || stopped.status === "saving_state")
+          await untilStopped(stopped.id, deadline);
+
+        return toInfo(await revive(stopped.id, deadline, findOptions?.signal));
+      } catch (error) {
+        if (isGone(error)) return undefined;
+        throw error;
+      }
     },
 
     async connect(id) {

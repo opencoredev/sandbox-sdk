@@ -1,8 +1,16 @@
 // GPT-6.2 Sol's independent review of the Microsandbox adapter (2026-11-24): its reproductions of
 // the adapter's own findings, kept verbatim as regressions. The bench's share is in
 // bench/tests/microsandbox-review.test.ts.
+import { createHook } from "node:async_hooks";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { createSandbox, reapSandboxes } from "../src/index.js";
 import { peerError } from "../src/providers/microsandbox/errors.js";
+import {
+  execute,
+  type PeerExecEvent,
+  type PeerExecHandle,
+  type PeerSandbox,
+} from "../src/providers/microsandbox/exec.js";
 import { microsandbox, type MicrosandboxOptions } from "../src/providers/microsandbox/index.js";
 import { microsandboxFake, type MicrosandboxFake } from "./microsandbox-fake.js";
 
@@ -142,4 +150,228 @@ test("the Service hooks report a 409 as a conflict before the next slug is journ
     `created ${retry}`,
   ]);
   await p.destroy(sandbox);
+});
+
+// The bot review of PR #88 (Greptile, Devin), 2026-11-25: each finding reproduced on the fake.
+
+/** Runs `command` through the adapter and returns its stdout with the result. */
+async function exec(
+  p: ReturnType<typeof adapter>,
+  id: string,
+  command: string,
+  extra: { timeoutMs?: number; signal?: AbortSignal } = {},
+) {
+  let stdout = "";
+
+  const result = await p.exec(id, {
+    command,
+    cwd: "/",
+    env: {},
+    timeoutMs: extra.timeoutMs ?? 30_000,
+    signal: extra.signal,
+    onChunk: (chunk) => {
+      if (chunk.stream === "stdout") stdout += chunk.text;
+    },
+  });
+
+  return { ...result, stdout };
+}
+
+/** A process record without an exit and a run marker, as a stop leaves them. */
+const staleRecord =
+  "mkdir -p /tmp/.sandbox-sdk/procs/p1 /tmp/.sandbox-sdk/runs && echo '{}' > /tmp/.sandbox-sdk/procs/p1/spec.json && touch /tmp/.sandbox-sdk/runs/r1";
+
+/** The record's exit code, or `none`, then whether the run marker is still there. */
+const recordState =
+  "cat /tmp/.sandbox-sdk/procs/p1/exit 2>/dev/null || printf none; if [ -e /tmp/.sandbox-sdk/runs/r1 ]; then printf ' run'; else printf ' gone'; fi";
+
+/** Marks a fake sandbox stopped, as its lifetime or idle timeout would. */
+function expire(id: string) {
+  const sandbox = fake.sandboxes.get(id);
+
+  if (sandbox === undefined) throw new Error(`no fake sandbox ${id}`);
+  sandbox.status = "stopped";
+}
+
+test("PR88-1 a long output stream adds no reaction per chunk to one shared promise", async () => {
+  const events = 2000;
+  let sent = 0;
+
+  const handle: PeerExecHandle = {
+    recv: async (): Promise<PeerExecEvent | null> => {
+      if (sent >= events) return null;
+      sent++;
+
+      return { kind: "stdout", data: new Uint8Array([97]) };
+    },
+    wait: async () => ({ code: 0 }),
+    kill: async () => {},
+  };
+
+  const sandbox: PeerSandbox = {
+    execStreamWith: async () => handle,
+    fs: () => {
+      throw new Error("not used");
+    },
+  };
+
+  let output = 0;
+  // Counts the promises derived from each promise: every reaction Promise.race adds to one is one.
+  const reactions = new Map<number, number>();
+
+  const hook = createHook({
+    init(_asyncId, type, triggerAsyncId) {
+      if (type === "PROMISE")
+        reactions.set(triggerAsyncId, (reactions.get(triggerAsyncId) ?? 0) + 1);
+    },
+  }).enable();
+
+  const result = await execute({
+    sandbox: Promise.resolve(sandbox),
+    sandboxId: "stream",
+    redact: (text) => text,
+    exec: {
+      command: "yes",
+      cwd: "/",
+      env: {},
+      timeoutMs: 30_000,
+      onChunk: (chunk) => {
+        output += chunk.text.length;
+      },
+    },
+  }).finally(() => hook.disable());
+
+  expect({ result, output }).toEqual({ result: { exitCode: 0, timedOut: false }, output: events });
+  expect(Math.max(...reactions.values())).toBeLessThan(50);
+});
+
+test("PR88-2 a failed Service listing fails the destroy, and the next destroy removes the detached Service", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+  const { url } = await p.previewUrl(sandbox, 3000);
+  const slug = new URL(url).pathname.split("/").at(-1) ?? "";
+  let listFails = true;
+
+  const fresh = adapter({
+    fetch: async (input, init) =>
+      listFails && new URL(input).pathname === "/v1/services" && init.method === "GET"
+        ? Response.json({ error: { code: "internal_error" } }, { status: 500 })
+        : realFetch(input, init),
+  });
+
+  await expect(fresh.destroy(sandbox)).rejects.toThrow(/could not be listed/);
+  expect(fake.sandboxes.has(sandbox)).toBe(false);
+  expect(fake.services.get(slug)?.status).toBe("detached");
+
+  listFails = false;
+  await fresh.destroy(sandbox);
+  expect(fake.services.has(slug)).toBe(false);
+});
+
+test("PR88-3 a failed create whose accepted DELETE never finishes stays outcome_unknown", async () => {
+  fake.faults.compute = "shared";
+  fake.faults.deleteLingerReads = Number.POSITIVE_INFINITY;
+  const realNow = Date.now.bind(Date);
+  let skew = 0;
+  let deleted = false;
+  vi.spyOn(Date, "now").mockImplementation(() => realNow() + skew);
+
+  // Every read after the DELETE moves the clock past the confirmation deadline.
+  const p = adapter({
+    fetch: async (input, init) => {
+      const path = new URL(input).pathname;
+
+      if (deleted && init.method === "GET" && path.startsWith("/v1/sandboxes/")) skew += 120_000;
+
+      if (init.method === "DELETE" && path.startsWith("/v1/sandboxes/")) deleted = true;
+
+      return realFetch(input, init);
+    },
+  });
+
+  await expect(p.create({ labels: labels() })).rejects.toMatchObject({ code: "outcome_unknown" });
+  expect(deleted).toBe(true);
+});
+
+test("PR88-4 a restore marks the processes its source's stop ended as exited", async () => {
+  const p = adapter();
+  const source = await p.create({ labels: labels() });
+  expect((await exec(p, source.id, staleRecord)).exitCode).toBe(0);
+
+  if (!p.snapshot) throw new Error("the adapter takes snapshots");
+  const snapshot = await p.snapshot(source.id);
+  const restored = await p.create({ labels: labels(), from: snapshot.id });
+
+  expect({
+    restored: (await exec(p, restored.id, recordState)).stdout,
+    source: (await exec(p, source.id, recordState)).stdout,
+  }).toEqual({ restored: "137 gone", source: "137 gone" });
+});
+
+test("PR88-5 a guest agent lookup that never answers still ends at the command's timeout or abort", async () => {
+  const { id: sandbox } = await adapter().create({ labels: labels() });
+
+  const stuck = adapter({
+    peer: async () => ({
+      RemoteContext: class {
+        readonly sandboxes = { get: () => new Promise<PeerSandbox>(() => {}) };
+      },
+    }),
+  });
+
+  expect(await exec(stuck, sandbox, "true", { timeoutMs: 200 })).toMatchObject({
+    exitCode: null,
+    timedOut: true,
+  });
+
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 100);
+
+  expect(
+    await exec(stuck, sandbox, "true", { timeoutMs: 60_000, signal: controller.signal }),
+  ).toMatchObject({ exitCode: null, timedOut: true });
+}, 10_000);
+
+test("PR88-7 a key whose sandbox its lifetime stopped is started again, its dead processes exited", async () => {
+  const p = adapter();
+  const box = await createSandbox(p, { key: "project:7", labels: { app: "review" } });
+  await box.run(staleRecord);
+  expire(box.id);
+
+  const again = await createSandbox(p, { key: "project:7", labels: { app: "review" } });
+
+  expect({ id: again.id, state: (await again.run(recordState)).stdout }).toEqual({
+    id: box.id,
+    state: "137 gone",
+  });
+  await again.destroy();
+});
+
+test("PR88-8 destroy returns only once the sandbox is gone, so its key makes a new sandbox", async () => {
+  fake.faults.deleteLingerReads = 2;
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels(), key: "project:42" });
+
+  await p.destroy(sandbox);
+
+  expect(fake.sandboxes.has(sandbox)).toBe(false);
+  expect(await p.find("project:42")).toBeUndefined();
+});
+
+test("PR88-9 idle-only reaping deletes a sandbox its lifetime stopped without probing it", async () => {
+  const p = adapter();
+  const { id: sandbox } = await p.create({ labels: labels() });
+  expire(sandbox);
+  const execs = fake.execs.length;
+
+  expect(
+    await reapSandboxes(p, {
+      idleOnly: true,
+      labels: { "sandbox-bench-run": "independent-review" },
+    }),
+  ).toBe(1);
+  expect({ gone: !fake.sandboxes.has(sandbox), probes: fake.execs.length - execs }).toEqual({
+    gone: true,
+    probes: 0,
+  });
 });

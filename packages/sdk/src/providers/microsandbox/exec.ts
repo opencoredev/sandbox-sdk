@@ -66,11 +66,17 @@ export interface MicrosandboxModule {
 /** How long a kill, and the wait that confirms it, may take after a timeout or abort, on its own deadline. */
 export const killMs = 30_000;
 
-/** Resolves to `"stop"` when `signal` fires, and never otherwise. */
-function stopped(signal: AbortSignal): Promise<"stop"> {
-  return new Promise((resolve) => {
-    if (signal.aborted) resolve("stop");
-    else signal.addEventListener("abort", () => resolve("stop"), { once: true });
+/**
+ * `promise`, or `"stop"` once `signal` fires. Each call adds one abort listener and removes it when
+ * `promise` settles, so a stream of reads never piles reactions onto one long-lived promise.
+ */
+function orStop<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | "stop"> {
+  return new Promise((resolve, reject) => {
+    const stop = () => resolve("stop");
+
+    if (signal.aborted) stop();
+    else signal.addEventListener("abort", stop, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
   });
 }
 
@@ -108,18 +114,20 @@ export async function killConfirmed(handle: PeerExecHandle): Promise<boolean> {
 const timedOut: ExecResult = { exitCode: null, timedOut: true };
 
 /**
- * One command through the peer. Never sent twice. A timeout or abort before the peer hands back the
+ * One command through the peer. Never sent twice. `sandbox` is the guest agent lookup, awaited inside
+ * the command's timeout and abort: one that fires first reports `timedOut`, as nothing was started.
+ * A timeout or abort before the peer hands back the
  * command's handle leaves its start unknown: the late handle is killed when it arrives, and the call
  * reports `outcome_unknown`. After the handle, a timeout or abort kills the command and waits for its
  * exit on a fresh deadline; only a confirmed exit reports `timedOut`.
  */
 export async function execute(input: {
-  sandbox: PeerSandbox;
+  sandbox: Promise<PeerSandbox>;
   exec: ExecInput;
   sandboxId: string;
   redact: (text: string) => string;
 }): Promise<ExecResult> {
-  const { sandbox, exec, sandboxId, redact } = input;
+  const { exec, sandboxId, redact } = input;
 
   if (exec.signal?.aborted) return timedOut;
 
@@ -128,7 +136,6 @@ export async function execute(input: {
   const timer = setTimeout(() => stop.abort(), Math.min(exec.timeoutMs, 2 ** 31 - 1));
   const abort = () => stop.abort();
   exec.signal?.addEventListener("abort", abort, { once: true });
-  const halted = stopped(stop.signal);
 
   const unknown = (message: string, cause?: unknown) =>
     fail(message, "outcome_unknown", {
@@ -137,6 +144,10 @@ export async function execute(input: {
     });
 
   try {
+    const sandbox = await orStop(input.sandbox, stop.signal);
+
+    if (sandbox === "stop") return timedOut;
+
     const launching = sandbox.execStreamWith("sh", (builder) => {
       const configured = builder.args(["-c", exec.command]).cwd(exec.cwd).envs(exec.env).tty(false);
 
@@ -149,7 +160,7 @@ export async function execute(input: {
     let handle: PeerExecHandle | "stop";
 
     try {
-      handle = await Promise.race([launching, halted]);
+      handle = await orStop(launching, stop.signal);
     } catch (error) {
       // The peer refused or failed before handing back a handle. Whether the command started is unknown
       // unless the peer says the sandbox was not there to run it.
@@ -209,7 +220,7 @@ export async function execute(input: {
       let event: PeerExecEvent | null | "stop";
 
       try {
-        event = await Promise.race([running.recv(), halted]);
+        event = await orStop(running.recv(), stop.signal);
       } catch (error) {
         if (stop.signal.aborted) return await cancel();
         await killConfirmed(running);
@@ -221,19 +232,16 @@ export async function execute(input: {
       if (event === null) {
         // The stream ended; the exit code is the one `wait` already observed.
         flush();
-        let status: { readonly code: number };
+        let status: { readonly code: number } | "stop";
 
         try {
-          status = await Promise.race([
-            running.wait(),
-            halted.then(() => {
-              throw new Error("stopped");
-            }),
-          ]);
+          status = await orStop(running.wait(), stop.signal);
         } catch (error) {
           if (stop.signal.aborted) return await cancel();
           throw unknown("the command stream ended without an exit code", error);
         }
+
+        if (status === "stop") return await cancel();
 
         return exitOf(status.code, unknown);
       }

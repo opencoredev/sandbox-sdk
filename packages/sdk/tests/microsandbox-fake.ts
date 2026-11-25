@@ -102,6 +102,11 @@ export interface Faults {
   operationPendingReads?: number;
   /** A finished capture records this source instead of the real one, without the source label. Consumed. */
   snapshotForeignSource?: string;
+  /**
+   * A sandbox DELETE is accepted, and the sandbox still answers this many more reads by ID (and stays
+   * listed) before it is gone, as Microsandbox finishes a delete later. `Infinity` never finishes. Kept.
+   */
+  deleteLingerReads?: number;
   /** `DELETE /v1/services/{slug}` answers 500. Kept. */
   serviceDeleteFails?: boolean;
   /** Slugs another organization holds: `POST /v1/services` answers 409. Kept. */
@@ -298,6 +303,8 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
   const execs: MicrosandboxFake["execs"] = [];
   const faults: Faults = {};
   const starting = new Map<string, number>();
+  /** Sandboxes whose accepted DELETE has not finished, with the reads by ID left before it does. */
+  const deleting = new Map<string, number>();
   const work = await mkdtemp(join(tmpdir(), "msb-fake-"));
   let origin = "";
 
@@ -587,14 +594,9 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
 
       if (!sandbox) return failure(response, 404, "sandbox_not_found");
 
-      if (b === undefined && method === "GET") {
-        advance(sandbox);
-
-        return json(response, 200, view(sandbox));
-      }
-
-      if (b === undefined && method === "DELETE") {
-        stopChildren(sandbox);
+      /** Finishes the delete: the sandbox goes, and its Services are detached. */
+      const remove = async () => {
+        deleting.delete(sandbox.id);
         sandboxes.delete(sandbox.id);
 
         for (const service of services.values())
@@ -604,6 +606,36 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
           }
 
         await rm(sandbox.root, { recursive: true, force: true });
+      };
+
+      if (b === undefined && method === "GET") {
+        const left = deleting.get(sandbox.id);
+
+        if (left !== undefined) {
+          if (left <= 0) {
+            await remove();
+
+            return failure(response, 404, "sandbox_not_found");
+          }
+
+          deleting.set(sandbox.id, left - 1);
+        }
+
+        advance(sandbox);
+
+        return json(response, 200, view(sandbox));
+      }
+
+      if (b === undefined && method === "DELETE") {
+        stopChildren(sandbox);
+
+        if (faults.deleteLingerReads !== undefined) {
+          if (!deleting.has(sandbox.id)) deleting.set(sandbox.id, faults.deleteLingerReads);
+
+          return json(response, 200, { message: "deleting" });
+        }
+
+        await remove();
 
         return json(response, 200, { message: "deleted" });
       }
