@@ -103,6 +103,16 @@ export interface MicrosandboxHooks {
   }): void | Promise<void>;
   /** Before the source is stopped for a snapshot: the snapshot name the capture will use. */
   snapshot?(attempt: { sandboxId: string; name: string }): void | Promise<void>;
+  /**
+   * After a capture journaled through `snapshot` failed before its `POST /v1/snapshots` was sent,
+   * or that request was refused: nothing was captured under `name`. Not called when the capture's
+   * outcome is unknown, so its journal entry stays.
+   */
+  snapshotSettled?(outcome: {
+    sandboxId: string;
+    name: string;
+    outcome: "not-started";
+  }): void | Promise<void>;
   /** Before `POST /v1/services`: the Service slug the adapter will create for this sandbox port. */
   service?(attempt: {
     sandboxId: string;
@@ -1756,20 +1766,38 @@ export function createMicrosandboxProvider(
     return { kind: "pending", operationId };
   }
 
-  /** Captures under way in this client, per sandbox ID: the stop they made is not idleness. */
-  const capturing = new Map<string, number>();
+  /**
+   * Captures under way in this client, per sandbox ID, each as a promise that settles with it: the
+   * stop they made is not idleness, and nothing else starts the source until they finish.
+   */
+  const capturing = new Map<string, Set<Promise<void>>>();
 
   async function snapshot(id: string, snapshotOptions?: { expiresInMs?: number }) {
-    capturing.set(id, (capturing.get(id) ?? 0) + 1);
+    const run = capture(id, snapshotOptions);
+
+    const settled = run.then(
+      () => {},
+      () => {},
+    );
+
+    const pending = capturing.get(id) ?? new Set<Promise<void>>();
+
+    pending.add(settled);
+    capturing.set(id, pending);
 
     try {
-      return await capture(id, snapshotOptions);
+      return await run;
     } finally {
-      const left = (capturing.get(id) ?? 1) - 1;
+      pending.delete(settled);
 
-      if (left > 0) capturing.set(id, left);
-      else capturing.delete(id);
+      if (pending.size === 0 && capturing.get(id) === pending) capturing.delete(id);
     }
+  }
+
+  /** Waits until no capture of this client holds sandbox `id`. */
+  async function capturesDone(id: string) {
+    for (let pending = capturing.get(id); pending; pending = capturing.get(id))
+      await Promise.all(pending);
   }
 
   async function capture(id: string, snapshotOptions?: { expiresInMs?: number }) {
@@ -1782,26 +1810,47 @@ export function createMicrosandboxProvider(
     // Journaled before the source is touched, so a capture that outlives this call is still found.
     await hooks.snapshot?.({ sandboxId: id, name: snapshotName });
 
-    const before = await readSandbox(id);
-    const wasRunning = before.status === "running" || before.status === "starting";
-
-    if (wasRunning) {
-      handles.delete(id);
-      const deadline = createDeadline(readyMs);
-
+    /** Reports `cause` once the journal hears that no capture request went out under this name. */
+    const notStarted = async (cause: unknown): Promise<never> => {
       try {
-        await http.request({ method: "POST", ...sandboxPath(id, "/stop"), deadline });
-      } catch (error) {
-        // A 409 is a stop already under way; an unknown outcome is settled by reading the status.
-        if (refused(error) && statusOf(error) !== 409) throw error;
+        await hooks.snapshotSettled?.({
+          sandboxId: id,
+          name: snapshotName,
+          outcome: "not-started",
+        });
+      } catch {
+        // The capture's failure is what the caller sees; an unrecorded entry is settled by recovery.
       }
 
-      try {
-        await untilStopped(id, deadline);
-      } catch (error) {
-        await restart(id);
-        throw error;
+      throw cause;
+    };
+
+    let wasRunning: boolean;
+
+    try {
+      const before = await readSandbox(id);
+      wasRunning = before.status === "running" || before.status === "starting";
+
+      if (wasRunning) {
+        handles.delete(id);
+        const deadline = createDeadline(readyMs);
+
+        try {
+          await http.request({ method: "POST", ...sandboxPath(id, "/stop"), deadline });
+        } catch (error) {
+          // A 409 is a stop already under way; an unknown outcome is settled by reading the status.
+          if (refused(error) && statusOf(error) !== 409) throw error;
+        }
+
+        try {
+          await untilStopped(id, deadline);
+        } catch (error) {
+          await restart(id);
+          throw error;
+        }
       }
+    } catch (error) {
+      return notStarted(error);
     }
 
     /** Reports `cause` after restarting a source that was running; the restart never hides it. */
@@ -1835,7 +1884,12 @@ export function createMicrosandboxProvider(
             : await settleOperation(op.id);
     } catch (error) {
       // Refused before an operation started (400, 403, 404, 409, 422): nothing was captured.
-      if (neverSent(error) || refused(error)) return afterRestart(error);
+      if (neverSent(error) || refused(error)) {
+        if (wasRunning) await restart(id);
+
+        return notStarted(error);
+      }
+
       settled = await settleLostCapture(snapshotName, id);
     }
 
@@ -1980,7 +2034,13 @@ export function createMicrosandboxProvider(
       const deadline = createDeadline(readyMs);
 
       try {
-        if (toInfo(match).state === "running")
+        // A capture of this client stopped the source on purpose and restarts it itself.
+        if (capturing.has(match.id)) {
+          await capturesDone(match.id);
+
+          if (toInfo(await readSandbox(match.id)).state === "running")
+            return toInfo(await untilRunning(match.id, deadline, signal));
+        } else if (toInfo(match).state === "running")
           return toInfo(await untilRunning(match.id, deadline, signal));
 
         if (match.status === "stopping" || match.status === "saving_state")

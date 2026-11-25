@@ -1202,3 +1202,88 @@ test("PR88 merge review: no second Service create is sent while a lost one may s
 
   expect({ posts, retry }).toEqual({ posts: 1, retry: { code: "unavailable", retryable: true } });
 });
+
+test("PR88 merge review: a capture that fails before its request tells the journal nothing was captured", async () => {
+  let failReads = false;
+  const journaled: string[] = [];
+  const settled: unknown[] = [];
+
+  const p = adapter({
+    hooks: {
+      snapshot: ({ name }) => {
+        journaled.push(name);
+        failReads = true;
+      },
+      snapshotSettled: (outcome) => {
+        settled.push(outcome);
+      },
+    },
+    fetch: async (input, init) => {
+      const url = new URL(input);
+
+      if (failReads && init.method === "GET" && url.pathname.startsWith("/v1/sandboxes/"))
+        return Response.json({ error: { code: "forbidden" } }, { status: 403 });
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+  await expect(p.snapshot?.(id)).rejects.toBeDefined();
+  failReads = false;
+
+  expect({
+    captures: fake.requests.filter((r) => r.method === "POST" && r.path === "/v1/snapshots").length,
+    settled,
+  }).toEqual({
+    captures: 0,
+    settled: [{ sandboxId: id, name: journaled[0], outcome: "not-started" }],
+  });
+});
+
+test("PR88 merge review: a key lookup during a capture never starts the source the capture stopped", async () => {
+  let release = () => {};
+
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  let capturing = () => {};
+
+  const posted = new Promise<void>((resolve) => {
+    capturing = resolve;
+  });
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      if (new URL(input).pathname === "/v1/snapshots" && init.method === "POST") {
+        capturing();
+        await gate;
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels(), key: "project:capture" });
+  const snapshot = p.snapshot?.(id);
+
+  await posted;
+  const startsBefore = fake.requests.filter((r) => r.path.endsWith("/start")).length;
+  const found = p.find("project:capture");
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const startsDuringCapture =
+    fake.requests.filter((r) => r.path.endsWith("/start")).length - startsBefore;
+
+  release();
+
+  const taken = await snapshot;
+
+  expect({
+    startsDuringCapture,
+    stored: [...fake.snapshots.values()].some((s) => s.id === taken?.id),
+    found: (await found)?.id,
+  }).toEqual({ startsDuringCapture: 0, stored: true, found: id });
+});

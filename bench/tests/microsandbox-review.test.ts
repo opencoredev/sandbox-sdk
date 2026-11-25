@@ -3431,6 +3431,128 @@ describe("independent review reproductions", () => {
 });
 
 describe("PR88 merge review: recovery reads through the run adapter's connection", () => {
+  it("drops a capture's name entry when its request never went out", async () => {
+    const out = await directory("bench-msb-not-started-");
+    const provider = adapter();
+    const names: string[] = [];
+    let failNextRead = false;
+    const setHooks = provider.setAttemptHooks.bind(provider);
+
+    provider.setAttemptHooks = (hooks: MicrosandboxHooks | undefined) =>
+      setHooks({
+        ...hooks,
+        snapshot: async (attempt) => {
+          await hooks?.snapshot?.(attempt);
+          names.push(attempt.name);
+          failNextRead = true;
+        },
+      });
+
+    const capture = provider.snapshot?.bind(provider);
+    const keptAfterFailure: unknown[] = [];
+
+    // What a run that died right after the failed capture would leave for the reap.
+    provider.snapshot = async (...args) => {
+      try {
+        return await capture!(...args);
+      } catch (error) {
+        keptAfterFailure.push(
+          ...(await readJournal(out)).resources.filter((r) => names.includes(r.id)),
+        );
+        throw error;
+      }
+    };
+
+    const original = globalThis.fetch.bind(globalThis);
+
+    // The capture's first read of its source fails, before any capture request is sent.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+
+      if (
+        failNextRead &&
+        (init?.method ?? "GET") === "GET" &&
+        /^\/v1\/sandboxes\/[^/]+$/.test(url.pathname)
+      ) {
+        failNextRead = false;
+
+        return Response.json({ error: { code: "forbidden" } }, { status: 403 });
+      }
+
+      return original(input, init);
+    });
+
+    await runV2(
+      [{ kind: "ready", name: "microsandbox", cloud: true, region: null, provider }],
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--runs",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "snapshot",
+        "--timeout-ms",
+        "60000",
+        "--out",
+        out,
+      ]),
+      async () => {},
+    );
+
+    expect(names.length).toBeGreaterThan(0);
+    expect({
+      captures: fake.requests.filter((r) => r.method === "POST" && r.path === "/v1/snapshots")
+        .length,
+      keptAfterFailure,
+      kept: (await readJournal(out)).resources.filter((r) => names.includes(r.id)),
+    }).toEqual({ captures: 0, keptAfterFailure: [], kept: [] });
+  }, 60_000);
+
+  it("keeps the connection fingerprint in the journal an allocation hook writes", async () => {
+    const out = await directory("bench-msb-hook-fingerprint-");
+    const provider = adapter();
+    const atHook: unknown[] = [];
+    const setHooks = provider.setAttemptHooks.bind(provider);
+
+    // What a run that died right after sending its create would leave for the reap.
+    provider.setAttemptHooks = (hooks: MicrosandboxHooks | undefined) =>
+      setHooks({
+        ...hooks,
+        create: async (attempt) => {
+          await hooks?.create?.(attempt);
+          atHook.push(
+            JSON.parse(await readFile(join(out, "ownership.json"), "utf8")).connectionFingerprints,
+          );
+        },
+      });
+
+    await runV2(
+      [{ kind: "ready", name: "microsandbox", cloud: true, region: null, provider }],
+      parseV2([
+        "--providers",
+        "microsandbox",
+        "--runs",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "cold",
+        "--timeout-ms",
+        "60000",
+        "--out",
+        out,
+      ]),
+      async () => {},
+    );
+
+    const expected = { microsandbox: await fingerprintOf(provider) };
+
+    expect(atHook.length).toBeGreaterThan(0);
+    expect(atHook).toEqual(atHook.map(() => expected));
+  }, 60_000);
+
   it("cleans a journaled Service through the bound connection when the environment has changed", async () => {
     const provider = adapter();
     const run = "msb-reap-connection";

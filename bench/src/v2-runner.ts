@@ -783,7 +783,12 @@ export async function runV2(
       await writeOwnership(
         join(runDir, "ownership.json"),
         JSON.stringify(
-          { runId: config.run, resources: [...nextOwned.values()], apps: [...apps.values()] },
+          {
+            runId: config.run,
+            connectionFingerprints,
+            resources: [...nextOwned.values()],
+            apps: [...apps.values()],
+          },
           null,
           2,
         ),
@@ -920,6 +925,17 @@ export async function runV2(
         });
 
         captureNames.set(attempt.sandboxId, attempt.name);
+      },
+      // No capture request went out under this name, so its name-journaled entry can never settle.
+      snapshotSettled: async (settled) => {
+        const key = `${name}/snapshot/${settled.name}`;
+
+        await persistJournalUpdate((nextOwned) => {
+          if (nextOwned.get(key)?.snapshotName === settled.name) nextOwned.delete(key);
+        });
+
+        if (captureNames.get(settled.sandboxId) === settled.name)
+          captureNames.delete(settled.sandboxId);
       },
     };
   }
