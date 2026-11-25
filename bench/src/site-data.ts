@@ -17,6 +17,8 @@ import {
 import { statistics } from "./stats.js";
 import { distribution } from "./v2-stats.js";
 import type { Fingerprint } from "./fingerprint.js";
+import { stressData, type StressReport } from "./stress-site.js";
+import { isStressRun, isStressSample } from "./suite.js";
 
 // Compact, chart-ready view of a merged publication report for apps/bench-site.
 // Every number here is derived from results.json; the site never hard-codes measurements.
@@ -461,7 +463,28 @@ export function exclusions(input: SiteReport, track: "default" | "same-spec") {
   };
 }
 
-export function siteData(input: SiteReport, track: "default" | "same-spec" = "default") {
+/**
+ * The site's data for one track. Every field but `stress` comes from `input`, the publication
+ * report, exactly as before the stress suites existed. `stress` comes only from `stressReport`, a
+ * separate merge of stress runs. A publication report holding stress rows is refused rather than
+ * filtered: which rows belong where is the merge inputs' decision, not site-data's.
+ */
+export function siteData(
+  input: SiteReport,
+  track: "default" | "same-spec" = "default",
+  stressReport: StressReport | null = null,
+) {
+  // A stress run is refused by its plan, whatever rows selection left of it.
+  const stressRuns = new Set([
+    ...input.sources.filter(isStressRun).map((s) => s.runId),
+    ...input.samples.filter(isStressSample).map((s) => s.sourceRunId),
+  ]);
+
+  if (stressRuns.size)
+    throw new Error(
+      `The publication report includes stress runs (${[...stressRuns].join(", ")}): merge stress runs into their own report and pass it with --stress-report`,
+    );
+
   const disclosed = exclusions(input, track);
 
   // Nothing below reads the per-track counts; exclusions above already has them.
@@ -640,6 +663,8 @@ export function siteData(input: SiteReport, track: "default" | "same-spec" = "de
     providers,
     metrics,
     coldSamples,
+    // CPU sustained, CPU burst and burst survival, from the separate stress report (stress-site.ts).
+    stress: stressData(stressReport, track),
   };
 }
 
@@ -651,17 +676,33 @@ export async function siteDataCommand(args: string[]) {
     options: {
       track: { type: "string", default: "default" },
       report: { type: "string", default: "results/publication-final" },
+      // A merge of stress runs only (cpu-sustained, cpu-burst, survival). One of it or
+      // --no-stress is required, so the stress section is never emptied by omission.
+      "stress-report": { type: "string" },
+      "no-stress": { type: "boolean", default: false },
       out: { type: "string", default: "../apps/bench-site/src/data/benchmark.json" },
     },
   });
+
+  if (values["stress-report"] === "")
+    throw new Error("--stress-report needs a directory (a merge of stress runs)");
+
+  if (values["no-stress"] === (values["stress-report"] !== undefined))
+    throw new Error(
+      "Pass exactly one of --stress-report DIR (a merge of stress runs) or --no-stress (publish an empty stress section)",
+    );
 
   // results.json is written by `bun bench merge`; its shape is PublicationReport by construction.
   const report: PublicationReport = JSON.parse(
     await readFile(join(values.report, "results.json"), "utf8"),
   );
 
+  const stress: StressReport | null = values["stress-report"]
+    ? JSON.parse(await readFile(join(values["stress-report"], "results.json"), "utf8"))
+    : null;
+
   const track = (await import("./v2-config.js")).trackSchema.parse(values.track);
-  await writeFile(values.out, `${JSON.stringify(siteData(report, track), null, 1)}\n`);
+  await writeFile(values.out, `${JSON.stringify(siteData(report, track, stress), null, 1)}\n`);
 
   process.stdout.write(`Wrote ${values.out}\n`);
 }

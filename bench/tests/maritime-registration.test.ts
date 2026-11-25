@@ -2,6 +2,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { maritime } from "@opencoredev/sandbox-sdk/maritime";
 import { requestedSize } from "../src/allocation.js";
 import { cloudProviders } from "../src/attempts.js";
 import {
@@ -26,6 +27,7 @@ import {
   settleMaritimeSave,
 } from "../src/snapshots.js";
 import { parseV2 } from "../src/v2-config.js";
+import { bound, boundFake } from "./native-fakes.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -116,9 +118,7 @@ describe("Maritime bench registration", () => {
       return Response.json({ id: "sbx-a", state: "ended" });
     });
 
-    const provider = { name: "maritime" } as const;
-    // SAFETY: lookupSandbox reads only `provider.name` for a native-lookup provider.
-    const lookup = await lookupSandbox(provider as never, "sbx-a", 5000);
+    const lookup = await lookupSandbox(bound(maritime()), "sbx-a", 5000);
 
     expect(lookup).toMatchObject({ result: "terminal", nativeState: "ended" });
     expect(calls).toEqual([{ url: "https://api.maritime.sh/v1/sandboxes/sbx-a", method: "GET" }]);
@@ -281,11 +281,11 @@ describe("Maritime snapshots journaled before the save", () => {
 
     // The first save was lost: a first read already 404s.
     await expect(
-      // SAFETY: inspectSnapshot reads the provider only for local Docker; Maritime's case never touches it.
-      inspectSnapshot("maritime", { name: "maritime" } as never, "sbx-src", "snap-1"),
+      inspectSnapshot("maritime", bound(maritime()), "sbx-src", "snap-1"),
     ).resolves.toEqual({ exists: false });
 
     const settled = await settleMaritimeSave({
+      provider: bound(maritime()),
       sandboxId: "sbx-src",
       name: "snap-1",
       idempotencyKey: "key-1",
@@ -313,13 +313,19 @@ describe("Maritime snapshots journaled before the save", () => {
     await expect(
       settleJournaledSnapshot(
         "maritime",
+        bound(maritime()),
         { id: "snap-1", parent: "sbx-src", idempotencyKey: "key-1" },
         5000,
       ),
     ).resolves.toBe("absent");
     // A confirmed save keeps no key: it goes straight to the proven delete.
     await expect(
-      settleJournaledSnapshot("maritime", { id: "snap-1", parent: "sbx-src" }, 5000),
+      settleJournaledSnapshot(
+        "maritime",
+        bound(maritime()),
+        { id: "snap-1", parent: "sbx-src" },
+        5000,
+      ),
     ).resolves.toBe("exists");
   });
 
@@ -329,6 +335,7 @@ describe("Maritime snapshots journaled before the save", () => {
 
     await expect(
       settleMaritimeSave({
+        provider: bound(maritime()),
         sandboxId: "sbx-src",
         name: "snap-1",
         idempotencyKey: "key-1",
@@ -345,8 +352,7 @@ describe("Maritime snapshots journaled before the save", () => {
     );
 
     await expect(
-      // SAFETY: inspectSnapshot reads the provider only for local Docker; Maritime's case never touches it.
-      inspectSnapshot("maritime", { name: "maritime" } as never, "sbx-src", "snap-1"),
+      inspectSnapshot("maritime", bound(maritime()), "sbx-src", "snap-1"),
     ).rejects.toThrow(/source metadata/);
   });
 });
@@ -375,7 +381,15 @@ describe("preview credentials stay out of the run's records", () => {
 
     try {
       const report = await runV2(
-        [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+        [
+          {
+            kind: "ready",
+            name: "memory",
+            cloud: false,
+            region: null,
+            provider: boundFake(provider),
+          },
+        ],
         parseV2([
           "--providers",
           "memory",

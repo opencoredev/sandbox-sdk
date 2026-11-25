@@ -38,6 +38,8 @@ import {
 } from "./routes.js";
 import { spawn } from "./session.js";
 
+export { resolveConfig, type SuperserveConfig } from "./routes.js";
+
 export interface SuperserveOptions {
   /** Defaults to SUPERSERVE_API_KEY; required on first use. */
   apiKey?: string;

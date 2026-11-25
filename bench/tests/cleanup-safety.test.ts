@@ -9,6 +9,7 @@ import { runV2 } from "../src/v2-runner.js";
 import { writeV2 } from "../src/v2-report.js";
 import { reapRun } from "../src/recovery.js";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
+import { bound } from "./native-fakes.js";
 
 /** The native cause a rejected create carries in these fixtures. */
 interface CreateCause {
@@ -87,7 +88,7 @@ it.each(["generic-cause", "sdk-foreign", "sdk-no-sdk-marker", "sdk-unreadable", 
       ]);
 
       const report = await runV2(
-        [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+        [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
         config,
         (r) => writeV2(r, out),
       );
@@ -111,7 +112,15 @@ it.each(["generic-cause", "sdk-foreign", "sdk-no-sdk-marker", "sdk-unreadable", 
       try {
         expect(
           await reapRun(
-            [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+            [
+              {
+                kind: "ready",
+                name: "memory",
+                cloud: false,
+                region: null,
+                provider: bound(provider),
+              },
+            ],
             config,
             (s) => s,
           ),
@@ -177,7 +186,7 @@ it.each(["sdk-unmarked", "generic", "wrong-provider"])(
       ]);
 
       const report = await runV2(
-        [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+        [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
         config,
         (r) => writeV2(r, out),
       );
@@ -247,7 +256,7 @@ it("reap releases a quarantined sandbox only when labels become readable", async
   ]);
 
   const loaded = [
-    { kind: "ready", name: "memory", cloud: false, region: null, provider },
+    { kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) },
   ] satisfies Parameters<typeof reapRun>[0];
 
   const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
@@ -319,7 +328,7 @@ it("quarantines a released ID again if live ownership proof disappears before a 
     ]);
 
     const report = await runV2(
-      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
       config,
       (r) => writeV2(r, out),
     );
@@ -379,7 +388,7 @@ it("does not trust an admission marker on an exec error", async () => {
     ]);
 
     const report = await runV2(
-      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
       config,
       (r) => writeV2(r, out),
     );
@@ -428,7 +437,7 @@ it("rechecks ownership at deletion and records the ID when labels become unreada
     ]);
 
     const report = await runV2(
-      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
       config,
       (r) => writeV2(r, out),
     );
@@ -474,7 +483,7 @@ it("recovery refuses a snapshot ID not linked to its verified parent", async () 
     const config = parseV2(["--providers", "daytona", "--run", "snapshot-safety", "--out", out]);
     expect(
       await reapRun(
-        [{ kind: "ready", name: "daytona", cloud: false, region: null, provider: backing }],
+        [{ kind: "ready", name: "daytona", cloud: false, region: null, provider: bound(backing) }],
         config,
         (s) => s,
       ),
@@ -536,7 +545,7 @@ it("recovery rejects foreign bare journal IDs and snapshot parents, but deletes 
     await writeFile(join(out, "results.json"), JSON.stringify({ cleanupReview: [] }));
     expect(
       await reapRun(
-        [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+        [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
         config,
         (s) => s,
       ),
@@ -582,7 +591,7 @@ it("recovery fails, naming them, when sleeping machines it can't read without wa
   try {
     const ready = (provider: typeof backing) =>
       reapRun(
-        [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+        [{ kind: "ready", name: "memory", cloud: false, region: null, provider: bound(provider) }],
         config,
         (s) => s,
       );

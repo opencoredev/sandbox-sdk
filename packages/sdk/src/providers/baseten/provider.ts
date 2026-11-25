@@ -44,6 +44,33 @@ export interface BasetenVolume {
   mountPath: string;
 }
 
+/** The options that choose which Baseten account and team an adapter acts in. */
+export type BasetenConnection = Pick<BasetenOptions, "apiKey" | "teamId">;
+
+/** What a Baseten adapter builds its client with, in the shape `new SandboxClient(config)` takes. */
+export interface BasetenConfig {
+  readonly apiKey: string;
+  /** `undefined` acts in the key's only team. */
+  readonly teamId: string | undefined;
+}
+
+/**
+ * The key and team `baseten(options)` builds its `SandboxClient` with, read from `options` and the
+ * environment as the adapter reads them. Throws `auth` when the key is missing, as the adapter does.
+ * It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(options: BasetenConnection = {}): BasetenConfig {
+  const apiKey = options.apiKey ?? process.env.BASETEN_API_KEY;
+
+  if (!apiKey?.trim())
+    throw failure(
+      "Baseten API key is missing. Authentication is required. Set BASETEN_API_KEY or pass apiKey.",
+      "auth",
+    );
+
+  return { apiKey, teamId: options.teamId };
+}
+
 export interface BasetenNative {
   sandbox: Sandbox;
   client: SandboxClient;
@@ -188,16 +215,10 @@ export function createBasetenProvider(
 
   async function api() {
     return (client ??= (async () => {
-      const apiKey = options.apiKey ?? process.env.BASETEN_API_KEY;
-
-      if (!apiKey?.trim())
-        throw failure(
-          "Baseten API key is missing. Authentication is required. Set BASETEN_API_KEY or pass apiKey.",
-          "auth",
-        );
+      const config = resolveConfig(options);
       const { SandboxClient } = await loadPeer("@basetenlabs/sandbox", "baseten", load);
 
-      const clientOptions: SandboxClientOptions = { apiKey, teamId: options.teamId };
+      const clientOptions: SandboxClientOptions = { ...config };
 
       // @basetenlabs/sandbox 0.5.0 loads its optional undici through
       // createRequire(import.meta.url). A CommonJS bundle empties import.meta, so that throws on

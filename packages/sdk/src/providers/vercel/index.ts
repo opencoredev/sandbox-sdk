@@ -8,8 +8,12 @@ import {
   type VercelNonPersistentCapability,
 } from "./provider.js";
 
+export { resolveConfig } from "./provider.js";
+
 export type {
   VercelCapability,
+  VercelConfig,
+  VercelConnection,
   VercelNonPersistentCapability,
   VercelImage,
   VercelRuntime,

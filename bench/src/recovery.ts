@@ -16,6 +16,7 @@ import {
   snapshotProvenanceSchema,
 } from "./ownership.js";
 import { isAbsent, lookupSandbox, lookupSchema } from "./existence.js";
+import { fingerprintSchema, reapConnection } from "./connections.js";
 import { DeadlineError, DeletionWork, deadline } from "./timing.js";
 import { snapshotsFromSource, deleteProvenSnapshot, settleJournaledSnapshot } from "./snapshots.js";
 import { isMissingFile } from "./files.js";
@@ -46,7 +47,13 @@ const reviewSchema = resource
   .omit({ parent: true, snapshotProof: true, idempotencyKey: true })
   .extend({ reason: z.string(), status: z.enum(["checking", "unresolved"]).optional() });
 
-/** Recovery never treats a journal ID as permission to delete. */
+/** A journal from before connection fingerprints: it kept each connection's endpoints as text. */
+const legacyConnections = z.object({ connections: z.record(z.string(), z.unknown()) });
+
+/**
+ * Recovery never treats a journal ID as permission to delete. It reads only through adapters whose
+ * connection matches the fingerprint the run journaled, so it must run with the run's environment.
+ */
 export async function reapRun(
   providers: LoadedProvider[],
   config: ConfigV2,
@@ -56,19 +63,29 @@ export async function reapRun(
 
   let journal: {
     runId: string;
+    connectionFingerprints: Record<string, string>;
     resources: z.infer<typeof resource>[];
     apps: JournalApp[];
   } | null = null;
 
   try {
+    const raw: unknown = JSON.parse(await readFile(path, "utf8"));
+
+    if (legacyConnections.safeParse(raw).success)
+      throw new Error(
+        "Ownership journal keeps connection endpoint text (written before connection fingerprints), which can hold a credential; reap refuses it. Clean up that run's sandboxes in the provider's console, then delete the journal",
+      );
+
     journal = z
       .object({
         runId: z.string(),
+        // Kept as read, so every rewrite of the journal still lets a later reap check connections.
+        connectionFingerprints: z.record(z.string(), fingerprintSchema).default({}),
         resources: z.array(resource),
         // Older journals have no Apps: every sandbox is in the adapter's default App.
         apps: z.array(journalAppSchema).default([]),
       })
-      .parse(JSON.parse(await readFile(path, "utf8")));
+      .parse(raw);
   } catch (error) {
     if (!isMissingFile(error)) {
       if (!(error instanceof SyntaxError || error instanceof z.ZodError)) throw error;
@@ -111,6 +128,25 @@ export async function reapRun(
   for (const p of providers) {
     if (p.kind === "skipped") {
       process.stderr.write(`SKIP ${p.name}: ${p.note}\n`);
+
+      // Its journaled cleanup is still owed: the entries stay and the reap fails.
+      if (
+        (journal?.resources ?? []).some((r) => r.provider === p.name) ||
+        (journal?.apps ?? []).some((app) => app.provider === p.name)
+      )
+        failed = true;
+      continue;
+    }
+
+    // Before any request: an adapter on another endpoint, account or scope reads the run's live
+    // sandboxes as missing, which would be recorded as absence.
+    const connection = await reapConnection(p.provider, journal?.connectionFingerprints[p.name]);
+
+    if (connection.kind === "differs") {
+      process.stderr.write(
+        `SKIP ${p.name}: ${connection.reason}; reap must run with the environment the run used\n`,
+      );
+      failed = true;
       continue;
     }
 
@@ -208,7 +244,7 @@ export async function reapRun(
         pendingOwned.add(item.id);
         candidates.add(item.id);
         reconciled = reconcileDiscovered(journaled, p.name, item) || reconciled;
-        journal ??= { runId: config.run, resources: [], apps: [] };
+        journal ??= { runId: config.run, connectionFingerprints: {}, resources: [], apps: [] };
 
         if (
           !journal.resources.some(
@@ -240,7 +276,7 @@ export async function reapRun(
 
       try {
         if (reviews.some((r) => r.provider === p.name && r.id === id && r.kind === "sandbox")) {
-          journal ??= { runId: config.run, resources: [], apps: [] };
+          journal ??= { runId: config.run, connectionFingerprints: {}, resources: [], apps: [] };
 
           if (
             !journal.resources.some(
@@ -314,7 +350,7 @@ export async function reapRun(
         );
 
         for (const snapshot of await deadline(config["timeout-ms"], () =>
-          snapshotsFromSource(p.name, entry.id, journaled),
+          snapshotsFromSource(p.name, p.provider, entry.id, journaled),
         )) {
           const item = {
             provider: p.name,
@@ -377,7 +413,10 @@ export async function reapRun(
         if (restoresUnresolved)
           throw new Error("Restore cleanup unresolved; snapshot and source retained");
 
-        if ((await settleJournaledSnapshot(p.name, entry, config["timeout-ms"])) === "exists") {
+        if (
+          (await settleJournaledSnapshot(p.name, p.provider, entry, config["timeout-ms"])) ===
+          "exists"
+        ) {
           let confirmed = entry;
 
           if (entry.idempotencyKey !== undefined) {

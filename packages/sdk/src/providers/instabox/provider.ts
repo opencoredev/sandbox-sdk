@@ -209,28 +209,50 @@ function sleep(ms: number, signal?: AbortSignal) {
   });
 }
 
+/** The options that choose where an Instabox adapter connects and as whom. */
+export type InstaboxConnection = Pick<InstaboxOptions, "apiKey" | "baseUrl">;
+
+/** What an Instabox adapter sends every request with: `X-API-Key: apiKey` to `baseUrl + path`. */
+export interface InstaboxConfig {
+  readonly apiKey: string;
+  /** The API base URL, without trailing slashes. */
+  readonly baseUrl: string;
+}
+
+function baseUrlOf(options: InstaboxConnection): string {
+  return (options.baseUrl ?? process.env.INSTABOX_API_URL ?? "https://api.instabox.sh").replace(
+    /\/+$/,
+    "",
+  );
+}
+
+function apiKeyOf(options: InstaboxConnection): string {
+  const key = options.apiKey ?? process.env.INSTABOX_API_KEY;
+
+  if (!key?.trim())
+    throw fail("no API key; set INSTABOX_API_KEY or pass apiKey", "auth", {
+      retryable: false,
+    });
+
+  return key.trim();
+}
+
+/**
+ * The key and base URL `instabox(options)` sends every request with, read from `options` and the
+ * environment as the adapter reads them. Throws `auth` when the key is missing, as the adapter does.
+ * It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(options: InstaboxConnection = {}): InstaboxConfig {
+  return { apiKey: apiKeyOf(options), baseUrl: baseUrlOf(options) };
+}
+
 /** Instabox through its REST API. Machines are Firecracker microVMs; `/workspace` links to the persistent `/data` disk. */
 export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxProvider {
-  const baseUrl = (
-    options.baseUrl ??
-    process.env.INSTABOX_API_URL ??
-    "https://api.instabox.sh"
-  ).replace(/\/+$/, "");
-
+  const baseUrl = baseUrlOf(options);
   const requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
   const operationTimeoutMs = options.operationTimeoutMs ?? 300_000;
   const previews = new Map<string, string>();
-
-  function apiKey() {
-    const key = options.apiKey ?? process.env.INSTABOX_API_KEY;
-
-    if (!key?.trim())
-      throw fail("no API key; set INSTABOX_API_KEY or pass apiKey", "auth", {
-        retryable: false,
-      });
-
-    return key.trim();
-  }
+  const apiKey = () => apiKeyOf(options);
 
   interface RequestInput {
     method: Method;

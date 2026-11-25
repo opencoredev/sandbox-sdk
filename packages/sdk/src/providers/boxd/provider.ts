@@ -51,6 +51,34 @@ export interface BoxdOptions {
   volumes?: { diskId: string; mountPath: string; readOnly?: boolean }[];
 }
 
+/** The options that choose where a boxd adapter connects and as whom. */
+export type BoxdConnection = Pick<BoxdOptions, "apiKey" | "baseUrl" | "baseURL">;
+
+/** What a boxd adapter builds its client with, in the shape `new Boxd(config)` takes. */
+export interface BoxdConfig {
+  readonly apiKey: string;
+  /** `undefined` leaves the endpoint to `@boxd-sh/sdk`: BOXD_BASE_URL, then BOXD_API_URL. */
+  readonly baseURL: string | undefined;
+}
+
+/**
+ * The key and endpoint `boxd(options)` builds its `Boxd` client with, read from `options` and the
+ * environment as the adapter reads them. Throws `auth` when the key is missing, as the adapter's
+ * client does.
+ * It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(options: BoxdConnection = {}): BoxdConfig {
+  const apiKey = options.apiKey ?? process.env.BOXD_API_KEY;
+
+  if (!apiKey?.trim())
+    throw failure(
+      "boxd API key is missing. Authentication is required. Set BOXD_API_KEY or pass apiKey.",
+      "auth",
+    );
+
+  return { apiKey, baseURL: options.baseUrl ?? options.baseURL };
+}
+
 export interface BoxdNative {
   machine: Machine;
   client: Boxd;
@@ -236,18 +264,11 @@ export function createBoxdProvider<C extends BoxdClient>(
         (!Number.isSafeInteger(options.requestTimeoutMs) || options.requestTimeoutMs <= 0)
       )
         throw failure("requestTimeoutMs must be a positive integer", "invalid_argument");
-      const apiKey = options.apiKey ?? process.env.BOXD_API_KEY;
-
-      if (!apiKey?.trim())
-        throw failure(
-          "boxd API key is missing. Authentication is required. Set BOXD_API_KEY or pass apiKey.",
-          "auth",
-        );
+      const config = resolveConfig(options);
       const { Boxd } = await loadPeer("@boxd-sh/sdk", "boxd", load);
 
       return (current = new Boxd({
-        apiKey,
-        baseURL: options.baseUrl ?? options.baseURL,
+        ...config,
         timeout: options.requestTimeoutMs ?? 30000,
         maxRetries: 0,
       }));

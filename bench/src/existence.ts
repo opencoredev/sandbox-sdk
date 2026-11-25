@@ -4,6 +4,7 @@ import type { SandboxClient as BasetenClient } from "@basetenlabs/sandbox";
 import type { BoatApi, Configuration } from "@boatdev/sdk";
 import type { Boxd } from "@boxd-sh/sdk";
 import type { Daytona, Sandbox as DaytonaSandbox } from "@daytonaio/sdk";
+import { SandboxError } from "@opencoredev/sandbox-sdk";
 import type { LocalNative } from "@opencoredev/sandbox-sdk/local";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { Snapshot } from "@superserve/sdk";
@@ -13,6 +14,12 @@ import type { Sandbox, SnapshotListOpts, SnapshotPaginator } from "e2b";
 import type { Freestyle } from "freestyle";
 import type { Sandbox as VercelSandbox, Snapshot as VercelSnapshot } from "@vercel/sandbox";
 import { archilControlUrl, archilSandboxBody } from "./archil.js";
+import {
+  connectionOf,
+  endpoint,
+  modalClientParams,
+  type ModalClientParams,
+} from "./connections.js";
 import { deadline } from "./timing.js";
 
 const statusFields = z.object({
@@ -139,9 +146,9 @@ export interface NativeModules {
       ...args: ConstructorParameters<typeof BasetenClient>
     ) => Pick<BasetenClient, "getInfo">;
   };
-  /** Modal's client: reads MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from the environment. */
+  /** Modal's client: params it is not given resolve from the environment, then ~/.modal.toml. */
   modal: {
-    ModalClient: new (params?: { grpcMiddleware?: GrpcMiddleware[] }) => {
+    ModalClient: new (params?: ModalClientParams & { grpcMiddleware?: GrpcMiddleware[] }) => {
       readonly images: {
         fromId(imageId: string): Promise<{ readonly imageId: string }>;
         delete(imageId: string): Promise<void>;
@@ -285,6 +292,41 @@ const { NotFoundError: boxdNotFound }: typeof import("@boxd-sh/sdk") = await imp
 /** Loads installed native SDKs; tests replace `load`. */
 export const nativeModules = { load: sdk };
 
+/**
+ * A Daytona client with this adapter instance's endpoint, credentials and region, for lookups and
+ * snapshot reads and deletes only. Polling mode: by default the constructor opens an event-stream
+ * WebSocket to the API, which a read never needs and which would stay open after it. The URL
+ * loses its trailing slashes, as the adapter's own requests do.
+ */
+export async function daytonaClient(provider: Provider) {
+  const { Daytona } = await nativeModules.load("@daytonaio/sdk");
+  const config = connectionOf(provider, "daytona");
+
+  return new Daytona({ ...config, apiUrl: endpoint(config.apiUrl), useDeprecatedPolling: true });
+}
+
+/**
+ * This adapter instance's E2B connection on the API URL its own requests use. The `e2b` package
+ * accepts `apiUrl` (its types mark it internal); without it, the package follows E2B_DEBUG to
+ * localhost while the adapter, and the sandboxes it created, use the domain.
+ */
+export function e2bConnection(provider: Provider) {
+  const config = connectionOf(provider, "e2b");
+
+  return { ...config, apiUrl: endpoint(config.apiUrl) };
+}
+
+/**
+ * This adapter instance's Upstash connection for `@upstash/box` calls. The connection's base URL
+ * already lost one trailing slash, as the adapter's own requests drop it; `@upstash/box` drops
+ * one more, so one goes back on and the call lands where the adapter's requests do.
+ */
+export function upstashConnection(provider: Provider) {
+  const { apiKey, baseUrl } = connectionOf(provider, "upstash");
+
+  return { apiKey, baseUrl: `${baseUrl}/` };
+}
+
 /** `local().native(id)`: the adapter's handle on its Docker container. */
 type LocalHandle = { readonly client: Pick<LocalNative["client"], "call"> };
 
@@ -326,27 +368,14 @@ function isDaytonaSandboxApi(api: unknown): api is DaytonaSandboxApi {
   );
 }
 
-const lookupKeys = new Map([
-  ["tenki", "TENKI_API_KEY"],
-  ["upstash", "UPSTASH_BOX_API_KEY"],
-  ["e2b", "E2B_API_KEY"],
-  ["daytona", "DAYTONA_API_KEY"],
-  ["boxd", "BOXD_API_KEY"],
-  ["boat", "BOAT_API_KEY"],
-  ["freestyle", "FREESTYLE_API_KEY"],
-  ["superserve", "SUPERSERVE_API_KEY"],
-  ["modal", "MODAL_TOKEN_SECRET"],
-  ["baseten", "BASETEN_API_KEY"],
-  ["instabox", "INSTABOX_API_KEY"],
-  ["beam", "BEAM_TOKEN"],
-  ["archil", "ARCHIL_API_KEY"],
-  ["maritime", "MARITIME_API_KEY"],
-]);
-
-/** Maritime's control plane, as the adapter resolves it. */
-export function maritimeBase() {
-  return `${(process.env.MARITIME_API_URL ?? "https://api.maritime.sh").replace(/\/+$/, "")}/v1`;
-}
+/**
+ * Every native client below takes its endpoint, credentials and scope from the connection of the
+ * adapter instance being read (`connectionOf`), never from the environment alone: a lookup sent to
+ * another endpoint, account or team answers 404 for a sandbox that is running. Base URLs lose
+ * their trailing slashes, as the adapters' own requests do. Modal's client gets the token, secret
+ * and environment the adapter was bound with; only the ones it was not given resolve in the SDK
+ * (environment, then ~/.modal.toml), as they do for the adapter and its fingerprint.
+ */
 
 /** Beam's gateway container listing, as the existence check reads it. */
 const beamContainers = z.object({
@@ -363,6 +392,18 @@ const nativeInfo = z.object({
 
 const memoryNotFound = z.object({ code: z.literal("not_found") });
 
+/** Maritime's error body: `{ code }`, such as `sandbox_not_found`. */
+const maritimeErrorBody = z.object({ code: z.string() });
+
+/** Maritime's sandbox answer: its `state` is the only field that says whether it ended. */
+const maritimeSandbox = z.object({ id: z.string(), state: z.string() });
+
+/** The fields the bench reads from Docker's container inspect. */
+const dockerContainer = z.object({
+  Id: z.string(),
+  State: z.object({ Status: z.string().optional() }).optional(),
+});
+
 /** Exact, read-only native lookup. No guest setup, connect/activate, resume or delete. */
 export async function lookupSandbox(
   provider: Provider,
@@ -377,21 +418,17 @@ export async function lookupSandbox(
       // Memory connect only reads its machine map.
       if (name === "memory") return nativeInfo.parse(await provider.connect(id));
 
-      const key = lookupKeys.get(name);
-
-      if (key && !process.env[key]) throw new Error("Native lookup credentials unavailable");
-
       switch (name) {
         case "tenki": {
           const { TenkiSandbox } = await nativeModules.load("@tenkicloud/sandbox");
-          const tenki = new TenkiSandbox({ authToken: process.env.TENKI_API_KEY });
+          const tenki = new TenkiSandbox(connectionOf(provider, "tenki"));
 
           return nativeInfo.parse(await tenki.get(id));
         }
 
         case "upstash": {
           const { Box } = await nativeModules.load("@upstash/box");
-          const box = await Box.get(id);
+          const box = await Box.get(id, upstashConnection(provider));
 
           if (box.id !== id) throw new Error("Native lookup ID mismatch");
 
@@ -404,7 +441,7 @@ export async function lookupSandbox(
           const { Sandbox, SandboxNotFoundError } = await nativeModules.load("e2b");
 
           try {
-            return nativeInfo.parse(await Sandbox.getInfo(id, { apiKey: process.env.E2B_API_KEY }));
+            return nativeInfo.parse(await Sandbox.getInfo(id, e2bConnection(provider)));
           } catch (error) {
             if (error instanceof SandboxNotFoundError)
               throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
@@ -413,8 +450,7 @@ export async function lookupSandbox(
         }
 
         case "daytona": {
-          const { Daytona } = await nativeModules.load("@daytonaio/sdk");
-          const daytona = new Daytona();
+          const daytona = await daytonaClient(provider);
 
           // Daytona.get also hydrates the toolbox URL. A missing toolbox is not a missing sandbox.
           const sandboxApi = "sandboxApi" in daytona ? daytona.sandboxApi : undefined;
@@ -428,7 +464,7 @@ export async function lookupSandbox(
 
         case "baseten": {
           const { SandboxClient } = await nativeModules.load("@basetenlabs/sandbox");
-          const client = new SandboxClient({ apiKey: process.env.BASETEN_API_KEY ?? "" });
+          const client = new SandboxClient(connectionOf(provider, "baseten"));
           // A deleted sandbox reads TERMINATED until its record expires, then 404.
           const info = await client.getInfo({ name: id, callOptions: { signal } });
 
@@ -437,8 +473,11 @@ export async function lookupSandbox(
 
         case "beam": {
           // Beam lists pending and running containers only; a stopped one leaves the list.
-          const response = await fetch("https://app.beam.cloud/api/v1/gateway/containers", {
-            headers: { Authorization: `Bearer ${process.env.BEAM_TOKEN ?? ""}` },
+          // On this adapter instance's gateway and token, as its own container list.
+          const { token, gatewayUrl } = connectionOf(provider, "beam");
+
+          const response = await fetch(`${endpoint(gatewayUrl)}/api/v1/gateway/containers`, {
+            headers: { Authorization: `Bearer ${token}` },
             signal,
           });
 
@@ -457,9 +496,11 @@ export async function lookupSandbox(
         case "archil": {
           // A plain GET: it never wakes a paused sandbox, unlike a command. A deleted one reads
           // "deleted" until Archil drops it, then 404.
+          const { apiKey, region } = connectionOf(provider, "archil");
+
           const response = await fetch(
-            `${archilControlUrl(process.env)}/api/sandboxes/${encodeURIComponent(id)}`,
-            { headers: { Authorization: `Bearer ${process.env.ARCHIL_API_KEY ?? ""}` }, signal },
+            `${archilControlUrl(region)}/api/sandboxes/${encodeURIComponent(id)}`,
+            { headers: { Authorization: `Bearer ${apiKey}` }, signal },
           );
 
           if (!response.ok)
@@ -472,14 +513,15 @@ export async function lookupSandbox(
 
         case "boxd": {
           const { Boxd } = await nativeModules.load("@boxd-sh/sdk");
-          const boxd = new Boxd({ apiKey: process.env.BOXD_API_KEY });
+          const boxd = new Boxd(connectionOf(provider, "boxd"));
 
           return nativeInfo.parse(await boxd.machines.get(id));
         }
 
         case "freestyle": {
           const { Freestyle } = await nativeModules.load("freestyle");
-          const freestyle = new Freestyle({ apiKey: process.env.FREESTYLE_API_KEY });
+          const config = connectionOf(provider, "freestyle");
+          const freestyle = new Freestyle({ ...config, baseUrl: endpoint(config.baseUrl) });
 
           return nativeInfo.parse(await freestyle.vms.get(id));
         }
@@ -487,9 +529,11 @@ export async function lookupSandbox(
         case "boat": {
           const { BoatApi, Configuration } = await nativeModules.load("@boatdev/sdk");
 
+          const { apiKey, baseUrl } = connectionOf(provider, "boat");
+
           const config = new Configuration({
-            accessToken: process.env.BOAT_API_KEY,
-            basePath: process.env.BOAT_API_BASE ?? "https://boat.dev/api/v1",
+            accessToken: apiKey,
+            basePath: endpoint(baseUrl),
             fetchApi: (url: string, init?: RequestInit) => fetch(url, { ...init, signal }),
           });
 
@@ -500,8 +544,42 @@ export async function lookupSandbox(
 
         case "maritime": {
           // GET only: it never resumes a paused sandbox. An ended one reads `state: "ended"`.
-          const response = await fetch(`${maritimeBase()}/sandboxes/${encodeURIComponent(id)}`, {
-            headers: { Authorization: `Bearer ${process.env.MARITIME_API_KEY ?? ""}` },
+          const { apiKey, baseUrl } = connectionOf(provider, "maritime");
+
+          // A redirect would answer from somewhere other than the fingerprinted endpoint.
+          const response = await fetch(`${baseUrl}/v1/sandboxes/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            redirect: "error",
+            signal,
+          });
+
+          // Only Maritime's own codes decide: `404 sandbox_not_found` is absence and
+          // `410 sandbox_ended` an ended sandbox. A route-level 404 or any other answer is unavailable.
+          if (response.status === 404 || response.status === 410) {
+            const answer = maritimeErrorBody.safeParse(await response.json().catch(() => null));
+            const code = answer.success ? answer.data.code : undefined;
+
+            if (response.status === 404 && code === "sandbox_not_found")
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+
+            if (response.status === 410 && code === "sandbox_ended") return { id, state: "ended" };
+
+            throw new Error("Maritime lookup answered a route or unknown error");
+          }
+
+          if (!response.ok)
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+          const sandbox = maritimeSandbox.parse(await response.json());
+
+          return { id: sandbox.id, state: sandbox.state };
+        }
+
+        case "instabox": {
+          // GET only: it never wakes, starts or changes the machine.
+          const { apiKey, baseUrl } = connectionOf(provider, "instabox");
+
+          const response = await fetch(`${baseUrl}/v1/machines/${encodeURIComponent(id)}`, {
+            headers: { "X-API-Key": apiKey },
             signal,
           });
 
@@ -511,25 +589,15 @@ export async function lookupSandbox(
           return nativeInfo.parse(await response.json());
         }
 
-        case "instabox": {
-          // GET only: it never wakes, starts or changes the machine.
-          const response = await fetch(
-            `${process.env.INSTABOX_API_URL ?? "https://api.instabox.sh"}/v1/machines/${encodeURIComponent(id)}`,
-            { headers: { "X-API-Key": process.env.INSTABOX_API_KEY ?? "" }, signal },
-          );
-
-          if (!response.ok)
-            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
-
-          return nativeInfo.parse(await response.json());
-        }
-
         case "superserve": {
-          // Sandbox.connect POSTs /activate; use the SDK's read-only getInfo endpoint directly.
-          const response = await fetch(
-            `${process.env.SUPERSERVE_BASE_URL ?? "https://api.superserve.ai"}/sandboxes/${encodeURIComponent(id)}`,
-            { headers: { "X-API-Key": process.env.SUPERSERVE_API_KEY ?? "" }, signal },
-          );
+          // Sandbox.connect POSTs /activate; use the SDK's read-only getInfo endpoint directly, on
+          // the key's region's control plane.
+          const { apiKey, baseUrl } = connectionOf(provider, "superserve");
+
+          const response = await fetch(`${endpoint(baseUrl)}/sandboxes/${encodeURIComponent(id)}`, {
+            headers: { "X-API-Key": apiKey },
+            signal,
+          });
 
           if (!response.ok)
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
@@ -540,10 +608,16 @@ export async function lookupSandbox(
         case "modal": {
           const { ModalClient } = await nativeModules.load("modal");
           const { ClientError, Status } = await nativeModules.load("nice-grpc");
+
           // The deadline cancels the request in flight and closes the client, so a stalled poll
           // keeps no call or client open past it.
-          const client = new ModalClient({ grpcMiddleware: [cancelOn(signal)] });
+          const client = new ModalClient({
+            ...modalClientParams(connectionOf(provider, "modal")),
+            grpcMiddleware: [cancelOn(signal)],
+          });
+
           const close = () => client.close();
+
           signal.addEventListener("abort", close, { once: true });
 
           try {
@@ -567,7 +641,13 @@ export async function lookupSandbox(
         case "vercel": {
           // Sandbox.get only reads: it resumes a stopped sandbox only when asked to.
           const { Sandbox } = await nativeModules.load("@vercel/sandbox");
-          const box = await Sandbox.get({ name: id, resume: false, signal });
+
+          const box = await Sandbox.get({
+            ...connectionOf(provider, "vercel"),
+            name: id,
+            resume: false,
+            signal,
+          });
 
           return nativeInfo.parse({ id: box.name, status: box.status });
         }
@@ -575,9 +655,22 @@ export async function lookupSandbox(
         case "local": {
           const docker = localDocker(provider, id);
 
-          return nativeInfo.parse(
-            await docker.call("GET", `/containers/${encodeURIComponent(id)}/json`),
-          );
+          let inspected;
+
+          try {
+            inspected = await docker.call("GET", `/containers/${encodeURIComponent(id)}/json`);
+          } catch (error) {
+            // The local client maps exactly an HTTP 404 from this exact inspect to `not_found`.
+            if (error instanceof SandboxError && error.code === "not_found")
+              throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
+            throw error;
+          }
+
+          const container = dockerContainer.parse(inspected);
+
+          // Docker nests the state ("running", "paused", "exited"). None is terminal: an exited
+          // container still exists until removed, so cleanup treats it as present.
+          return { Id: container.Id, state: container.State?.Status };
         }
 
         default:

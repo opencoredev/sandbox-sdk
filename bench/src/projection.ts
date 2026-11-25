@@ -1,6 +1,7 @@
 import type { ReportV2 } from "./v2-model.js";
 import { pricedResources } from "./billed-resources.js";
 import { estimateCost, pricing } from "./pricing.js";
+import { accountCap, selectsScenario } from "./scenarios.js";
 
 /** Planning estimate only: extrapolates pilot durations, including failures, with no rate-limit prediction. */
 export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "samples">) {
@@ -116,27 +117,102 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
         (meanDuration("restore-destroy") ?? 0);
 
       const overlap = estimateCost(p.name, overlapMs * 100, allocation, region);
-      const burstLife = meanDuration("burst-3/sandbox-lifetime");
 
-      const burst10 =
-        burstLife === null
-          ? null
-          : estimateCost(
-              p.name,
-              burstLife * 10 * (report.config["burst-cohorts"] ?? 1),
-              allocation,
-              region,
-            );
+      // Cohorts and dedicated iterations are priced per sandbox: each observed lifetime on its
+      // own, so per-sandbox minimums, rounding and creation fees apply to every one, then the
+      // mean price is multiplied by the number of sandboxes.
+      const cohorts = report.config["burst-cohorts"] ?? 1;
+      const cap = accountCap(p.name, report.config["account-limits"] ?? {});
 
-      const burst25 =
-        burstLife === null
-          ? null
-          : estimateCost(
-              p.name,
-              burstLife * 25 * (report.config["burst-cohorts"] ?? 1),
-              allocation,
-              region,
-            );
+      const meanPrice = (lifetimesMs: readonly number[]) => {
+        const prices = lifetimesMs.map((ms) => estimateCost(p.name, ms, allocation, region));
+
+        if (!prices.length || prices.some((price) => price === null)) return null;
+
+        return prices.reduce<number>((a, b) => a + (b ?? 0), 0) / prices.length;
+      };
+
+      const lifetimes = (pattern: RegExp) =>
+        rows
+          .filter((s) => pattern.test(s.scenario) && ["sample", "failure"].includes(s.outcome.kind))
+          .map((s) => s.durationMs);
+
+      const perSandbox = (lifetimesMs: readonly number[], sandboxes: number) => {
+        const one = meanPrice(lifetimesMs);
+
+        return one === null ? null : one * sandboxes;
+      };
+
+      const burstLifetimes = lifetimes(/^burst-3\/sandbox-lifetime$/);
+      const burst10 = perSandbox(burstLifetimes, 10 * cohorts);
+      const burst25 = perSandbox(burstLifetimes, 25 * cohorts);
+
+      // Stress suites, priced from the pilot's own rows and kept out of `total` above.
+      // One member's lifetime at any observed K, for K members and the configured cohorts.
+      // A K above the account cap is not collected, so it costs nothing ("skipped").
+      const cohortCost = (kind: "cpu-burst" | "survival", k: number) =>
+        k > cap
+          ? ("skipped" as const)
+          : perSandbox(lifetimes(new RegExp(`^${kind}-\\d+/sandbox-lifetime$`)), k * cohorts);
+
+      // A dedicated cpu-sustained iteration is one sandbox, priced on its own recorded lifetime
+      // (`sandbox-lifetime`, create to destroy): that covers the probe's upload and first guest
+      // clock read, which run before the measured probe step. In a sustained run only the planned
+      // iterations (below `runs`) are priced, whichever row places them: each that recorded a
+      // lifetime is priced on it, even when its probe was blocked (the sandbox still ran), and an
+      // iteration past the runs is left out even when its probe was timed. An iteration whose
+      // probe ran but whose lifetime is missing (an older pilot) falls back to the sum of its
+      // create, fingerprint, probe and destroy steps.
+      const sustainedParts = ["cold", "fingerprint", "cpu-sustained", "destroy"];
+      const timed = (s: (typeof rows)[number]) => ["sample", "failure"].includes(s.outcome.kind);
+
+      const recordedLifetime = (iteration: number) =>
+        rows.find(
+          (s) =>
+            s.iteration === iteration &&
+            s.scenario === "sandbox-lifetime" &&
+            s.outcome.kind === "sample",
+        );
+
+      const sustainedRun = selectsScenario(report.config.scenarios, "cpu-sustained");
+      const planned = (iteration: number) => !sustainedRun || iteration < report.config.runs;
+
+      const sustainedIterations = [
+        ...new Set(
+          rows
+            .filter(
+              (s) =>
+                planned(s.iteration) &&
+                ((s.scenario === "cpu-sustained" && timed(s)) ||
+                  (sustainedRun &&
+                    s.scenario === "sandbox-lifetime" &&
+                    s.outcome.kind === "sample")),
+            )
+            .map((s) => s.iteration),
+        ),
+      ];
+
+      const sustainedLifetimes = sustainedIterations.map(
+        (iteration) =>
+          recordedLifetime(iteration)?.durationMs ??
+          rows
+            .filter(
+              (s) => s.iteration === iteration && sustainedParts.includes(s.scenario) && timed(s),
+            )
+            .reduce((ms, s) => ms + s.durationMs, 0),
+      );
+
+      const cpuSustained30 = perSandbox(sustainedLifetimes, 30);
+
+      const stressParts = {
+        cpuSustained30,
+        cpuBurst10: cohortCost("cpu-burst", 10),
+        cpuBurst25: cohortCost("cpu-burst", 25),
+        survival10: cohortCost("survival", 10),
+        survival25: cohortCost("survival", 25),
+      };
+
+      const stressValues = Object.values(stressParts);
 
       return {
         provider: p.name,
@@ -156,6 +232,19 @@ export function projectCosts(report: Pick<ReportV2, "config" | "providers" | "sa
           burst25 === null
             ? null
             : lifecycle + workload + overlap + burst10 + burst25,
+        /**
+         * CPU sustained (30 dedicated iterations, each priced on its recorded sandbox lifetime) and the
+         * cpu-burst and survival cohorts at K=10 and 25 with the configured cohort count, each
+         * sandbox priced on its own. Null where the pilot did not run that suite; "skipped" where
+         * K exceeds the account cap. Not included in `total`.
+         */
+        stress: {
+          ...stressParts,
+          accountCap: cap,
+          total: stressValues.every((v) => v !== null)
+            ? stressValues.reduce<number>((a, b) => a + (b === "skipped" ? 0 : (b ?? 0)), 0)
+            : null,
+        },
         note: "Estimate from pilot duration (failures included), same observed/default allocation. Missing restored-fingerprint time uses source fingerprint duration for planning only. Larger-burst rate limits, fixed subscriptions, credits, transfer, retained storage excluded. Unsupported scenarios excluded; unobserved scenarios make estimate unknown. K=10/25 require account capacity; costs include configured burst-cohorts repeats.",
       };
     });

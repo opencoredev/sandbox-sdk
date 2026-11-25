@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { maritime } from "@opencoredev/sandbox-sdk/maritime";
 import { z } from "zod";
 import { decodeMaritime, type MaritimeInfo } from "../src/billing/providers.js";
 import { createRawMaritime, rawOwnerLabel, type RawMaritimeBox } from "../src/maritime-raw.js";
@@ -18,7 +19,9 @@ import {
 } from "../src/snapshots.js";
 import { parseV2 } from "../src/v2-config.js";
 import { sanitize } from "../src/v2-runner.js";
-import { fakeNativeModules } from "./native-fakes.js";
+import { bound, boundFake, fakeNativeModules } from "./native-fakes.js";
+import { fingerprintOf } from "../src/connections.js";
+import { lookupSandbox } from "../src/existence.js";
 
 const dirs: string[] = [];
 
@@ -96,7 +99,15 @@ describe("finding 1: credentials stay out of benchmark records", () => {
     };
 
     const report = await runV2(
-      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      [
+        {
+          kind: "ready",
+          name: "memory",
+          cloud: false,
+          region: null,
+          provider: boundFake(provider),
+        },
+      ],
       parseV2([
         "--providers",
         "memory",
@@ -145,8 +156,7 @@ describe("finding 4: Maritime snapshot provenance is its own sourceSandboxId", (
       vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json(body));
 
       await expect(
-        // SAFETY: inspectSnapshot reads the provider only for local Docker; Maritime's case never touches it.
-        inspectSnapshot("maritime", { name: "maritime" } as never, "sbx-src", "snap-1"),
+        inspectSnapshot("maritime", bound(maritime()), "sbx-src", "snap-1"),
       ).rejects.toThrow(/source metadata/);
     },
   );
@@ -164,6 +174,7 @@ describe("finding 5: a pending Maritime save is never lost or replayed after its
 
     await expect(
       settleMaritimeSave({
+        provider: bound(maritime()),
         sandboxId: "sbx-src",
         name: "snap-1",
         idempotencyKey: "key-1",
@@ -183,6 +194,7 @@ describe("finding 5: a pending Maritime save is never lost or replayed after its
 
     await expect(
       settleMaritimeSave({
+        provider: bound(maritime()),
         sandboxId: "sbx-src",
         name: "snap-1",
         idempotencyKey: "key-1",
@@ -194,6 +206,7 @@ describe("finding 5: a pending Maritime save is never lost or replayed after its
   it("reapRun deletes a pending save's snapshot found from its source, clears the entry and never replays the save", async () => {
     vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
     const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const maritimeProvider = bound({ ...memory(), name: "maritime" }, { apiKey: "mk_test_key" });
     const out = await directory("bench-maritime-reap-");
     const calls: string[] = [];
     let deleted = false;
@@ -241,6 +254,7 @@ describe("finding 5: a pending Maritime save is never lost or replayed after its
       join(out, "ownership.json"),
       JSON.stringify({
         runId: "maritime-run",
+        connectionFingerprints: { maritime: await fingerprintOf(maritimeProvider) },
         resources: [
           {
             provider: "maritime",
@@ -262,7 +276,7 @@ describe("finding 5: a pending Maritime save is never lost or replayed after its
     );
 
     await reapRun(
-      [{ kind: "ready", name: "maritime", cloud: true, region: null, provider: memory() }],
+      [{ kind: "ready", name: "maritime", cloud: true, region: null, provider: maritimeProvider }],
       parseV2(["--providers", "maritime", "--run", "maritime-run", "--out", out]),
       (s) => s,
     );
@@ -536,7 +550,15 @@ describe("re-review regressions on 6d6fea6", () => {
     };
 
     const report = await runV2(
-      [{ kind: "ready", name: "memory", cloud: false, region: null, provider }],
+      [
+        {
+          kind: "ready",
+          name: "memory",
+          cloud: false,
+          region: null,
+          provider: boundFake(provider),
+        },
+      ],
       parseV2([
         "--providers",
         "memory",
@@ -592,6 +614,7 @@ describe("re-review regressions on 6d6fea6", () => {
 
     await expect(
       settleMaritimeSave({
+        provider: bound(maritime()),
         sandboxId: "sbx-src",
         name: "snap-1",
         idempotencyKey: "key-1",
@@ -604,6 +627,7 @@ describe("re-review regressions on 6d6fea6", () => {
   it("reapRun never replays a confirmed save after the delete response is lost", async () => {
     vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
     const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const maritimeProvider = bound({ ...memory(), name: "maritime" }, { apiKey: "mk_test_key" });
     const out = await directory("bench-maritime-reap-drop-");
     const calls: string[] = [];
     let deleted = false;
@@ -649,6 +673,7 @@ describe("re-review regressions on 6d6fea6", () => {
       join(out, "ownership.json"),
       JSON.stringify({
         runId: "maritime-run",
+        connectionFingerprints: { maritime: await fingerprintOf(maritimeProvider) },
         resources: [
           {
             provider: "maritime",
@@ -670,7 +695,7 @@ describe("re-review regressions on 6d6fea6", () => {
     );
 
     await reapRun(
-      [{ kind: "ready", name: "maritime", cloud: true, region: null, provider: memory() }],
+      [{ kind: "ready", name: "maritime", cloud: true, region: null, provider: maritimeProvider }],
       parseV2(["--providers", "maritime", "--run", "maritime-run", "--out", out]),
       (s) => s,
     );
@@ -685,6 +710,7 @@ describe("re-review regressions on 6d6fea6", () => {
   it("reapRun strips the save key before DELETE when list omits the snapshot and exact GET confirms it", async () => {
     vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
     const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+    const maritimeProvider = bound({ ...memory(), name: "maritime" }, { apiKey: "mk_test_key" });
     const out = await directory("bench-maritime-reap-list-miss-");
     const calls: string[] = [];
     let deleted = false;
@@ -729,6 +755,7 @@ describe("re-review regressions on 6d6fea6", () => {
       join(out, "ownership.json"),
       JSON.stringify({
         runId: "maritime-run",
+        connectionFingerprints: { maritime: await fingerprintOf(maritimeProvider) },
         resources: [
           {
             provider: "maritime",
@@ -743,7 +770,13 @@ describe("re-review regressions on 6d6fea6", () => {
     );
 
     const providers = [
-      { kind: "ready" as const, name: "maritime", cloud: true, region: null, provider: memory() },
+      {
+        kind: "ready" as const,
+        name: "maritime",
+        cloud: true,
+        region: null,
+        provider: maritimeProvider,
+      },
     ];
 
     const config = parseV2(["--providers", "maritime", "--run", "maritime-run", "--out", out]);
@@ -764,8 +797,7 @@ describe("re-review regressions on 6d6fea6", () => {
 
   it("route-level 404 resource_not_found never proves snapshot absence in settle, inspect, or delete", async () => {
     vi.stubEnv("MARITIME_API_KEY", "mk_test_key");
-    const { memory } = await import("@opencoredev/sandbox-sdk/memory");
-    const provider = memory();
+    const provider = bound(maritime());
 
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = new URL(String(input));
@@ -779,6 +811,7 @@ describe("re-review regressions on 6d6fea6", () => {
 
     await expect(
       settleMaritimeSave({
+        provider: bound(maritime()),
         sandboxId: "sbx-src",
         name: "snap-1",
         idempotencyKey: "key-1",
@@ -869,13 +902,14 @@ describe("re-review regressions on 6d6fea6", () => {
           name: "maritime",
           cloud: true,
           region: null,
-          provider: {
+          provider: boundFake({
             ...base,
+            name: "maritime",
             capabilities: new Set([...base.capabilities, "snapshot"]),
             async snapshot() {
               throw new Error("unused for named Maritime snapshots");
             },
-          },
+          }),
         },
       ],
       parseV2([
@@ -968,13 +1002,14 @@ describe("re-review regressions on 6d6fea6", () => {
           name: "maritime",
           cloud: true,
           region: null,
-          provider: {
+          provider: boundFake({
             ...base,
+            name: "maritime",
             capabilities: new Set([...base.capabilities, "snapshot"]),
             async snapshot() {
               throw new Error("unused for named Maritime snapshots");
             },
-          },
+          }),
         },
       ],
       parseV2([
@@ -1059,13 +1094,14 @@ describe("re-review regressions on 6d6fea6", () => {
           name: "e2b",
           cloud: true,
           region: null,
-          provider: {
+          provider: boundFake({
             ...base,
+            name: "e2b",
             capabilities: new Set([...base.capabilities, "snapshot"]),
             async snapshot() {
               return { id: snapshotId };
             },
-          },
+          }),
         },
       ],
       parseV2([
@@ -1090,4 +1126,105 @@ describe("re-review regressions on 6d6fea6", () => {
     expect(rejectedWrites).toBe(1);
     expect(deleted).toContain(snapshotId);
   }, 30_000);
+});
+
+describe("Maritime exact reads decide absence only from Maritime's own codes", () => {
+  it.each([
+    [404, { code: "sandbox_not_found" }, "not-found"],
+    [410, { code: "sandbox_ended" }, "terminal"],
+    [404, { code: "resource_not_found" }, "unavailable"],
+    [404, null, "unavailable"],
+  ] as const)("%i %j reads as %s", async (status, body, result) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      body === null ? new Response("not json", { status }) : Response.json(body, { status }),
+    );
+
+    const lookup = await lookupSandbox(
+      bound(maritime(), { apiKey: "mk_test_key" }),
+      "sbx-src",
+      5000,
+    );
+
+    expect(lookup.result).toBe(result);
+  });
+
+  it("snapshot writes refuse redirects, as the adapter's do", async () => {
+    const redirects: (RequestRedirect | undefined)[] = [];
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "DELETE") redirects.push(init.redirect);
+
+      return Response.json({ deleted: true });
+    });
+
+    const clean = await snapshotCleaner(
+      "maritime",
+      bound(maritime(), { apiKey: "mk_test_key" }),
+      "sbx-src",
+    );
+
+    await clean("snap-1");
+
+    expect(redirects).toEqual(["error"]);
+  });
+});
+
+describe("round 2: Maritime reads never follow redirects, and a skipped reap with owed cleanup fails", () => {
+  it("an exact lookup refuses redirects and needs Maritime's own state field", async () => {
+    const redirects: (RequestRedirect | undefined)[] = [];
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      redirects.push(init?.redirect);
+
+      return Response.json({ id: "sbx-src", status: "terminated" });
+    });
+
+    const lookup = await lookupSandbox(
+      bound(maritime(), { apiKey: "mk_test_key" }),
+      "sbx-src",
+      5000,
+    );
+
+    expect(redirects).toEqual(["error"]);
+    expect(lookup.result).toBe("unavailable");
+  });
+
+  it("snapshot reads refuse redirects too", async () => {
+    const redirects: (RequestRedirect | undefined)[] = [];
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      redirects.push(init?.redirect);
+
+      return Response.json({ code: "snapshot_not_found" }, { status: 404 });
+    });
+
+    await inspectSnapshot(
+      "maritime",
+      bound(maritime(), { apiKey: "mk_test_key" }),
+      "sbx-src",
+      "snap-1",
+    );
+
+    expect(redirects).toEqual(["error"]);
+  });
+
+  it("reapRun fails and keeps the journal when a provider with journaled entries cannot load", async () => {
+    const out = await directory("bench-maritime-skip-");
+
+    const journal = JSON.stringify({
+      runId: "maritime-run",
+      resources: [{ provider: "maritime", id: "sbx-src", kind: "sandbox", parent: null }],
+    });
+
+    await writeFile(join(out, "ownership.json"), journal);
+
+    const failed = await reapRun(
+      [{ kind: "skipped", name: "maritime", note: "Missing credentials: MARITIME_API_KEY" }],
+      parseV2(["--providers", "maritime", "--run", "maritime-run", "--out", out]),
+      (s) => s,
+    );
+
+    expect(failed).toBe(true);
+    expect(await readFile(join(out, "ownership.json"), "utf8")).toBe(journal);
+  });
 });
