@@ -1,5 +1,6 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSandbox } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
@@ -151,8 +152,12 @@ describe("expanded run lifecycle", () => {
 
   it("keeps a died run's claim, so its empty journal is overwritten only with --force", async () => {
     freshOut();
-    // A run that died after allocating, before its create returned an ID: nothing journaled.
-    writeFileSync(join(out, "run.json"), JSON.stringify({ runId: "expanded-died" }));
+    // A run that died after allocating, before its create returned an ID: nothing journaled. Its
+    // claim names a pid on this host that no longer exists.
+    writeFileSync(
+      join(out, "run.json"),
+      JSON.stringify({ runId: "expanded-died", pid: spawnSync("true").pid, host: hostname() }),
+    );
     writeFileSync(
       join(out, "ownership.json"),
       JSON.stringify({

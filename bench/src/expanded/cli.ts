@@ -336,6 +336,12 @@ interface OwnedSandbox {
  */
 class LiveSandboxes {
   private readonly owned = new Map<string, OwnedSandbox>();
+  /**
+   * Every sandbox ever attributed to this run, by `provider/id`: created, named by a failed create
+   * or adopted from a listing. One that left `owned` was seen gone, which is not the same as never
+   * seen: a stale listing may still show it, and it must not be adopted again.
+   */
+  private readonly attributed = new Set<string>();
   private readonly attempts = new Map<string, Promise<boolean>>();
   private readonly deletions = new DeletionWork();
 
@@ -351,6 +357,7 @@ class LiveSandboxes {
   }
 
   async add(provider: ReadyProvider, box: Sandbox, sample: SampleRef): Promise<void> {
+    this.attributed.add(`${provider.name}/${box.id}`);
     this.owned.set(`${provider.name}/${box.id}`, {
       provider,
       id: box.id,
@@ -364,16 +371,17 @@ class LiveSandboxes {
 
   /**
    * Journal a sandbox the run has no handle for, before deleting it by ID: one a failed create
-   * named (with its sample), or one only the final sweep's listing found. True when it was not
-   * journaled yet.
+   * named (with its sample), or one only the final sweep's listing found. True only for a sandbox
+   * the run never attributed before, so one already seen gone is never taken up again.
    */
   async adopt(
     provider: ReadyProvider,
     id: string,
     sample: SampleRef | null = null,
   ): Promise<boolean> {
-    if (this.owned.has(`${provider.name}/${id}`)) return false;
+    if (this.attributed.has(`${provider.name}/${id}`)) return false;
 
+    this.attributed.add(`${provider.name}/${id}`);
     this.owned.set(`${provider.name}/${id}`, {
       provider,
       id,
@@ -583,75 +591,65 @@ export function sandboxLifetimeMs(adapter: string, timeoutMs: number): number | 
 }
 
 /**
- * Adapters `lookupSandbox` (existence.ts) reads exactly. Only that read shows a sandbox gone, so on
- * any other adapter (AgentOS, Railway) no delete could ever be confirmed.
+ * When the run's label attaches to a new sandbox, for every adapter `lookupSandbox` (existence.ts)
+ * reads exactly; only that read shows a sandbox gone, so any adapter missing here (AgentOS,
+ * Railway) is never created on. "at-allocation": the label is in the create request itself (native
+ * labels, tags, metadata or create-time env). "after-allocation": it arrives in a later step, so a
+ * crash in between leaves a sandbox the run's label cannot find. Archil and Beam write a marker file
+ * in the guest, boxd keeps custom labels only in its guest file, and Boat renames the VM after
+ * creating it.
  */
-const exactLookup: ReadonlySet<string> = new Set([
-  "memory",
-  "local",
-  "tenki",
-  "upstash",
-  "e2b",
-  "daytona",
-  "baseten",
-  "beam",
-  "archil",
-  "boxd",
-  "freestyle",
-  "boat",
-  "styne",
-  "maritime",
-  "instabox",
-  "superserve",
-  "modal",
-  "vercel",
+const labelAttaches: ReadonlyMap<string, "at-allocation" | "after-allocation"> = new Map([
+  ["memory", "at-allocation"],
+  ["local", "at-allocation"],
+  ["tenki", "at-allocation"],
+  ["upstash", "at-allocation"],
+  ["e2b", "at-allocation"],
+  ["daytona", "at-allocation"],
+  ["baseten", "at-allocation"],
+  ["freestyle", "at-allocation"],
+  ["styne", "at-allocation"],
+  ["maritime", "at-allocation"],
+  ["instabox", "at-allocation"],
+  ["superserve", "at-allocation"],
+  ["modal", "at-allocation"],
+  ["vercel", "at-allocation"],
+  ["archil", "after-allocation"],
+  ["beam", "after-allocation"],
+  ["boxd", "after-allocation"],
+  ["boat", "after-allocation"],
 ]);
 
 /**
- * Adapters that write the run's labels into the guest after allocation: Archil, Beam and Railway
- * write a marker file, and boxd keeps custom labels only in its guest file. Until that write no
- * label marks the sandbox as this run's, so a crash in between leaves one nothing finds.
+ * Adapters whose hard lifetime (`timeoutMs`) deletes the sandbox when it runs out, which is all that
+ * bounds a sandbox whose label never arrived. Accepting `timeoutMs` is not enough: boxd's
+ * `deleteAfter` deletes the machine, and Beam stops the container, its adapter's own delete; Archil's
+ * expiry only pauses the sandbox, out of list(), and Boat's timer stops or archives the VM.
  */
-const guestLabeled: ReadonlySet<string> = new Set(["archil", "beam", "boxd", "railway"]);
-
-/**
- * Of those, the ones whose hard lifetime ends the sandbox for good when it runs out, which is what
- * bounds such a leftover. Taking `timeoutMs` is not enough: boxd's `deleteAfter` deletes the
- * machine, and Beam stops the container, its adapter's own delete. Archil's expiry only pauses the
- * sandbox, which drops it from list(); Railway takes no lifetime at all.
- */
-const endedAtExpiry: ReadonlySet<string> = new Set(["beam", "boxd"]);
+const deletedAtExpiry: ReadonlySet<string> = new Set(["beam", "boxd"]);
 
 /** Why the run must not create on `adapter`, or null when it may. Checked before any create. */
 export function admissionRefusal(adapter: string, timeoutMs: number): string | null {
-  if (!exactLookup.has(adapter))
-    return "No exact read-only lookup for this adapter, so no deletion of its sandboxes could be confirmed";
+  const attaches = labelAttaches.get(adapter);
+
+  if (attaches === undefined)
+    return "No exact read-only lookup, so no deletion of its sandboxes could be confirmed";
 
   if (
-    guestLabeled.has(adapter) &&
-    !(endedAtExpiry.has(adapter) && sandboxLifetimeMs(adapter, timeoutMs) !== null)
+    attaches === "after-allocation" &&
+    !(deletedAtExpiry.has(adapter) && sandboxLifetimeMs(adapter, timeoutMs) !== null)
   )
-    return "Labels are written in the guest after allocation and no hard lifetime ends the sandbox, so a crash before the label lands would leave one nothing finds or removes";
+    return "Labels arrive after create and expiry does not delete the sandbox, so a crash in between would leave one nothing finds or removes";
 
   return null;
 }
 
 /**
- * Codes for a create the provider refused before allocating anything, as `realistic/burst.ts`
- * reads them; never for Modal, whose client allocates before it can be refused.
- */
-const refusalCodes: ReadonlySet<string> = new Set([
-  "quota",
-  "auth",
-  "unsupported",
-  "invalid_argument",
-  "not_found",
-]);
-
-/**
  * A create threw `failed` (null when not a SandboxError). A sandbox it named is journaled and
- * returned, to be cleaned by ID; a refusal allocated nothing; anything else may have allocated one
- * unnamed, counted for the final sweep.
+ * returned, to be cleaned by ID. Any other failure may have allocated one unnamed and is counted
+ * for the final sweep, whatever its code: no adapter states that a create was refused before
+ * allocating, and boxd, for one, allocates, then can fail setup and its compensating delete with an
+ * auth or quota error that names no machine.
  */
 async function failedCreate(
   provider: ReadyProvider,
@@ -665,7 +663,6 @@ async function failedCreate(
     return failed.sandboxId;
   }
 
-  if (failed && refusalCodes.has(failed.code) && provider.name !== "modal") return null;
   state.unnamedCreates.set(provider.name, (state.unnamedCreates.get(provider.name) ?? 0) + 1);
 
   return null;
@@ -811,27 +808,26 @@ async function readClaim(
 }
 
 /**
- * Whether the run holding `claim` may still be writing: its process is alive on this host, or it
- * ran on another host this one cannot check. A claim without a pid (an older run's) is not.
+ * Whether the run holding `claim` has provably stopped: the claim names this host and a pid, and
+ * that pid no longer exists (ESRCH). A claim without both (`v2-runner.ts` writes only `runId`) or
+ * from another host cannot be checked, so it is never taken as stopped.
  */
-function claimHolderAlive(claim: Claim): boolean {
-  if (claim.pid === undefined || claim.host === undefined) return false;
-
-  if (claim.host !== hostname()) return true;
+function claimHolderGone(claim: Claim): boolean {
+  if (claim.pid === undefined || claim.host !== hostname()) return false;
 
   try {
     process.kill(claim.pid, 0);
 
-    return true;
+    return false;
   } catch (error) {
-    return !isNoProcess(error);
+    return isNoProcess(error);
   }
 }
 
 /**
  * Claim `out` for `runId` with run.json, naming this process. Of two runs that both passed
- * `assertJournalFree`, only one gets it. `force` takes over only the claim of a run whose process
- * is gone, so two live runs never write one --out.
+ * `assertJournalFree`, only one gets it. `force` takes over only a claim whose run provably
+ * stopped, so two live runs never write one --out.
  */
 async function claimOutput(out: string, runId: string, force: boolean) {
   const path = join(out, "run.json");
@@ -847,9 +843,9 @@ async function claimOutput(out: string, runId: string, force: boolean) {
         `${path} claims this --out for another run, which may still be running or may have died before its cleanup was confirmed. Reap that run (bun bench reap --run ID --out the same directory) and pass --force, or choose another --out.`,
       );
 
-    if (current.kind === "claim" && claimHolderAlive(current.claim))
+    if (current.kind !== "claim" || !claimHolderGone(current.claim))
       throw new Error(
-        `${path} belongs to a run whose process is still alive, or ran on another host; --force takes over only a dead run's claim. Stop that run, remove run.json if it ran elsewhere and is gone, or choose another --out.`,
+        `${path} belongs to a run that may be still alive: its process is still alive, or the claim names no pid on this host to check. --force takes over only a claim whose process is gone. Stop that run, remove run.json yourself once you know it is gone, or choose another --out.`,
       );
 
     return writeFile(path, mine);

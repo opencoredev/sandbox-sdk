@@ -165,7 +165,7 @@ describe("expanded run lifecycle, round 2", () => {
     expect(existsSync(join(out, "run.json"))).toBe(false);
   });
 
-  it("owes nothing for a create the provider refused", async () => {
+  it("owes cleanup for a refused create that names no sandbox, since a refusal proves nothing", async () => {
     freshOut();
 
     const refused = {
@@ -180,8 +180,10 @@ describe("expanded run lifecycle, round 2", () => {
     const results = readJson(resultsFile, join(out, "results.json"));
 
     expect(results.failures).toHaveLength(1);
-    expect(results.cleanupErrors).toEqual([]);
-    expect(existsSync(join(out, "run.json"))).toBe(false);
+    expect(results.cleanupErrors).toEqual([
+      { sandboxId: null, reason: expect.stringMatching(/1 failed create\(s\) named no sandbox/) },
+    ]);
+    expect(existsSync(join(out, "run.json"))).toBe(true);
   });
 
   it("journals and deletes by ID a sandbox a failed create named", async () => {
