@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createSandbox, reapSandboxes } from "../src/index.js";
 import { Redactor } from "../src/errors.js";
+import { parseSandbox, tokenPattern } from "../src/providers/microsandbox/api.js";
 import { peerError } from "../src/providers/microsandbox/errors.js";
 import {
   execute,
@@ -755,7 +756,7 @@ test("PR88 merge review: output keeps a leading byte order mark, so a secret sta
   }
 });
 
-test("PR88 merge review: a snapshot reference shown in an error goes through the credential filter", async () => {
+test("PR88 merge review: a snapshot reference is never shown in an error", async () => {
   const error = await adapter()
     .create({ labels: labels(), from: key })
     .catch((failure: Error) => failure);
@@ -771,4 +772,47 @@ test("PR88 merge review: a secret under a name the guest shell sets is refused b
     createSandbox(adapter(), { labels: labels(), secrets: { PWD: "pwd-secret-value" } }),
   ).rejects.toMatchObject({ code: "invalid_argument" });
   expect(fake.sandboxes.size).toBe(before);
+});
+
+test("PR88 merge review: a peer message the adapter's filter would change is withheld whole", () => {
+  const secret = "secret-head-msb_abc123-secret-tail";
+  const redactor = new Redactor();
+  redactor.add([secret]);
+
+  const error = peerError(new Error(`write failed: ${secret}`), "writing a file", {
+    redact: (text) => text.replace(tokenPattern, "[REDACTED]"),
+  });
+
+  const cause = String(redactor.error(error, "microsandbox").cause);
+  expect(cause).not.toContain("secret-head");
+  expect(cause).not.toContain("secret-tail");
+});
+
+test("PR88 merge review: a peer that fails to load keeps its message whole for the core", async () => {
+  const secret = "load-line-one\nload-line-two";
+
+  const failing = adapter({
+    peer: async () => {
+      throw new Error(`could not load: ${secret}`);
+    },
+  });
+
+  const error = await createSandbox(failing, {
+    labels: labels(),
+    secrets: { LOADED: secret },
+  }).then(
+    () => undefined,
+    (failure: Error) => failure,
+  );
+
+  expect(error).toBeInstanceOf(Error);
+  expect(JSON.stringify({ message: String(error), cause: String(error?.cause) })).not.toMatch(
+    /load-line-(one|two)/,
+  );
+});
+
+test("PR88 merge review: a sandbox ID that holds a token is refused at the API boundary", () => {
+  expect(() => parseSandbox({ id: "sbx-msb_abc123", name: "sbx-1", status: "running" })).toThrow(
+    /unexpected sandbox object/,
+  );
 });

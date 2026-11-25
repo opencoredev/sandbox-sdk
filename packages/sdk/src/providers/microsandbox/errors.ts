@@ -89,13 +89,16 @@ const peerCodes: ReadonlyMap<string, ErrorCode> = new Map<string, ErrorCode>([
 const missingFile = /no such file|not found|enoent|does not exist/i;
 
 /**
- * The message of a peer error for `cause`, never the message itself. `redact` removes what the adapter
- * knows without scrubbing; the copy shown is scrubbed and bounded, and the whole text is kept for the
- * core, which redacts the sandbox's secrets in it first, since a fold or the bound can split one.
+ * The message of a peer error for `cause`, never the message itself. The copy shown is scrubbed and
+ * bounded, and the whole text is kept for the core, which redacts the sandbox's secrets in it first,
+ * since a fold or the bound can split one. Text that `redact` (what the adapter knows, unscrubbed)
+ * would change is withheld whole: replacing a credential first could split a secret that holds it.
  */
 export function peerCause(cause: unknown, redact: (text: string) => string) {
   if (!(cause instanceof Error)) return undefined;
-  const whole = redact(cause.message);
+  const whole = cause.message;
+
+  if (redact(whole) !== whole) return evidenceCause({ providerMessage: "[REDACTED]" });
 
   return evidenceCause({ providerMessage: scrub(whole, 300) }, { providerMessage: whole });
 }

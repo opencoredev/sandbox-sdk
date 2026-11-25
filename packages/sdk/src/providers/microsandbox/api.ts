@@ -96,7 +96,8 @@ export function parseSandbox(raw: JsonValue | undefined): MicrosandboxSandbox {
   const name = field(raw, "name");
   const status = field(raw, "status");
 
-  if (!isString(id) || !id || !isString(name) || !isStatus(status))
+  // An ID that holds a token is refused here, so a credential never travels as one.
+  if (!isString(id) || !id || tokensIn(id).length > 0 || !isString(name) || !isStatus(status))
     throw fail("unexpected sandbox object from the API");
   const compute = field(field(raw, "compute"), "type");
   const rawSpec = field(raw, "spec");

@@ -60,7 +60,7 @@ import {
   type MicrosandboxSnapshot,
   type SandboxAnswer,
 } from "./api.js";
-import { fail, mapError, nativeHint, peerError, provider as name } from "./errors.js";
+import { fail, mapError, nativeHint, peerCause, peerError, provider as name } from "./errors.js";
 import {
   execute,
   orStop,
@@ -449,9 +449,7 @@ export function createMicrosandboxProvider(
     mapError,
   });
 
-  const redact = (text: string) => http.redact(text);
-
-  /** {@link redact} without its scrub, for peer text the core redacts again before scrubbing. */
+  /** The HTTP client's redaction without its scrub, for peer text the core redacts again before scrubbing. */
   const peerRedact = (text: string) =>
     leakPatterns.reduce(
       (redacted, pattern) => redacted.replace(pattern, "[REDACTED]"),
@@ -490,7 +488,7 @@ export function createMicrosandboxProvider(
 
         throw fail(`microsandbox could not load. ${nativeHint}`, "unavailable", {
           hint: nativeHint,
-          cause: error instanceof Error ? redact(error.message) : undefined,
+          cause: peerCause(error, peerRedact),
         });
       }
 
@@ -502,7 +500,7 @@ export function createMicrosandboxProvider(
         throw fail(
           `microsandbox loaded, but its RemoteContext could not start. ${nativeHint}`,
           "unavailable",
-          { hint: nativeHint, cause: error instanceof Error ? redact(error.message) : undefined },
+          { hint: nativeHint, cause: peerCause(error, peerRedact) },
         );
       }
     })();
@@ -1085,7 +1083,7 @@ export function createMicrosandboxProvider(
       await destroy(id);
     } catch {
       throw fail(
-        `sandbox ${redact(id)} was created but did not finish setting up, and it could not be confirmed deleted. Delete it before retrying`,
+        `the sandbox was created but did not finish setting up, and it could not be confirmed deleted. Delete it before retrying`,
         "outcome_unknown",
         { sandboxId: id },
       );
@@ -1154,12 +1152,12 @@ export function createMicrosandboxProvider(
         }),
       );
     } catch (error) {
-      if (isGone(error)) throw fail(`snapshot ${redact(from)} was not found`, "not_found");
+      if (isGone(error)) throw fail("the snapshot was not found", "not_found");
       throw error;
     }
 
     if (snapshot.location.type !== "managed")
-      throw fail(`snapshot ${redact(from)} is not in managed storage`, "unsupported");
+      throw fail("the snapshot is not in managed storage", "unsupported");
 
     return snapshot.location.id;
   }
@@ -1293,7 +1291,7 @@ export function createMicrosandboxProvider(
         answer.sandbox.name === sandboxName
       )
         throw fail(
-          `the create answered with sandbox ${redact(answer.sandbox.id)}, which carries another allocation marker; it was left alone`,
+          "the create answered with another sandbox, which carries another allocation marker; it was left alone",
           "outcome_unknown",
           { sandboxId: answer.sandbox.id },
         );
@@ -1751,7 +1749,7 @@ export function createMicrosandboxProvider(
     // The snapshot exists whatever happens next; a failed restart names it so it is never lost.
     if (wasRunning && !(await restart(id)))
       throw fail(
-        `snapshot ${redact(confirmedId)} (${snapshotName}) was taken, but the sandbox could not be restarted`,
+        `snapshot ${uuidPattern.test(confirmedId) ? `${confirmedId} (${snapshotName})` : snapshotName} was taken, but the sandbox could not be restarted`,
         "provider",
         { sandboxId: id },
       );
