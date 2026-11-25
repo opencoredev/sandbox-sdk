@@ -744,18 +744,15 @@ export function createMicrosandboxProvider(
             continue;
           }
         } else if (
-          entry.createdAt === undefined ||
-          service.createdAt === undefined ||
+          entry.createdAt !== undefined &&
+          service.createdAt !== undefined &&
           service.createdAt !== entry.createdAt
         ) {
           ownedServices.get(id)?.delete(slug);
-
-          if (
-            entry.createdAt !== undefined &&
-            service.createdAt !== undefined &&
-            service.createdAt !== entry.createdAt
-          )
-            await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
+          await notifyServiceCleanup({ sandboxId: id, slug, outcome: "conflict" }, deadline);
+          continue;
+        } else if (entry.createdAt === undefined || service.createdAt === undefined) {
+          failed.push(slug);
           continue;
         }
 

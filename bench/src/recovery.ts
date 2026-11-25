@@ -260,7 +260,10 @@ export async function reapRun(
       );
 
       if (journal) {
-        journal.resources = journal.resources.filter((r) => r !== entry);
+        const hadEntry = journal.resources.includes(entry);
+        let addedSettled = false;
+
+        if (hadEntry) journal.resources = journal.resources.filter((r) => r !== entry);
 
         if (
           entry.kind === "service" &&
@@ -268,9 +271,20 @@ export async function reapRun(
           !journal.settledServices.some((s) => s.provider === entry.provider && s.id === entry.id)
         ) {
           journal.settledServices.push({ provider: entry.provider, id: entry.id });
+          addedSettled = true;
         }
 
-        await persistJournal();
+        try {
+          await persistJournal();
+        } catch (error) {
+          if (hadEntry && !journal.resources.includes(entry)) journal.resources.push(entry);
+
+          if (addedSettled)
+            journal.settledServices = journal.settledServices.filter(
+              (s) => !(s.provider === entry.provider && s.id === entry.id),
+            );
+          throw error;
+        }
       }
 
       for (const item of matchingReviews) {

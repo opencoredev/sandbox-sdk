@@ -1721,4 +1721,111 @@ describe("independent review reproductions", () => {
       reviewedIds: [],
     });
   });
+
+  test("R6-1 SDK destroy keeps a detached original retryable when one read lacks created_at", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const slug = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    await p.previewUrl(source.id, 3000);
+    const original = fake.services.get(slug);
+
+    if (!original) throw new Error("Original Service missing");
+    fake.faults.serviceDeleteFails = true;
+    await expect(p.destroy(source.id)).rejects.toThrow("could not be removed");
+    expect(fake.sandboxes.has(source.id)).toBe(false);
+    fake.faults.serviceDeleteFails = false;
+
+    const incomplete = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (init?.method !== "GET" || new URL(String(input)).pathname !== `/v1/services/${slug}`)
+        return realFetch(input, init);
+      const response = await realFetch(input, init);
+      const value = z.looseObject({ created_at: z.string() }).parse(await response.json());
+      const { created_at: _, ...withoutCreatedAt } = value;
+
+      return Response.json(withoutCreatedAt, { status: response.status });
+    });
+
+    await expect(p.destroy(source.id)).rejects.toThrow("could not be removed");
+    expect(fake.services.get(slug)).toBe(original);
+    incomplete.mockRestore();
+    await p.destroy(source.id);
+    expect(fake.services.has(slug)).toBe(false);
+  });
+
+  test("R6-2 reap clears a Service review created by a failed ownership journal write", async () => {
+    const p = adapter();
+    const source = await p.create({ labels: labels() });
+    const sandbox = fake.sandboxes.get(source.id);
+
+    if (!sandbox) throw new Error("Owned sandbox is missing");
+    const first = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3000`;
+    const second = `sbx-${source.id.replaceAll("-", "").slice(0, 16)}-p3001`;
+    await p.previewUrl(source.id, 3000);
+    await p.previewUrl(source.id, 3001);
+    await journal([
+      { provider: "microsandbox", id: source.id, kind: "sandbox", parent: null },
+      {
+        provider: "microsandbox",
+        id: first,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "created",
+        serviceCreatedAt: fake.services.get(first)?.createdAt,
+      },
+      {
+        provider: "microsandbox",
+        id: second,
+        kind: "service",
+        parent: source.id,
+        sandboxName: sandbox.name,
+        serviceState: "created",
+        serviceCreatedAt: fake.services.get(second)?.createdAt,
+      },
+    ]);
+
+    const del = await realFetch(`${fake.url}/v1/sandboxes/${source.id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${key}` },
+    });
+
+    await del.body?.cancel();
+    expect(del.ok).toBe(true);
+
+    const ownershipPath = join(out, "ownership.json");
+    const realRename = journalFiles.rename;
+    let failedOnce = false;
+
+    const rename = vi.spyOn(journalFiles, "rename").mockImplementation(async (from, to) => {
+      if (to === ownershipPath && !failedOnce) {
+        const ids = z
+          .object({ resources: z.array(z.object({ id: z.string() })) })
+          .parse(JSON.parse(await readFile(from, "utf8")))
+          .resources.map((r) => r.id);
+
+        if (!ids.includes(first) && ids.includes(second)) {
+          failedOnce = true;
+          throw new Error("simulated first Service journal rename failure");
+        }
+      }
+
+      await realRename(from, to);
+    });
+
+    expect(await reap()).toBe(true);
+    expect(failedOnce).toBe(true);
+    expect(fake.services.size).toBe(0);
+    rename.mockRestore();
+
+    const failed = await reap();
+
+    const results = z
+      .object({ cleanupReview: z.array(z.object({ id: z.string() })) })
+      .parse(JSON.parse(await readFile(join(out, "results.json"), "utf8")));
+
+    expect({ failed, reviewedIds: results.cleanupReview.map((item) => item.id) }).toEqual({
+      failed: false,
+      reviewedIds: [],
+    });
+  });
 });
