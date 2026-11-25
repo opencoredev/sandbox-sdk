@@ -30,6 +30,7 @@
  * no lifetime that ends the sandbox) are skipped before any create.
  */
 import { randomInt, randomUUID } from "node:crypto";
+import { readlinkSync } from "node:fs";
 import { mkdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
@@ -746,6 +747,7 @@ const claimFile = z.object({
   runId: z.string(),
   pid: z.number().int().positive().optional(),
   host: z.string().optional(),
+  pidns: z.string().optional(),
 });
 
 type Claim = z.infer<typeof claimFile>;
@@ -808,12 +810,26 @@ async function readClaim(
 }
 
 /**
- * Whether the run holding `claim` has provably stopped: the claim names this host and a pid, and
- * that pid no longer exists (ESRCH). A claim without both (`v2-runner.ts` writes only `runId`) or
- * from another host cannot be checked, so it is never taken as stopped.
+ * This process's PID namespace (`/proc/self/ns/pid`), or `none` where there is none to read: a pid
+ * in a claim names the same process only inside the same namespace.
+ */
+export function pidNamespace(): string {
+  try {
+    return readlinkSync("/proc/self/ns/pid");
+  } catch {
+    return "none";
+  }
+}
+
+/**
+ * Whether the run holding `claim` has provably stopped: the claim names this host, this PID
+ * namespace and a pid, and that pid no longer exists (ESRCH). A claim without all three
+ * (`v2-runner.ts` writes only `runId`), or from another host or namespace, cannot be checked, so it
+ * is never taken as stopped.
  */
 function claimHolderGone(claim: Claim): boolean {
-  if (claim.pid === undefined || claim.host !== hostname()) return false;
+  if (claim.pid === undefined || claim.host !== hostname() || claim.pidns !== pidNamespace())
+    return false;
 
   try {
     process.kill(claim.pid, 0);
@@ -831,7 +847,7 @@ function claimHolderGone(claim: Claim): boolean {
  */
 async function claimOutput(out: string, runId: string, force: boolean) {
   const path = join(out, "run.json");
-  const mine = `${JSON.stringify({ runId, pid: process.pid, host: hostname() })}\n`;
+  const mine = `${JSON.stringify({ runId, pid: process.pid, host: hostname(), pidns: pidNamespace() })}\n`;
 
   await withClaimLock(out, async () => {
     const current = await readClaim(path);
@@ -845,7 +861,7 @@ async function claimOutput(out: string, runId: string, force: boolean) {
 
     if (current.kind !== "claim" || !claimHolderGone(current.claim))
       throw new Error(
-        `${path} belongs to a run that may be still alive: its process is still alive, or the claim names no pid on this host to check. --force takes over only a claim whose process is gone. Stop that run, remove run.json yourself once you know it is gone, or choose another --out.`,
+        `${path} belongs to a run that may be still alive: its process is still alive, or the claim names no pid on this host and PID namespace to check. --force takes over only a claim whose process is gone. Stop that run, remove run.json yourself once you know it is gone, or choose another --out.`,
       );
 
     return writeFile(path, mine);
@@ -862,7 +878,8 @@ async function releaseClaim(out: string, runId: string) {
     if (
       current.kind === "claim" &&
       current.claim.runId === runId &&
-      current.claim.pid === process.pid
+      current.claim.pid === process.pid &&
+      current.claim.pidns === pidNamespace()
     )
       await rm(path, { force: true });
   });

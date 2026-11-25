@@ -8,7 +8,7 @@ import type { CreateInput, Labels, Provider } from "@opencoredev/sandbox-sdk/pro
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { connectionProbes } from "../src/connections.js";
-import { expandedCommand, sandboxLifetimeMs } from "../src/expanded/cli.js";
+import { expandedCommand, pidNamespace, sandboxLifetimeMs } from "../src/expanded/cli.js";
 import type { ExpandedScenario } from "../src/expanded/types.js";
 import type { LoadedProvider } from "../src/providers.js";
 import { bound, boundFake, fakeNativeModules } from "./native-fakes.js";
@@ -156,7 +156,12 @@ describe("expanded run lifecycle", () => {
     // claim names a pid on this host that no longer exists.
     writeFileSync(
       join(out, "run.json"),
-      JSON.stringify({ runId: "expanded-died", pid: spawnSync("true").pid, host: hostname() }),
+      JSON.stringify({
+        runId: "expanded-died",
+        pid: spawnSync("true").pid,
+        host: hostname(),
+        pidns: pidNamespace(),
+      }),
     );
     writeFileSync(
       join(out, "ownership.json"),

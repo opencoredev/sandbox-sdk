@@ -7,7 +7,7 @@ import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { CreateInput, Labels, Provider, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { admissionRefusal, expandedCommand } from "../src/expanded/cli.js";
+import { admissionRefusal, expandedCommand, pidNamespace } from "../src/expanded/cli.js";
 import type { ExpandedScenario } from "../src/expanded/types.js";
 import type { LoadedProvider } from "../src/providers.js";
 import { bound, boundFake } from "./native-fakes.js";
@@ -223,11 +223,41 @@ describe("expanded run lifecycle, round 3", () => {
       expect(readFileSync(join(out, "run.json"), "utf8")).toBe(text);
     });
 
+    it("refuses a same-host claim from another PID namespace, where its pid means another process", async () => {
+      freshOut();
+
+      const text = JSON.stringify({
+        runId: "x",
+        pid: exited(),
+        host: hostname(),
+        pidns: "pid:[1]",
+      });
+
+      writeFileSync(join(out, "run.json"), text);
+
+      await expect(expandedCommand(forced(), dependencies())).rejects.toThrow(/still alive/);
+      expect(readFileSync(join(out, "run.json"), "utf8")).toBe(text);
+    });
+
+    it("refuses a same-host claim that names no PID namespace", async () => {
+      freshOut();
+      const text = JSON.stringify({ runId: "x", pid: exited(), host: hostname() });
+      writeFileSync(join(out, "run.json"), text);
+
+      await expect(expandedCommand(forced(), dependencies())).rejects.toThrow(/still alive/);
+      expect(readFileSync(join(out, "run.json"), "utf8")).toBe(text);
+    });
+
     it("takes over a complete same-host claim whose pid is gone", async () => {
       freshOut();
       writeFileSync(
         join(out, "run.json"),
-        JSON.stringify({ runId: "expanded-died", pid: exited(), host: hostname() }),
+        JSON.stringify({
+          runId: "expanded-died",
+          pid: exited(),
+          host: hostname(),
+          pidns: pidNamespace(),
+        }),
       );
 
       await expandedCommand(forced(), dependencies());

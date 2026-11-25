@@ -7,7 +7,7 @@ import { memory } from "@opencoredev/sandbox-sdk/memory";
 import type { CreateInput, Labels, Provider } from "@opencoredev/sandbox-sdk/provider";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { admissionRefusal, expandedCommand } from "../src/expanded/cli.js";
+import { admissionRefusal, expandedCommand, pidNamespace } from "../src/expanded/cli.js";
 import type { ExpandedScenario } from "../src/expanded/types.js";
 import { lookupSandbox } from "../src/existence.js";
 import type { LoadedProvider } from "../src/providers.js";
@@ -243,7 +243,7 @@ describe("expanded run lifecycle, round 2", () => {
     const claim = (pid: number | undefined) =>
       writeFileSync(
         join(out, "run.json"),
-        JSON.stringify({ runId: "expanded-other", pid, host: hostname() }),
+        JSON.stringify({ runId: "expanded-other", pid, host: hostname(), pidns: pidNamespace() }),
       );
 
     claim(process.pid);
