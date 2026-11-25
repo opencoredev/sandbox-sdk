@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { open, rm } from "node:fs/promises";
-import { journalFiles } from "./files.js";
+import { open, readFile, rm } from "node:fs/promises";
+import { isMissingFile, journalFiles } from "./files.js";
 import { dirname } from "node:path";
 import type { Provider, SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import { deadline } from "./timing.js";
@@ -21,6 +21,53 @@ export class DeletionUnconfirmedError extends Error {
   constructor(readonly sandboxId: string) {
     super("Deletion accepted, but the sandbox still reads; see cleanupReview");
   }
+}
+
+/** What decides whether a journal is another run's and still holds cleanup entries. */
+const journalOwner = z.object({
+  runId: z.string(),
+  resources: z.array(z.unknown()).default([]),
+  apps: z.array(z.unknown()).default([]),
+});
+
+const printableRun = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+
+/**
+ * Refuse to start `run` where another run's journal still lists resources or Apps: the new run
+ * would overwrite it, and `bench reap` for that run could no longer find them. A journal of the
+ * same run, an empty one, or one that does not parse is left to be overwritten. `force` skips this.
+ */
+export async function assertJournalFree(path: string, run: string, force: boolean) {
+  if (force) return;
+  let text: string;
+
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingFile(error)) return;
+    throw error;
+  }
+
+  let raw: unknown;
+
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return;
+  }
+
+  const owner = journalOwner.safeParse(raw);
+
+  if (!owner.success || owner.data.runId === run) return;
+  const entries = owner.data.resources.length + owner.data.apps.length;
+
+  if (entries === 0) return;
+  const other = printableRun.safeParse(owner.data.runId);
+  const name = other.success ? `run ${other.data}` : "another run";
+
+  throw new Error(
+    `${path} holds ${entries} cleanup entries of ${name}. Reap that run first (bun bench reap --run ID --out the same directory), or choose another --out; --force overwrites its journal.`,
+  );
 }
 
 /** Replace the journal only after its complete contents have reached disk. */

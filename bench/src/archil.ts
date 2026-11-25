@@ -15,14 +15,17 @@ const controlPlanes = new Map([
 /** The adapter's default region when ARCHIL_REGION is unset. */
 export const archilDefaultRegion = "aws-us-east-1";
 
-/** The control plane for `ARCHIL_REGION` (keys are region-scoped), or an error naming the regions. */
-export function archilControlUrl(env: NodeJS.ProcessEnv): string {
-  const region = env.ARCHIL_REGION?.trim() || archilDefaultRegion;
-  const url = controlPlanes.get(region);
+/**
+ * The control plane for a region (keys are region-scoped): the adapter's `region` option or
+ * ARCHIL_REGION, the default when unset or blank. Throws naming the regions for any other.
+ */
+export function archilControlUrl(region: string | undefined): string {
+  const name = region?.trim() || archilDefaultRegion;
+  const url = controlPlanes.get(name);
 
   if (url === undefined)
     throw new Error(
-      `Unknown ARCHIL_REGION "${region}"; use one of ${[...controlPlanes.keys()].join(", ")}`,
+      `Unknown ARCHIL_REGION "${name}"; use one of ${[...controlPlanes.keys()].join(", ")}`,
     );
 
   return url;

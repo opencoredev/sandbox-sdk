@@ -2,9 +2,11 @@ import { z } from "zod";
 import type { DaytonaNative } from "@opencoredev/sandbox-sdk/daytona";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import {
+  daytonaClient,
+  e2bConnection,
+  upstashConnection,
   localDocker,
   lookupError,
-  maritimeBase,
   nativeModules,
   type NativeModules,
 } from "./existence.js";
@@ -18,42 +20,49 @@ import {
   isMicrosandboxSnapshotId,
 } from "./microsandbox.js";
 import { microsandboxTier } from "./providers.js";
+import { connectionOf, endpoint, modalClientParams } from "./connections.js";
 import { deadline } from "./timing.js";
 import { snapshotProvenanceSchema, type SnapshotProvenance } from "./ownership.js";
 
-async function daytonaSnapshots() {
-  const { Daytona } = await nativeModules.load("@daytonaio/sdk");
+// Every native client here uses the connection of the adapter instance that took the snapshots.
 
-  return new Daytona().snapshot;
+async function daytonaSnapshots(provider: Provider) {
+  return (await daytonaClient(provider)).snapshot;
 }
 
-async function boxdSnapshots() {
+async function boxdSnapshots(provider: Provider) {
   const { Boxd } = await nativeModules.load("@boxd-sh/sdk");
 
-  return new Boxd({ apiKey: process.env.BOXD_API_KEY }).snapshots;
+  return new Boxd(connectionOf(provider, "boxd")).snapshots;
 }
 
-async function freestyleSnapshots() {
+async function freestyleSnapshots(provider: Provider) {
   const { Freestyle } = await nativeModules.load("freestyle");
+  const config = connectionOf(provider, "freestyle");
 
-  return new Freestyle({ apiKey: process.env.FREESTYLE_API_KEY }).vms.snapshots;
+  return new Freestyle({ ...config, baseUrl: endpoint(config.baseUrl) }).vms.snapshots;
 }
 
-async function tenkiClient() {
+async function tenkiClient(provider: Provider) {
   const { TenkiSandbox } = await nativeModules.load("@tenkicloud/sandbox");
 
-  return new TenkiSandbox({ authToken: process.env.TENKI_API_KEY ?? process.env.TENKI_AUTH_TOKEN });
+  return new TenkiSandbox(connectionOf(provider, "tenki"));
 }
 
-/** Run `action` with a fresh Modal client, closed afterwards. Cleanup can outlive the adapter's client. */
+/**
+ * Run `action` with a fresh Modal client on `provider`'s bound connection, closed afterwards.
+ * Cleanup can outlive the adapter's client.
+ */
 async function withModal<T>(
+  provider: Provider,
   action: (
     client: InstanceType<NativeModules["modal"]["ModalClient"]>,
     modal: NativeModules["modal"],
   ) => Promise<T>,
 ): Promise<T> {
+  const params = modalClientParams(connectionOf(provider, "modal"));
   const modal = await nativeModules.load("modal");
-  const client = new modal.ModalClient();
+  const client = new modal.ModalClient(params);
 
   try {
     return await action(client, modal);
@@ -62,15 +71,28 @@ async function withModal<T>(
   }
 }
 
-/** Maritime's control plane with the bench's key. Snapshot calls never need the source to be running. */
-function maritimeFetch(path: string, init: RequestInit = {}) {
+/** Superserve's connection for `@superserve/sdk` calls: the key and its region's control plane. */
+function superserveConnection(provider: Provider) {
+  const { apiKey, baseUrl } = connectionOf(provider, "superserve");
+
+  return { apiKey, baseUrl: endpoint(baseUrl) };
+}
+
+/**
+ * Maritime's control plane through the adapter instance's connection. Snapshot calls never need the
+ * source to be running.
+ */
+function maritimeFetch(provider: Provider, path: string, init: RequestInit = {}) {
+  const { apiKey, baseUrl } = connectionOf(provider, "maritime");
   const headers = new Headers(init.headers);
 
-  headers.set("Authorization", `Bearer ${process.env.MARITIME_API_KEY ?? ""}`);
+  headers.set("Authorization", `Bearer ${apiKey}`);
 
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
 
-  return fetch(`${maritimeBase()}${path}`, { ...init, headers });
+  // Never follow a redirect: a write would be replayed as another request, and a read would
+  // answer from somewhere other than the fingerprinted endpoint.
+  return fetch(`${baseUrl}/v1${path}`, { ...init, headers, redirect: "error" });
 }
 
 function httpError(message: string, status: number) {
@@ -98,16 +120,21 @@ export function maritimeSnapshotName(run: string) {
  * unsettled until {@link settleMaritimeSave} decides it.
  */
 export async function createNamedMaritimeSnapshot(
+  provider: Provider,
   sandboxId: string,
   name: string,
   idempotencyKey: string,
 ) {
-  const response = await maritimeFetch(`/sandboxes/${encodeURIComponent(sandboxId)}/save`, {
-    method: "POST",
-    headers: { "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify({ name }),
-    signal: AbortSignal.timeout(600_000),
-  });
+  const response = await maritimeFetch(
+    provider,
+    `/sandboxes/${encodeURIComponent(sandboxId)}/save`,
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ name }),
+      signal: AbortSignal.timeout(600_000),
+    },
+  );
 
   if (!response.ok) {
     await response.body?.cancel();
@@ -138,8 +165,15 @@ async function isMaritimeSnapshotNotFound(response: Response): Promise<boolean> 
 }
 
 /** One read of a Maritime snapshot: absent only on `404 snapshot_not_found`, else its source, which must be this run's. */
-async function readMaritimeSnapshot(name: string, sandboxId: string, signal: AbortSignal) {
-  const response = await maritimeFetch(`/snapshots/${encodeURIComponent(name)}`, { signal });
+async function readMaritimeSnapshot(
+  provider: Provider,
+  name: string,
+  sandboxId: string,
+  signal: AbortSignal,
+) {
+  const response = await maritimeFetch(provider, `/snapshots/${encodeURIComponent(name)}`, {
+    signal,
+  });
 
   if (response.status === 404) {
     if (await isMaritimeSnapshotNotFound(response)) return "absent" as const;
@@ -186,6 +220,7 @@ function isSaveRefusal(status: number, code: string | undefined): boolean {
  * the snapshot shows or the deadline passes, which throws and keeps the journal entry.
  */
 export async function settleMaritimeSave(input: {
+  provider: Provider;
   sandboxId: string;
   name: string;
   idempotencyKey: string;
@@ -204,6 +239,7 @@ export async function settleMaritimeSave(input: {
 
     try {
       const response = await maritimeFetch(
+        input.provider,
         `/sandboxes/${encodeURIComponent(input.sandboxId)}/save`,
         {
           method: "POST",
@@ -224,6 +260,7 @@ export async function settleMaritimeSave(input: {
     }
 
     const read = await readMaritimeSnapshot(
+      input.provider,
       input.name,
       input.sandboxId,
       AbortSignal.timeout(Math.max(1, Math.min(30_000, end - Date.now()))),
@@ -251,6 +288,7 @@ export async function settleMaritimeSave(input: {
  * so nothing else is ever its to delete.
  */
 async function snapshotsFromMaritimeSandbox(
+  provider: Provider,
   sourceSandboxId: string,
   journaled: ReadonlySet<string>,
 ) {
@@ -262,7 +300,7 @@ async function snapshotsFromMaritimeSandbox(
 
     if (cursor !== null) query.set("cursor", cursor);
 
-    const response = await maritimeFetch(`/snapshots?${query}`);
+    const response = await maritimeFetch(provider, `/snapshots?${query}`);
 
     if (!response.ok) {
       await response.body?.cancel();
@@ -285,10 +323,6 @@ async function snapshotsFromMaritimeSandbox(
   throw new Error("Snapshot recovery exceeded pagination bound");
 }
 
-function instaboxBase() {
-  return process.env.INSTABOX_API_URL ?? "https://api.instabox.sh";
-}
-
 /**
  * Providers whose snapshots the bench cannot delete. Their snapshot scenarios are skipped: a run
  * would leave every snapshot it made behind, and no cleaner can honestly report one removed.
@@ -305,10 +339,12 @@ export async function snapshotCleaner(
   if (name === "instabox") {
     // A fresh request: cleanup can run after the source machine is gone.
     return async (id) => {
-      const response = await fetch(`${instaboxBase()}/v1/snapshots/${encodeURIComponent(id)}`, {
+      const { apiKey, baseUrl } = connectionOf(provider, "instabox");
+
+      const response = await fetch(`${baseUrl}/v1/snapshots/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: {
-          "X-API-Key": process.env.INSTABOX_API_KEY ?? "",
+          "X-API-Key": apiKey,
           "Idempotency-Key": crypto.randomUUID(),
           "X-Confirm-Delete": id,
         },
@@ -325,7 +361,7 @@ export async function snapshotCleaner(
     const { Snapshot } = await nativeModules.load("@superserve/sdk");
 
     return async (id) => {
-      await Snapshot.deleteById(id);
+      await Snapshot.deleteById(id, superserveConnection(provider));
     };
   }
 
@@ -338,7 +374,7 @@ export async function snapshotCleaner(
     // Deleted by name, also after the source sandbox has ended. Only `404 snapshot_not_found`
     // confirms absence; a route-level `404 resource_not_found` must fail so recovery retains it.
     return async (id) => {
-      const response = await maritimeFetch(`/snapshots/${encodeURIComponent(id)}`, {
+      const response = await maritimeFetch(provider, `/snapshots/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: { "Idempotency-Key": crypto.randomUUID() },
       });
@@ -369,7 +405,7 @@ export async function snapshotCleaner(
 
   if (name === "boxd") {
     // A fresh client: cleanup can run after the source machine is gone, when the adapter's native handle is not.
-    const snapshots = await boxdSnapshots();
+    const snapshots = await boxdSnapshots(provider);
 
     return async (id) => {
       await snapshots.delete(id);
@@ -380,7 +416,7 @@ export async function snapshotCleaner(
     const { Box } = await nativeModules.load("@upstash/box");
 
     return async (id) => {
-      await Box.deleteSnapshots({ snapshotIds: [id] });
+      await Box.deleteSnapshots({ ...upstashConnection(provider), snapshotIds: [id] });
     };
   }
 
@@ -388,12 +424,12 @@ export async function snapshotCleaner(
     const { Sandbox } = await nativeModules.load("e2b");
 
     return async (id) => {
-      await Sandbox.deleteSnapshot(id);
+      await Sandbox.deleteSnapshot(id, e2bConnection(provider));
     };
   }
 
   if (name === "daytona") {
-    const snapshots = await daytonaSnapshots();
+    const snapshots = await daytonaSnapshots(provider);
 
     return async (id) => {
       await snapshots.delete(id);
@@ -401,7 +437,7 @@ export async function snapshotCleaner(
   }
 
   if (name === "freestyle") {
-    const snapshots = await freestyleSnapshots();
+    const snapshots = await freestyleSnapshots(provider);
 
     return async (id) => {
       await snapshots.delete(id);
@@ -409,7 +445,7 @@ export async function snapshotCleaner(
   }
 
   if (name === "tenki") {
-    const tenki = await tenkiClient();
+    const tenki = await tenkiClient(provider);
 
     return async (id) => {
       await tenki.deleteSnapshot(id);
@@ -418,13 +454,13 @@ export async function snapshotCleaner(
 
   if (name === "modal")
     // A snapshot is a Modal Image. Its delete also succeeds for a missing image; inspect runs first.
-    return (id) => withModal((client) => client.images.delete(id));
+    return (id) => withModal(provider, (client) => client.images.delete(id));
 
   if (name === "vercel") {
     const { Snapshot } = await nativeModules.load("@vercel/sandbox");
 
     return async (id) => {
-      await (await Snapshot.get({ snapshotId: id })).delete();
+      await (await Snapshot.get({ ...connectionOf(provider, "vercel"), snapshotId: id })).delete();
     };
   }
 
@@ -461,8 +497,8 @@ export async function createNamedDaytonaSnapshot(
 }
 
 /** Narrow recovery query for snapshots of a sandbox whose run ownership was already established. */
-export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
-  const snapshots = await daytonaSnapshots();
+export async function snapshotsFromDaytonaSandbox(provider: Provider, sourceSandboxId: string) {
+  const snapshots = await daytonaSnapshots(provider);
 
   const pageSchema = z.object({
     items: z.array(z.object({ id: z.string(), name: z.string() })),
@@ -487,22 +523,24 @@ export async function snapshotsFromDaytonaSandbox(sourceSandboxId: string) {
  * keep only those.
  */
 export async function snapshotsFromSource(
-  provider: string,
+  name: string,
+  provider: Provider,
   sourceSandboxId: string,
   journaled: ReadonlySet<string> = new Set(),
 ) {
-  if (provider === "maritime") return snapshotsFromMaritimeSandbox(sourceSandboxId, journaled);
+  if (name === "maritime")
+    return snapshotsFromMaritimeSandbox(provider, sourceSandboxId, journaled);
 
-  if (microsandboxTier(provider) !== undefined)
+  if (microsandboxTier(name) !== undefined)
     return microsandboxSnapshotsFromSource(sourceSandboxId, journaled);
 
-  if (provider !== "superserve") return snapshotsFromDaytonaSandbox(sourceSandboxId);
+  if (name !== "superserve") return snapshotsFromDaytonaSandbox(provider, sourceSandboxId);
 
   const { Snapshot } = await nativeModules.load("@superserve/sdk");
 
   return z
     .array(z.object({ id: z.string(), name: z.string().optional() }))
-    .parse(await Snapshot.list(sourceSandboxId));
+    .parse(await Snapshot.list(sourceSandboxId, superserveConnection(provider)));
 }
 
 const snapshotInfo = z.object({
@@ -555,7 +593,7 @@ export async function inspectSnapshot(
     switch (name) {
       case "e2b": {
         const { Sandbox } = await nativeModules.load("e2b");
-        const page = Sandbox.listSnapshots({ name: id, limit: 100 });
+        const page = Sandbox.listSnapshots({ ...e2bConnection(provider), name: id, limit: 100 });
 
         for (let index = 0; index < 100; index++) {
           const items = z.array(z.object({ snapshotId: z.string() })).parse(await page.nextItems());
@@ -570,36 +608,38 @@ export async function inspectSnapshot(
       }
 
       case "daytona": {
-        const snapshots = await daytonaSnapshots();
+        const snapshots = await daytonaSnapshots(provider);
 
         info = snapshotInfo.parse(await snapshots.get(id));
         break;
       }
 
       case "boxd": {
-        const snapshots = await boxdSnapshots();
+        const snapshots = await boxdSnapshots(provider);
 
         info = snapshotInfo.parse(await snapshots.get(id));
         break;
       }
 
       case "tenki": {
-        const tenki = await tenkiClient();
+        const tenki = await tenkiClient(provider);
 
         info = snapshotInfo.parse(await tenki.getSnapshot(id));
         break;
       }
 
       case "freestyle": {
-        const snapshots = await freestyleSnapshots();
+        const snapshots = await freestyleSnapshots(provider);
 
         info = snapshotInfo.parse(await snapshots.get(id));
         break;
       }
 
       case "instabox": {
-        const response = await fetch(`${instaboxBase()}/v1/snapshots/${encodeURIComponent(id)}`, {
-          headers: { "X-API-Key": process.env.INSTABOX_API_KEY ?? "" },
+        const { apiKey, baseUrl } = connectionOf(provider, "instabox");
+
+        const response = await fetch(`${baseUrl}/v1/snapshots/${encodeURIComponent(id)}`, {
+          headers: { "X-API-Key": apiKey },
         });
 
         if (!response.ok)
@@ -613,12 +653,12 @@ export async function inspectSnapshot(
       case "superserve": {
         const { Snapshot } = await nativeModules.load("@superserve/sdk");
 
-        info = snapshotInfo.parse(await Snapshot.get(id));
+        info = snapshotInfo.parse(await Snapshot.get(id, superserveConnection(provider)));
         break;
       }
 
       case "maritime": {
-        const response = await maritimeFetch(`/snapshots/${encodeURIComponent(id)}`);
+        const response = await maritimeFetch(provider, `/snapshots/${encodeURIComponent(id)}`);
 
         if (response.status === 404) {
           if (await isMaritimeSnapshotNotFound(response)) return { exists: false };
@@ -641,10 +681,11 @@ export async function inspectSnapshot(
       }
 
       case "upstash": {
-        const response = await fetch(
-          `${process.env.UPSTASH_BOX_BASE_URL ?? "https://us-east-1.box.upstash.com"}/v2/box/snapshots`,
-          { headers: { Authorization: `Bearer ${process.env.UPSTASH_BOX_API_KEY ?? ""}` } },
-        );
+        const { apiKey, baseUrl } = connectionOf(provider, "upstash");
+
+        const response = await fetch(`${baseUrl}/v2/box/snapshots`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
 
         if (!response.ok)
           throw Object.assign(new Error("Snapshot metadata unavailable"), {
@@ -660,7 +701,7 @@ export async function inspectSnapshot(
 
       case "modal": {
         // Modal Images record no source sandbox, so provenance rests on the ownership journal.
-        const found = await withModal(async (client, modal) => {
+        const found = await withModal(provider, async (client, modal) => {
           try {
             if ((await client.images.fromId(id)).imageId !== id)
               throw new Error("Snapshot metadata ID mismatch");
@@ -679,7 +720,11 @@ export async function inspectSnapshot(
         // Vercel keeps a deleted snapshot readable with status "deleted". Its source is a session
         // ID, not the sandbox name the ownership proof records, so no parent is compared.
         const { Snapshot } = await nativeModules.load("@vercel/sandbox");
-        const snapshot = await Snapshot.get({ snapshotId: id });
+
+        const snapshot = await Snapshot.get({
+          ...connectionOf(provider, "vercel"),
+          snapshotId: id,
+        });
 
         if (snapshot.snapshotId !== id) throw new Error("Snapshot metadata ID mismatch");
 
@@ -746,6 +791,7 @@ export type JournaledSnapshot = { kind: "exists"; id: string } | { kind: "absent
  */
 export async function settleJournaledSnapshot(
   name: string,
+  provider: Provider,
   entry: { id: string; parent: string | null; idempotencyKey?: string; snapshotName?: string },
   timeoutMs: number,
 ): Promise<JournaledSnapshot> {
@@ -763,6 +809,7 @@ export async function settleJournaledSnapshot(
   if (entry.parent === null) throw new Error("Snapshot source missing; no deletion attempted");
 
   const saved = await settleMaritimeSave({
+    provider,
     sandboxId: entry.parent,
     name: entry.id,
     idempotencyKey: entry.idempotencyKey,

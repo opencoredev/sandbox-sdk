@@ -64,11 +64,19 @@ export interface E2BSandboxInit {
   trafficAccessToken?: string;
   apiKey?: string;
   domain?: string;
+  /**
+   * The control-plane URL, which the `e2b` package accepts. The adapter leaves it out, so the
+   * package reads E2B_API_URL, then E2B_DEBUG (localhost), then the domain.
+   */
+  apiUrl?: string;
   requestTimeoutMs?: number;
 }
 
 /** The connection options `provider.api.sdk(load)` passes to the `E2B` client. */
-export type E2BClientInit = Pick<E2BSandboxInit, "apiKey" | "domain" | "requestTimeoutMs">;
+export type E2BClientInit = Pick<
+  E2BSandboxInit,
+  "apiKey" | "domain" | "apiUrl" | "requestTimeoutMs"
+>;
 
 /** `box.native.sdk`: pass `() => import("e2b")` and get that module's `Sandbox` for this sandbox. */
 export type E2BSandboxSdk = <M extends { Sandbox: new (init: E2BSandboxInit) => object }>(
@@ -289,23 +297,63 @@ export type E2BProvider = Provider<E2BNative, E2BCapability, { e2b: E2BExtension
   buildTemplate(spec: E2BTemplateSpec, options: TemplateBuildOptions): Promise<TemplateInfo>;
 } & Required<Pick<Provider, "terminal" | "deleteSnapshot">>;
 
+/** The options that choose where an E2B adapter connects and as whom. */
+export type E2BConnection = Pick<E2BOptions, "apiKey" | "domain">;
+
+/**
+ * What an E2B adapter sends its control-plane requests with: `resolveConfig` returns it in the
+ * shape the `e2b` package's connection options take, so a client built from it reaches the same
+ * sandboxes as the adapter.
+ */
+export interface E2BConfig {
+  readonly apiKey: string;
+  readonly domain: string;
+  /**
+   * The control-plane base URL the adapter's own requests use: E2B_API_URL, else
+   * `https://api.<domain>`. They drop trailing slashes before they append a path.
+   */
+  readonly apiUrl: string;
+}
+
+function domainOf(options: E2BConnection): string {
+  return options.domain ?? (process.env.E2B_DOMAIN || "e2b.app");
+}
+
+function apiUrlOf(options: E2BConnection): string {
+  return process.env.E2B_API_URL || `https://api.${domainOf(options)}`;
+}
+
+function apiKeyOf(options: E2BConnection): string {
+  const key = options.apiKey ?? process.env.E2B_API_KEY;
+
+  if (!key?.trim())
+    throw new SandboxError(
+      "E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey.",
+      { code: "auth", provider: "e2b" },
+    );
+
+  return key;
+}
+
+/**
+ * The key, domain and API URL `e2b(options)` uses, read from `options` and the environment as the
+ * adapter reads them. Throws `auth` when the key is missing, as the adapter does. The adapter's own
+ * requests ignore `E2B_DEBUG`. The `e2b` package's clients from `native.sdk()` get only the key
+ * and domain, so the package reads E2B_API_URL and E2B_DEBUG itself and, with E2B_DEBUG, uses
+ * localhost. To reach what the adapter's requests reach, pass the whole object to the package:
+ * `Sandbox.getInfo(id, resolveConfig())`.
+ * It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(options: E2BConnection = {}): E2BConfig {
+  return { apiKey: apiKeyOf(options), domain: domainOf(options), apiUrl: apiUrlOf(options) };
+}
+
 /** E2B's template fixes CPU, RAM and disk; explicit size requests fail closed.
  * Talks to E2B's control plane and to envd directly over HTTP; the `e2b` package is not needed.
  */
 export function e2b(options: E2BOptions = {}): E2BProvider {
-  const domain = () => options.domain ?? (process.env.E2B_DOMAIN || "e2b.app");
-
-  const apiKey = () => {
-    const key = options.apiKey ?? process.env.E2B_API_KEY;
-
-    if (!key?.trim())
-      throw new SandboxError(
-        "E2B API key is missing. Authentication is required. Set E2B_API_KEY or pass apiKey.",
-        { code: "auth", provider: "e2b" },
-      );
-
-    return key;
-  };
+  const domain = () => domainOf(options);
+  const apiKey = () => apiKeyOf(options);
 
   const requestTimeoutMs = options.requestTimeoutMs ?? 60_000;
   const connections = new Map<string, Connection>();
@@ -340,7 +388,7 @@ export function e2b(options: E2BOptions = {}): E2BProvider {
     ],
     planes: {
       api: {
-        baseUrl: () => process.env.E2B_API_URL || `https://api.${domain()}`,
+        baseUrl: () => apiUrlOf(options),
         auth: () => ({ "x-api-key": apiKey() }),
       },
       envd: {

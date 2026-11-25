@@ -290,14 +290,73 @@ async function silently<T>(token: string, action: () => Promise<T>): Promise<T> 
   }
 }
 
+/** The options that choose where a Beam adapter connects and as whom. */
+export type BeamConnection = Pick<BeamOptions, "token" | "workspaceId" | "gatewayUrl">;
+
+/**
+ * What a Beam adapter connects with: `Authorization: Bearer token` on its gateway requests, and
+ * the token, workspace and gateway it configures beam-js with.
+ */
+export interface BeamConfig {
+  readonly token: string;
+  readonly workspaceId: string;
+  /** As given: the adapter's gateway requests drop its trailing slashes, beam-js gets it as is. */
+  readonly gatewayUrl: string;
+}
+
+/** The token, workspace and gateway from `options` and the environment, not yet checked. */
+interface BeamSettings {
+  readonly token: string | undefined;
+  readonly workspaceId: string | undefined;
+  readonly gatewayUrl: string;
+}
+
+function settingsOf(options: BeamConnection): BeamSettings {
+  return {
+    token: options.token ?? process.env.BEAM_TOKEN,
+    workspaceId: options.workspaceId ?? process.env.BEAM_WORKSPACE_ID,
+    gatewayUrl: options.gatewayUrl ?? "https://app.beam.cloud",
+  };
+}
+
+/** The trimmed token and workspace ID. Throws `auth` when either is missing or blank. */
+function credentialsOf(settings: BeamSettings): Pick<BeamConfig, "token" | "workspaceId"> {
+  const { token, workspaceId } = settings;
+
+  if (!token?.trim())
+    throw failure(
+      "Beam token is missing. Authentication is required. Set BEAM_TOKEN or pass token.",
+      "auth",
+    );
+
+  if (!workspaceId?.trim())
+    throw failure(
+      "Beam workspace ID is missing. Set BEAM_WORKSPACE_ID or pass workspaceId.",
+      "auth",
+    );
+
+  return { token: token.trim(), workspaceId: workspaceId.trim() };
+}
+
+/**
+ * The token, workspace and gateway `beam(options)` uses, read from `options` and the environment
+ * as the adapter reads them. Throws `auth` when the token or workspace ID is missing, as the
+ * adapter does. It holds the credentials: never log, print or store it.
+ */
+export function resolveConfig(options: BeamConnection = {}): BeamConfig {
+  const settings = settingsOf(options);
+
+  return { ...credentialsOf(settings), gatewayUrl: settings.gatewayUrl };
+}
+
 /** @internal The adapter behind `beam()`. `load` imports the Beam SDK; tests pass a fixture. */
 export function createBeamProvider(
   options: BeamOptions,
   load: () => Promise<BeamModule>,
 ): BeamProvider {
-  const token = options.token ?? process.env.BEAM_TOKEN;
-  const workspaceId = options.workspaceId ?? process.env.BEAM_WORKSPACE_ID;
-  const gatewayUrl = options.gatewayUrl ?? "https://app.beam.cloud";
+  // Read once, when the adapter is made; checked on each use, as before.
+  const settings = settingsOf(options);
+  const { gatewayUrl } = settings;
 
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
 
@@ -308,21 +367,7 @@ export function createBeamProvider(
   /** Stub IDs by container, from create or the container list. */
   const stubs = new Map<string, string>();
 
-  function credentials() {
-    if (!token?.trim())
-      throw failure(
-        "Beam token is missing. Authentication is required. Set BEAM_TOKEN or pass token.",
-        "auth",
-      );
-
-    if (!workspaceId?.trim())
-      throw failure(
-        "Beam workspace ID is missing. Set BEAM_WORKSPACE_ID or pass workspaceId.",
-        "auth",
-      );
-
-    return { token: token.trim(), workspaceId: workspaceId.trim() };
-  }
+  const credentials = () => credentialsOf(settings);
 
   /** The gateway's transport, for the adapter and `box.native`: retries, error mapping, redaction. */
   const http = createGatewayClient({

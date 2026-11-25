@@ -1195,7 +1195,10 @@ test("PR88 merge review: no second Service create is sent while a lost one may s
 
   const { id } = await p.create({ labels: labels() });
   await expect(p.previewUrl(id, 3000)).rejects.toBeDefined();
-  const retry = await p.previewUrl(id, 3000).catch((error: SandboxError) => error.code);
 
-  expect({ posts, retry }).toEqual({ posts: 1, retry: "unavailable" });
+  const retry = await p
+    .previewUrl(id, 3000)
+    .catch((error: SandboxError) => ({ code: error.code, retryable: error.retryable }));
+
+  expect({ posts, retry }).toEqual({ posts: 1, retry: { code: "unavailable", retryable: true } });
 });

@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
+import { resolveConfig as vercelConfig } from "@opencoredev/sandbox-sdk/vercel";
+import { endpoint } from "../connections.js";
 import type { Json } from "../json.js";
 import { archilControlUrl, archilSandboxBody, archilUsageBody } from "../archil.js";
 import { pricing } from "../pricing.js";
@@ -722,11 +724,14 @@ async function vercelSdk(): Promise<VercelModule> {
   return import(pathToFileURL(require.resolve("@vercel/sandbox")).href);
 }
 
-/** Reads and stops through the native SDK, which resolves OIDC or token credentials itself. Tests replace it. */
+/**
+ * Reads and stops through the native SDK with the adapter's credentials and scope: an explicit
+ * token's team and project, else OIDC. Tests replace it.
+ */
 export const vercelMeter = {
   async read(name: string): Promise<VercelMeter> {
     const { Sandbox } = await vercelSdk();
-    const box = await Sandbox.get({ name, resume: false });
+    const box = await Sandbox.get({ ...vercelConfig(), name, resume: false });
 
     return vercelMeterSchema.parse({
       name: box.name,
@@ -740,7 +745,7 @@ export const vercelMeter = {
   },
   async stop(name: string): Promise<void> {
     const { Sandbox } = await vercelSdk();
-    await (await Sandbox.get({ name, resume: false })).stop();
+    await (await Sandbox.get({ ...vercelConfig(), name, resume: false })).stop();
   },
 };
 
@@ -1524,7 +1529,9 @@ export async function collectProvider(
           : unavailable("Event pagination limit; history incomplete");
       } else if (provider === "instabox") {
         const headers = { "X-API-Key": key ?? "" };
-        const base = env.INSTABOX_API_URL ?? "https://api.instabox.sh";
+        // From the same environment as the key, without trailing slashes as the adapter joins it:
+        // `//v1/machines/<id>` can answer 404 for a live machine, marking its accruing usage final.
+        const base = endpoint(env.INSTABOX_API_URL ?? "https://api.instabox.sh");
 
         // Deletion first: a machine already gone (404) when its usage is read has a final meter.
         const deleted = await transport(`${base}/v1/machines/${id}`, headers).then(
@@ -1543,7 +1550,7 @@ export async function collectProvider(
         cost = decodeInstabox(usage, { deleted, started: row.startedAt !== null });
       } else if (provider === "archil") {
         const headers = { Authorization: `Bearer ${key ?? ""}` };
-        const base = archilControlUrl(env);
+        const base = archilControlUrl(env.ARCHIL_REGION);
 
         // Deletion and Archil's own end of the last session first, so a usage read after them is
         // known to be final. A sandbox already dropped (404) has no end time left: provisional.

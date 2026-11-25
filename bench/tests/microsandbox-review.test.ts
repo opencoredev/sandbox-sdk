@@ -36,6 +36,8 @@ import { deleteProvenSnapshot, inspectSnapshot } from "../src/snapshots.js";
 import { DeadlineError, deadline } from "../src/timing.js";
 import { parseV2 } from "../src/v2-config.js";
 import { runV2 } from "../src/v2-runner.js";
+import { fingerprintOf } from "../src/connections.js";
+import { bound } from "./native-fakes.js";
 
 // The built adapter, as runV2 loads it, with the fake's peer: the core and the adapter then share one
 // SandboxError class.
@@ -71,7 +73,17 @@ function adapter(computeType: "standard" | "shared" = "standard"): MicrosandboxP
   vi.stubEnv("MSB_API_KEY", key);
   vi.stubEnv("MSB_API_URL", fake.url);
 
-  return microsandbox({ apiKey: key, baseUrl: fake.url, computeType, peer: async () => fake.peer });
+  return bound(
+    microsandbox({ apiKey: key, baseUrl: fake.url, computeType, peer: async () => fake.peer }),
+    { apiKey: key, baseUrl: fake.url },
+  );
+}
+
+/** The connection fingerprints a run through `provider` journals; one connection serves both tiers. */
+async function fingerprints(provider: MicrosandboxProvider) {
+  const fingerprint = (await fingerprintOf(provider)) ?? "";
+
+  return { microsandbox: fingerprint, "microsandbox-shared": fingerprint };
 }
 
 const journalSchema = z.object({
@@ -246,6 +258,7 @@ describe("allocation attempts: settled by name, by marker and tier", () => {
       join(out, "ownership.json"),
       JSON.stringify({
         runId: run,
+        connectionFingerprints: await fingerprints(adapter()),
         resources: [
           {
             provider: "microsandbox",
@@ -281,6 +294,7 @@ describe("allocation attempts: settled by name, by marker and tier", () => {
       join(out, "ownership.json"),
       JSON.stringify({
         runId: run,
+        connectionFingerprints: await fingerprints(adapter()),
         resources: [
           {
             provider: "microsandbox",
@@ -352,6 +366,7 @@ describe("Services: cleaned independently of their sandbox, never another's", ()
       join(out, "ownership.json"),
       JSON.stringify({
         runId: run,
+        connectionFingerprints: await fingerprints(adapter()),
         resources: [
           {
             provider: "microsandbox",
@@ -446,6 +461,7 @@ describe("captures journaled by name: settled, never cleared on an unresolved 40
       join(out, "ownership.json"),
       JSON.stringify({
         runId: run,
+        connectionFingerprints: await fingerprints(adapter()),
         resources: [
           {
             provider: "microsandbox",
@@ -504,6 +520,16 @@ describe("tier isolation in sweeps", () => {
     const out = await directory("bench-msb-tiers-");
     const shared = adapter("shared");
     const box = await shared.create({ labels: runLabels(run, "shared") });
+
+    // A reap reads only through the connection the run journaled.
+    await writeFile(
+      join(out, "ownership.json"),
+      JSON.stringify({
+        runId: run,
+        connectionFingerprints: await fingerprints(shared),
+        resources: [],
+      }),
+    );
 
     await reapRun(
       [
@@ -566,13 +592,16 @@ describe("independent review reproductions", () => {
   });
 
   function adapter(options: MicrosandboxOptions = {}) {
-    return microsandbox({
-      apiKey: key,
-      baseUrl: fake.url,
-      computeType: "standard",
-      peer: async () => fake.peer,
-      ...options,
-    });
+    return bound(
+      microsandbox({
+        apiKey: key,
+        baseUrl: fake.url,
+        computeType: "standard",
+        peer: async () => fake.peer,
+        ...options,
+      }),
+      { apiKey: options.apiKey ?? key, baseUrl: options.baseUrl ?? fake.url },
+    );
   }
 
   function capture(provider: ReturnType<typeof adapter>, id: string) {
@@ -607,8 +636,15 @@ describe("independent review reproductions", () => {
       (s) => s,
     );
 
-  const journal = (resources: unknown[]) =>
-    writeFile(join(out, "ownership.json"), JSON.stringify({ runId: run, resources }));
+  const journal = async (resources: unknown[]) =>
+    writeFile(
+      join(out, "ownership.json"),
+      JSON.stringify({
+        runId: run,
+        connectionFingerprints: await fingerprints(adapter()),
+        resources,
+      }),
+    );
 
   const journalText = () => readFile(join(out, "ownership.json"), "utf8");
 
@@ -3125,7 +3161,7 @@ describe("independent review reproductions", () => {
 
     // Simulate the older retry slug being already gone on server (confirming only base needs cleanup).
     const parsed = z
-      .object({
+      .looseObject({
         runId: z.string(),
         resources: z.array(
           z.looseObject({
@@ -3141,7 +3177,7 @@ describe("independent review reproductions", () => {
     const withoutOldRetry = parsed.resources.filter((r) => r.id !== retrySlug);
     await writeFile(
       join(out, "ownership.json"),
-      JSON.stringify({ runId: parsed.runId, resources: withoutOldRetry }),
+      JSON.stringify({ ...parsed, resources: withoutOldRetry }),
     );
 
     expect(await reap()).toBe(false);

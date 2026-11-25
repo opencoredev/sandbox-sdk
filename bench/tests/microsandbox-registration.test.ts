@@ -24,6 +24,7 @@ import { heldOpenProviders } from "../src/realistic/cli.js";
 import { providerSetup } from "../src/realistic/setup.js";
 import { parseV2 } from "../src/v2-config.js";
 import { restoreSize, sanitize } from "../src/v2-runner.js";
+import { bound } from "./native-fakes.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -189,7 +190,7 @@ describe("Microsandbox existence: read-only, failed is present", () => {
 
       const { memory } = await import("@opencoredev/sandbox-sdk/memory");
       // A Microsandbox adapter on the Standard tier, as far as the lookup reads it.
-      const standard = { ...memory(), name: "microsandbox", computeType: "standard" };
+      const standard = bound({ ...memory(), name: "microsandbox", computeType: "standard" });
       const evidence = await lookupSandbox(standard, id, 5000);
 
       expect(evidence.result).toBe(expected);
@@ -205,12 +206,12 @@ describe("Microsandbox existence: read-only, failed is present", () => {
     );
 
     const { memory } = await import("@opencoredev/sandbox-sdk/memory");
-    const shared = { ...memory(), name: "microsandbox", computeType: "shared" };
+    const shared = bound({ ...memory(), name: "microsandbox", computeType: "shared" });
 
     expect((await lookupSandbox(shared, id, 5000)).result).toBe("unavailable");
-    expect((await lookupSandbox({ ...memory(), name: "microsandbox" }, id, 5000)).result).toBe(
-      "unavailable",
-    );
+    expect(
+      (await lookupSandbox(bound({ ...memory(), name: "microsandbox" }), id, 5000)).result,
+    ).toBe("unavailable");
   });
 });
 

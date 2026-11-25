@@ -82,11 +82,11 @@ describe("Archil bench registration", () => {
   });
 
   it("reads the control plane of the key's region", () => {
-    expect(archilControlUrl({})).toBe("https://control.green.us-east-1.aws.prod.archil.com");
-    expect(archilControlUrl({ ARCHIL_REGION: "aws-eu-west-1" })).toBe(
+    expect(archilControlUrl(undefined)).toBe("https://control.green.us-east-1.aws.prod.archil.com");
+    expect(archilControlUrl("aws-eu-west-1")).toBe(
       "https://control.green.eu-west-1.aws.prod.archil.com",
     );
-    expect(() => archilControlUrl({ ARCHIL_REGION: "mars-1" })).toThrow(/Unknown ARCHIL_REGION/);
+    expect(() => archilControlUrl("mars-1")).toThrow(/Unknown ARCHIL_REGION/);
   });
 });
 
@@ -112,6 +112,31 @@ describe("Archil failures", () => {
     );
     expect(classifyFailure(failed("cold", { code: "provider" }))).toBe("provider-operation");
     expect(classifyFailure(failed("exec", { code: "quota" }))).toBe("provider-operation");
+  });
+
+  // PR 75 review (PRRT_kwDOTZ9UNs67Hvb3): a stress cohort counts a quota only on HTTP 429, or SDK
+  // code quota with no status; the older Archil rule must not override that there.
+  it.each([402, 403])(
+    "a stress cohort's create refused with HTTP %i stays the provider's",
+    (status) => {
+      const refused = { code: "quota" as const, cause: { httpStatus: status } };
+
+      for (const scenario of ["cpu-burst-4/cold", "survival-4/cold"])
+        expect(classifyFailure(failed(scenario, refused))).toBe("provider-operation");
+
+      // Outside stress cohorts the Archil rule still reads the adapter's quota code.
+      for (const scenario of ["cold", "burst-25/cold"])
+        expect(classifyFailure(failed(scenario, refused))).toBe("provider-account-limit");
+    },
+  );
+
+  it("a stress cohort's create refused with HTTP 429 or a bare quota code is an account limit", () => {
+    expect(
+      classifyFailure(failed("cpu-burst-4/cold", { code: "quota", cause: { httpStatus: 429 } })),
+    ).toBe("provider-account-limit");
+    expect(classifyFailure(failed("survival-4/cold", { code: "quota" }))).toBe(
+      "provider-account-limit",
+    );
   });
 });
 

@@ -1508,9 +1508,7 @@ export function createMicrosandboxProvider(
       throw fail(
         "an earlier Service create for this port may still land; try again shortly",
         "unavailable",
-        {
-          sandboxId: id,
-        },
+        { sandboxId: id, retryable: true },
       );
 
     // Journaled before the request: a lost answer may still have made it.

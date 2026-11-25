@@ -1,5 +1,5 @@
 import type { ConfigV2 } from "./v2-config.js";
-import { iterationBoundMs } from "./scenarios.js";
+import { cohortBoundMs, iterationBoundMs } from "./scenarios.js";
 
 // parseV2's default --timeout-ms, for callers that pass no full config.
 const defaultStepTimeoutMs = 180_000;
@@ -31,7 +31,12 @@ export interface LifetimeOptions {
 
 export function lifetimeOptions(
   name: string,
-  config: Partial<Pick<ConfigV2, "lifetime-ms" | "timeout-ms">>,
+  config: Partial<
+    Pick<
+      ConfigV2,
+      "lifetime-ms" | "timeout-ms" | "scenarios" | "survival-window-ms" | "survival-heartbeat-ms"
+    >
+  >,
 ): LifetimeOptions {
   const limit = lifetimeLimits.get(name);
   const configured = config["lifetime-ms"]?.[name];
@@ -42,13 +47,30 @@ export function lifetimeOptions(
     return {};
   }
 
+  const step = config["timeout-ms"] ?? defaultStepTimeoutMs;
+  const scenarios = config.scenarios ?? [];
+
+  // A survival member lives through its whole heartbeat window, which can outlast an iteration.
+  const survival = scenarios.includes("survival")
+    ? cohortBoundMs("survival", step, {
+        windowMs: config["survival-window-ms"] ?? 300_000,
+        intervalMs: config["survival-heartbeat-ms"] ?? 15_000,
+      })
+    : 0;
+
   const timeoutMs =
-    configured ?? Math.min(limit, iterationBoundMs(config["timeout-ms"] ?? defaultStepTimeoutMs));
+    configured ?? Math.min(limit, Math.max(iterationBoundMs(step, scenarios), survival));
 
   if (!(timeoutMs > 0)) throw new Error(`${name} needs a positive lifetime`);
 
   if (timeoutMs > limit)
     throw new Error(`${name} caps a sandbox's lifetime at ${limit / 3_600_000} hours`);
+
+  // An explicit lifetime too short for a survival member would end it mid-window as a "death".
+  if (configured !== undefined && configured < survival)
+    throw new Error(
+      `--lifetime-ms ${name}=${configured} is shorter than a survival member needs: ${survival} ms for create, fingerprint, the window and cleanup`,
+    );
 
   return { timeoutMs };
 }

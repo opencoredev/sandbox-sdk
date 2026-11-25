@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ConfigV2 } from "./v2-config.js";
 import { lifetimeOptions } from "./lifetime.js";
 import { createAppByLabel } from "./modal-apps.js";
+import { bindConnection } from "./connections.js";
 
 const templateKeys = new Map([
   ["e2b", "template"],
@@ -124,6 +125,17 @@ export function microsandboxTier(name: string): "standard" | "shared" | undefine
 
   return tier === "standard" || tier === "shared" ? tier : undefined;
 }
+
+/**
+ * Every provider `loadProvider` builds: the cloud ones with a credential policy, the local Docker
+ * adapter, and the in-process ones. Each must have a connection fingerprint (connections.ts).
+ */
+export const providerNames: readonly string[] = [
+  ...credentials.keys(),
+  "local",
+  "memory",
+  "agentos",
+];
 
 const regionKeys = new Map([
   ["e2b", "E2B_REGION"],
@@ -283,7 +295,7 @@ export async function loadProvider(
   // Before anything else: a conflicting region configuration refuses the run.
   const region = providerRegion(name, env);
 
-  if (!credentials.has(name) && name !== "local" && name !== "memory" && name !== "agentos")
+  if (!providerNames.includes(name))
     return {
       kind: "skipped",
       name,
@@ -312,8 +324,7 @@ export async function loadProvider(
   if (!factory.success)
     return { kind: "skipped", name, note: `Entry point does not export ${spec.factory}()` };
 
-  // Factory failures are real configuration errors, not missing-provider skips.
-  const provider = await factory.data({
+  const options = {
     ...providerDefaults(name),
     ...templateOptions(name, config?.template[name]),
     ...productOptions(name, config?.product[name]),
@@ -324,9 +335,14 @@ export async function loadProvider(
     ...config?.factory,
     // Last: a pinned option, such as Microsandbox's compute tier, is never overridden.
     ...spec.pinned,
-  });
+  };
+
+  // Factory failures are real configuration errors, not missing-provider skips.
+  const provider = await factory.data(options);
 
   assertProvider(provider);
+  // Reads, snapshots and cleanup reach this instance's sandboxes through the same connection.
+  bindConnection(provider, options);
 
   return {
     kind: "ready",

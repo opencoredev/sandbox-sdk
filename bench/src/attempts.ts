@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { MergedSample, MergeSource, Suite } from "./merge.js";
 import { attemptApp, type JournalApp } from "./modal-apps.js";
-import { sampleSuite, suiteFor } from "./suite.js";
+import { isStressSample, sampleSuite, stressUnit, suiteFor, suiteSchema } from "./suite.js";
 
 export const cloudProviders = [
   "e2b",
@@ -54,7 +54,7 @@ export const workloads = [
 
 const identity = z.object({
   provider: z.enum(cloudProviders),
-  suite: z.enum(["main", "snapshot", "burst", "cost"]),
+  suite: suiteSchema,
   scenario: z.string(),
   track: z.enum(["default", "same-spec"]).optional(),
 });
@@ -66,7 +66,7 @@ const identity = z.object({
  */
 const supersededIterations = z.object({
   provider: z.enum(cloudProviders),
-  suite: z.enum(["main", "snapshot", "burst", "cost"]),
+  suite: suiteSchema,
   track: z.enum(["default", "same-spec"]).optional(),
   sourceRunId: z.string().min(1),
   iterations: z.array(z.number().int().nonnegative()).min(1),
@@ -218,10 +218,63 @@ function matches(s: z.infer<typeof identity>, rule: z.infer<typeof identity>) {
   );
 }
 
+/** The policy rule that removes a row, if any: a replaced source, documented not-run, or superseded. */
+function ruleReason(
+  s: MergedSample,
+  policy: AttemptPolicy,
+  iteration: number,
+): "replaced-source" | "documented-not-run" | "superseded-by-rerun" | null {
+  if (policy.replacements.some((r) => matches(s, r) && !r.sourceRunIds.includes(s.sourceRunId)))
+    return "replaced-source";
+
+  if (policy.notRun.some((r) => matches(s, r))) return "documented-not-run";
+
+  if (
+    (policy.superseded ?? []).some(
+      (r) =>
+        r.provider === s.provider &&
+        r.suite === s.suite &&
+        (r.track ?? "default") === (s.track ?? "default") &&
+        r.sourceRunId === s.sourceRunId &&
+        r.iterations.includes(iteration),
+    )
+  )
+    return "superseded-by-rerun";
+
+  return null;
+}
+
+/**
+ * Stress rows are selected by whole unit (see `stressUnit`): a policy rule matching any row of a
+ * cohort or cpu-sustained iteration removes the unit. No stress row is dropped for its failure
+ * class or a target count, so refusals stay in the stress section as evidence.
+ */
+function stressRemovals(samples: readonly MergedSample[], policy: AttemptPolicy) {
+  const key = (s: MergedSample) => {
+    const unit = stressUnit(s);
+
+    return JSON.stringify([s.track ?? "default", s.provider, s.sourceRunId, unit.name, unit.index]);
+  };
+
+  const units = new Map<string, NonNullable<ReturnType<typeof ruleReason>>>();
+
+  for (const s of samples) {
+    if (!isStressSample(s) || !cloudProviders.includes(s.provider)) continue;
+    const reason = ruleReason(s, policy, stressUnit(s).index);
+
+    if (reason && !units.has(key(s))) units.set(key(s), reason);
+  }
+
+  return (s: MergedSample) => units.get(key(s)) ?? null;
+}
+
 export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
   const counts = new Map<string, number>();
   const removed = new Map<string, number>();
   const removedByTrack = new Map<string, Map<string, number>>();
+  const stressRemoved = new Map<string, number>();
+  const stressRemovedByTrack = new Map<string, Map<string, number>>();
+  const stressRemoval = stressRemovals(samples, policy);
 
   const drop = (reason: string, s: Pick<MergedSample, "track">) => {
     removed.set(reason, (removed.get(reason) ?? 0) + 1);
@@ -243,22 +296,23 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
     .filter((s) => {
       if (!cloudProviders.includes(s.provider)) return true;
 
-      if (policy.replacements.some((r) => matches(s, r) && !r.sourceRunIds.includes(s.sourceRunId)))
-        return drop("replaced-source", s);
+      if (isStressSample(s)) {
+        const reason = stressRemoval(s);
 
-      if (policy.notRun.some((r) => matches(s, r))) return drop("documented-not-run", s);
+        if (reason) {
+          stressRemoved.set(reason, (stressRemoved.get(reason) ?? 0) + 1);
+          const track = s.track ?? "default";
+          const byReason = stressRemovedByTrack.get(track) ?? new Map<string, number>();
+          byReason.set(reason, (byReason.get(reason) ?? 0) + 1);
+          stressRemovedByTrack.set(track, byReason);
+        }
 
-      if (
-        (policy.superseded ?? []).some(
-          (r) =>
-            r.provider === s.provider &&
-            r.suite === s.suite &&
-            (r.track ?? "default") === (s.track ?? "default") &&
-            r.sourceRunId === s.sourceRunId &&
-            r.iterations.includes(s.sourceIteration),
-        )
-      )
-        return drop("superseded-by-rerun", s);
+        return reason === null;
+      }
+
+      const reason = ruleReason(s, policy, s.sourceIteration);
+
+      if (reason) return drop(reason, s);
 
       if (s.failureClass === "provider-account-limit" || s.failureClass === "client-third-party")
         return drop(s.failureClass, s);
@@ -295,6 +349,12 @@ export function selectAttempts(samples: MergedSample[], policy: AttemptPolicy) {
   return {
     samples: complete,
     removed: Object.fromEntries(removed),
+    /** Stress rows removed by whole unit, by reason; never counted in `removed`. */
+    stressRemoved: Object.fromEntries(stressRemoved),
+    /** `stressRemoved` split by track, so each track's stress export discloses only its own. */
+    stressRemovedByTrack: Object.fromEntries(
+      [...stressRemovedByTrack].map(([track, byReason]) => [track, Object.fromEntries(byReason)]),
+    ),
     removedByTrack: Object.fromEntries(
       [...removedByTrack].map(([track, byReason]) => [track, Object.fromEntries(byReason)]),
     ),
@@ -379,7 +439,7 @@ export async function attemptsCommand(args: string[]) {
           sourceSampleIndex: z.number(),
           sourceIteration: z.number(),
           iterationNamespace: z.string(),
-          suite: z.enum(["main", "snapshot", "burst", "cost"]),
+          suite: suiteSchema,
           failureClass: z
             .enum(["provider-account-limit", "client-third-party", "provider-operation"])
             .nullable(),
