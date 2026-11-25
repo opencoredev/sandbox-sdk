@@ -240,7 +240,10 @@ export type Parsed<T> =
   | { readonly kind: "error"; readonly error: NativeError }
   | { readonly kind: "invalid"; readonly reason: string };
 
-/** The last JSON line of a run's stdout through `schema`, or the binary's own error line. */
+/**
+ * The last JSON line of a run's stdout through `schema`, or the binary's own error line. A reason
+ * never quotes the line: a secret in it may be JSON-escaped, which redaction cannot recognise.
+ */
 export function parseNativeOutput<T>(stdout: string, schema: z.ZodType<T>): Parsed<T> {
   const line =
     stdout
@@ -254,7 +257,7 @@ export function parseNativeOutput<T>(stdout: string, schema: z.ZodType<T>): Pars
   try {
     value = JSON.parse(line);
   } catch {
-    return { kind: "invalid", reason: `Output is not JSON: ${sanitize(line).slice(0, 200)}` };
+    return { kind: "invalid", reason: `Output is not JSON (${line.length} characters)` };
   }
 
   const error = errorOutputSchema.safeParse(value);

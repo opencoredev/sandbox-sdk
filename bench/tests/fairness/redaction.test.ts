@@ -29,11 +29,25 @@ const supported = platform() === "linux" && arch() === "x64";
 const secret = "Qz7vLw2Kp9Rt4Xn8Bm3Hd6Jf".repeat(4).slice(0, 88);
 const leaky = `${secret} `.repeat(16);
 
-/** Fails when any 8 characters of the secret survive. */
+/** A password with a quote and a backslash: a JSON line carries it escaped, not as it is. */
+const password = 'Hy4"Np8\\Vc2-Gs6Wb9Tk';
+const escaped = JSON.stringify(password).slice(1, -1);
+
+/**
+ * Fails when any 8 characters of either secret survive, as they are, JSON-escaped, or escaped
+ * twice (a reason inside a JSON file).
+ */
 function expectClean(text: string) {
-  for (let at = 0; at + 8 <= secret.length; at++)
-    expect(text).not.toContain(secret.slice(at, at + 8));
+  const forms = [secret, password, escaped, JSON.stringify(escaped).slice(1, -1)];
+
+  for (const form of forms)
+    for (let at = 0; at + 8 <= form.length; at++)
+      expect(text).not.toContain(form.slice(at, at + 8));
 }
+
+/** A line that is not JSON, and one that is but has the wrong shape, each holding the password. */
+const malformed = `{"mode":"cpu-stream","password":${JSON.stringify(password)},`;
+const wrongFields = `{"mode":"cpu-stream","segment":${JSON.stringify(password)}}`;
 
 const failed = (stderr: string, stdout = ""): CommandResult => ({
   ok: false,
@@ -45,6 +59,7 @@ const failed = (stderr: string, stdout = ""): CommandResult => ({
 
 beforeEach(() => {
   vi.stubEnv("FAIRNESS_TEST_SECRET", secret);
+  vi.stubEnv("FAIRNESS_TEST_PASSWORD", password);
 });
 
 afterEach(() => {
@@ -70,6 +85,26 @@ describe("guest output in reasons", () => {
       });
 
       expect(check.kind).toBe("invalid");
+      expectClean(check.kind === "invalid" ? check.reason : "");
+    }
+  });
+
+  it("never quotes a JSON line the native output or a checkpoint failed on", () => {
+    const phase = { segments: 2, seconds: 1, workers: 1 };
+
+    for (const line of [malformed, wrongFields]) {
+      const parsed = parseNativeOutput(`${line}\n`, memOutputSchema);
+
+      const check = verifyCheckpoints({
+        stdout: `${line}\n`,
+        seed: 1,
+        phase,
+        firstSeenS: new Map(),
+      });
+
+      expect(parsed.kind).toBe("invalid");
+      expect(check.kind).toBe("invalid");
+      expectClean(parsed.kind === "invalid" ? parsed.reason : "");
       expectClean(check.kind === "invalid" ? check.reason : "");
     }
   });
@@ -211,6 +246,27 @@ describe.runIf(supported)("guest output in every check's stop reason", () => {
     expect(await stopReason(check, (c) => (/' mem /.test(c) ? new Error(leaky) : null))).toMatch(
       /mem exec failed/,
     );
+  }, 60_000);
+
+  it("a malformed JSON line with an escaped password in every check that parses one", async () => {
+    const memory = memoryHonestyCheck({ memoryMiB: 64, fileMiB: 16 });
+    const disk = diskRealCheck({ randomSeconds: 0.3, sizeMiB: 64 });
+
+    expect(
+      await stopReason(memory, (c) => (/' mem /.test(c) ? failed("", `${malformed}\n`) : null)),
+    ).toMatch(/Output is not JSON/);
+    expect(
+      await stopReason(disk, (c) => (/' disk '/.test(c) ? failed("", `${malformed}\n`) : null)),
+    ).toMatch(/Output is not JSON/);
+
+    for (const line of [malformed, wrongFields])
+      expect(
+        await stopReason(cpuNativeCheck(plan, 100), (c) =>
+          c.includes('cat "$out"')
+            ? { ok: true, exitCode: 0, stdout: `${line}\nalive=1\n`, stderr: "", timedOut: false }
+            : null,
+        ),
+      ).toMatch(/Sustained: Checkpoint/);
   }, 60_000);
 
   it("security-probe: a probe cut short", async () => {

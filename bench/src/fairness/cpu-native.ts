@@ -319,7 +319,8 @@ export type CheckpointCheck =
  * ..., at least k segments of time and a full segment since the last, every worker with its seed,
  * whole chunks, steps that never shrink and a final value equal to `lcgChecksum`, a plausible
  * rate, and a time the host could have seen (no later than the host's seconds since the start when
- * the line first appeared, within `clockToleranceS`).
+ * the line first appeared, within `clockToleranceS`). A reason never quotes a line, as
+ * `parseNativeOutput` does not.
  */
 export function verifyCheckpoints(input: {
   readonly stdout: string;
@@ -343,7 +344,7 @@ export function verifyCheckpoints(input: {
     try {
       value = JSON.parse(line);
     } catch {
-      return { kind: "invalid", reason: `Checkpoint is not JSON: ${sanitize(line).slice(0, 120)}` };
+      return { kind: "invalid", reason: `Checkpoint is not JSON (${line.length} characters)` };
     }
 
     if (streamDoneSchema.safeParse(value).success) {
@@ -354,7 +355,10 @@ export function verifyCheckpoints(input: {
     const parsed = checkpointSchema.safeParse(value);
 
     if (!parsed.success)
-      return { kind: "invalid", reason: `Checkpoint shape: ${sanitize(line).slice(0, 120)}` };
+      return {
+        kind: "invalid",
+        reason: `Checkpoint shape: ${parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; ")}`,
+      };
     const point = parsed.data;
     const k = segments.length + 1;
 

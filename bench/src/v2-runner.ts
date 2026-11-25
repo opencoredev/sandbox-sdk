@@ -269,9 +269,11 @@ const leakPatterns: [RegExp, string][] = [
 export function sanitize(text: string) {
   let result = text;
 
+  // Each secret as written and as a JSON string escapes it, so a quoted or escaped copy is caught too.
   for (const [name, value] of Object.entries(process.env))
     if (/KEY|TOKEN|SECRET|PASSWORD/.test(name) && value && value.length > 5)
-      result = result.replaceAll(value, "[REDACTED]");
+      for (const form of new Set([value, JSON.stringify(value).slice(1, -1)]))
+        result = result.replaceAll(form, "[REDACTED]");
 
   for (const [pattern, replacement] of leakPatterns) result = result.replace(pattern, replacement);
 

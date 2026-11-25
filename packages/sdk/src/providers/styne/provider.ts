@@ -52,14 +52,14 @@ import {
   type StyneSnapshot,
 } from "./api.js";
 import {
+  answerBehind,
   causeOf,
   codeOf,
   fail,
+  isAbout,
   isGoneAnswer,
   mapError,
   provider as name,
-  StyneFailure,
-  type StyneAnswer,
   type StyneTarget,
 } from "./errors.js";
 
@@ -261,16 +261,26 @@ function readJson(response: HttpResponse): JsonValue | undefined {
   }
 }
 
-/** Styne's own answer behind a failed request, which the client keeps as the error's cause. */
-function answerBehind(error: SandboxError): StyneAnswer | undefined {
-  return error.cause instanceof StyneFailure ? error.cause.answer : undefined;
-}
-
 /** Whether a delete's failure is Styne saying `target` is gone ({@link isGoneAnswer}). */
 function isGone(error: SandboxError, target: StyneTarget): boolean {
   const answer = answerBehind(error);
 
   return answer !== undefined && isGoneAnswer(answer, target);
+}
+
+/**
+ * Whether a failure is Styne's documented `409 <errorCode>` (`already_paused`, `already_running`) about
+ * this sandbox, or about none.
+ */
+function isConflict(error: SandboxError, errorCode: string, sandboxId: string): boolean {
+  const answer = answerBehind(error);
+
+  return (
+    answer !== undefined &&
+    answer.status === 409 &&
+    answer.errorCode === errorCode &&
+    isAbout(answer, { sandboxId })
+  );
 }
 
 export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
@@ -306,7 +316,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     return key;
   }
 
-  const http = createHttpClient<StynePlane>({
+  const http: HttpClient<StynePlane> = createHttpClient<StynePlane>({
     provider: name,
     label: "Styne",
     planes: { api: { baseUrl, auth: () => ({ Authorization: `Bearer ${apiKey()}` }) } },
@@ -317,7 +327,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
     idempotencyHeader: "Idempotency-Key",
     authHint: "Set STYNE_API_KEY to a valid Styne API key.",
     mapError,
-    cause: causeOf,
+    cause: (failure) => causeOf(failure, (text) => http.redact(text)),
   });
 
   const binding: NativeSdkBinding = {
@@ -1068,7 +1078,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
           ...idempotent(),
         });
       } catch (error) {
-        if (!(error instanceof SandboxError && answerBehind(error)?.errorCode === "already_paused"))
+        if (!(error instanceof SandboxError && isConflict(error, "already_paused", id)))
           throw error;
       }
     },
@@ -1092,9 +1102,7 @@ export function createStyneProvider(options: StyneOptions = {}): StyneProvider {
           });
         connections.set(id, resumed);
       } catch (error) {
-        if (
-          !(error instanceof SandboxError && answerBehind(error)?.errorCode === "already_running")
-        )
+        if (!(error instanceof SandboxError && isConflict(error, "already_running", id)))
           throw error;
       }
     },
