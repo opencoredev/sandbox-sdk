@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { request } from "node:http";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { FactoryOptions } from "./providers.js";
 import {
@@ -449,6 +452,9 @@ export function modalClientParams(config: ModalConfig): ModalClientParams {
 
 const sdkPackage = new URL("../../packages/sdk/package.json", import.meta.url);
 
+/** The fields of a package manifest a fingerprint reads. */
+const packageVersion = z.object({ version: z.string().min(1) });
+
 /** Docker's `/info`: the daemon's ID, which stays the same across its restarts. */
 const dockerInfo = z.object({ ID: z.string().min(1) });
 
@@ -462,6 +468,18 @@ export const connectionProbes = {
     const module: ModalModule = await import(import.meta.resolve("modal", sdkPackage.href));
 
     return module;
+  },
+  /**
+   * The version of `@tenkicloud/sandbox` in the SDK package's install, the one the adapter uses.
+   * It picks the endpoint when no variable does: 1.4 and earlier api.tenki.cloud, 1.5 and later
+   * api.luxor.ai. Throws when the package can't be read.
+   */
+  tenkiSdkVersion: (): string => {
+    const entry = createRequire(sdkPackage).resolve("@tenkicloud/sandbox");
+
+    return packageVersion.parse(
+      JSON.parse(readFileSync(join(dirname(entry), "../package.json"), "utf8")),
+    ).version;
   },
   /** The ID of the Docker daemon answering on `socketPath`. Rejects on any failure. */
   dockerDaemonId: (socketPath: string, timeoutMs: number) =>
@@ -505,7 +523,9 @@ const connectionFields = z.record(z.string(), z.string().optional());
 /**
  * What a connection takes from the environment through the provider's own SDK, where
  * `resolveConfig` leaves the field unset: Boxd's and Tenki's endpoints, Boxd's region, Railway's
- * endpoints, Vercel's OIDC token. Modal's are read through its SDK (`modalProfileOf`).
+ * endpoints, Vercel's OIDC token. Modal's are read through its SDK (`modalProfileOf`). Tenki's SDK
+ * reads LUXOR_API_ENDPOINT, LUXOR_API_URL, TENKI_API_ENDPOINT, then TENKI_API_URL, and falls back
+ * to a default its version decides, so the version is part of the connection too.
  */
 function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields> {
   const env = process.env;
@@ -535,9 +555,15 @@ function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields
     }
 
     case "tenki":
-      return connection.config.baseUrl === undefined
-        ? { TENKI_API_ENDPOINT: env.TENKI_API_ENDPOINT, TENKI_API_URL: env.TENKI_API_URL }
-        : {};
+      return connection.config.baseUrl?.trim()
+        ? {}
+        : {
+            LUXOR_API_ENDPOINT: env.LUXOR_API_ENDPOINT,
+            LUXOR_API_URL: env.LUXOR_API_URL,
+            TENKI_API_ENDPOINT: env.TENKI_API_ENDPOINT,
+            TENKI_API_URL: env.TENKI_API_URL,
+            tenkiSdkVersion: connectionProbes.tenkiSdkVersion(),
+          };
     case "vercel":
       return "token" in connection.config ? {} : { VERCEL_OIDC_TOKEN: env.VERCEL_OIDC_TOKEN };
     default:

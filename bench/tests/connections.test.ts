@@ -55,6 +55,8 @@ const providerEnv = [
   "TENKI_AUTH_TOKEN",
   "TENKI_API_ENDPOINT",
   "TENKI_API_URL",
+  "LUXOR_API_ENDPOINT",
+  "LUXOR_API_URL",
   "UPSTASH_BOX_API_KEY",
   "UPSTASH_BOX_BASE_URL",
   "VERCEL_TOKEN",
@@ -176,6 +178,8 @@ describe("a connection fingerprint names the whole connection without holding an
     ["boxd", "BOXD_API_URL", { BOXD_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["tenki", "TENKI_API_ENDPOINT", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["tenki", "TENKI_API_URL", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
+    ["tenki", "LUXOR_API_ENDPOINT", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
+    ["tenki", "LUXOR_API_URL", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["vercel", "VERCEL_OIDC_TOKEN", {}, "other-oidc-token"],
   ])("%s changes when %s, which its SDK reads itself, does", async (name, variable, env, value) => {
     for (const [key, set] of Object.entries(env)) vi.stubEnv(key, set);
@@ -188,6 +192,29 @@ describe("a connection fingerprint names the whole connection without holding an
 
     expect(await fingerprintOf(run)).toMatch(/^[0-9a-f]{16}$/);
     expect(await fingerprintOf(other)).not.toBe(await fingerprintOf(run));
+  });
+
+  it("tenki changes with the installed @tenkicloud/sandbox version, which picks its default endpoint", async () => {
+    vi.stubEnv("TENKI_API_KEY", "live-key");
+    const run = bound({ ...memory(), name: "tenki" });
+
+    vi.spyOn(connectionProbes, "tenkiSdkVersion").mockReturnValue("0.0.0-other");
+    const older = bound({ ...memory(), name: "tenki" });
+
+    expect(await fingerprintOf(run)).toMatch(/^[0-9a-f]{16}$/);
+    expect(await fingerprintOf(older)).not.toBe(await fingerprintOf(run));
+  });
+
+  it("tenki ignores the endpoint variables and SDK version when the endpoint is explicit", async () => {
+    vi.stubEnv("TENKI_API_KEY", "live-key");
+    const explicit = { baseUrl: "https://live.invalid" };
+    const run = bound({ ...memory(), name: "tenki" }, explicit);
+
+    vi.stubEnv("LUXOR_API_ENDPOINT", "https://elsewhere.invalid");
+    vi.spyOn(connectionProbes, "tenkiSdkVersion").mockReturnValue("0.0.0-other");
+    const other = bound({ ...memory(), name: "tenki" }, explicit);
+
+    expect(await fingerprintOf(other)).toBe(await fingerprintOf(run));
   });
 
   it("is one Microsandbox connection for both tiers, and changes with MSB_API_URL", async () => {
