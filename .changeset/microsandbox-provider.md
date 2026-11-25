@@ -1,5 +1,0 @@
----
-"@opencoredev/sandbox-sdk": minor
----
-
-Add the Microsandbox provider, `@opencoredev/sandbox-sdk/microsandbox`: Microsandbox Cloud microVMs, with the control plane over REST and commands and files through the optional peer `microsandbox`, which `create` loads before it allocates anything. `computeType: "standard" | "shared"` picks the tier, is checked on every create, and scopes `list` and `find`. Streamed commands with explicit stdin, a decoder per stream, and a timeout or abort that kills the command and confirms its exit (`outcome_unknown` when it cannot); files; public preview URLs through Microsandbox Services the adapter owns and deletes with the sandbox; disk snapshots that stop and restart a running source, with `deleteSnapshot`; restores; presets and exact sizes; `network: "none"` and host allow lists; and `box.native` on the control plane, whose `sdk()` binds a `RemoteContext` with the adapter's key. A create carries a unique name and an allocation marker, so a lost answer is found by name and never mistaken for another caller's sandbox. `msb_` and `msb_pat_` tokens are redacted from every error.
