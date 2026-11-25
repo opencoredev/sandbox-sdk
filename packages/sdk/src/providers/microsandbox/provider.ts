@@ -350,11 +350,11 @@ const setupCommand = "mkdir -p /workspace";
 
 /**
  * A stop ends every guest process but leaves its record on the disk, which a restart or a restore
- * keeps. Run right after the adapter boots a guest (create, restore, start): the first run in a boot,
- * told apart by the kernel's boot ID, marks every record without an exit killed and drops the run
- * markers; later runs in the same boot change nothing.
+ * keeps. Only what is proven to be from before the guest's boot is touched: a record without an exit,
+ * or a run marker, last written in an earlier second than the kernel's boot time (`btime`). A record
+ * written since the boot is never marked killed, so any client can run this at any time.
  */
-const repair = `boot=$(cat /proc/sys/kernel/random/boot_id) && if [ "$(cat /tmp/.sandbox-sdk/boot-id 2>/dev/null)" != "$boot" ]; then for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && printf 137 > "$d/exit"; done; rm -rf /tmp/.sandbox-sdk/runs; mkdir -p /tmp/.sandbox-sdk && printf '%s' "$boot" > /tmp/.sandbox-sdk/boot-id; fi`;
+const repair = `boot=$(sed -n 's/^btime //p' /proc/stat); [ -n "$boot" ] || exit 1; for d in /tmp/.sandbox-sdk/procs/*; do [ -f "$d/spec.json" ] && [ ! -f "$d/exit" ] && [ "$(stat -c %Y "$d/spec.json")" -lt "$boot" ] && printf 137 > "$d/exit"; done; for m in /tmp/.sandbox-sdk/runs/*; do [ -e "$m" ] && [ "$(stat -c %Y "$m")" -lt "$boot" ] && rm -rf "$m"; done; true`;
 
 /** @internal The adapter behind `microsandbox()`. `load` imports `microsandbox`; tests pass a fixture. */
 export function createMicrosandboxProvider(
@@ -506,6 +506,8 @@ export function createMicrosandboxProvider(
   /**
    * The guest agent handle of sandbox `id`, through this adapter's own `RemoteContext`. The lookup has
    * its own `requestTimeoutMs` deadline, and a failed one is dropped so the next call connects again.
+   * Each handle runs {@link repair} before its first use, so this client never trusts the record of a
+   * process a stop ended, whoever restarted or restored the sandbox.
    */
   function handle(id: string): Promise<PeerSandbox> {
     let known = handles.get(id);
@@ -527,6 +529,18 @@ export function createMicrosandboxProvider(
 
         if (sandbox === "stop")
           throw fail("the guest agent did not answer in time", "timeout", { sandboxId: id });
+
+        const repaired = await execute({
+          sandbox: Promise.resolve(sandbox),
+          sandboxId: id,
+          redact,
+          exec: { command: repair, cwd: "/", env: {}, timeoutMs: 60_000, onChunk() {} },
+        });
+
+        if (repaired.timedOut || repaired.exitCode !== 0)
+          throw fail("the records of processes a stop ended could not be cleared", "provider", {
+            sandboxId: id,
+          });
 
         return sandbox;
       })();
@@ -700,10 +714,13 @@ export function createMicrosandboxProvider(
     return untilRunning(id, deadline, signal);
   }
 
-  /** Starts a sandbox a stop ended, then marks the processes the stop killed exited ({@link repair}). */
+  /**
+   * Starts a sandbox a stop ended and connects to it, which runs {@link repair}, before it is handed
+   * out. An abort after the start leaves the repair to the next connection.
+   */
   async function revive(id: string, deadline: Deadline, signal?: AbortSignal) {
     const sandbox = await start(id, deadline, signal);
-    await shell(id, repair, 60_000);
+    await handle(id);
 
     return sandbox;
   }
@@ -1281,13 +1298,7 @@ export function createMicrosandboxProvider(
         sandbox = await untilRunning(id, deadline, input.signal);
 
       const guest = await handle(id);
-      // A restore's disk holds the records of processes its source's stop ended.
-      await shell(
-        id,
-        ref === undefined ? setupCommand : `${repair} && ${setupCommand}`,
-        60_000,
-        guest,
-      );
+      await shell(id, setupCommand, 60_000, guest);
 
       if (input.signal?.aborted) throw fail("creation aborted", "aborted", { sandboxId: id });
     } catch (error) {

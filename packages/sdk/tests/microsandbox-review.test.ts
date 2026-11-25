@@ -179,7 +179,7 @@ async function exec(
 
 /** A process record without an exit and a run marker, as a stop leaves them. */
 const staleRecord =
-  "mkdir -p /tmp/.sandbox-sdk/procs/p1 /tmp/.sandbox-sdk/runs && echo '{}' > /tmp/.sandbox-sdk/procs/p1/spec.json && touch /tmp/.sandbox-sdk/runs/r1";
+  "mkdir -p /tmp/.sandbox-sdk/procs/p1 /tmp/.sandbox-sdk/runs && echo '{}' > /tmp/.sandbox-sdk/procs/p1/spec.json && touch -d '1 hour ago' /tmp/.sandbox-sdk/procs/p1/spec.json /tmp/.sandbox-sdk/runs/r1";
 
 /** The record's exit code, or `none`, then whether the run marker is still there. */
 const recordState =
@@ -358,6 +358,22 @@ test("PR88-4 a restore marks the processes its source's stop ended as exited", a
     restored: (await exec(p, restored.id, recordState)).stdout,
     source: (await exec(p, source.id, recordState)).stdout,
   }).toEqual({ restored: "137 gone", source: "137 gone" });
+
+  // Work started since the boot is never marked killed, by this client or the next one to connect.
+  const current =
+    "mkdir -p /tmp/.sandbox-sdk/procs/p2 /tmp/.sandbox-sdk/runs && echo '{}' > /tmp/.sandbox-sdk/procs/p2/spec.json && touch /tmp/.sandbox-sdk/runs/r2";
+
+  expect((await exec(p, restored.id, current)).exitCode).toBe(0);
+
+  expect(
+    (
+      await exec(
+        adapter(),
+        restored.id,
+        "cat /tmp/.sandbox-sdk/procs/p2/exit 2>/dev/null || printf none; [ -e /tmp/.sandbox-sdk/runs/r2 ] && printf ' run'",
+      )
+    ).stdout,
+  ).toBe("none run");
 });
 
 test("PR88-5 a guest agent lookup that never answers still ends at the command's timeout or abort", async () => {
