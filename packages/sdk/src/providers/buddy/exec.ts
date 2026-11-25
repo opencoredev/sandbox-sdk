@@ -40,12 +40,12 @@ export const notStarted = {
  * released before the command runs.
  */
 const start = [
-  `exec 9>>"$1/lock" && flock -w 30 9 || { echo "sandbox-sdk: cannot take the command lock" >&2; exit 125; }`,
+  `exec 9>>"$1/lock" && "$5" -w 30 9 || { echo "sandbox-sdk: cannot take the command lock" >&2; exit 125; }`,
   `if [ -e "$1/cancel" ]; then : > "$1/refused"; exit 137; fi`,
-  `echo $$ > "$1/pid.tmp" && mv -f "$1/pid.tmp" "$1/pid" || { echo "sandbox-sdk: cannot record the command" >&2; exit 125; }`,
+  `echo $$ > "$1/pid.tmp" && "$6" -f "$1/pid.tmp" "$1/pid" || { echo "sandbox-sdk: cannot record the command" >&2; exit 125; }`,
   `exec 9>&-`,
   `cd -- "$2" || exit 1`,
-  `if [ "$3" = "f" ]; then exec sh "$1/cmd"; else exec sh -c "$4"; fi`,
+  `if [ "$3" = "f" ]; then exec "$7" "$1/cmd"; else exec "$7" -c "$4"; fi`,
 ].join("\n");
 
 /**
@@ -87,6 +87,9 @@ except OSError: pass
 def missing():
  print('${notStarted.stage}',flush=True)
  sys.exit(125)
+sys_sh=shutil.which('sh') or '/bin/sh'
+sys_flock=shutil.which('flock') or 'flock'
+sys_mv=shutil.which('mv') or 'mv'
 env=dict(os.environ)
 try:
  if envf:
@@ -125,7 +128,7 @@ p=None
 if act and not os.path.exists(d+'/cancel'):
  os.makedirs(os.path.dirname(act),exist_ok=True)
  with open(act,'w') as f: f.write('1')
-argv=['sh','-c',start,'sh',d,cwd,'f'] if 'c' in staged else ['sh','-c',start,'sh',d,cwd,'c',cmd]
+argv=[sys_sh,'-c',start,'sh',d,cwd,'f','',sys_flock,sys_mv,sys_sh] if 'c' in staged else [sys_sh,'-c',start,'sh',d,cwd,'c',cmd,sys_flock,sys_mv,sys_sh]
 try:
  p=subprocess.Popen(argv,env=env,stdin=si,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
 except OSError as e:
@@ -515,11 +518,41 @@ export class FrameReader {
 export class LineSplitter {
   #pending = "";
   readonly #decoder = new TextDecoder("utf-8");
+  readonly #sandboxId: string;
+
+  constructor(sandboxId: string) {
+    this.#sandboxId = sandboxId;
+  }
 
   push(bytes: Uint8Array): string[] {
-    this.#pending += this.#decoder.decode(bytes, { stream: true });
-    const lines = this.#pending.split("\n");
-    this.#pending = lines.pop() ?? "";
+    const lines: string[] = [];
+
+    for (let start = 0; start < bytes.length;) {
+      const nl = bytes.indexOf(10, start);
+      const end = nl === -1 ? bytes.length : nl;
+
+      if (end - start > maxFrame * 4) {
+        this.#pending = "";
+        throw new FrameError(this.#sandboxId);
+      }
+
+      const chunk = this.#decoder.decode(bytes.subarray(start, end), { stream: nl === -1 });
+
+      if (this.#pending.length + chunk.length > maxFrame) {
+        this.#pending = "";
+        throw new FrameError(this.#sandboxId);
+      }
+
+      if (nl === -1) {
+        this.#pending += chunk;
+
+        break;
+      }
+
+      lines.push(this.#pending + chunk);
+      this.#pending = "";
+      start = nl + 1;
+    }
 
     return lines;
   }

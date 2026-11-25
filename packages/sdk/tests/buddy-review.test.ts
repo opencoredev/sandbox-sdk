@@ -3,7 +3,8 @@ import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { createSandbox, SandboxError } from "../src/index.js";
+import { createSandbox, reapSandboxes, SandboxError } from "../src/index.js";
+import { FrameError, LineSplitter } from "../src/providers/buddy/exec.js";
 import { buddy, type BuddyOptions } from "../src/providers/buddy/index.js";
 import type { Fetch } from "../src/http.js";
 import { buddyFake, type BuddyFake, type FakeSandbox } from "./buddy-fake.js";
@@ -620,6 +621,7 @@ test("a 140 KB staged command runs without hitting Linux's per-argument limit", 
 
 test("aborting while a launch response stalls immediately kills the accepted command by tag", async () => {
   const controller = new AbortController();
+  let interceptedLaunch = false;
   let stalledLaunch = false;
   let launchAborted = false;
 
@@ -629,13 +631,14 @@ test("aborting while a launch response stalls immediately kills the accepted com
         const url = new URL(input);
 
         if (
-          !stalledLaunch &&
+          !interceptedLaunch &&
           (init?.method ?? "GET") === "POST" &&
           url.pathname.endsWith("/execs")
         ) {
-          stalledLaunch = true;
+          interceptedLaunch = true;
           // Deliver the launch to the fake so the command starts, then hold the response.
-          await fetch(input, init);
+          const delivered = await fetch(input, { ...init, signal: undefined });
+          await delivered.body?.cancel();
 
           return new Promise<Response>((_resolve, reject) => {
             const onAbort = () => {
@@ -645,6 +648,7 @@ test("aborting while a launch response stalls immediately kills the accepted com
 
             if (init?.signal?.aborted) onAbort();
             else init?.signal?.addEventListener("abort", onAbort, { once: true });
+            stalledLaunch = true;
           });
         }
 
@@ -1243,3 +1247,161 @@ test("polling an accepted snapshot retries past a transient 404 and keeps the sn
     await box2.destroy();
   }
 }, 20_000);
+
+test("LineSplitter caps partial spool lines and rejects unbounded newline-free spool output", async () => {
+  const splitter = new LineSplitter("sbx-cap");
+  const chunk = new Uint8Array(2000).fill(97);
+
+  expect(splitter.push(chunk)).toEqual([]);
+  expect(splitter.push(chunk)).toEqual([]);
+  expect(() => splitter.push(chunk)).toThrow(FrameError);
+  expect(splitter.pending).toBe("");
+
+  const box = await createSandbox(
+    provider({
+      fetch: async (input, init) => {
+        const url = new URL(input);
+
+        if ((init?.method ?? "GET") === "GET" && url.pathname.endsWith("/log"))
+          return Response.json({ lines: [], next_offset: 0, truncated: true });
+
+        return fetch(input, init);
+      },
+    }),
+  );
+
+  try {
+    await expect(
+      box.run(
+        `python3 -c "import glob; p = glob.glob('/tmp/.sandbox-sdk/exec/*/spool')[0]; open(p, 'ab').write(b'A' * 32768)"`,
+      ),
+    ).rejects.toMatchObject({
+      code: "provider",
+      message: expect.stringContaining("output spool is malformed"),
+    });
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("reapSandboxes with idleOnly reaps stopped Buddy sandboxes without guest probes and skips stopping ones", async () => {
+  const guestProbes: string[] = [];
+
+  const p = provider({
+    fetch: async (input, init) => {
+      const url = new URL(input);
+      const match = /\/sandboxes\/([^/]+)\/execs?$/.exec(url.pathname);
+
+      if (match && (init?.method ?? "GET") === "POST") guestProbes.push(match[1] ?? "");
+
+      return fetch(input, init);
+    },
+  });
+
+  const label = { suite: "buddy-idle-reap" };
+  const stoppedBox = await createSandbox(p, { labels: label });
+  const stoppingBox = await createSandbox(p, { labels: label });
+  const runningBox = await createSandbox(p, { labels: label });
+
+  try {
+    await stoppedBox.pause();
+    sandboxOf(stoppingBox.id).status = "STOPPING";
+    guestProbes.length = 0;
+
+    const reaped = await reapSandboxes(p, {
+      labels: label,
+      idleOnly: true,
+      olderThanMs: 0,
+    });
+
+    expect(reaped).toBe(2);
+    expect(guestProbes).not.toContain(stoppedBox.id);
+    expect(guestProbes).not.toContain(stoppingBox.id);
+    expect(fake.sandboxes.has(stoppedBox.id)).toBe(false);
+    expect(fake.sandboxes.has(runningBox.id)).toBe(false);
+    expect(fake.sandboxes.has(stoppingBox.id)).toBe(true);
+  } finally {
+    await stoppingBox.destroy().catch(() => {});
+    await stoppedBox.destroy().catch(() => {});
+    await runningBox.destroy().catch(() => {});
+  }
+});
+
+test("custom PATH without sh, flock or mv still starts commands and preserves caller PATH", async () => {
+  const box = await createSandbox(provider());
+
+  try {
+    const result = await box.run('printf "%s" "$PATH"', {
+      env: { PATH: "/workspace/toolchain/bin" },
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      timedOut: false,
+      stdout: "/workspace/toolchain/bin",
+    });
+  } finally {
+    await box.destroy();
+  }
+});
+
+test("destroyed sandboxes release their secrets and preview passwords from the provider redactor", async () => {
+  let leakedText = "";
+  let failReads = false;
+
+  const p = provider({
+    fetch: async (input, init) => {
+      const url = new URL(input);
+
+      if (
+        failReads &&
+        (init?.method ?? "GET") === "GET" &&
+        /\/sandboxes\/[^/]+$/.test(url.pathname)
+      )
+        throw new TypeError(`echo ${leakedText}`);
+
+      return fetch(input, init);
+    },
+  });
+
+  const secretValue = "buddy-create-secret-unique-9911";
+  const boxA = await createSandbox(p, { secrets: { MY_SECRET: secretValue } });
+  const boxB = await createSandbox(p);
+
+  try {
+    const preview = await boxA.preview(3000);
+    const authHeader = preview.headers?.Authorization ?? "";
+
+    const password = Buffer.from(authHeader.slice("Basic ".length), "base64")
+      .toString()
+      .split(":")[1];
+
+    expect(password).toBeTruthy();
+
+    // While boxA is live, both its create-time secret and preview password are redacted on errors.
+    leakedText = `${secretValue} ${password}`;
+    failReads = true;
+    const whileLive = await failure(p.connect(boxB.id));
+    const liveDetail = `${whileLive?.message ?? ""} ${String(whileLive?.cause ?? "")}`;
+
+    expect(whileLive).toBeInstanceOf(SandboxError);
+    expect(liveDetail).not.toContain(secretValue);
+    expect(liveDetail).not.toContain(password ?? "");
+
+    // After boxA is destroyed, its credentials are released from the shared provider's redactor.
+    failReads = false;
+    await boxA.destroy();
+
+    failReads = true;
+    const afterDestroy = await failure(p.connect(boxB.id));
+    const destroyedDetail = `${afterDestroy?.message ?? ""} ${String(afterDestroy?.cause ?? "")}`;
+
+    expect(afterDestroy).toBeInstanceOf(SandboxError);
+    expect(destroyedDetail).toContain(secretValue);
+    expect(destroyedDetail).toContain(password ?? "");
+  } finally {
+    failReads = false;
+    await boxA.destroy().catch(() => {});
+    await boxB.destroy().catch(() => {});
+  }
+});

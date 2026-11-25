@@ -331,8 +331,31 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
   const guests = new Map<string, GuestState>();
   const previews = new Map<string, Preview>();
   const previewQueues = new Map<string, Promise<unknown>>();
-  /** Values to redact that the adapter made or read: preview passwords and their headers. */
-  const tokens = new Set<string>();
+  /** Values to redact scoped per live sandbox, plus in-flight creates before an ID exists. */
+  const sandboxTokens = new Map<string, Set<string>>();
+  const pendingCreateTokens = new Set<Set<string>>();
+
+  function addSandboxToken(id: string, value: string) {
+    let set = sandboxTokens.get(id);
+
+    if (!set) {
+      set = new Set<string>();
+      sandboxTokens.set(id, set);
+    }
+
+    set.add(value);
+  }
+
+  function addSandboxTokens(id: string, values: Iterable<string>) {
+    let set = sandboxTokens.get(id);
+
+    if (!set) {
+      set = new Set<string>();
+      sandboxTokens.set(id, set);
+    }
+
+    for (const value of values) set.add(value);
+  }
 
   const configuredToken = (options.token ?? process.env.BUDDY_TOKEN)?.trim();
   const configuredWorkspace = (options.workspace ?? process.env.BUDDY_WORKSPACE)?.trim();
@@ -375,7 +398,15 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     defaultPlane: "workspace",
     fetch: options.fetch,
     timeoutMs: requestTimeoutMs,
-    secrets: () => [options.token ?? process.env.BUDDY_TOKEN, ...tokens],
+    secrets: () => {
+      const values: (string | undefined)[] = [configuredToken];
+
+      for (const set of pendingCreateTokens) for (const value of set) values.push(value);
+
+      for (const set of sandboxTokens.values()) for (const value of set) values.push(value);
+
+      return values;
+    },
     credentialPatterns: leakPatterns,
     authHint:
       "Set BUDDY_TOKEN to a Buddy personal access token with the Sandboxes: Manage scope, and BUDDY_WORKSPACE to its workspace.",
@@ -534,6 +565,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
       throw last;
     } finally {
       forget(id);
+      sandboxTokens.delete(id);
     }
   }
 
@@ -993,7 +1025,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
   ): Promise<Attempt> {
     const reader = new FrameReader(input.onChunk, id);
     const streaming = input.streaming === true;
-    const splitter = new LineSplitter();
+    const splitter = new LineSplitter(id);
     let offset = 0;
     let spoolOffset = 0;
     let spool = false;
@@ -1539,8 +1571,8 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     const found = parseCredentials(text.trim(), port);
 
     if (found) {
-      tokens.add(found.password);
-      tokens.add(basic(found));
+      addSandboxToken(id, found.password);
+      addSandboxToken(id, basic(found));
     }
 
     return found;
@@ -1628,9 +1660,9 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
 
       // Registered before the request, so no error from here on can show them.
       if (made) {
-        tokens.add(made.password);
-        tokens.add(basic(made));
-        tokens.add(basic(made).slice("Basic ".length));
+        addSandboxToken(id, made.password);
+        addSandboxToken(id, basic(made));
+        addSandboxToken(id, basic(made).slice("Basic ".length));
       }
 
       const ours: JsonObject = {
@@ -1697,36 +1729,50 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
     api,
 
     async create(input) {
+      const pending = new Set<string>();
+
       for (const secret of input.secretNames ?? []) {
         const value = input.env?.[secret];
 
-        if (value) tokens.add(value);
+        if (value) pending.add(value);
       }
 
-      const sandbox = await createSandbox(input);
-      const id = sandbox.id;
-      const aborted = () => fail("creation aborted", "aborted", { sandboxId: id });
+      if (pending.size > 0) pendingCreateTokens.add(pending);
 
       try {
-        if (input.signal?.aborted) throw aborted();
-        const deadline = createDeadline(readyMs, input.signal);
+        const sandbox = await createSandbox(input);
+        const id = sandbox.id;
 
-        if (sandbox.status !== "RUNNING" || sandbox.setupStatus !== "SUCCESS")
-          await untilReady(id, deadline);
-        await setUp(id, deadline);
+        if (pending.size > 0) {
+          addSandboxTokens(id, pending);
+          pendingCreateTokens.delete(pending);
+        }
 
-        if (input.signal?.aborted) throw aborted();
-      } catch (error) {
-        return abandon(id, error);
+        const aborted = () => fail("creation aborted", "aborted", { sandboxId: id });
+
+        try {
+          if (input.signal?.aborted) throw aborted();
+          const deadline = createDeadline(readyMs, input.signal);
+
+          if (sandbox.status !== "RUNNING" || sandbox.setupStatus !== "SUCCESS")
+            await untilReady(id, deadline);
+          await setUp(id, deadline);
+
+          if (input.signal?.aborted) throw aborted();
+        } catch (error) {
+          return abandon(id, error);
+        }
+
+        return {
+          id,
+          key: input.key,
+          labels: { ...input.labels },
+          state: "running",
+          createdAt: sandbox.createdAt || Date.now(),
+        };
+      } finally {
+        pendingCreateTokens.delete(pending);
       }
-
-      return {
-        id,
-        key: input.key,
-        labels: { ...input.labels },
-        state: "running",
-        createdAt: sandbox.createdAt || Date.now(),
-      };
     },
 
     async find(key, findOptions) {
@@ -1763,6 +1809,12 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
       return toInfo(await readSandbox(id));
     },
 
+    async isStopped(id) {
+      const { status } = await readSandbox(id);
+
+      return status === "STOPPED" || status === "FAILED";
+    },
+
     async list(labels: Labels): Promise<SandboxInfo[]> {
       const ours = (await listSummaries()).filter((s) => isSdkIdentifier(s.identifier));
       const found: SandboxInfo[] = [];
@@ -1792,6 +1844,7 @@ export function createBuddyProvider(options: BuddyOptions = {}): BuddyProvider {
 
     async close(id) {
       forget(id);
+      sandboxTokens.delete(id);
     },
 
     exec,

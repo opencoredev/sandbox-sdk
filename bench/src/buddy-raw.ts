@@ -116,9 +116,15 @@ export async function createRawBuddy(input: {
   labels: Readonly<Record<string, string>>;
   admit: (box: RawBuddyBox) => void;
 }): Promise<RawBuddyBox> {
+  const config = buddyConfig();
   const owner = crypto.randomUUID();
   const identifier = `sdk-raw-${owner.replace(/-/g, "").slice(0, 20)}`;
   const note = JSON.stringify({ ...input.labels, [rawOwnerField]: owner });
+
+  const body = config.project
+    ? { name: identifier, identifier, os: "ubuntu:24.04", note, project_name: config.project }
+    : { name: identifier, identifier, os: "ubuntu:24.04", note };
+
   let created: z.infer<typeof buddyRecord>;
 
   try {
@@ -126,7 +132,7 @@ export async function createRawBuddy(input: {
       await (
         await buddyCall("/sandboxes", {
           method: "POST",
-          json: { name: identifier, identifier, os: "ubuntu:24.04", note },
+          json: body,
         })
       ).json(),
     );
@@ -161,12 +167,18 @@ async function recoverByIdentifier(
   owner: string,
   admit: (box: RawBuddyBox) => void,
 ) {
+  const config = buddyConfig();
+
+  const listPath = config.project
+    ? `/sandboxes?project_name=${encodeURIComponent(config.project)}`
+    : "/sandboxes";
+
   for (let read = 0; read < 5; read++) {
     if (read > 0) await new Promise((resolve) => setTimeout(resolve, 2000));
 
     const list = z
       .object({ sandboxes: z.array(buddyRecord).optional() })
-      .parse(await (await buddyCall("/sandboxes")).json());
+      .parse(await (await buddyCall(listPath)).json());
 
     const holder = list.sandboxes?.find((s) => s.identifier === identifier);
 

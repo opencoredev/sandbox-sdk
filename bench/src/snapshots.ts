@@ -566,6 +566,7 @@ export async function createNamedBuddySnapshot(
   await onSaved(saved.id);
 
   const end = Date.now() + 600_000;
+  let transientMisses = 0;
 
   for (let status = saved.status; status !== "CREATED";) {
     if (status === "FAILED" || status === "DELETING")
@@ -582,9 +583,17 @@ export async function createNamedBuddySnapshot(
 
     if (!read.ok) {
       await read.body?.cancel();
+
+      // Buddy can briefly return 404 right after snapshot creation; retry a few times like the SDK.
+      if (read.status === 404 && transientMisses < 5 && Date.now() <= end) {
+        transientMisses++;
+        continue;
+      }
+
       throw httpError("Buddy snapshot read failed", read.status);
     }
 
+    transientMisses = 0;
     status = buddySnapshot.parse(await read.json()).status;
   }
 
