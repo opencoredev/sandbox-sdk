@@ -969,3 +969,69 @@ it("records Instabox's blocked tcp-ms as documented not-run, not a failure, and 
     }
   }
 });
+
+it("keeps an acknowledged delete journaled, and reports it, until a lookup sees the sandbox gone", async () => {
+  const { memory } = await import("@opencoredev/sandbox-sdk/memory");
+  const { runV2 } = await import("../src/v2-runner.js");
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const directory = await mkdtemp(resolve(tmpdir(), "sandbox-bench-test-"));
+  const backing = memory();
+  const acknowledged = new Set<string>();
+
+  // The delete is acknowledged and the listing drops the sandbox, but it still answers by ID.
+  const provider = {
+    ...backing,
+    list: async (labels: Record<string, string>) =>
+      (await backing.list(labels)).filter((info) => !acknowledged.has(info.id)),
+    destroy: async (id: string) => {
+      acknowledged.add(id);
+    },
+  } satisfies import("@opencoredev/sandbox-sdk/provider").Provider;
+
+  try {
+    const report = await runV2(
+      [
+        {
+          kind: "ready",
+          name: "memory",
+          cloud: false,
+          region: null,
+          provider: boundFake(provider),
+        },
+      ],
+      parseV2([
+        "--providers",
+        "memory",
+        "--runs",
+        "1",
+        "--bursts",
+        "",
+        "--scenarios",
+        "command",
+        "--timeout-ms",
+        "200",
+        "--out",
+        directory,
+      ]),
+      async () => {},
+    );
+
+    const [id] = acknowledged;
+
+    expect(id).toBeDefined();
+    expect(report.cleanup).toEqual([
+      {
+        provider: "memory",
+        remaining: [id],
+        error: expect.stringContaining("no exact lookup saw the sandbox gone"),
+      },
+    ]);
+    expect(
+      JSON.parse(await readFile(resolve(directory, "ownership.json"), "utf8")).resources,
+    ).toEqual([expect.objectContaining({ provider: "memory", id, kind: "sandbox" })]);
+  } finally {
+    for (const info of await backing.list({})) await backing.destroy(info.id);
+    await rm(directory, { recursive: true, force: true });
+  }
+});

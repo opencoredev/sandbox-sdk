@@ -25,6 +25,7 @@ import {
   fingerprintCommand,
   labelsFor,
   lcgChecksum,
+  listedLeftovers,
   lifetimeMs,
   logLineSchema,
   mergeResults,
@@ -1346,6 +1347,27 @@ function fakeBoatApi() {
 }
 
 describe("sweep ownership", () => {
+  it("sweeps only listed sandboxes that carry every attempt label, whatever the listing returns", async () => {
+    const labels = { "sandbox-bench-run": "run", "sc-provider": "styne", "sc-attempt": "aaaa" };
+
+    const info = (id: string, own: Labels) => ({
+      id,
+      labels: own,
+      state: "running" as const,
+      createdAt: 0,
+    });
+
+    const provider = {
+      list: async () => [
+        info("mine", { ...labels, extra: "1" }),
+        info("other-attempt", { ...labels, "sc-attempt": "bbbb" }),
+        info("unlabelled", {}),
+      ],
+    };
+
+    expect(await listedLeftovers(provider, labels)).toEqual(["mine"]);
+  });
+
   it("labels every attempt apart, Boat in its one label", () => {
     const first = { runId: "sustained15m-20261123", attemptId: "aaaaaaaaaaaa" };
     const second = { ...first, attemptId: "bbbbbbbbbbbb" };

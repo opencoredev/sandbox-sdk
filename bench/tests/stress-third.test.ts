@@ -349,7 +349,7 @@ describe("P1.2: a guest clock step is a diagnostic, never a placement", () => {
             endedAt: startedAt + 2 * phase + 0.04,
           },
           cpus: { visible: 1, affinity: 1, quota: null },
-          python: "fixture",
+          python: "3.12.3",
         }),
       );
 

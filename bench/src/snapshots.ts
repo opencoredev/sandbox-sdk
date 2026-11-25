@@ -385,6 +385,7 @@ export async function snapshotCleaner(
     return async (id) => {
       const { apiKey, baseUrl } = connectionOf(provider, "instabox");
 
+      // Never follow a redirect: it would replay the DELETE, key included, at another origin.
       const response = await fetch(`${baseUrl}/v1/snapshots/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: {
@@ -392,6 +393,7 @@ export async function snapshotCleaner(
           "Idempotency-Key": crypto.randomUUID(),
           "X-Confirm-Delete": id,
         },
+        redirect: "error",
       });
 
       if (!response.ok && response.status !== 404)
@@ -858,6 +860,7 @@ export async function inspectSnapshot(
 
         const response = await fetch(`${baseUrl}/v1/snapshots/${encodeURIComponent(id)}`, {
           headers: { "X-API-Key": apiKey },
+          redirect: "error",
         });
 
         if (!response.ok)
@@ -927,10 +930,13 @@ export async function inspectSnapshot(
           headers: { Authorization: `Bearer ${apiKey}` },
         });
 
-        if (!response.ok)
-          throw Object.assign(new Error("Snapshot metadata unavailable"), {
-            status: response.status,
-          });
+        // An account-wide listing says nothing about this snapshot when it fails, a 404 included:
+        // the error carries no status, so it is unavailable, never absence.
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error(`Snapshot listing unavailable (HTTP ${response.status})`);
+        }
+
         const list = z.object({ snapshots: z.array(snapshotInfo) }).parse(await response.json());
         const listed = list.snapshots.find((snapshot) => snapshot.id === id);
 

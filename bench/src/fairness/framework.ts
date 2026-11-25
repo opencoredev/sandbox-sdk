@@ -29,7 +29,7 @@ import { isMissingFile } from "../files.js";
 import { loadProvider } from "../providers.js";
 import { collectMetadata } from "../publication.js";
 import { providerSetups, type ProviderSetup } from "../realistic/setup.js";
-import { labelsFor, type Attempt } from "../sustained-cpu.js";
+import { labelsFor, listedLeftovers, type Attempt } from "../sustained-cpu.js";
 import { deadline } from "../timing.js";
 import { sanitize } from "../v2-runner.js";
 
@@ -155,7 +155,7 @@ export const openLiveSession: OpenSession = async (setup, plan) => {
           destroy: () => sandbox.destroy(),
         };
       },
-      leftovers: async () => (await provider.list(labels)).map((info) => info.id),
+      leftovers: () => listedLeftovers(provider, labels),
       destroyById: (id) => provider.destroy(id),
     },
   };

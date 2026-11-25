@@ -13,7 +13,7 @@ import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import type { ModalClientParams } from "../src/connections.js";
 import { lookupSandbox } from "../src/existence.js";
 import { loadProvider, type FactoryOptions } from "../src/providers.js";
-import { inspectSnapshot } from "../src/snapshots.js";
+import { inspectSnapshot, snapshotCleaner } from "../src/snapshots.js";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { bound, fakeNativeModules } from "./native-fakes.js";
 
@@ -582,5 +582,63 @@ describe("lookups use the explicit options the adapter was built with, not the e
       expect((await lookupSandbox(adapter, id, budget)).result).toBe("present");
       expect(params).toEqual([expect.objectContaining(live)]);
     });
+  });
+});
+
+describe("raw reads and deletes keep the key on the adapter's origin", () => {
+  it("Instabox and Superserve: lookups, snapshot reads and the snapshot delete refuse redirects", async () => {
+    otherEnvironment();
+    const sent: string[] = [];
+
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      sent.push(`${init?.method ?? "GET"} ${url.pathname} ${init?.redirect ?? "follow"}`);
+
+      if (url.pathname.endsWith(`/machines/${id}`)) return Response.json({ id, state: "running" });
+
+      if (url.pathname.endsWith(`/snapshots/${id}`))
+        return Response.json({ id, sourceMachineId: "source" });
+
+      return Response.json({ id, status: "active" });
+    });
+
+    const instabox = await load("instabox", {
+      apiKey: "live-key",
+      baseUrl: "https://live.invalid/ib/",
+    });
+
+    const superserve = await load("superserve", {
+      apiKey: "live-key",
+      baseUrl: "https://live.invalid/ss/",
+    });
+
+    expect((await lookupSandbox(instabox, id, budget)).result).toBe("present");
+    await inspectSnapshot("instabox", instabox, "source", id);
+    await (
+      await snapshotCleaner("instabox", instabox, "source")
+    )(id);
+    expect((await lookupSandbox(superserve, id, budget)).result).toBe("present");
+
+    expect(sent).toEqual([
+      `GET /ib/v1/machines/${id} error`,
+      `GET /ib/v1/snapshots/${id} error`,
+      `DELETE /ib/v1/snapshots/${id} error`,
+      `GET /ss/sandboxes/${id} error`,
+    ]);
+  });
+
+  it("Upstash: a failed account-wide snapshot listing is never proof the snapshot is gone", async () => {
+    otherEnvironment();
+    fakeNativeModules({ "@upstash/box": { Box: { get: vi.fn(), deleteSnapshots: vi.fn() } } });
+    stubFetch(() => [404, {}]);
+
+    const adapter = await load("upstash", {
+      apiKey: "live-key",
+      baseUrl: "https://live.invalid/up/",
+    });
+
+    await expect(inspectSnapshot("upstash", adapter, "source", id)).rejects.toThrow(
+      /listing unavailable/,
+    );
   });
 });

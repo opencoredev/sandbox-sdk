@@ -1,3 +1,6 @@
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { memory } from "@opencoredev/sandbox-sdk/memory";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { describe, expect, it } from "vitest";
 import {
   expectedSmallFilesDigest,
@@ -214,5 +217,45 @@ describe("filesystem scenarios", () => {
     expect(Math.max(...sizes)).toBe(65_536);
     expect(files.filter((f) => f.kind === "bytes")).toHaveLength(10);
     expect(new Set(files.map((f) => f.name)).size).toBe(20);
+  });
+});
+
+describe("fs-sdk-transfer-batch read-back", () => {
+  it("refuses a file whose size is not the one written before reading it", async () => {
+    const backing = memory({ handlers: { rm: () => 0, mkdir: () => 0 } });
+    const grown = transferFiles(seedA)[3]?.name ?? "";
+    const reads: string[] = [];
+
+    // The guest hands back a file 4 MiB larger than the one written to it.
+    const provider: Provider = {
+      ...backing,
+      files: {
+        ...backing.files,
+        write: (id, path, data, options) =>
+          backing.files.write(
+            id,
+            path,
+            path.endsWith(`/${grown}`) ? new Uint8Array(data.byteLength + 4 * 1024 * 1024) : data,
+            options,
+          ),
+        read: (id, path) => {
+          reads.push(path);
+
+          return backing.files.read(id, path);
+        },
+      },
+    };
+
+    const box = await createSandbox(provider);
+    const scenario = filesystemScenarios.find((s) => s.id === "fs-sdk-transfer-batch");
+
+    try {
+      await expect(scenario?.run(box, { seed: seedA, timeoutMs: 10_000 })).rejects.toThrow(
+        `${grown} differs`,
+      );
+      expect(reads.some((path) => path.endsWith(`/${grown}`))).toBe(false);
+    } finally {
+      await box.destroy();
+    }
   });
 });

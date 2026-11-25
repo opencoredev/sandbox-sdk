@@ -428,7 +428,15 @@ export function createMicrosandboxProvider(
   if (computeType !== undefined && computeType !== "standard" && computeType !== "shared")
     throw fail(`computeType must be "standard" or "shared"`, "invalid_argument");
 
+  /** The key this adapter resolved first. REST and the guest context it builds once both use it. */
+  let pinnedKey: string | undefined;
+
+  /**
+   * One key for the adapter's life: the guest context keeps the key it was built with, so REST
+   * never moves to another key (a rotated `MSB_API_KEY`) while the context still holds this one.
+   */
   function apiKey() {
+    if (pinnedKey !== undefined) return pinnedKey;
     const key = (options.apiKey ?? process.env.MSB_API_KEY)?.trim();
 
     if (!key)
@@ -437,10 +445,12 @@ export function createMicrosandboxProvider(
         "auth",
       );
 
+    pinnedKey = key;
+
     return key;
   }
 
-  const secrets = () => [options.apiKey, process.env.MSB_API_KEY, ...tokens];
+  const secrets = () => [options.apiKey, process.env.MSB_API_KEY, pinnedKey, ...tokens];
 
   const http = createHttpClient<MicrosandboxPlane>({
     provider: name,
@@ -1466,10 +1476,40 @@ export function createMicrosandboxProvider(
     },
     read: async (path, range) => {
       const sandbox = await handle(id);
-      let bytes: Uint8Array;
 
       try {
-        bytes = await sandbox.fs().read(path);
+        if (range === undefined) return await sandbox.fs().read(path);
+
+        // Streamed and stopped once the range is in, so a file larger than the range, or one that
+        // grew after a size check, is never buffered whole.
+        const end = range.offset + range.length;
+        const kept: Uint8Array[] = [];
+        let seen = 0;
+        let size = 0;
+
+        for await (const chunk of await sandbox.fs().readStream(path)) {
+          const from = Math.max(range.offset - seen, 0);
+          const to = Math.min(end - seen, chunk.byteLength);
+
+          if (to > from) {
+            kept.push(chunk.slice(from, to));
+            size += to - from;
+          }
+
+          seen += chunk.byteLength;
+
+          if (seen >= end) break;
+        }
+
+        const bytes = new Uint8Array(size);
+        let at = 0;
+
+        for (const part of kept) {
+          bytes.set(part, at);
+          at += part.byteLength;
+        }
+
+        return bytes;
       } catch (error) {
         throw peerError(error, "reading a file", {
           sandboxId: id,
@@ -1477,8 +1517,6 @@ export function createMicrosandboxProvider(
           files: true,
         });
       }
-
-      return range ? bytes.subarray(range.offset, range.offset + range.length) : bytes;
     },
   });
 

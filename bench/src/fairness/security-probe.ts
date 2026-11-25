@@ -311,7 +311,7 @@ export const securityResultSchema = z.object({
     insideVm: z.boolean().nullable(),
   }),
   kernel: z.string().nullable(),
-  cmdline: z.string().nullable(),
+  /** Only allowlisted kernel parameters: the raw command line can carry boot secrets. */
   weakeningFlags: z.array(z.string()),
   notableFlags: z.array(z.string()),
   vulnerabilities: z.array(z.object({ name: z.string(), status: z.string() })),
@@ -387,7 +387,6 @@ export function parseProbe(stdout: string) {
     facts,
     isolation: classifyIsolation(facts),
     kernel: facts.kernel,
-    cmdline,
     weakeningFlags: flags.weakening,
     notableFlags: flags.notable,
     vulnerabilities,
@@ -452,7 +451,10 @@ export const securityProbe: Check<SecurityResult> = {
         `Probe ${probe.timedOut ? "timed out" : `exited ${probe.exitCode}`} without ${missing.join(", ") || "finishing"}: ${sanitize(probe.stderr).slice(0, 200)}`,
       );
     const parsed = parseProbe(probe.stdout);
-    await context.note("facts", parsed.facts);
+    // The raw kernel command line and dmesg can carry boot secrets: the log keeps only the other facts
+    // and what was derived from those two (the isolation evidence, the allowlisted flags).
+    const { cmdline: _cmdline, dmesg: _dmesg, ...facts } = parsed.facts;
+    await context.note("facts", facts);
     context.say(
       `${parsed.isolation.kind}; ${parsed.cpu.modelName ?? "cpu ?"}; uptime ${first.uptimeS ?? "?"}s after ${round(sinceCreateS, 1)}s; ${parsed.vulnerableCount} vulnerable`,
     );
@@ -464,7 +466,6 @@ export const securityProbe: Check<SecurityResult> = {
       bootId: first.bootId,
       isolation: parsed.isolation,
       kernel: parsed.kernel,
-      cmdline: parsed.cmdline,
       weakeningFlags: parsed.weakeningFlags,
       notableFlags: parsed.notableFlags,
       vulnerabilities: parsed.vulnerabilities,

@@ -16,8 +16,8 @@ const bootIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 export function parseBootId(output: string) {
   const bootId = output.trim();
 
-  if (!bootIdPattern.test(bootId))
-    throw new Error(`Heartbeat reply is not a boot ID: ${JSON.stringify(bootId.slice(0, 80))}`);
+  // A fixed message: the reply is guest text and never goes into the report.
+  if (!bootIdPattern.test(bootId)) throw new Error("Heartbeat reply is not a boot ID");
 
   return bootId.toLowerCase();
 }

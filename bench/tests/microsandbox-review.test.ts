@@ -23,7 +23,9 @@ import {
   capturedFrom,
   cleanService,
   isDefiniteRefusal,
+  maxMicrosandboxAnswerBytes,
   microsandboxFetch,
+  readMicrosandboxJson,
   settleAllocationAttempt,
   settleMicrosandboxCapture,
 } from "../src/microsandbox.js";
@@ -3875,5 +3877,34 @@ describe("PR88 security review, third round", () => {
       kept: true,
     });
     fake.services.delete("no-stamp-slug");
+  });
+});
+
+describe("control-plane answers are read with a byte cap", () => {
+  it("parses an answer within the cap", async () => {
+    expect(
+      await readMicrosandboxJson(Response.json({ id: "sbx" }), z.object({ id: z.string() })),
+    ).toEqual({ id: "sbx" });
+  });
+
+  it("cancels and refuses an answer past the cap before parsing it", async () => {
+    let pulled = 0;
+    let cancelled = false;
+
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 64 * 1024;
+        controller.enqueue(new Uint8Array(64 * 1024).fill(0x20));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    await expect(readMicrosandboxJson(new Response(body), z.unknown())).rejects.toThrow(
+      /larger than/,
+    );
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThanOrEqual(maxMicrosandboxAnswerBytes + 2 * 64 * 1024);
   });
 });

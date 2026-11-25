@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import type { Sandbox } from "@opencoredev/sandbox-sdk";
 import { z } from "zod";
+import { deadline } from "../timing.js";
 import { command, quote } from "../workloads.js";
 import {
   digestSchema,
@@ -722,15 +723,24 @@ async function runTransfer(box: Sandbox, ctx: ExpandedContext) {
 
     for (const file of files) await box.files.write(`${transferDir}/${file.name}`, file.data);
 
+    // The size checks run outside the timed transfer.
+    let checkMs = 0;
+
     for (const file of files) {
       const path = `${transferDir}/${file.name}`;
-      const back = await box.files.read(path, { as: "bytes" });
+      const expected = fileBytes(file);
+      const checkStart = performance.now();
+      // A file of another size is refused before it is read, so the guest cannot have a large one buffered.
+      const { size } = await box.files.stat(path);
+      checkMs += performance.now() - checkStart;
 
-      if (!sameBytes(back, fileBytes(file)))
-        throw new Error(`fs-sdk-transfer-batch: ${path} differs`);
+      if (size !== expected.byteLength) throw new Error(`fs-sdk-transfer-batch: ${path} differs`);
+      const back = await deadline(ctx.timeoutMs, () => box.files.read(path, { as: "bytes" }));
+
+      if (!sameBytes(back, expected)) throw new Error(`fs-sdk-transfer-batch: ${path} differs`);
     }
 
-    const seconds = (performance.now() - start) / 1000;
+    const seconds = (performance.now() - start - checkMs) / 1000;
 
     const guest = parseGuestJson(
       await command(box, `node -e ${quote(transferManifestScript)} ${transferDir}`, ctx.timeoutMs),

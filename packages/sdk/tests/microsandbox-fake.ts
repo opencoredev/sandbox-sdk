@@ -4,7 +4,16 @@
 // temporary directory; `/workspace`, `/tmp/.sandbox-sdk` and `/tmp/sdk-bare` in commands and paths map into
 // it, and commands run as real process groups. Faults let a test lose, refuse or delay answers.
 import { spawn, type ChildProcess } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -135,6 +144,8 @@ export interface MicrosandboxFake {
   readonly requests: { method: string; path: string; body: JsonValue | undefined }[];
   /** Every `RemoteContext` the peer built, with the options it got. */
   readonly contexts: PeerContextOptions[];
+  /** Every guest file read, whole or streamed, with the bytes the guest handed over. */
+  readonly fileReads: { path: string; via: "read" | "stream"; bytes: number }[];
   /** Every command the peer launched. */
   readonly execs: {
     sandbox: string;
@@ -310,6 +321,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
   const requests: MicrosandboxFake["requests"] = [];
   const contexts: PeerContextOptions[] = [];
   const execs: MicrosandboxFake["execs"] = [];
+  const fileReads: MicrosandboxFake["fileReads"] = [];
   const faults: Faults = {};
   const starting = new Map<string, number>();
   /** Sandboxes whose accepted DELETE has not finished, with the reads by ID left before it does. */
@@ -948,10 +960,42 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
             const sandbox = find();
 
             try {
-              return new Uint8Array(await readFile(mapped(sandbox, path)));
+              const bytes = new Uint8Array(await readFile(mapped(sandbox, path)));
+              fileReads.push({ path, via: "read", bytes: bytes.byteLength });
+
+              return bytes;
             } catch (error) {
               throw fsError(error instanceof Error ? errnoOf(error) : undefined);
             }
+          },
+          async readStream(path: string) {
+            const sandbox = find();
+            let handle: FileHandle;
+
+            try {
+              handle = await open(mapped(sandbox, path));
+            } catch (error) {
+              throw fsError(error instanceof Error ? errnoOf(error) : undefined);
+            }
+
+            const record = { path, via: "stream" as const, bytes: 0 };
+            fileReads.push(record);
+
+            // As the real peer: chunks on demand, so a reader that stops early reads no further.
+            return (async function* () {
+              try {
+                for (;;) {
+                  const chunk = new Uint8Array(64 * 1024);
+                  const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, null);
+
+                  if (bytesRead === 0) return;
+                  record.bytes += bytesRead;
+                  yield chunk.subarray(0, bytesRead);
+                }
+              } finally {
+                await handle.close();
+              }
+            })();
           },
           async write(path: string, data: Uint8Array) {
             const sandbox = find();
@@ -990,6 +1034,7 @@ export async function microsandboxFake(): Promise<MicrosandboxFake> {
     requests,
     contexts,
     execs,
+    fileReads,
     faults,
     peer: { RemoteContext },
     async close() {

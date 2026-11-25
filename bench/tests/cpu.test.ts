@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { cpuResult, lcgChecksum, segmentConsistency, throughputSpread } from "../src/cpu.js";
+import {
+  cpuResult,
+  lcgChecksum,
+  maxProbeOutputChars,
+  segmentConsistency,
+  throughputSpread,
+} from "../src/cpu.js";
 
 const probePath = new URL("../probes/cpu.py", import.meta.url);
 const at = 1_800_000_000;
@@ -59,6 +65,44 @@ describe("CPU probe checksum", () => {
 
     expect(perf).toContain(kernel);
     expect(cpu).toContain(kernel);
+  });
+});
+
+describe("cpuResult on untrusted output", () => {
+  const secret = "sk-guest-secret-0123456789";
+
+  it("refuses oversized output before parsing it", () => {
+    expect(() => cpuResult(" ".repeat(maxProbeOutputChars + 1), challenge, 10)).toThrow(
+      /longer than/,
+    );
+  });
+
+  it("reports malformed output with fixed messages that copy no guest text", () => {
+    for (const reply of [`not json ${secret}`, JSON.stringify({ seed: secret })]) {
+      let message = "";
+
+      try {
+        cpuResult(reply, challenge, 10);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message).toMatch(/CPU probe output/);
+      expect(message).not.toContain(secret);
+    }
+  });
+
+  it("keeps only a Python version, never free text", () => {
+    const withPython = (python: string) =>
+      output().replace('"python":"3.12.3"', `"python":${JSON.stringify(python)}`);
+
+    expect(cpuResult(withPython("3.14.0rc1"), challenge, 10).probe.python).toBe("3.14.0rc1");
+    expect(() => cpuResult(withPython(`3.12.3 ${secret}`), challenge, 10)).toThrow(
+      "does not match the probe's format",
+    );
+    expect(() => cpuResult(withPython("x".repeat(10_000)), challenge, 10)).toThrow(
+      "does not match the probe's format",
+    );
   });
 });
 

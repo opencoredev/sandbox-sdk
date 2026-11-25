@@ -81,6 +81,40 @@ export async function microsandboxFetch(
   });
 }
 
+/** The largest control-plane answer the bench reads; a page of 100 records is a small fraction of it. */
+export const maxMicrosandboxAnswerBytes = 1024 * 1024;
+
+/**
+ * A control-plane answer parsed by `schema`, read only up to {@link maxMicrosandboxAnswerBytes}: a
+ * longer body is cancelled and refused before it is parsed.
+ */
+export async function readMicrosandboxJson<T extends z.ZodType>(
+  response: Response,
+  schema: T,
+): Promise<z.output<T>> {
+  const reader = response.body?.getReader();
+
+  if (!reader) throw new Error("Microsandbox answer has no body");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+
+    if (done) break;
+    size += value.byteLength;
+
+    if (size > maxMicrosandboxAnswerBytes) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`Microsandbox answer is larger than ${maxMicrosandboxAnswerBytes} bytes`);
+    }
+
+    chunks.push(value);
+  }
+
+  return schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+}
+
 const sandboxSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -163,7 +197,7 @@ export async function settleAllocationAttempt(
     throw new MicrosandboxHttpError("Microsandbox create lookup failed", response.status);
   }
 
-  const sandbox = sandboxSchema.parse(await response.json());
+  const sandbox = await readMicrosandboxJson(response, sandboxSchema);
 
   if (sandbox.name !== entry.id) throw new Error("Microsandbox lookup answered another sandbox");
 
@@ -275,7 +309,7 @@ export async function probePendingService(
     throw new MicrosandboxHttpError("Microsandbox Service read failed", read.status);
   }
 
-  const service = serviceSchema.parse(await read.json());
+  const service = await readMicrosandboxJson(read, serviceSchema);
 
   if (service.slug !== slug) throw new Error("Microsandbox Service read answered another slug");
 
@@ -325,7 +359,7 @@ export async function cleanService(
     throw new MicrosandboxHttpError("Microsandbox Service read failed", read.status);
   }
 
-  const service = serviceSchema.parse(await read.json());
+  const service = await readMicrosandboxJson(read, serviceSchema);
 
   if (service.slug !== entry.id) throw new Error("Microsandbox Service read answered another slug");
 
@@ -411,7 +445,7 @@ export async function readMicrosandboxSnapshot(
     throw new MicrosandboxHttpError("Microsandbox snapshot read failed", response.status);
   }
 
-  const snapshot = microsandboxSnapshotSchema.parse(await response.json());
+  const snapshot = await readMicrosandboxJson(response, microsandboxSnapshotSchema);
   const matches = uuidPattern.test(id) ? snapshot.location.id === id : snapshot.name === id;
 
   if (!matches) throw new Error("Snapshot metadata ID mismatch");
@@ -458,7 +492,7 @@ async function findOperation(connection: MicrosandboxConfig, snapshotName: strin
       throw new MicrosandboxHttpError("Microsandbox operation listing failed", response.status);
     }
 
-    const answer = page(operationSchema).parse(await response.json());
+    const answer = await readMicrosandboxJson(response, page(operationSchema));
     const found = answer.data.find((op) => op.snapshot_name === snapshotName);
 
     if (found) return found;
@@ -551,7 +585,7 @@ export async function microsandboxSnapshotsFromSource(
       throw new MicrosandboxHttpError("Microsandbox snapshot listing failed", response.status);
     }
 
-    const answer = page(microsandboxSnapshotSchema).parse(await response.json());
+    const answer = await readMicrosandboxJson(response, page(microsandboxSnapshotSchema));
 
     for (const snapshot of answer.data) {
       const id = snapshot.location.id;

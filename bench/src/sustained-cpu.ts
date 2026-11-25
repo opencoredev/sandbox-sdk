@@ -723,6 +723,19 @@ export function labelsFor(setup: ProviderSetup, attempt: Attempt): Labels {
 }
 
 /**
+ * The IDs a provider lists under `labels`, keeping only sandboxes that carry every one of them exactly:
+ * a listing that filtered too broadly never puts another run's sandbox up for a sweep's delete.
+ */
+export async function listedLeftovers(
+  provider: Pick<Provider, "list">,
+  labels: Labels,
+): Promise<string[]> {
+  return (await provider.list(labels))
+    .filter((info) => Object.entries(labels).every(([key, value]) => info.labels[key] === value))
+    .map((info) => info.id);
+}
+
+/**
  * Loads a provider as the realistic harness does (`loadSlotProvider`): the same-machine template,
  * product and size, Modal's, Maritime's and Styne's factory lifetime, and `timeoutMs` on create where the
  * adapter takes one, long enough for the whole burn.
@@ -772,7 +785,7 @@ export const openLiveSession: OpenSession = async (setup, plan) => {
           destroy: () => sandbox.destroy(),
         };
       },
-      leftovers: async () => (await provider.list(labels)).map((info) => info.id),
+      leftovers: () => listedLeftovers(provider, labels),
       destroyById: (id) => provider.destroy(id),
     },
   };

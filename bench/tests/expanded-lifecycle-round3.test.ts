@@ -1,5 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxError } from "@opencoredev/sandbox-sdk";
@@ -290,6 +298,25 @@ describe("expanded run lifecycle, round 3", () => {
 
       expect(readJson(resultsFile, join(out, "results.json")).samples).toHaveLength(1);
       expect(existsSync(join(out, "run.json"))).toBe(false);
+    });
+
+    it("never follows a run.json symlink, so a forced takeover cannot write through it", async () => {
+      freshOut();
+      const target = join(mkdtempSync(join(tmpdir(), "expanded-claim-target-")), "victim.json");
+
+      const dead = JSON.stringify({
+        runId: "expanded-died",
+        pid: exited(),
+        host: hostname(),
+        pidns: pidNamespace(),
+      });
+
+      writeFileSync(target, dead);
+      symlinkSync(target, join(out, "run.json"));
+
+      await expect(expandedCommand(forced(), dependencies())).rejects.toThrow(/still alive/);
+      expect(readFileSync(target, "utf8")).toBe(dead);
+      expect(lstatSync(join(out, "run.json")).isSymbolicLink()).toBe(true);
     });
   });
 });

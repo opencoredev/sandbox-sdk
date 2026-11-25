@@ -51,6 +51,12 @@ describe("parseBootId", () => {
       "not a boot ID",
     );
   });
+
+  it("never copies the guest's reply into the error", () => {
+    expect(() => parseBootId("TOKEN=sk-guest-secret")).toThrow(
+      /^Heartbeat reply is not a boot ID$/,
+    );
+  });
 });
 
 describe("heartbeatOffsets", () => {

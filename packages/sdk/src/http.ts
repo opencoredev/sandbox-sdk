@@ -85,6 +85,12 @@ export interface HttpPlane {
    * is `outcome_unknown`. For APIs that never redirect a write. Default: only a resend is refused.
    */
   redirectWrites?: false;
+  /**
+   * `false`: a redirect to another origin is refused before anything is sent there, so no body and no
+   * header (an upload, secret values in a create) is replayed off the plane. For APIs that never
+   * redirect off their own origin. Default: followed, without credentials.
+   */
+  crossOriginRedirects?: false;
 }
 
 /**
@@ -1090,6 +1096,15 @@ export function createHttpClient<Plane extends string>(
             request,
             ": the redirect left http and https.",
             undefined,
+            false,
+          );
+
+        if (plane.crossOriginRedirects === false && url.origin !== origin)
+          throw failure(
+            unsafe && !request.readOnly ? "outcome_unknown" : "provider",
+            request,
+            ` (HTTP ${response.status}): the server redirected to another origin, which is not followed.`,
+            `HTTP ${response.status}`,
             false,
           );
 

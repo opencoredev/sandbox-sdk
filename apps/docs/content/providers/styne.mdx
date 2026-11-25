@@ -96,7 +96,7 @@ The `base` template is Debian 12 with Python 3, Node.js, git and curl, and comma
 
 ## Background processes and previews
 
-`box.preview(port)` returns the port's URL and the `e2b-traffic-access-token` header it needs. Nothing needs to be declared at creation. Send the headers with every request:
+`box.preview(port)` returns the port's URL and the `e2b-traffic-access-token` header it needs. Nothing needs to be declared at creation. Send the headers with every request, and only to the preview's own origin: `fetch` keeps custom headers on a redirect, so `redirect: "error"` stops the token from following one to wherever the app inside the sandbox points:
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
@@ -105,7 +105,7 @@ import { styne } from "@opencoredev/sandbox-sdk/styne";
 await using box = await createSandbox(styne(), { timeoutMs: 30 * 60_000 });
 await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
 const preview = await box.preview(8000);
-const page = await fetch(preview.url, { headers: preview.headers });
+const page = await fetch(preview.url, { headers: preview.headers, redirect: "error" });
 console.log(page.status);
 ```
 
@@ -160,7 +160,8 @@ Styne puts a running sandbox to sleep by itself when nothing you started runs in
 - The adapter calls `https://api.styne.ai` with your key as `Authorization: Bearer`. Creates, pauses, resumes and snapshots carry an `Idempotency-Key`, so a retried request is applied once. If a create's answer is lost or cannot be read, the adapter sends it again with the same key, and Styne returns the sandbox the first request made. A create answer that names a sandbox without its domain deletes that sandbox. A snapshot is named before it is requested, so a lost or unreadable answer is looked up by that name.
 - Commands stream as NDJSON from `POST /sandboxes/{id}/exec`. Closing that stream does not stop a command on Styne, so on a timeout or abort the adapter kills the command's process group in the guest before `run()` returns, and counts the kill as done only when the kill command exits 0. When it is not confirmed, or the stream sends a line Styne does not document, `run()` fails `outcome_unknown`. A cancel that arrives before the command reports its PID still finds it, and a command it beats to the guest never starts.
 - At create, the adapter makes `/workspace`, which Styne's image lacks. Styne's file API creates new files and folders as `user` while commands run as root, so the adapter also marks every directory safe for git; without that, git refuses a repository in a folder the file API made. If this step fails, the adapter deletes the sandbox before it throws, and names it in an `outcome_unknown` error when the delete is not confirmed.
-- File reads and writes use Styne's file routes. Listing, stat, mkdir and remove run as one guest command each, so `remove` without `recursive` refuses a directory with files in it; Styne's own delete is always recursive.
+- The adapter refuses any redirect off Styne's API origin, so a request body (a create's secret environment values, an upload) is never sent anywhere else.
+- File reads and writes use Styne's file routes. A ranged read, such as the agent tools' size-limited reads, streams the file and stops once it has the range. Listing, stat, mkdir and remove run as one guest command each, so `remove` without `recursive` refuses a directory with files in it; Styne's own delete is always recursive.
 - Your `labels` become Styne metadata, and a key is stored as `sandbox-sdk-key`. `connectSandbox` reads the sandbox with a `GET`; Styne's connect route would wake a paused sandbox and extend its lifetime.
 - A sandbox that ended answers `410`, which the SDK reports as `not_found`, so a stale key creates a new sandbox. A `501` is `unsupported`. A write answered with another `5xx` Styne does not document as a refusal is `outcome_unknown`. Errors keep Styne's HTTP status and `error_code`, never its message.
 - `box.native` is a [`NativeApi`](/reference/native) on Styne's API with `{id}` bound to the sandbox: `box.native.request("GET", "/sandboxes/{id}/metrics")`. `styne().api` has no sandbox bound, for calls such as `api.request("GET", "/snapshots")`.

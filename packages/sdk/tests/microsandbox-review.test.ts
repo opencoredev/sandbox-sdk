@@ -1856,3 +1856,40 @@ test("PR88 security review: the boot repair touches nothing under a directory it
 
   expect(after.stdout).toBe("kept");
 });
+
+test("backfill #88: a ranged read streams only up to its range, never the whole file", async () => {
+  const p = adapter();
+  const { id } = await p.create({ labels: labels() });
+  const file = new Uint8Array(1024 * 1024).map((_, i) => i % 251);
+
+  await p.files.write(id, "/workspace/big.bin", file);
+  fake.fileReads.length = 0;
+
+  const ranged = await p.files.readRange?.(id, "/workspace/big.bin", {
+    offset: 100_000,
+    length: 1000,
+  });
+
+  expect(ranged).toEqual(file.slice(100_000, 101_000));
+  expect(fake.fileReads).toHaveLength(1);
+  expect(fake.fileReads[0]?.via).toBe("stream");
+  expect(fake.fileReads[0]?.bytes).toBeLessThan(file.byteLength / 2);
+  expect(
+    await p.files.readRange?.(id, "/workspace/big.bin", {
+      offset: file.byteLength - 10,
+      length: 100,
+    }),
+  ).toEqual(file.slice(-10));
+  await p.destroy(id);
+});
+
+test("backfill #88: one adapter keeps the key it started with after MSB_API_KEY changes", async () => {
+  const p = adapter({ apiKey: undefined });
+  const { id } = await p.create({ labels: labels() });
+
+  vi.stubEnv("MSB_API_KEY", "msb_rotated_key_9876543210");
+
+  await expect(p.list(labels())).resolves.toEqual([expect.objectContaining({ id })]);
+  expect(fake.contexts.map((context) => context.apiKey)).toEqual([key]);
+  await p.destroy(id);
+});
