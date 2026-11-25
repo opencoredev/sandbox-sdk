@@ -38,7 +38,8 @@ export interface CreateInput {
   /**
    * The names in `env` that are secrets. The core records them in the sandbox after create; an
    * adapter that publishes its own readiness marker writes the same record first, so a second
-   * client that finds the sandbox can always recover them.
+   * client that finds the sandbox can always recover them. An adapter that cannot keep a secret
+   * where a reconnect reads it back refuses the create.
    */
   secretNames?: readonly string[];
   network?: "all" | "none" | { allow: string[] };

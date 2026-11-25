@@ -764,6 +764,15 @@ export function createInstaboxProvider(options: InstaboxOptions = {}): InstaboxP
     async create(input) {
       if (input.network !== undefined && input.network !== "all")
         throw fail("network policies are not supported", "unsupported");
+
+      // A reconnect recovers secrets from the machine's environment, which can't hold reserved names.
+      const unkept = input.secretNames?.find(isReservedEnv);
+
+      if (unkept !== undefined)
+        throw fail(
+          `secret ${unkept} uses a name Instabox reserves, so a reconnect could not recover it. Rename the secret`,
+          "invalid_argument",
+        );
       const labels: Labels = { ...input.labels };
 
       if (input.key !== undefined) labels[keyLabel] = input.key;

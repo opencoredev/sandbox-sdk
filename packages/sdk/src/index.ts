@@ -253,11 +253,9 @@ export async function createSandbox(
         const request: CreateInput = {
           ...input,
           env: { ...options.env, ...secrets },
+          secretNames: Object.keys(secrets ?? {}),
           labels: { ...options.labels, ...sdkLabel },
         };
-
-        // Only an adapter that records secret names itself is told which env entries they are.
-        if (provider.recordsSecretNames) request.secretNames = Object.keys(secrets ?? {});
 
         const pending = provider.create(request).catch(async (error) => {
           // A native unique-name conflict can race the initial lookup on another client.
