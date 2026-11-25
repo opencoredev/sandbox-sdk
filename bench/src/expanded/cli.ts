@@ -25,13 +25,22 @@
  *
  * A run claims --out with `run.json` and gives it up only when it ends with nothing left to clean
  * up; a run that died keeps the claim, so reap it and then pass --force or choose another --out.
+ * --force takes over only the claim of a run whose process is gone. Adapters a crash could leave
+ * an unfindable or unconfirmable sandbox on (no exact lookup, or labels written in the guest with
+ * no lifetime that ends the sandbox) are skipped before any create.
  */
 import { randomInt, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
-import { createSandbox, type CreateOptions, type Sandbox } from "@opencoredev/sandbox-sdk";
+import {
+  createSandbox,
+  SandboxError,
+  type CreateOptions,
+  type Sandbox,
+} from "@opencoredev/sandbox-sdk";
 import { z } from "zod";
 import { isAbsent, lookupSandbox, type LookupEvidence } from "../existence.js";
 import { isMissingFile } from "../files.js";
@@ -353,19 +362,29 @@ class LiveSandboxes {
     await this.journal.track(provider.name, box.id);
   }
 
-  /** Journal a sandbox only the final sweep's listing found, before deleting it. */
-  async adopt(provider: ReadyProvider, id: string): Promise<void> {
-    if (this.owned.has(`${provider.name}/${id}`)) return;
+  /**
+   * Journal a sandbox the run has no handle for, before deleting it by ID: one a failed create
+   * named (with its sample), or one only the final sweep's listing found. True when it was not
+   * journaled yet.
+   */
+  async adopt(
+    provider: ReadyProvider,
+    id: string,
+    sample: SampleRef | null = null,
+  ): Promise<boolean> {
+    if (this.owned.has(`${provider.name}/${id}`)) return false;
 
     this.owned.set(`${provider.name}/${id}`, {
       provider,
       id,
       box: null,
-      sample: null,
+      sample,
       handleDeleted: false,
       pending: null,
     });
     await this.journal.track(provider.name, id);
+
+    return true;
   }
 
   /**
@@ -462,6 +481,10 @@ class LiveSandboxes {
  * The final sweep, after the last sample: list each provider's sandboxes under this run's label,
  * journal any the run lost track of, and delete and look up every one not yet seen gone, within
  * one shared wait. What is still not seen gone becomes a cleanup error and stays journaled.
+ *
+ * A sandbox the listing finds that the run never journaled can only come from a create that
+ * failed without naming it, since the label is this run's alone. Each one confirmed gone settles
+ * one such create; any create left unsettled is a cleanup error, so the run ends owing cleanup.
  */
 async function finalSweep(providers: readonly ReadyProvider[], state: RunState): Promise<void> {
   const end = performance.now() + goneWaitMs(state.timeoutMs);
@@ -469,13 +492,16 @@ async function finalSweep(providers: readonly ReadyProvider[], state: RunState):
 
   await Promise.all(
     providers.map(async (provider) => {
+      const found: string[] = [];
+
       try {
         const listed = await deadline(left(), () =>
           provider.provider.list({ "sandbox-bench-run": state.runId }),
         );
 
         for (const info of listed)
-          if (hasRunOwnership(info, state.runId)) await state.live.adopt(provider, info.id);
+          if (hasRunOwnership(info, state.runId) && (await state.live.adopt(provider, info.id)))
+            found.push(info.id);
       } catch (error) {
         const reason = `final sweep could not list the run's sandboxes: ${errorText(error instanceof Error ? error : nonError)}`;
         state.results.cleanupErrors.push({
@@ -487,12 +513,18 @@ async function finalSweep(providers: readonly ReadyProvider[], state: RunState):
         process.stdout.write(`CLEANUP ${provider.name}: ${reason}\n`);
       }
 
+      const gone = new Set<string>();
+
       await Promise.all(
         state.live.of(provider).map(async (entry) => {
           let failed: string | null = null;
 
           try {
-            if (await state.live.clean(provider, entry.id, left())) return;
+            if (await state.live.clean(provider, entry.id, left())) {
+              gone.add(entry.id);
+
+              return;
+            }
           } catch (error) {
             failed = errorText(error instanceof Error ? error : nonError);
           }
@@ -509,6 +541,19 @@ async function finalSweep(providers: readonly ReadyProvider[], state: RunState):
           );
         }),
       );
+
+      const unsettled =
+        (state.unnamedCreates.get(provider.name) ?? 0) - found.filter((id) => gone.has(id)).length;
+
+      if (unsettled <= 0) return;
+      const reason = `${unsettled} failed create(s) named no sandbox and may have allocated one this run's final listing did not show; reap the run`;
+      state.results.cleanupErrors.push({
+        provider: provider.name,
+        sandboxId: null,
+        sample: null,
+        reason,
+      });
+      process.stdout.write(`CLEANUP ${provider.name}: ${reason}\n`);
     }),
   );
 }
@@ -519,15 +564,11 @@ interface RunState {
   readonly timeoutMs: number;
   readonly results: ExpandedResults;
   readonly live: LiveSandboxes;
+  /** Per provider, the creates that failed without naming a sandbox and were not refusals. */
+  readonly unnamedCreates: Map<string, number>;
   /** Set by the first SIGINT or SIGTERM. */
   stopSignal: NodeJS.Signals | null;
 }
-
-/**
- * Adapters that write the run's labels into the guest after allocation: until that write, no label
- * marks the sandbox as this run's, so a crash in between leaves nothing `reap` can find.
- */
-const guestLabeled: ReadonlySet<string> = new Set(["boxd", "archil", "beam"]);
 
 /**
  * The hard lifetime a sample's sandbox is created with (`timeoutMs`), so the provider deletes one
@@ -541,6 +582,95 @@ export function sandboxLifetimeMs(adapter: string, timeoutMs: number): number | 
     : null;
 }
 
+/**
+ * Adapters `lookupSandbox` (existence.ts) reads exactly. Only that read shows a sandbox gone, so on
+ * any other adapter (AgentOS, Railway) no delete could ever be confirmed.
+ */
+const exactLookup: ReadonlySet<string> = new Set([
+  "memory",
+  "local",
+  "tenki",
+  "upstash",
+  "e2b",
+  "daytona",
+  "baseten",
+  "beam",
+  "archil",
+  "boxd",
+  "freestyle",
+  "boat",
+  "styne",
+  "maritime",
+  "instabox",
+  "superserve",
+  "modal",
+  "vercel",
+]);
+
+/**
+ * Adapters that write the run's labels into the guest after allocation: Archil, Beam and Railway
+ * write a marker file, and boxd keeps custom labels only in its guest file. Until that write no
+ * label marks the sandbox as this run's, so a crash in between leaves one nothing finds.
+ */
+const guestLabeled: ReadonlySet<string> = new Set(["archil", "beam", "boxd", "railway"]);
+
+/**
+ * Of those, the ones whose hard lifetime ends the sandbox for good when it runs out, which is what
+ * bounds such a leftover. Taking `timeoutMs` is not enough: boxd's `deleteAfter` deletes the
+ * machine, and Beam stops the container, its adapter's own delete. Archil's expiry only pauses the
+ * sandbox, which drops it from list(); Railway takes no lifetime at all.
+ */
+const endedAtExpiry: ReadonlySet<string> = new Set(["beam", "boxd"]);
+
+/** Why the run must not create on `adapter`, or null when it may. Checked before any create. */
+export function admissionRefusal(adapter: string, timeoutMs: number): string | null {
+  if (!exactLookup.has(adapter))
+    return "No exact read-only lookup for this adapter, so no deletion of its sandboxes could be confirmed";
+
+  if (
+    guestLabeled.has(adapter) &&
+    !(endedAtExpiry.has(adapter) && sandboxLifetimeMs(adapter, timeoutMs) !== null)
+  )
+    return "Labels are written in the guest after allocation and no hard lifetime ends the sandbox, so a crash before the label lands would leave one nothing finds or removes";
+
+  return null;
+}
+
+/**
+ * Codes for a create the provider refused before allocating anything, as `realistic/burst.ts`
+ * reads them; never for Modal, whose client allocates before it can be refused.
+ */
+const refusalCodes: ReadonlySet<string> = new Set([
+  "quota",
+  "auth",
+  "unsupported",
+  "invalid_argument",
+  "not_found",
+]);
+
+/**
+ * A create threw `failed` (null when not a SandboxError). A sandbox it named is journaled and
+ * returned, to be cleaned by ID; a refusal allocated nothing; anything else may have allocated one
+ * unnamed, counted for the final sweep.
+ */
+async function failedCreate(
+  provider: ReadyProvider,
+  failed: SandboxError | null,
+  sample: SampleRef,
+  state: RunState,
+): Promise<string | null> {
+  if (failed?.sandboxId !== undefined) {
+    await state.live.adopt(provider, failed.sandboxId, sample);
+
+    return failed.sandboxId;
+  }
+
+  if (failed && refusalCodes.has(failed.code) && provider.name !== "modal") return null;
+  state.unnamedCreates.set(provider.name, (state.unnamedCreates.get(provider.name) ?? 0) + 1);
+
+  return null;
+}
+
 /** One verified sample on a fresh sandbox; the sandbox is destroyed whatever happens. */
 async function runSample(
   provider: ReadyProvider,
@@ -552,13 +682,28 @@ async function runSample(
   const where = { provider: provider.name, scenarioId: scenario.id, run, seed };
   const started = performance.now();
   let box: Sandbox | undefined;
+  /** The sandbox to clean up: the one created, or one a failed create named. */
+  let owned: string | null = null;
 
   try {
     const options: CreateOptions = { labels: { "sandbox-bench-run": state.runId } };
     const lifetimeMs = sandboxLifetimeMs(provider.name, state.timeoutMs);
 
     if (lifetimeMs !== null) options.timeoutMs = lifetimeMs;
-    box = await createSandbox(provider.provider, options);
+
+    try {
+      box = await createSandbox(provider.provider, options);
+    } catch (error) {
+      owned = await failedCreate(
+        provider,
+        error instanceof SandboxError ? error : null,
+        where,
+        state,
+      );
+      throw error;
+    }
+
+    owned = box.id;
     await state.live.add(provider, box, where);
 
     if (state.stopSignal) throw new Error("not started: the run was interrupted");
@@ -593,45 +738,138 @@ async function runSample(
     process.stdout.write(`FAIL ${provider.name} ${scenario.id} run ${run}: ${reason}\n`);
   } finally {
     // Not yet gone stays journaled; the final sweep retries it and reports what it cannot clear.
-    if (box && !(await state.live.clean(provider, box.id).catch(() => false)))
+    if (owned && !(await state.live.clean(provider, owned).catch(() => false)))
       process.stdout.write(
-        `CLEANUP ${provider.name} ${scenario.id} ${box.id}: not confirmed gone; the final sweep retries it\n`,
+        `CLEANUP ${provider.name} ${scenario.id} ${owned}: not confirmed gone; the final sweep retries it\n`,
       );
   }
 }
 
-const claimFile = z.object({ runId: z.string() });
+const claimFile = z.object({
+  runId: z.string(),
+  pid: z.number().int().positive().optional(),
+  host: z.string().optional(),
+});
+
+type Claim = z.infer<typeof claimFile>;
+
+const hasCode = (code: string) => (cause: unknown) =>
+  z.object({ code: z.literal(code) }).safeParse(cause).success;
+
+const isExisting = hasCode("EEXIST");
+const isNoProcess = hasCode("ESRCH");
 
 /**
- * Claim `out` for `runId` by creating run.json exclusively, as `v2-runner.ts` does: of two runs
- * that both passed `assertJournalFree`, only one gets it. `force` takes the claim over.
+ * Run `action` holding `run.lock`, a directory only one process can create, so claiming, taking
+ * over and releasing run.json never interleave between runs. Waits up to 2 s for another run's
+ * step; a lock left by a process that died inside one is named in the error.
  */
-async function claimOutput(path: string, runId: string, force: boolean) {
-  try {
-    await writeFile(path, `${JSON.stringify({ runId })}\n`, { flag: force ? "w" : "wx" });
-  } catch (error) {
-    if (!z.object({ code: z.literal("EEXIST") }).safeParse(error).success) throw error;
+async function withClaimLock<T>(out: string, action: () => Promise<T>): Promise<T> {
+  const lock = join(out, "run.lock");
 
-    throw new Error(
-      `${path} claims this --out for another run, which may still be running or may have died before its cleanup was confirmed. Reap that run (bun bench reap --run ID --out the same directory) and pass --force, or choose another --out.`,
-    );
+  for (let waitedMs = 0; ; waitedMs += 100) {
+    try {
+      await mkdir(lock);
+      break;
+    } catch (error) {
+      if (!isExisting(error)) throw error;
+
+      if (waitedMs >= 2000)
+        throw new Error(
+          `${lock} is held by another run claiming this --out; if no run is, remove that directory`,
+        );
+      await sleep(100);
+    }
+  }
+
+  try {
+    return await action();
+  } finally {
+    await rmdir(lock);
   }
 }
 
-/** Give up the claim, unless another run took it over with --force. */
-async function releaseClaim(path: string, runId: string) {
+async function readClaim(
+  path: string,
+): Promise<{ kind: "missing" } | { kind: "unreadable" } | { kind: "claim"; claim: Claim }> {
   let text: string;
 
   try {
     text = await readFile(path, "utf8");
   } catch (error) {
-    if (isMissingFile(error)) return;
+    if (isMissingFile(error)) return { kind: "missing" };
     throw error;
   }
 
-  const claim = claimFile.safeParse(JSON.parse(text));
+  try {
+    const claim = claimFile.safeParse(JSON.parse(text));
 
-  if (claim.success && claim.data.runId === runId) await rm(path, { force: true });
+    return claim.success ? { kind: "claim", claim: claim.data } : { kind: "unreadable" };
+  } catch {
+    return { kind: "unreadable" };
+  }
+}
+
+/**
+ * Whether the run holding `claim` may still be writing: its process is alive on this host, or it
+ * ran on another host this one cannot check. A claim without a pid (an older run's) is not.
+ */
+function claimHolderAlive(claim: Claim): boolean {
+  if (claim.pid === undefined || claim.host === undefined) return false;
+
+  if (claim.host !== hostname()) return true;
+
+  try {
+    process.kill(claim.pid, 0);
+
+    return true;
+  } catch (error) {
+    return !isNoProcess(error);
+  }
+}
+
+/**
+ * Claim `out` for `runId` with run.json, naming this process. Of two runs that both passed
+ * `assertJournalFree`, only one gets it. `force` takes over only the claim of a run whose process
+ * is gone, so two live runs never write one --out.
+ */
+async function claimOutput(out: string, runId: string, force: boolean) {
+  const path = join(out, "run.json");
+  const mine = `${JSON.stringify({ runId, pid: process.pid, host: hostname() })}\n`;
+
+  await withClaimLock(out, async () => {
+    const current = await readClaim(path);
+
+    if (current.kind === "missing") return writeFile(path, mine, { flag: "wx" });
+
+    if (!force)
+      throw new Error(
+        `${path} claims this --out for another run, which may still be running or may have died before its cleanup was confirmed. Reap that run (bun bench reap --run ID --out the same directory) and pass --force, or choose another --out.`,
+      );
+
+    if (current.kind === "claim" && claimHolderAlive(current.claim))
+      throw new Error(
+        `${path} belongs to a run whose process is still alive, or ran on another host; --force takes over only a dead run's claim. Stop that run, remove run.json if it ran elsewhere and is gone, or choose another --out.`,
+      );
+
+    return writeFile(path, mine);
+  });
+}
+
+/** Give up the claim, only while it still names this run and this process. */
+async function releaseClaim(out: string, runId: string) {
+  const path = join(out, "run.json");
+
+  await withClaimLock(out, async () => {
+    const current = await readClaim(path);
+
+    if (
+      current.kind === "claim" &&
+      current.claim.runId === runId &&
+      current.claim.pid === process.pid
+    )
+      await rm(path, { force: true });
+  });
 }
 
 /** Replace `path` through a temporary file in the same directory, so no reader sees half a file. */
@@ -696,16 +934,16 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
   const scenarios = selectScenarios(catalog, args.scenarios, args.categories);
   const out = resolve(args.out);
   const startedAt = new Date();
-  const runId = `expanded-${startedAt.toISOString().replace(/[:.]/g, "-")}`;
+  // The run's label: a random suffix keeps two runs started in the same millisecond apart.
+  const runId = `expanded-${startedAt.toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
   const journalPath = join(out, "ownership.json");
-  const claimPath = join(out, "run.json");
 
   // Before this run writes anything there: another run's journal must not be overwritten. The
   // claim stays until the run ends with nothing left to clean up, so the journal of a run that
   // died, even one whose first create never returned an ID, is never overwritten without --force.
   await mkdir(out, { recursive: true });
   await assertJournalFree(journalPath, runId, args.force);
-  await claimOutput(claimPath, runId, args.force);
+  await claimOutput(out, runId, args.force);
 
   const candidates: LoadedProvider[] = [];
 
@@ -726,18 +964,11 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
   const { loaded: fingerprintedProviders, connectionFingerprints } =
     await fingerprinted(candidates);
 
-  const loaded = fingerprintedProviders.map(
-    (p): LoadedProvider =>
-      p.kind === "ready" &&
-      guestLabeled.has(p.name) &&
-      sandboxLifetimeMs(p.name, args.timeoutMs) === null
-        ? {
-            kind: "skipped",
-            name: p.name,
-            note: "Labels are written in the guest after allocation and the adapter takes no hard lifetime, so a crash before the label lands would leave a sandbox nothing finds",
-          }
-        : p,
-  );
+  const loaded = fingerprintedProviders.map((p): LoadedProvider => {
+    const refused = p.kind === "ready" ? admissionRefusal(p.name, args.timeoutMs) : null;
+
+    return refused === null ? p : { kind: "skipped", name: p.name, note: refused };
+  });
 
   const results: ExpandedResults = {
     version: 1,
@@ -773,6 +1004,7 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
     timeoutMs: args.timeoutMs,
     results,
     live: new LiveSandboxes(journal, runId, args.timeoutMs),
+    unnamedCreates: new Map(),
     stopSignal: null,
   };
 
@@ -820,8 +1052,7 @@ export async function expandedCommand(argv: string[], dependencies: ExpandedDepe
   results.finishedAt = new Date().toISOString();
   await writeResults(out, results, scenarios);
 
-  if (state.live.size === 0 && results.cleanupErrors.length === 0)
-    await releaseClaim(claimPath, runId);
+  if (state.live.size === 0 && results.cleanupErrors.length === 0) await releaseClaim(out, runId);
   process.stdout.write(
     `${results.samples.length} verified samples, ${results.failures.length} failures, ${results.cleanupErrors.length} cleanup errors${state.stopSignal ? `, interrupted by ${state.stopSignal}` : ""}; ${out}\n`,
   );

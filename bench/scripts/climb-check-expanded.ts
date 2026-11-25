@@ -13,7 +13,7 @@
  * Prints diagnostic lines and finishes with the exact passing count on the last line.
  */
 import { randomUUID } from "node:crypto";
-import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { createSandbox, type Sandbox } from "@opencoredev/sandbox-sdk";
 import { local, type LocalProvider } from "@opencoredev/sandbox-sdk/local";
 import { expandedScenarios, exportExpandedSiteData } from "../src/expanded/registry.js";
 import {
@@ -71,50 +71,109 @@ function validateDefinition(s: ExpandedScenario, seen: Set<string>): string | nu
   return null;
 }
 
-async function runOne(
-  scenario: ExpandedScenario,
-  seed: number,
-  provider: LocalProvider,
-  runId: string,
-): Promise<{ ok: true; sample: ExpandedRunSample } | { ok: false; reason: string }> {
-  const start = performance.now();
+export type RunOutcome = { ok: true; sample: ExpandedRunSample } | { ok: false; reason: string };
 
-  const box = await createSandbox(provider, {
-    timeoutMs: TIMEOUT_MS,
-    labels: { [runLabel]: runId },
-  });
+/**
+ * Creates a sandbox, runs `work` in it and destroys it. A create, run or destroy that rejects is
+ * this run's failure, never a throw, so every scenario reaches the leak check and the score. A
+ * destroy that fails fails the run even if the work passed.
+ */
+export async function runInSandbox<B extends { destroy(): Promise<void> }>(input: {
+  create: () => Promise<B>;
+  work: (box: B) => Promise<RunOutcome>;
+}): Promise<RunOutcome> {
+  let box: B;
 
   try {
-    const outcome = await scenario.run(box, { seed, timeoutMs: TIMEOUT_MS });
-
-    if (!Number.isFinite(outcome.value) || outcome.value <= 0)
-      return { ok: false, reason: `non-positive value: ${outcome.value}` };
-
-    if (outcome.proof.trim().length < 8)
-      return { ok: false, reason: `proof too short: ${JSON.stringify(outcome.proof)}` };
-
-    return {
-      ok: true,
-      sample: {
-        scenarioId: scenario.id,
-        provider: "local",
-        seed,
-        value: outcome.value,
-        unit: scenario.unit,
-        better: scenario.better,
-        proof: outcome.proof,
-        wallMs: Math.round(performance.now() - start),
-        details: outcome.details,
-      },
-    };
+    box = await input.create();
   } catch (error) {
     return {
       ok: false,
-      reason: error instanceof Error ? error.message : String(error),
+      reason: `create failed: ${error instanceof Error ? error.message : String(error)}`,
     };
-  } finally {
-    await box.destroy();
   }
+
+  let outcome: RunOutcome;
+
+  try {
+    outcome = await input.work(box);
+  } catch (error) {
+    outcome = { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+
+  try {
+    await box.destroy();
+  } catch (error) {
+    const destroy = `destroy failed: ${error instanceof Error ? error.message : String(error)}`;
+
+    return { ok: false, reason: outcome.ok ? destroy : `${outcome.reason}; ${destroy}` };
+  }
+
+  return outcome;
+}
+
+/**
+ * Runs every scenario, `concurrency` at a time, and resolves with one outcome per scenario. A run
+ * that throws is that scenario's failure and its worker moves on, so this never rejects.
+ */
+export async function runAll<S>(input: {
+  scenarios: readonly S[];
+  concurrency: number;
+  runOne: (scenario: S, index: number) => Promise<RunOutcome>;
+}): Promise<{ scenario: S; outcome: RunOutcome }[]> {
+  const outcomes: { scenario: S; outcome: RunOutcome }[] = [];
+  let cursor = 0;
+
+  async function worker() {
+    for (let index = cursor++; index < input.scenarios.length; index = cursor++) {
+      const scenario = input.scenarios[index];
+
+      if (scenario === undefined) break;
+
+      try {
+        outcomes.push({ scenario, outcome: await input.runOne(scenario, index) });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        outcomes.push({ scenario, outcome: { ok: false, reason } });
+      }
+    }
+  }
+
+  await Promise.allSettled(
+    Array.from({ length: Math.min(input.concurrency, input.scenarios.length) }, () => worker()),
+  );
+
+  return outcomes;
+}
+
+async function scenarioOutcome(
+  scenario: ExpandedScenario,
+  box: Sandbox,
+  seed: number,
+): Promise<RunOutcome> {
+  const start = performance.now();
+  const outcome = await scenario.run(box, { seed, timeoutMs: TIMEOUT_MS });
+
+  if (!Number.isFinite(outcome.value) || outcome.value <= 0)
+    return { ok: false, reason: `non-positive value: ${outcome.value}` };
+
+  if (outcome.proof.trim().length < 8)
+    return { ok: false, reason: `proof too short: ${JSON.stringify(outcome.proof)}` };
+
+  return {
+    ok: true,
+    sample: {
+      scenarioId: scenario.id,
+      provider: "local",
+      seed,
+      value: outcome.value,
+      unit: scenario.unit,
+      better: scenario.better,
+      proof: outcome.proof,
+      wallMs: Math.round(performance.now() - start),
+      details: outcome.details,
+    },
+  };
 }
 
 async function main() {
@@ -141,30 +200,33 @@ async function main() {
   }
 
   const samples: ExpandedRunSample[] = [];
-  let cursor = 0;
 
-  async function worker() {
-    while (cursor < valid.length) {
-      const idx = cursor++;
-      const scenario = valid[idx];
-
-      if (!scenario) break;
+  const outcomes = await runAll({
+    scenarios: valid,
+    concurrency: CONCURRENCY,
+    async runOne(scenario, idx) {
       const seed = (0x9e3779b9 ^ ((idx + 1) * 2654435761)) >>> 0;
-      const res = await runOne(scenario, seed, provider, runId);
 
-      if (res.ok) {
-        samples.push(res.sample);
+      const res = await runInSandbox({
+        create: () =>
+          createSandbox(provider, { timeoutMs: TIMEOUT_MS, labels: { [runLabel]: runId } }),
+        work: (box) => scenarioOutcome(scenario, box, seed),
+      });
+
+      if (res.ok)
         process.stdout.write(
           `PASS ${scenario.id} (${scenario.category}): ${res.sample.value.toFixed(2)} ${scenario.unit} [${res.sample.wallMs}ms] proof=${res.sample.proof.slice(0, 12)}\n`,
         );
-      } else {
-        failures.push(`${scenario.id}: ${res.reason}`);
-        process.stdout.write(`FAIL ${scenario.id}: ${res.reason}\n`);
-      }
-    }
-  }
+      else process.stdout.write(`FAIL ${scenario.id}: ${res.reason}\n`);
 
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, valid.length) }, () => worker()));
+      return res;
+    },
+  });
+
+  for (const { scenario, outcome } of outcomes) {
+    if (outcome.ok) samples.push(outcome.sample);
+    else failures.push(`${scenario.id}: ${outcome.reason}`);
+  }
 
   const cleanup = await cleanupFailure(provider, runId);
 
