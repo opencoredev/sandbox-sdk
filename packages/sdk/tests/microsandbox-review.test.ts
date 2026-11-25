@@ -1510,3 +1510,42 @@ test("PR88 merge review: a key lookup that meets a capture saving the source wai
     stored: [...fake.snapshots.values()].some((s) => s.id === taken?.id),
   }).toEqual({ lookup: id, stored: true });
 });
+
+test("PR88 merge review: two snapshots of one sandbox take turns, so neither restart breaks the other", async () => {
+  let restarted = () => {};
+
+  const started = new Promise<void>((resolve) => {
+    restarted = resolve;
+  });
+
+  let posts = 0;
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const url = new URL(input);
+
+      // The second capture request goes out only after a capture has restarted the source.
+      if (url.pathname === "/v1/snapshots" && init.method === "POST" && ++posts === 2)
+        await started;
+
+      const response = await realFetch(input, init);
+
+      if (url.pathname.endsWith("/start")) restarted();
+
+      return response;
+    },
+  });
+
+  const { id } = await p.create({ labels: labels() });
+
+  const taken = await Promise.allSettled([p.snapshot?.(id), p.snapshot?.(id)]);
+
+  expect({
+    outcomes: taken.map((t) => t.status),
+    stored: taken.filter(
+      (t) =>
+        t.status === "fulfilled" && [...fake.snapshots.values()].some((s) => s.id === t.value?.id),
+    ).length,
+    running: fake.sandboxes.get(id)?.status,
+  }).toEqual({ outcomes: ["fulfilled", "fulfilled"], stored: 2, running: "running" });
+});

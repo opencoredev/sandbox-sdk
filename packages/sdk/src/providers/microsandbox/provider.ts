@@ -1773,14 +1773,16 @@ export function createMicrosandboxProvider(
   const capturing = new Map<string, Set<Promise<void>>>();
 
   async function snapshot(id: string, snapshotOptions?: { expiresInMs?: number }) {
-    const run = capture(id, snapshotOptions);
+    const pending = capturing.get(id) ?? new Set<Promise<void>>();
+
+    // Captures of one sandbox run one at a time: each restarts the source it stopped, which would
+    // leave a capture still under way facing a running sandbox.
+    const run = Promise.all(pending).then(() => capture(id, snapshotOptions));
 
     const settled = run.then(
       () => {},
       () => {},
     );
-
-    const pending = capturing.get(id) ?? new Set<Promise<void>>();
 
     pending.add(settled);
     capturing.set(id, pending);
