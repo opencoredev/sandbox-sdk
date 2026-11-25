@@ -1794,10 +1794,36 @@ export function createMicrosandboxProvider(
     }
   }
 
-  /** Waits until no capture of this client holds sandbox `id`. */
-  async function capturesDone(id: string) {
-    for (let pending = capturing.get(id); pending; pending = capturing.get(id))
-      await Promise.all(pending);
+  /**
+   * Waits until no capture of this client holds sandbox `id`, within its deadline and
+   * signal; giving up leaves the captures running.
+   */
+  async function capturesDone(id: string, deadline: Deadline, signal?: AbortSignal) {
+    for (let pending = capturing.get(id); pending; pending = capturing.get(id)) {
+      const stops = signal === undefined ? [deadline.timeout] : [deadline.timeout, signal];
+      let stop = () => {};
+
+      const stopped = new Promise<never>((_resolve, reject) => {
+        stop = () =>
+          reject(
+            signal?.aborted
+              ? fail("the key lookup was aborted", "aborted", { sandboxId: id })
+              : fail("a snapshot of the sandbox did not finish in time", "timeout", {
+                  sandboxId: id,
+                }),
+          );
+      });
+
+      if (stops.some((s) => s.aborted)) stop();
+
+      for (const s of stops) s.addEventListener("abort", stop, { once: true });
+
+      try {
+        await Promise.race([Promise.all(pending), stopped]);
+      } finally {
+        for (const s of stops) s.removeEventListener("abort", stop);
+      }
+    }
   }
 
   async function capture(id: string, snapshotOptions?: { expiresInMs?: number }) {
@@ -2034,17 +2060,20 @@ export function createMicrosandboxProvider(
       const deadline = createDeadline(readyMs);
 
       try {
-        // A capture of this client stopped the source on purpose and restarts it itself.
-        if (capturing.has(match.id)) {
-          await capturesDone(match.id);
-
-          if (toInfo(await readSandbox(match.id)).state === "running")
-            return toInfo(await untilRunning(match.id, deadline, signal));
-        } else if (toInfo(match).state === "running")
+        if (!capturing.has(match.id) && toInfo(match).state === "running")
           return toInfo(await untilRunning(match.id, deadline, signal));
 
         if (match.status === "stopping" || match.status === "saving_state")
           await untilStopped(match.id, deadline, signal);
+
+        // A capture of this client stops the source on purpose and restarts it itself, and one can
+        // start during any wait above: never revive while one holds it.
+        while (capturing.has(match.id)) {
+          await capturesDone(match.id, deadline, signal);
+
+          if (toInfo(await readSandbox(match.id, { deadline, signal })).state === "running")
+            return toInfo(await untilRunning(match.id, deadline, signal));
+        }
 
         if (signal?.aborted) throw fail("the key lookup was aborted", "aborted");
 

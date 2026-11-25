@@ -1269,13 +1269,18 @@ test("PR88 merge review: a key lookup during a capture never starts the source t
   const snapshot = p.snapshot?.(id);
 
   await posted;
-  const startsBefore = fake.requests.filter((r) => r.path.endsWith("/start")).length;
+
+  const startsBefore = fake.requests.filter((r) =>
+    r.path.startsWith(`/v1/sandboxes/${id}/start`),
+  ).length;
+
   const found = p.find("project:capture");
 
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   const startsDuringCapture =
-    fake.requests.filter((r) => r.path.endsWith("/start")).length - startsBefore;
+    fake.requests.filter((r) => r.path.startsWith(`/v1/sandboxes/${id}/start`)).length -
+    startsBefore;
 
   release();
 
@@ -1286,4 +1291,149 @@ test("PR88 merge review: a key lookup during a capture never starts the source t
     stored: [...fake.snapshots.values()].some((s) => s.id === taken?.id),
     found: (await found)?.id,
   }).toEqual({ startsDuringCapture: 0, stored: true, found: id });
+});
+
+test("PR88 merge review: a capture that starts while a key lookup waits out a stop still holds the source", async () => {
+  let release = () => {};
+
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  let capturing = () => {};
+
+  const posted = new Promise<void>((resolve) => {
+    capturing = resolve;
+  });
+
+  let polled = () => {};
+
+  const polling = new Promise<void>((resolve) => {
+    polled = resolve;
+  });
+
+  let stoppingId = "";
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      const url = new URL(input);
+
+      if (url.pathname === "/v1/snapshots" && init.method === "POST") {
+        capturing();
+        await gate;
+      }
+
+      const response = await realFetch(input, init);
+
+      if (
+        stoppingId !== "" &&
+        init.method === "GET" &&
+        url.pathname === "/v1/sandboxes/" + stoppingId
+      )
+        polled();
+
+      if (stoppingId === "" || init.method !== "GET" || !url.pathname.startsWith("/v1/sandboxes"))
+        return response;
+
+      // The sandbox reads as still stopping while stoppingId names it.
+      const text = await response.text();
+
+      return new Response(
+        text.includes(stoppingId)
+          ? text.replaceAll('"status":"stopped"', '"status":"stopping"')
+          : text,
+        { status: response.status, headers: response.headers },
+      );
+    },
+  });
+
+  const { id } = await p.create({ labels: labels(), key: "project:stopping" });
+  const sandbox = fake.sandboxes.get(id);
+
+  if (sandbox === undefined) throw new Error("no fake sandbox");
+  sandbox.status = "stopped";
+  stoppingId = id;
+
+  const found = p.find("project:stopping");
+
+  // The capture starts only once the lookup is polling the stop, past its capture check.
+  await polling;
+
+  const snapshot = p.snapshot?.(id);
+
+  await posted;
+  stoppingId = "";
+
+  const startsBefore = fake.requests.filter((r) =>
+    r.path.startsWith(`/v1/sandboxes/${id}/start`),
+  ).length;
+
+  // Long enough for the lookup's stop polling, which backs off to 2 s, to see the sandbox stopped.
+  await new Promise((resolve) => setTimeout(resolve, 4500));
+
+  const startsDuringCapture =
+    fake.requests.filter((r) => r.path.startsWith(`/v1/sandboxes/${id}/start`)).length -
+    startsBefore;
+
+  release();
+
+  const taken = await snapshot;
+
+  expect({
+    startsDuringCapture,
+    stored: [...fake.snapshots.values()].some((s) => s.id === taken?.id),
+    found: (await found)?.id,
+  }).toEqual({ startsDuringCapture: 0, stored: true, found: id });
+});
+
+test("PR88 merge review: an aborted key lookup stops waiting for a capture and leaves it running", async () => {
+  let release = () => {};
+
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  let capturing = () => {};
+
+  const posted = new Promise<void>((resolve) => {
+    capturing = resolve;
+  });
+
+  const p = adapter({
+    fetch: async (input, init) => {
+      if (new URL(input).pathname === "/v1/snapshots" && init.method === "POST") {
+        capturing();
+        await gate;
+      }
+
+      return realFetch(input, init);
+    },
+  });
+
+  const { id } = await p.create({ labels: labels(), key: "project:abort-capture" });
+  const snapshot = p.snapshot?.(id);
+
+  await posted;
+
+  const controller = new AbortController();
+  const found = p.find("project:abort-capture", { signal: controller.signal });
+
+  setTimeout(() => controller.abort(), 50);
+
+  const lookup = await Promise.race([
+    found.then(
+      () => "found",
+      (error: SandboxError) => error.code,
+    ),
+    new Promise((resolve) => setTimeout(() => resolve("still waiting"), 1500)),
+  ]);
+
+  release();
+
+  const taken = await snapshot;
+
+  expect({
+    lookup,
+    stored: [...fake.snapshots.values()].some((s) => s.id === taken?.id),
+  }).toEqual({ lookup: "aborted", stored: true });
 });
