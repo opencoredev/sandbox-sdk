@@ -303,9 +303,14 @@ export async function heartbeatWindow(input: WindowInput) {
       // proves nothing about quota, however late the deadline's own timer fired.
       const timedOut = error instanceof DeadlineError || latencyMs > callMs;
 
+      const lookupStart = performance.now();
+
+      // Judged by when the answer arrived, as the heartbeat is: a late answer proves nothing.
       const lookup =
         lookupMs > 0
-          ? await deadline(lookupMs, () => input.track(input.lookup(lookupMs))).catch(() => null)
+          ? await deadline(lookupMs, () => input.track(input.lookup(lookupMs)))
+              .then((found) => (performance.now() - lookupStart > lookupMs ? null : found))
+              .catch(() => null)
           : null;
 
       heartbeat = {
