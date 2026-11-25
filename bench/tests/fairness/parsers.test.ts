@@ -21,13 +21,14 @@ import {
   summarizeDisk,
   verifyDisk,
 } from "../../src/fairness/disk-real.js";
-import { checkIds, entryFromLog, parseLog } from "../../src/fairness/framework.js";
+import { CheckStop, checkIds, entryFromLog, parseLog } from "../../src/fairness/framework.js";
 import { lcgChecksum, workerSeed } from "../../src/sustained-cpu.js";
 import {
   countCpuList,
   cpuView,
   judgeMemory,
   oomFileOf,
+  type Liveness,
   lastPhase,
   parseLimits,
   parseOomKills,
@@ -618,8 +619,33 @@ describe("second review regressions", () => {
       memoryMiB: 16,
       fileMiB: 4,
       oomDelta: 0,
-      alive: true,
+      liveness: { kind: "present" },
     });
+
+  it("calls a sandbox lost only on confirmed absence", () => {
+    const failed = (run: Parameters<typeof judgeMemory>[0]["run"], liveness: Liveness) => () =>
+      judgeMemory({ run, seed: 3, memoryMiB: 16, fileMiB: 4, oomDelta: null, liveness });
+
+    const threw = { kind: "threw", detail: "502 Bad Gateway" } as const;
+
+    const exited = {
+      kind: "returned",
+      exitCode: 1,
+      timedOut: false,
+      stdout: "#phase filled 1\n",
+      stderr: "",
+    } as const;
+
+    const unknown = { kind: "unavailable", detail: "probe failed" } as const;
+    const gone = { kind: "absent", detail: "e2b:native-exact-get: not-found" } as const;
+
+    for (const run of [threw, exited]) {
+      expect(failed(run, unknown)).toThrow(CheckStop);
+      expect(failed(run, unknown)).toThrow(/state is unknown/);
+      expect(failed(run, { kind: "present" })).toThrow(CheckStop);
+      expect(failed(run, gone)()).toMatchObject({ kind: "sandbox-lost" });
+    }
+  });
 
   it("calls a run whose file failed file-failed, never completed", () => {
     expect(judge(memRaw({})).kind).toBe("completed");

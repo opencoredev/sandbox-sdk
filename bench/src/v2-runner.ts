@@ -113,7 +113,6 @@ import {
   createNamedMaritimeSnapshot,
   maritimeSnapshotName,
   settleJournaledSnapshot,
-  settleMaritimeSave,
   snapshotsFromSource,
   deleteProvenSnapshot,
 } from "./snapshots.js";
@@ -1998,7 +1997,7 @@ export async function runV2(
 
           let snapshotId: string | undefined;
           let snapshotReady = false;
-          // A Maritime save's idempotency key, journaled with its name before the request.
+          // A Maritime or Styne save's idempotency key, journaled with its name before the request.
           let saveKey: string | undefined;
           let pendingKeylessWrite: Promise<void> | undefined;
           let clean: ((id: string) => Promise<void>) | undefined;
@@ -2059,7 +2058,7 @@ export async function runV2(
                 });
 
                 // Named and journaled before the request, so a lost answer still names it for cleanup.
-                if (p.name === "daytona" || p.name === "styne") {
+                if (p.name === "daytona") {
                   snapshotId = `bench-${config.run.slice(0, 25).replace(/[^A-Za-z0-9._-]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`;
                   owned.set(`${p.name}/snapshot/${snapshotId}`, {
                     provider: p.name,
@@ -2070,10 +2069,13 @@ export async function runV2(
                   });
                 }
 
-                // Maritime: the name, the source and the save's idempotency key, so a save whose answer is
-                // lost is settled by replaying it, never forgotten on a first 404.
-                if (p.name === "maritime") {
-                  snapshotId = maritimeSnapshotName(config.run);
+                // Maritime and Styne: the name, the source and the save's idempotency key, so a save whose
+                // answer is lost is settled by replaying it, never forgotten on a first 404.
+                if (p.name === "maritime" || p.name === "styne") {
+                  snapshotId =
+                    p.name === "maritime"
+                      ? maritimeSnapshotName(config.run)
+                      : `bench-${config.run.slice(0, 25).replace(/[^A-Za-z0-9._-]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`;
                   saveKey = crypto.randomUUID();
                   owned.set(`${p.name}/snapshot/${snapshotId}`, {
                     provider: p.name,
@@ -2121,8 +2123,8 @@ export async function runV2(
               try {
                 snap = !snapshotId
                   ? await p.provider.snapshot(active.id)
-                  : p.name === "styne"
-                    ? await createNamedStyneSnapshot(p.provider, active.id, snapshotId)
+                  : p.name === "styne" && saveKey
+                    ? await createNamedStyneSnapshot(p.provider, active.id, snapshotId, saveKey)
                     : p.name === "maritime" && saveKey
                       ? await createNamedMaritimeSnapshot(
                           p.provider,
@@ -2367,17 +2369,16 @@ export async function runV2(
                   saveKey = undefined;
                 }
 
-                // A Maritime save that never confirmed may still land: settle it first. Only a refused
-                // save, or a source gone with no snapshot, drops the journal entry without a delete; an
-                // unsettled one throws and stays journaled for recovery.
-                if (p.name === "maritime" && !snapshotReady && saveKey) {
-                  const settled = await settleMaritimeSave({
-                    provider: p.provider,
-                    sandboxId: active.id,
-                    name: id,
-                    idempotencyKey: saveKey,
-                    timeoutMs: timeout,
-                  });
+                // A Maritime or Styne save that never confirmed may still land: settle it first. Only a
+                // refused save, or a source gone with no snapshot, drops the journal entry without a delete;
+                // an unsettled one throws and stays journaled for recovery.
+                if (!snapshotReady && saveKey) {
+                  const settled = await settleJournaledSnapshot(
+                    p.name,
+                    p.provider,
+                    { id, parent: active.id, idempotencyKey: saveKey },
+                    timeout,
+                  );
 
                   if (settled === "absent") {
                     owned.delete(`${p.name}/snapshot/${id}`);

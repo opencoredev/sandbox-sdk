@@ -8,6 +8,8 @@ import {
   localDocker,
   lookupError,
   nativeModules,
+  styneEnded,
+  styneErrorBody,
   type NativeModules,
 } from "./existence.js";
 import { connectionOf, endpoint, modalClientParams } from "./connections.js";
@@ -80,11 +82,9 @@ function maritimeFetch(provider: Provider, path: string, init: RequestInit = {})
 
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
 
-  // As the adapter: a write never follows a redirect, which would replay it as another request.
-  const method = init.method ?? "GET";
-  const redirect = method === "GET" ? init.redirect : "error";
-
-  return fetch(`${baseUrl}/v1${path}`, { ...init, headers, redirect });
+  // Never follow a redirect: a write would be replayed as another request, and a read would
+  // answer from somewhere other than the fingerprinted endpoint.
+  return fetch(`${baseUrl}/v1${path}`, { ...init, headers, redirect: "error" });
 }
 
 /**
@@ -99,11 +99,20 @@ function styneFetch(provider: Provider, path: string, init: RequestInit = {}) {
 
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
 
-  // A write never follows a redirect, which would replay it as another request.
-  const method = init.method ?? "GET";
-  const redirect = method === "GET" ? init.redirect : "error";
+  // No call follows a redirect: a write would be replayed as another request, and a read would answer
+  // for another resource, so a route's 404 could pass for a missing snapshot.
+  return fetch(`${baseUrl}${path}`, { ...init, headers, redirect: "error" });
+}
 
-  return fetch(`${baseUrl}${path}`, { ...init, headers, redirect });
+async function readStyneErrorCode(response: Response): Promise<string | undefined> {
+  const parsed = styneErrorBody.safeParse(await response.json().catch(() => null));
+
+  return parsed.success ? parsed.data.error_code : undefined;
+}
+
+/** True only when Styne itself answered `404 not_found`; a route-level or undecodable 404 is not absence. */
+async function isStyneNotFound(response: Response): Promise<boolean> {
+  return response.status === 404 && (await readStyneErrorCode(response)) === "not_found";
 }
 
 function httpError(message: string, status: number) {
@@ -222,20 +231,28 @@ function isSaveRefusal(status: number, code: string | undefined): boolean {
   return false;
 }
 
-/**
- * Decides a Maritime save whose answer was lost, timed out or unreadable: whether its snapshot exists.
- * It sends the journaled save again with the same idempotency key, which returns the first save's
- * outcome (or makes the save once), then reads the snapshot whatever the replay answered, so a snapshot
- * that is already visible is found even when the replay failed. A `404 snapshot_not_found` read is
- * final only when the replay refused the save ({@link isSaveRefusal}); otherwise it is read again until
- * the snapshot shows or the deadline passes, which throws and keeps the journal entry.
- */
-export async function settleMaritimeSave(input: {
+/** A save the run journaled with its name, source and idempotency key, still to be settled. */
+interface JournaledSave {
   provider: Provider;
   sandboxId: string;
   name: string;
   idempotencyKey: string;
   timeoutMs: number;
+}
+
+/**
+ * Decides a save whose answer was lost, timed out or unreadable: whether its snapshot exists. `replay`
+ * sends the journaled save again with the same idempotency key, which returns the first save's outcome
+ * (or makes the save once), and says whether that answer refused the save outright; `read` then reads
+ * the snapshot whatever the replay answered, so a snapshot that is already visible is found even when
+ * the replay failed. An absent read is final only when the replay refused the save; otherwise it is read
+ * again until the snapshot shows or the deadline passes, which throws and keeps the journal entry.
+ */
+async function settleSave(input: {
+  label: string;
+  timeoutMs: number;
+  replay: (signal: AbortSignal) => Promise<boolean>;
+  read: (signal: AbortSignal) => Promise<"exists" | "absent">;
 }): Promise<"exists" | "absent"> {
   const end = Date.now() + input.timeoutMs;
   let backoffMs = 500;
@@ -243,43 +260,20 @@ export async function settleMaritimeSave(input: {
   for (;;) {
     const left = end - Date.now();
 
-    if (left <= 0) throw new Error("Maritime snapshot save did not settle; journal entry kept");
+    if (left <= 0)
+      throw new Error(`${input.label} snapshot save did not settle; journal entry kept`);
 
-    const signal = AbortSignal.timeout(Math.min(60_000, left));
-    let refused = false;
+    const refused = await input
+      .replay(AbortSignal.timeout(Math.min(60_000, left)))
+      .catch(() => false);
 
-    try {
-      const response = await maritimeFetch(
-        input.provider,
-        `/sandboxes/${encodeURIComponent(input.sandboxId)}/save`,
-        {
-          method: "POST",
-          headers: { "Idempotency-Key": input.idempotencyKey },
-          body: JSON.stringify({ name: input.name }),
-          signal,
-        },
-      );
+    const read = await input
+      .read(AbortSignal.timeout(Math.max(1, Math.min(30_000, end - Date.now()))))
+      .catch((cause: unknown) => {
+        if (cause instanceof Error && /provenance|source metadata/.test(cause.message)) throw cause;
 
-      if (response.status === 404 || response.status === 410) {
-        refused = isSaveRefusal(response.status, await readMaritimeErrorCode(response));
-      } else {
-        refused = isSaveRefusal(response.status, undefined);
-        await response.body?.cancel();
-      }
-    } catch {
-      refused = false;
-    }
-
-    const read = await readMaritimeSnapshot(
-      input.provider,
-      input.name,
-      input.sandboxId,
-      AbortSignal.timeout(Math.max(1, Math.min(30_000, end - Date.now()))),
-    ).catch((cause: unknown) => {
-      if (cause instanceof Error && /provenance|source metadata/.test(cause.message)) throw cause;
-
-      return "unknown" as const;
-    });
+        return "unknown" as const;
+      });
 
     if (read === "exists") return "exists";
 
@@ -291,6 +285,37 @@ export async function settleMaritimeSave(input: {
     );
     backoffMs = Math.min(backoffMs * 2, 5000);
   }
+}
+
+/**
+ * Decides a Maritime save whose answer was lost ({@link settleSave}). A `404 snapshot_not_found` read is
+ * final only when the replay refused the save ({@link isSaveRefusal}).
+ */
+export function settleMaritimeSave(input: JournaledSave): Promise<"exists" | "absent"> {
+  return settleSave({
+    label: "Maritime",
+    timeoutMs: input.timeoutMs,
+    async replay(signal) {
+      const response = await maritimeFetch(
+        input.provider,
+        `/sandboxes/${encodeURIComponent(input.sandboxId)}/save`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": input.idempotencyKey },
+          body: JSON.stringify({ name: input.name }),
+          signal,
+        },
+      );
+
+      if (response.status === 404 || response.status === 410)
+        return isSaveRefusal(response.status, await readMaritimeErrorCode(response));
+
+      await response.body?.cancel();
+
+      return isSaveRefusal(response.status, undefined);
+    },
+    read: (signal) => readMaritimeSnapshot(input.provider, input.name, input.sandboxId, signal),
+  });
 }
 
 /**
@@ -402,16 +427,26 @@ export async function snapshotCleaner(
   }
 
   if (name === "styne") {
-    // A snapshot is deleted by its name, also after the source sandbox is gone.
+    // Deleted by name, also after the source sandbox is gone. Only Styne's `404 not_found` confirms
+    // absence; a route-level or undecodable 404 must fail so recovery retains the snapshot.
     return async (id) => {
       const response = await styneFetch(provider, `/snapshots/${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
 
-      await response.body?.cancel();
+      if (response.ok) {
+        await response.body?.cancel();
 
-      if (!response.ok && response.status !== 404)
-        throw httpError("Styne snapshot delete failed", response.status);
+        return;
+      }
+
+      if (response.status === 404) {
+        if (await isStyneNotFound(response)) return;
+      } else {
+        await response.body?.cancel();
+      }
+
+      throw httpError("Styne snapshot delete failed", response.status);
     };
   }
 
@@ -517,20 +552,22 @@ export async function createNamedDaytonaSnapshot(
 }
 
 /**
- * A Styne snapshot under a name the run journaled before the request, so a lost answer still names
- * the snapshot to delete. The name is the snapshot's portable ID.
+ * A Styne snapshot under a name and an idempotency key the run journaled before the request, so a lost
+ * answer still names the snapshot, and {@link settleStyneSave} can replay the save to decide it. The name
+ * is the snapshot's portable ID.
  */
 export async function createNamedStyneSnapshot(
   provider: Provider,
   sandboxId: string,
   name: string,
+  idempotencyKey: string = crypto.randomUUID(),
 ) {
   const response = await styneFetch(
     provider,
     `/sandboxes/${encodeURIComponent(sandboxId)}/snapshots`,
     {
       method: "POST",
-      headers: { "Idempotency-Key": crypto.randomUUID() },
+      headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify({ name }),
     },
   );
@@ -545,6 +582,84 @@ export async function createNamedStyneSnapshot(
   if (saved.name !== name) throw new Error("Styne snapshot name mismatch");
 
   return { id: name };
+}
+
+const styneSnapshot = z.object({ name: z.string(), sandboxID: z.string().nullish() });
+
+/** One read of a Styne snapshot: absent only on `404 not_found`, else its source, which must be this run's. */
+async function readStyneSnapshot(
+  provider: Provider,
+  name: string,
+  sandboxId: string,
+  signal: AbortSignal,
+) {
+  const response = await styneFetch(provider, `/snapshots/${encodeURIComponent(name)}`, { signal });
+
+  if (response.status === 404) {
+    if (await isStyneNotFound(response)) return "absent" as const;
+    throw httpError("Styne snapshot read failed", response.status);
+  }
+
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw httpError("Styne snapshot read failed", response.status);
+  }
+
+  const snapshot = styneSnapshot.parse(await response.json());
+
+  if (snapshot.name !== name || !snapshot.sandboxID)
+    throw new Error("Snapshot source metadata unavailable");
+
+  if (snapshot.sandboxID !== sandboxId)
+    throw new Error("Snapshot source differs from recorded provenance; no deletion attempted");
+
+  return "exists" as const;
+}
+
+/**
+ * Whether a replayed Styne save refused it outright, so nothing was saved: an invalid request (400, 422),
+ * `404 not_found` for the source, or a 410 naming an ended sandbox. A route-level 404 or 410, auth failure
+ * (401, 403), conflict, rate limit or any 5xx says nothing about the first save.
+ */
+function isStyneSaveRefusal(status: number, code: string | undefined): boolean {
+  if (status === 400 || status === 422) return true;
+
+  if (status === 404) return code === "not_found";
+
+  if (status === 410) return code !== undefined && styneEnded.has(code);
+
+  return false;
+}
+
+/**
+ * Decides a Styne save whose answer was lost ({@link settleSave}). A `404 not_found` read is final only
+ * when the replay refused the save ({@link isStyneSaveRefusal}).
+ */
+function settleStyneSave(input: JournaledSave): Promise<"exists" | "absent"> {
+  return settleSave({
+    label: "Styne",
+    timeoutMs: input.timeoutMs,
+    async replay(signal) {
+      const response = await styneFetch(
+        input.provider,
+        `/sandboxes/${encodeURIComponent(input.sandboxId)}/snapshots`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": input.idempotencyKey },
+          body: JSON.stringify({ name: input.name }),
+          signal,
+        },
+      );
+
+      if (response.status === 404 || response.status === 410)
+        return isStyneSaveRefusal(response.status, await readStyneErrorCode(response));
+
+      await response.body?.cancel();
+
+      return isStyneSaveRefusal(response.status, undefined);
+    },
+    read: (signal) => readStyneSnapshot(input.provider, input.name, input.sandboxId, signal),
+  });
 }
 
 /**
@@ -713,15 +828,19 @@ export async function inspectSnapshot(
       case "styne": {
         const response = await styneFetch(provider, `/snapshots/${encodeURIComponent(id)}`);
 
+        // Only Styne's own `404 not_found` is absence; a route-level or undecodable 404 is unavailable.
+        if (response.status === 404) {
+          if (await isStyneNotFound(response)) return { exists: false };
+          throw httpError("Snapshot metadata unavailable", response.status);
+        }
+
         if (!response.ok) {
           await response.body?.cancel();
           throw httpError("Snapshot metadata unavailable", response.status);
         }
 
         // Styne names the source `sandboxID`; the shared schema reads `sandboxId`.
-        const styne = z
-          .object({ name: z.string(), sandboxID: z.string().nullish() })
-          .parse(await response.json());
+        const styne = styneSnapshot.parse(await response.json());
 
         info = { name: styne.name, sandboxId: styne.sandboxID };
         break;
@@ -840,6 +959,7 @@ export async function inspectSnapshot(
   } catch (error) {
     if (
       name !== "maritime" &&
+      name !== "styne" &&
       lookupError(error, name, `${name}:snapshot-exact-get`).result === "not-found"
     )
       return { exists: false };
@@ -850,10 +970,10 @@ export async function inspectSnapshot(
 export const snapshotMetadata = { inspect: inspectSnapshot };
 
 /**
- * Before a journaled snapshot entry is deleted or forgotten: a Maritime entry that still holds its save's
- * idempotency key is a save that never confirmed, so it is settled first ({@link settleMaritimeSave}).
- * `absent` means nothing was saved and the entry may go; `exists` (or any other entry) proceeds to the
- * proven delete. An unsettled save throws, and the entry stays for recovery.
+ * Before a journaled snapshot entry is deleted or forgotten: a Maritime or Styne entry that still holds its
+ * save's idempotency key is a save that never confirmed, so it is settled first ({@link settleMaritimeSave},
+ * {@link settleStyneSave}). `absent` means nothing was saved and the entry may go; `exists` (or any other
+ * entry) proceeds to the proven delete. An unsettled save throws, and the entry stays for recovery.
  */
 export async function settleJournaledSnapshot(
   name: string,
@@ -861,17 +981,20 @@ export async function settleJournaledSnapshot(
   entry: { id: string; parent: string | null; idempotencyKey?: string },
   timeoutMs: number,
 ): Promise<"exists" | "absent"> {
-  if (name !== "maritime" || entry.idempotencyKey === undefined) return "exists";
+  if ((name !== "maritime" && name !== "styne") || entry.idempotencyKey === undefined)
+    return "exists";
 
   if (entry.parent === null) throw new Error("Snapshot source missing; no deletion attempted");
 
-  return settleMaritimeSave({
+  const save = {
     provider,
     sandboxId: entry.parent,
     name: entry.id,
     idempotencyKey: entry.idempotencyKey,
     timeoutMs,
-  });
+  };
+
+  return name === "maritime" ? settleMaritimeSave(save) : settleStyneSave(save);
 }
 
 /** A durable source proof plus current snapshot identity replaces a live-parent dependency. */

@@ -1,9 +1,9 @@
 import { appendFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { parseCli } from "../../src/fairness/cli.js";
+import { exitCodeOf, parseCli } from "../../src/fairness/cli.js";
 import {
   CheckStop,
   loadResults,
@@ -31,6 +31,11 @@ function fakeBox(id: string, behavior: { destroyFails?: boolean } = {}) {
     id,
     run: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", timedOut: false }),
     write: async () => {},
+    lookup: async () => ({
+      result: "present",
+      checkedAt: new Date().toISOString(),
+      method: "fake",
+    }),
     destroy: async () => {
       state.destroyCalls++;
 
@@ -200,6 +205,74 @@ describe("runCheck", () => {
       result: null,
     });
     expect(one.state.destroyed).toBe(true);
+  });
+
+  it("redacts secrets a check's stop reason carries from guest output", async () => {
+    const out = await outDir();
+    const marker = "fairness-marker-7c1d9e";
+    vi.stubEnv("FAIRNESS_TEST_SECRET", marker);
+    const one = fakeBox("sb-1");
+    const { open } = fakeSession({ creates: [async () => one.box] });
+    const progress: string[] = [];
+
+    const leaking = check({
+      run: async () => {
+        throw new CheckStop(`segment 1 exited 1: echo ${marker} mk_abcdefgh12345678`);
+      },
+    });
+
+    try {
+      const outcome = await runCheck(
+        leaking,
+        [e2b],
+        { runId: "r4s", out, concurrency: 1 },
+        { ...dependencies(open), progress: (line: string) => progress.push(line) },
+      );
+
+      const files = paths(out, "security-probe");
+
+      const persisted = [
+        await readFile(files.provider("e2b"), "utf8"),
+        await readFile(files.log("e2b"), "utf8"),
+        await readFile(files.report, "utf8"),
+      ];
+
+      expect(outcome.report.providers[0]?.reason).toBe(
+        "segment 1 exited 1: echo [REDACTED] [REDACTED]",
+      );
+
+      for (const text of [...progress, ...persisted]) {
+        expect(text).not.toContain(marker);
+        expect(text).not.toContain("mk_abcdefgh12345678");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("exits 1 when a provider it ran failed, though nothing threw", async () => {
+    const out = await outDir();
+    const one = fakeBox("sb-1");
+    const { open } = fakeSession({ creates: [async () => one.box] });
+
+    const failing = check({
+      run: async () => {
+        throw new CheckStop("segment 3 timed out");
+      },
+    });
+
+    const outcome = await runCheck(
+      failing,
+      [e2b],
+      { runId: "r4x", out, concurrency: 1 },
+      dependencies(open),
+    );
+
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.cleanupProblems).toEqual([]);
+    expect(exitCodeOf(outcome, ["e2b"])).toBe(1);
+    // A failed row this invocation did not run (an earlier run's) does not fail it.
+    expect(exitCodeOf(outcome, ["daytona"])).toBe(0);
   });
 
   it("rejects a result that does not fit the check's schema", async () => {

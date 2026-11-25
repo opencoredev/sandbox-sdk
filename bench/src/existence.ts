@@ -381,8 +381,22 @@ function isDaytonaSandboxApi(api: unknown): api is DaytonaSandboxApi {
 /** The fields of Styne's `GET /sandboxes/{id}` the lookup reads. */
 const styneSandbox = z.object({ sandboxID: z.string(), state: z.string() });
 
-/** Styne's error body: `{ error_code }`, such as `not_found` (https://docs.styne.ai/errors). */
-const styneErrorBody = z.object({ error_code: z.string() });
+/**
+ * Styne's error body: `{ error_code }`, such as `not_found` (https://docs.styne.ai/errors). An ended
+ * sandbox's 410 may also name the sandbox.
+ */
+export const styneErrorBody = z.object({
+  error_code: z.string(),
+  sandboxID: z.string().optional(),
+});
+
+/** Styne's codes for a sandbox that ended: killed, timed out, its node lost, or its guest agent gone. */
+export const styneEnded: ReadonlySet<string> = new Set([
+  "sandbox_ended",
+  "sandbox_timeout",
+  "node_loss",
+  "agent_exit",
+]);
 
 /** Beam's gateway container listing, as the existence check reads it. */
 const beamContainers = z.object({
@@ -401,6 +415,9 @@ const memoryNotFound = z.object({ code: z.literal("not_found") });
 
 /** Maritime's error body: `{ code }`, such as `sandbox_not_found`. */
 const maritimeErrorBody = z.object({ code: z.string() });
+
+/** Maritime's sandbox answer: its `state` is the only field that says whether it ended. */
+const maritimeSandbox = z.object({ id: z.string(), state: z.string() });
 
 /** The fields the bench reads from Docker's container inspect. */
 const dockerContainer = z.object({
@@ -550,24 +567,27 @@ export async function lookupSandbox(
           // GET only: Styne's POST /connect would wake a paused sandbox and move its deadline.
           const { apiKey, baseUrl } = connectionOf(provider, "styne");
 
+          // No redirect is followed: another resource's answer would decide this sandbox.
           const response = await fetch(`${baseUrl}/sandboxes/${encodeURIComponent(id)}`, {
             headers: { Authorization: `Bearer ${apiKey}` },
             signal,
+            redirect: "error",
           });
 
-          // Every 410 is an ended sandbox (sandbox_ended, sandbox_timeout, node_loss, agent_exit),
-          // answered until Styne forgets it and answers 404.
-          if (response.status === 410) {
-            await response.body?.cancel();
-
-            return { sandboxId: id, state: "killed" };
-          }
-
-          // A forgotten sandbox answers 404 `not_found`; a route-level or undecodable 404 is unavailable.
-          if (response.status === 404) {
+          // Only Styne's own codes decide, for this sandbox when the body names one: a 410 with an ended
+          // code (answered until Styne forgets it) is an ended sandbox, and `404 not_found` a forgotten
+          // one. A route-level, undecodable or foreign 404 or 410 is unavailable.
+          if (response.status === 404 || response.status === 410) {
             const answer = styneErrorBody.safeParse(await response.json().catch(() => null));
 
-            if (answer.success && answer.data.error_code === "not_found")
+            const own =
+              answer.success &&
+              (answer.data.sandboxID === undefined || answer.data.sandboxID === id);
+
+            if (own && response.status === 410 && styneEnded.has(answer.data.error_code))
+              return { sandboxId: id, state: "killed" };
+
+            if (own && response.status === 404 && answer.data.error_code === "not_found")
               throw Object.assign(new Error("Native sandbox not found"), { status: 404 });
 
             throw new Error("Styne lookup answered a route or unknown error");
@@ -584,8 +604,10 @@ export async function lookupSandbox(
           // GET only: it never resumes a paused sandbox. An ended one reads `state: "ended"`.
           const { apiKey, baseUrl } = connectionOf(provider, "maritime");
 
+          // A redirect would answer from somewhere other than the fingerprinted endpoint.
           const response = await fetch(`${baseUrl}/v1/sandboxes/${encodeURIComponent(id)}`, {
             headers: { Authorization: `Bearer ${apiKey}` },
+            redirect: "error",
             signal,
           });
 
@@ -605,8 +627,9 @@ export async function lookupSandbox(
 
           if (!response.ok)
             throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+          const sandbox = maritimeSandbox.parse(await response.json());
 
-          return nativeInfo.parse(await response.json());
+          return { id: sandbox.id, state: sandbox.state };
         }
 
         case "instabox": {

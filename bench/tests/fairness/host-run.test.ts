@@ -16,9 +16,14 @@ import {
   runCheck,
   type Box,
   type Check,
+  type CommandResult,
   type OpenSession,
 } from "../../src/fairness/framework.js";
-import { memoryHonestyCheck, type MemoryResult } from "../../src/fairness/memory-honesty.js";
+import {
+  memoryHonestyCheck,
+  memoryResultSchema,
+  type MemoryResult,
+} from "../../src/fairness/memory-honesty.js";
 import { securityProbe, type SecurityResult } from "../../src/fairness/security-probe.js";
 import { hostBox, hostSession } from "./host-box.js";
 
@@ -77,6 +82,7 @@ describe.runIf(supported)("fairness checks on this machine", () => {
     expect(result.sustained.retention).not.toBeNull();
     expect(result.binarySha256Verified).toBe(true);
     expect(log.filter((l) => l.kind === "event" && l.name === "sustained-segment")).toHaveLength(3);
+    expect(log.filter((l) => l.kind === "event" && l.name === "burn-stop-unconfirmed")).toEqual([]);
     expect(host.boxes.every((box) => box.destroyed())).toBe(true);
     expect(outcome.cleanupProblems).toEqual([]);
   }, 60_000);
@@ -249,6 +255,71 @@ describe.runIf(supported)("fairness checks on this machine", () => {
     const { entry } = await runOnHost(memoryHonestyCheck({ memoryMiB: 64, fileMiB: 16 }), open);
     expect(entry.status).toBe("failed");
     expect(entry.reason).toMatch(/8 MiB file, asked 64 and 16/);
+  }, 60_000);
+
+  it("memory-honesty calls a sandbox lost only when the provider confirms it is gone", async () => {
+    const lookedUp = (result: "not-found" | "unavailable") => async () => ({
+      result,
+      checkedAt: new Date().toISOString(),
+      method: "host:native-exact-get",
+    });
+
+    const runs = (memRun: () => Promise<CommandResult>, lookup: Box["lookup"]) => {
+      const real = hostBox();
+      let ran = false;
+
+      // The mem exec goes wrong at the gateway, then the follow-up probe cannot be read.
+      const box: Box = {
+        ...real,
+        run: async (command, options) => {
+          if (/ mem /.test(command)) {
+            ran = true;
+
+            return memRun();
+          }
+
+          if (ran) throw new Error("503 Service Unavailable");
+
+          return real.run(command, options);
+        },
+        lookup,
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => box,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      return runOnHost(memoryHonestyCheck({ memoryMiB: 64, fileMiB: 16 }), open);
+    };
+
+    const threw = async (): Promise<CommandResult> => {
+      throw new Error("502 Bad Gateway");
+    };
+
+    const exited = async (): Promise<CommandResult> => ({
+      ok: false,
+      exitCode: 1,
+      stdout: "#phase start 0\n",
+      stderr: "",
+      timedOut: false,
+    });
+
+    for (const memRun of [threw, exited]) {
+      const unknown = await runs(memRun, lookedUp("unavailable"));
+      expect(unknown.entry.status).toBe("failed");
+      expect(unknown.entry.reason).toMatch(/unknown/);
+      expect(unknown.entry.result).toBeNull();
+
+      const gone = await runs(memRun, lookedUp("not-found"));
+      expect(gone.entry.status, gone.entry.reason ?? "").toBe("completed");
+      const result = memoryResultSchema.parse(gone.entry.result);
+      expect(result.outcome.kind).toBe("sandbox-lost");
+    }
   }, 60_000);
 
   it("cleans up a sandbox whose create returned after its deadline", async () => {
