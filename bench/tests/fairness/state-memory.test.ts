@@ -370,6 +370,10 @@ describe("memory-pressure judge", () => {
     expect(
       judgePressure({ ...base, ending: exited(137), log: log("refused 64 ENOMEM\n") }),
     ).toMatchObject({ kind: "process-killed", exitCode: 137 });
+    expect(judgePressure({ ...base, ending: { kind: "lost", detail: "404" } })).toEqual({
+      kind: "sandbox-lost",
+      detail: "404",
+    });
     expect(judgePressure({ ...base, ending: { kind: "restarted" } })).toEqual({
       kind: "sandbox-restarted",
     });
@@ -401,6 +405,7 @@ describe("memory-pressure judge", () => {
     expect(scopeOf(killed, false)).toBe("collateral");
     expect(scopeOf(killed, null)).toBeNull();
     expect(scopeOf({ kind: "sandbox-restarted" }, null)).toBe("sandbox");
+    expect(scopeOf({ kind: "sandbox-lost", detail: "404" }, null)).toBe("sandbox");
     expect(scopeOf({ kind: "reached-target" }, true)).toBeNull();
     expect(scopeOf({ kind: "refused", reason: "ENOMEM" }, true)).toBe("process");
     expect(scopeOf({ kind: "inconclusive", reason: "x" }, true)).toBeNull();
@@ -684,27 +689,91 @@ describe.runIf(linux && available.length > 0)(
       expect(result.health.canaryBeatAgeS).toBeLessThanOrEqual(5);
     }, 60_000);
 
-    it("memory-pressure calls a sandbox that stops answering inconclusive, keeping the last progress seen", async () => {
+    it.each([
+      ["fail", false],
+      ["time out", true],
+    ] as const)(
+      "memory-pressure judges a sandbox whose polls %s by the provider's exact lookup",
+      async (_, timeOut) => {
+        const workdir = await scratch("mem-work");
+        const real = hostBox();
+        let polls = 0;
+        let lookups = 0;
+
+        // The first progress poll answers once the hog has held something; every later one fails.
+        const dying: Box = {
+          ...real,
+          run: async (command, options) => {
+            if (command.includes("status=done")) {
+              if (++polls > 1) {
+                if (!timeOut) throw new Error("connection reset");
+
+                return { ok: false, exitCode: null, stdout: "", stderr: "", timedOut: true };
+              }
+
+              await sleep(1_500);
+            }
+
+            return real.run(command, options);
+          },
+          lookup: async () => {
+            lookups++;
+
+            return { result: "not-found", checkedAt: new Date().toISOString(), method: "fake" };
+          },
+        };
+
+        const open: OpenSession = async () => ({
+          kind: "ready",
+          session: {
+            create: async () => dying,
+            leftovers: async () => [],
+            destroyById: async () => {},
+          },
+        });
+
+        const check = memoryPressureCheck({
+          ...defaultPressureOptions,
+          advertisedMiB: 128,
+          pollMs: 200,
+          unresponsiveMs: 1_000,
+          recoveryMs: 1_000,
+          workdir,
+        });
+
+        const entry = await runOnHost(check, open);
+        expect(entry.status, entry.reason ?? "").toBe("completed");
+        const result = check.resultSchema.parse(entry.result);
+        expect(lookups).toBeGreaterThanOrEqual(1);
+        expect(result.reachedEvidence).toBe("last-poll");
+        expect(result.reachedMiB).toBeGreaterThan(0);
+
+        // A poll the host cancelled may have made the SDK destroy the sandbox, so it proves no loss.
+        if (timeOut) {
+          expect(result.outcome).toMatchObject({
+            kind: "inconclusive",
+            reason: expect.stringMatching(/after a poll the host cancelled/),
+          });
+          expect(result).toMatchObject({ scope: null, usableAfter: null });
+        } else {
+          expect(result.outcome).toEqual({ kind: "sandbox-lost", detail: "fake: not-found" });
+          expect(result).toMatchObject({ scope: "sandbox", usableAfter: false });
+        }
+      },
+      60_000,
+    );
+
+    it("memory-pressure calls a sandbox that stops answering but is still listed inconclusive", async () => {
       const workdir = await scratch("mem-work");
       const real = hostBox();
       let polls = 0;
-      let lookups = 0;
 
-      // The first progress poll answers once the hog has held something; every later one fails.
       const silent: Box = {
         ...real,
         run: async (command, options) => {
-          if (command.includes("status=done")) {
-            if (++polls > 1) throw new Error("connection reset");
-            await sleep(1_500);
-          }
+          if (command.includes("status=done") && ++polls > 1) throw new Error("connection reset");
 
           return real.run(command, options);
-        },
-        lookup: async () => {
-          lookups++;
-
-          return { result: "not-found", checkedAt: new Date().toISOString(), method: "fake" };
         },
       };
 
@@ -733,15 +802,7 @@ describe.runIf(linux && available.length > 0)(
         kind: "inconclusive",
         reason: expect.stringMatching(/no answer for/),
       });
-      // Observing never asks the provider, so a poll's own cleanup cannot become the verdict.
-      expect(lookups).toBe(0);
-      expect(result).toMatchObject({
-        scope: null,
-        usableAfter: null,
-        reachedEvidence: "last-poll",
-      });
-      expect(result.health).toMatchObject({ allocOk: null, fileOk: null });
-      expect(result.reachedMiB).toBeGreaterThan(0);
+      expect(result).toMatchObject({ scope: null, usableAfter: null });
     }, 60_000);
 
     it("memory-pressure calls a hog with no status by the deadline inconclusive", async () => {

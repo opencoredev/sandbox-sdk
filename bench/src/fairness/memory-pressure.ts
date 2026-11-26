@@ -56,6 +56,7 @@ import {
 import {
   limitsCommand,
   limitsSchema,
+  lookUpLiveness,
   oomCommand,
   oomFileOf,
   parseLimits,
@@ -95,6 +96,9 @@ export const defaultPressureOptions: PressureOptions = {
 
 const pollTimeoutMs = 20_000;
 
+/** How often a sandbox that fails its status polls is looked up. */
+const lookupEveryMs = 15_000;
+
 /** A canary beat older than this (guest seconds) means the canary is stuck, not alive. */
 const freshBeatS = 5;
 
@@ -120,9 +124,9 @@ function canaryOf(after: Map<string, string>, beforeId: string) {
 const progressSchema = z.object({ mib: z.number().int(), ms: z.number().int() });
 
 /**
- * Only what the supervisor's recorded status or a new boot id proves is an outcome. Anything else
- * (no status by the deadline, a hog gone without one, a sandbox that stops answering) is
- * `inconclusive` with its reason, and claims nothing about the provider.
+ * Only what the supervisor's recorded status, a new boot id or the provider's exact lookup proves is
+ * an outcome. Anything else (no status by the deadline, a hog gone without one, a sandbox that stops
+ * answering) is `inconclusive` with its reason, and claims nothing about the provider.
  */
 const outcomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("reached-target") }),
@@ -138,6 +142,8 @@ const outcomeSchema = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("refused"), reason: z.string() }),
   z.object({ kind: z.literal("sandbox-restarted") }),
+  /** The provider's exact lookup says the sandbox is gone, and no poll the host cancelled came first. */
+  z.object({ kind: z.literal("sandbox-lost"), detail: z.string() }),
   z.object({ kind: z.literal("inconclusive"), reason: z.string() }),
 ]);
 
@@ -177,7 +183,8 @@ export const pressureResultSchema = z.object({
   scope: z.enum(["process", "collateral", "sandbox"]).nullable(),
   /**
    * The sandbox works afterwards: a fresh allocation and a file write succeed. Measured only after
-   * a recorded hog status on the same boot; false when a test ran and failed, null otherwise.
+   * a recorded hog status on the same boot; false for a lost sandbox or a test that ran and failed,
+   * null otherwise.
    */
   usableAfter: z.boolean().nullable(),
   health: healthSchema,
@@ -221,6 +228,7 @@ export function thinProgress(progress: readonly { mib: number; ms: number }[], s
 export type Ending =
   | { readonly kind: "exited"; readonly exitCode: number }
   | { readonly kind: "restarted" }
+  | { readonly kind: "lost"; readonly detail: string }
   | { readonly kind: "unsettled"; readonly reason: string };
 
 /** Judges the hog from its recorded status, its log and the boot id. */
@@ -233,6 +241,8 @@ export function judgePressure(input: {
   const { ending, log, oomDelta, bootSame } = input;
 
   if (ending.kind === "restarted" || bootSame === false) return { kind: "sandbox-restarted" };
+
+  if (ending.kind === "lost") return { kind: "sandbox-lost", detail: ending.detail };
 
   if (ending.kind === "unsettled") return { kind: "inconclusive", reason: ending.reason };
 
@@ -255,6 +265,7 @@ export function judgePressure(input: {
 export function scopeOf(outcome: PressureOutcome, canaryAlive: boolean | null) {
   switch (outcome.kind) {
     case "sandbox-restarted":
+    case "sandbox-lost":
       return "sandbox" as const;
     case "inconclusive":
       return null;
@@ -333,6 +344,8 @@ async function pollHog(input: {
   let heldMiB = 0;
   let recoveredAfterMs: number | null = null;
   let vanishedOnce = false;
+  let cancelledPoll = false;
+  let lookedUpAt = Number.NEGATIVE_INFINITY;
   const polled = (ending: Ending): Polled => ({ ending, heldMiB, maxGapMs, recoveredAfterMs });
   const unsettled = (reason: string) => polled({ kind: "unsettled", reason });
 
@@ -343,13 +356,17 @@ async function pollHog(input: {
     try {
       const result = await context.exec(box, statusCommand(dir), pollTimeoutMs);
 
-      if (!result.timedOut && result.stdout.includes("status=done"))
-        values = keyValues(result.stdout);
+      if (result.timedOut) cancelledPoll = true;
+      else if (result.stdout.includes("status=done")) values = keyValues(result.stdout);
     } catch (cause) {
       context.say(`poll: ${errorText(cause).slice(0, 120)}`);
     }
 
     const now = performance.now();
+
+    // A poll that ran into its own timeout was cancelled by the host, and an SDK may answer a
+    // cancellation it cannot confirm by destroying the sandbox.
+    if (values === null && now - askedAt >= pollTimeoutMs) cancelledPoll = true;
     const silence = now - lastAnswer;
     maxGapMs = Math.max(maxGapMs, silence);
 
@@ -375,8 +392,23 @@ async function pollHog(input: {
         if (vanishedOnce) return unsettled("the hog and its supervisor are gone with no status");
         vanishedOnce = true;
       } else vanishedOnce = false;
-    } else if (silence > options.unresponsiveMs + options.recoveryMs)
-      return unsettled(`no answer for ${Math.round(silence)} ms`);
+    } else {
+      // A read-only exact lookup, at most every lookupEveryMs, says whether the sandbox still exists.
+      if (now - lookedUpAt >= lookupEveryMs) {
+        lookedUpAt = now;
+        const liveness = await lookUpLiveness(box, "status poll failed");
+
+        if (liveness.kind === "absent")
+          return cancelledPoll
+            ? unsettled(
+                `the sandbox is gone (${liveness.detail}) after a poll the host cancelled, which the SDK may have answered by destroying it`,
+              )
+            : polled({ kind: "lost", detail: liveness.detail });
+      }
+
+      if (silence > options.unresponsiveMs + options.recoveryMs)
+        return unsettled(`no answer for ${Math.round(silence)} ms`);
+    }
 
     if (now - started > options.deadlineMs) return unsettled("no status by the deadline");
 
@@ -556,7 +588,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
       outcome,
       scope,
       usableAfter:
-        allocOk === false || fileOk === false
+        outcome.kind === "sandbox-lost" || allocOk === false || fileOk === false
           ? false
           : allocOk === true && fileOk === true
             ? true
