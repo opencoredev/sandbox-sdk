@@ -401,8 +401,11 @@ const bounded = <T>(work: Promise<T>, ms: number, what: string) =>
  * Before a sweep deletes a sandbox that may be the only way back to an as-found daemon, each
  * pending as-found claim on it gets a bounded `compose down -v` there: only once the sandbox is
  * confirmed to carry this run's label and the claim's attempt, through the exact command and
- * socket the claim recorded (its project name is unique to the attempt). `down` is journaled only
- * after it exits 0; anything else leaves the claim open, named with its full identity.
+ * socket the claim recorded (its project name is unique to the attempt). A `compose up` a crashed
+ * runner left running is stopped first (`quiesce`), and after `down` the project must list empty
+ * twice (`settle`), so a create still in flight cannot land after it. `down` is journaled only
+ * after all three exit 0; anything else, or a claim without them, leaves the claim open, named
+ * with its full identity.
  */
 async function downAsFound(input: {
   readonly claims: readonly ProjectEvent[];
@@ -417,13 +420,15 @@ async function downAsFound(input: {
     const unresolved = (reason: string) =>
       input.note({ kind: "project-unresolved", project: projectIdentity(claim), reason });
 
-    if (!entry || claim.sandboxId === null || claim.down === undefined) {
+    const { down: teardown, quiesce, settle } = claim;
+
+    if (!entry || claim.sandboxId === null || !teardown || !quiesce || !settle) {
       await unresolved(
         !entry
           ? "its provider was not loaded"
           : claim.sandboxId === null
             ? "no sandbox ID was journaled"
-            : "the claim recorded no teardown command",
+            : "the claim recorded no teardown, quiesce or settle command",
       );
       continue;
     }
@@ -441,11 +446,23 @@ async function downAsFound(input: {
       }
 
       const box = await bounded(connectSandbox(entry.provider, claim.sandboxId), 30_000, "connect");
+
+      const check = (command: string, what: string) =>
+        bounded(box.run(command, { cwd: guest.app, timeoutMs: 30_000 }), 35_000, what).then(
+          (result) => result.ok,
+          () => false,
+        );
+
+      if (!(await check(quiesce, "quiesce"))) {
+        await unresolved("a compose process for the project could not be stopped");
+        continue;
+      }
+
       let down = false;
 
       for (let attempt = 1; attempt <= 2 && !down; attempt++) {
         const result = await bounded(
-          box.run(claim.down, { cwd: guest.app, timeoutMs: composeDownMs / 2 }),
+          box.run(teardown, { cwd: guest.app, timeoutMs: composeDownMs / 2 }),
           composeDownMs / 2 + 5_000,
           "compose down",
         ).catch(() => null);
@@ -455,6 +472,11 @@ async function downAsFound(input: {
 
       if (!down) {
         await unresolved("compose down did not exit 0");
+        continue;
+      }
+
+      if (!(await check(settle, "settle"))) {
+        await unresolved("the project's containers, volumes or networks did not list empty twice");
         continue;
       }
 

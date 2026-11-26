@@ -3063,6 +3063,12 @@ describe("storage fallback only for a storage-driver incompatibility", () => {
       storageIncompatibility("failed to mount overlay: operation not permitted"),
     ).not.toBeNull();
 
+    // containerd's image store (Docker 29's default) refusing a nested overlay.
+    const containerd =
+      'docker: Error response from daemon: failed to mount /tmp/containerd-mount1888648785: mount source: "overlay", target: "/tmp/containerd-mount1888648785", fstype: overlay, flags: 0, data: "workdir=/var/lib/docker/containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/17/work,upperdir=/var/lib/docker/containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/17/fs,lowerdir=/var/lib/docker/containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/1/fs,index=off", err: invalid argument';
+
+    expect(storageIncompatibility(`x\n${containerd}`)).toBe(containerd.slice(0, 300));
+
     for (const output of [
       "failed to extract layer sha256:abc: write /var/lib/docker/overlay2/x/diff/y: no space left on device",
       "failed to extract layer: unexpected EOF",

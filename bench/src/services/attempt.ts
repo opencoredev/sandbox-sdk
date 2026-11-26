@@ -949,9 +949,18 @@ class Daemon {
    */
   /**
    * The project's obligation on the chosen daemon, journaled before `up` can create anything
-   * there; a write that fails rejects, and `up` is never sent.
+   * there; a write that fails rejects, and `up` is never sent. With it go the guest commands
+   * recovery runs around its `down`: `quiesce` kills every process whose command line names the
+   * project (a `compose up` a crashed runner left behind) with its tree and waits for them to exit;
+   * `settle` lists the project's labelled containers, volumes and networks twice, 3 s apart, and
+   * exits 0 only when both lists are empty. The bracketed first letter keeps pgrep from matching
+   * the script's own text, and the script's own ancestors are never signalled.
    */
   async claim() {
+    const pattern = quote(`[${this.project.slice(0, 1)}]${this.project.slice(1)}`);
+    const kill = this.viaSudo ? "sudo -n kill" : "kill";
+    const docker = `${this.client}docker`;
+
     const event: ProjectEvent = {
       ...this.owner,
       project: this.project,
@@ -959,6 +968,19 @@ class Daemon {
       provenance: this.record.method === "preinstalled-running" ? "as-found" : "launched",
       state: "pending",
       down: `${this.g.prelude()}${this.composeCommand(composeDown)}`,
+      quiesce: [
+        `command -v pgrep >/dev/null && command -v ps >/dev/null || { echo "no pgrep or ps"; exit 4; }`,
+        `anc=" "; a=$$; while [ -n "$a" ] && [ "$a" -gt 1 ]; do anc="$anc$a "; a=$(ps -o ppid= -p "$a" | tr -d " "); done`,
+        `others() { o=$(pgrep -f -- ${pattern}); [ $? -le 1 ] || exit 4; left=""; for p in $o; do case "$anc" in *" $p "*) ;; *) left="$left $p" ;; esac; done; }`,
+        `walk() { for c in $(pgrep -P "$1"); do walk "$c"; done; echo "$1"; }`,
+        `others; for p in $left; do ${kill} -KILL $(walk "$p") 2>/dev/null; done`,
+        `n=0; while others; [ -n "$left" ]; do n=$((n + 1)); [ $n -lt 20 ] || { echo "still running:$left"; exit 3; }; sleep 0.5; done`,
+      ].join("; "),
+      settle: `${this.g.prelude()}${[
+        `f=${quote(`label=com.docker.compose.project=${this.project}`)}`,
+        `left() { c=$(${docker} ps -aq --filter "$f") && v=$(${docker} volume ls -q --filter "$f") && n=$(${docker} network ls -q --filter "$f") || { echo "listing failed"; exit 4; }; [ -z "$c$v$n" ] || { echo "left: $c $v $n"; exit 3; }; }`,
+        "left; sleep 3; left",
+      ].join("; ")}`,
     };
 
     await this.onProject?.(event);
@@ -1473,10 +1495,11 @@ export async function getDaemon(
 export function storageIncompatibility(output: string): string | null {
   const driver = /graph ?driver|storage[- ]driver|driver not supported/i;
 
-  // "error creating overlay mount to …", "failed to mount overlay", "mount … type overlay", or a
-  // mount onto the layer store itself.
+  // "error creating overlay mount to …", "failed to mount overlay", "mount … type overlay",
+  // containerd's 'mount source: "overlay", …, fstype: overlay' (Docker 29's image store), or a mount
+  // onto the layer store itself.
   const storageMount =
-    /\boverlay\w*\s+mount\b|\bmount(?:ing)?\s+"?overlay|\btype\s+"?overlay|\bmount(?:ing)?\b[^\n]*\b(?:to|at|on(?:to)?)\s+"?\/var\/lib\/(?:docker|containers)\//i;
+    /\boverlay\w*\s+mount\b|\bmount(?:ing)?\s+"?overlay|\btype\s+"?overlay|\b(?:mount source|fstype):\s*"?overlay\b|\bmount(?:ing)?\b[^\n]*\b(?:to|at|on(?:to)?)\s+"?\/var\/lib\/(?:docker|containers)\//i;
 
   const notStorage =
     /no space left on device|\bl?chown\b|mount namespace|rootfs at "|mounting "(?:proc|sysfs|cgroup2?|devpts|mqueue|tmpfs)"/i;

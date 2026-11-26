@@ -126,12 +126,24 @@ describe("sweep uses the connection that created the sandboxes", () => {
 });
 
 describe("recovery tears an as-found project down before it deletes the sandbox", () => {
-  /** `connectFailures`: how many of the first connects fail, as a transient 503 would. */
-  const setup = async (downExit: number, connectFailures = 0, destroyFailures = 0) => {
+  /**
+   * `connectFailures`: how many of the first connects fail, as a transient 503 would. `lateCreate`:
+   * an engine create still in flight lands on the daemon right after the teardown exits.
+   */
+  const setup = async (
+    downExit: number,
+    connectFailures = 0,
+    destroyFailures = 0,
+    lateCreate = false,
+  ) => {
     const provider = bindConnection(memory(), {});
     const order: string[] = [];
+    const checks: string[] = [];
     let failures = connectFailures;
     let destroyFails = destroyFailures;
+
+    // The project's containers, volumes and networks on the as-found daemon.
+    let resources = 2;
 
     const box = await createSandbox(provider, {
       labels: { "sandbox-bench-run": "r1-abcd", "svc-attempt": "e2b-compose-1" },
@@ -148,8 +160,22 @@ describe("recovery tears an as-found project down before it deletes the sandbox"
     };
 
     provider.exec = async (id, input) => {
+      if (input.command.startsWith("quiesce;")) {
+        checks.push("quiesce");
+
+        return { exitCode: 0, timedOut: false };
+      }
+
+      if (input.command.startsWith("settle;")) {
+        checks.push(`settle ${resources}`);
+
+        return { exitCode: resources === 0 ? 0 : 3, timedOut: false };
+      }
+
       if (!input.command.includes("compose -p")) return exec(id, input);
       order.push(`down ${input.command.includes("DOCKER_HOST='unix:///var/run/docker.sock'")}`);
+
+      if (downExit === 0) resources = lateCreate ? 1 : 0;
 
       return { exitCode: downExit, timedOut: false };
     };
@@ -182,6 +208,9 @@ describe("recovery tears an as-found project down before it deletes the sandbox"
       sandboxId: box.id,
       state: "pending",
       down: "export DOCKER_HOST='unix:///var/run/docker.sock'; docker compose -p 'sbx-e2b-compose-1-abc123' -f compose.yaml down -v --remove-orphans --timeout 5",
+      quiesce: "quiesce; pgrep -f -- '[s]bx-e2b-compose-1-abc123'",
+      settle:
+        "settle; docker ps -aq --filter 'label=com.docker.compose.project=sbx-e2b-compose-1-abc123'",
     };
 
     // A runner that died after up: the claim and the owned ID, and no attempt row.
@@ -192,13 +221,14 @@ describe("recovery tears an as-found project down before it deletes the sandbox"
       "projects.jsonl": lines([claim]),
     };
 
-    return { order, files, entry };
+    return { order, checks, files, entry };
   };
 
   test("a teardown that exits 0 runs on the recorded socket first and resolves the claim", async () => {
-    const { order, files, entry } = await setup(0);
+    const { order, checks, files, entry } = await setup(0);
     const swept = await sweep(files, entry);
 
+    expect(checks).toEqual(["quiesce", "settle 0"]);
     expect(order[0]).toBe("down true");
     expect(order).toContain("destroy true");
     expect(order.indexOf("destroy true")).toBeGreaterThan(0);
@@ -222,6 +252,33 @@ describe("recovery tears an as-found project down before it deletes the sandbox"
     expect(swept.stderr).toContain(
       "Compose project cleanup unresolved for e2b-compose-1 (project sbx-e2b-compose-1-abc123 on e2b sandbox",
     );
+  });
+
+  test("a resource that lands between the teardown and the settle check keeps the claim and the sandbox", async () => {
+    const { order, checks, files, entry } = await setup(0, 0, 0, true);
+    const swept = await sweep(files, entry);
+
+    // The teardown exited 0, but a create still in flight landed after it: never cleared.
+    expect(order).toEqual(["down true"]);
+    expect(checks).toEqual(["quiesce", "settle 1"]);
+    expect(states(swept.projects)).toEqual(["pending"]);
+    expect(swept.exitCode).toBe(1);
+    expect(swept.stdout).toContain('"retained":1');
+    expect(swept.stderr).toContain(
+      "Compose project cleanup unresolved for e2b-compose-1 (project sbx-e2b-compose-1-abc123 on e2b sandbox",
+    );
+  });
+
+  test("a claim journaled without its quiesce and settle commands keeps the claim and the sandbox", async () => {
+    const { order, checks, files, entry } = await setup(0);
+    const [line = ""] = files["projects.jsonl"].split("\n");
+    const { quiesce: _quiesce, settle: _settle, ...older } = JSON.parse(line);
+    const swept = await sweep({ ...files, "projects.jsonl": lines([older]) }, entry);
+
+    expect(order).toEqual([]);
+    expect(checks).toEqual([]);
+    expect(states(swept.projects)).toEqual(["pending"]);
+    expect(swept.stdout).toContain('"retained":1');
   });
 
   test("a connect that fails once keeps the sandbox, and the next sweep tears down and deletes", async () => {

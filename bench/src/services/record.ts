@@ -171,6 +171,13 @@ export const projectEventSchema = z.object({
    * run it on the sandbox before deleting it. Absent in journals from before it was recorded.
    */
   down: z.string().optional(),
+  /**
+   * The guest commands recovery runs before and after `down`: one that stops any compose process
+   * still working on the project, and one that exits 0 only when nothing labelled with the project
+   * is left (Daemon.claim). Absent in journals from before they were recorded.
+   */
+  quiesce: z.string().optional(),
+  settle: z.string().optional(),
 });
 
 export type ProjectEvent = z.infer<typeof projectEventSchema>;
