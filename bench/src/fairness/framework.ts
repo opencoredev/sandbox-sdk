@@ -28,6 +28,7 @@ import { lookupSandbox, type LookupEvidence } from "../existence.js";
 import { isMissingFile } from "../files.js";
 import { loadProvider } from "../providers.js";
 import { collectMetadata } from "../publication.js";
+import { managedIdleCapabilities } from "../realistic/idle.js";
 import { providerSetups, type ProviderSetup } from "../realistic/setup.js";
 import { labelsFor, listedLeftovers, type Attempt } from "../sustained-cpu.js";
 import { deadline } from "../timing.js";
@@ -46,6 +47,8 @@ export const checkIds = [
   "disk-real",
   "cpu-native",
   "cpu-burst-10",
+  "state-survival",
+  "memory-pressure",
 ] as const;
 
 export const checkIdSchema = z.enum(checkIds);
@@ -80,8 +83,18 @@ export interface RunOptions {
   readonly signal: AbortSignal;
 }
 
+/** How a sandbox can be suspended with its state: the adapter's pause and resume, or nothing. */
+export type Suspend =
+  | {
+      readonly kind: "pause";
+      pause(): Promise<void>;
+      resume(): Promise<void>;
+    }
+  | { readonly kind: "none"; readonly reason: string };
+
 export interface Box {
   readonly id: string;
+  readonly suspend: Suspend;
   run(command: string, options: RunOptions): Promise<CommandResult>;
   write(path: string, data: Uint8Array): Promise<void>;
   /** The provider's exact, read-only lookup of this sandbox; never runs anything in it. */
@@ -136,9 +149,18 @@ export const openLiveSession: OpenSession = async (setup, plan) => {
         // Upstash, Superserve and Boat refuse `timeoutMs`; every other adapter gets the lifetime.
         if (setup.lifetime) options.timeoutMs = plan.lifetimeMs;
         const sandbox = await createSandbox(provider, options);
+        const { pause, resume } = provider;
 
         return {
           id: sandbox.id,
+          suspend:
+            managedIdleCapabilities(provider).pause && pause && resume
+              ? {
+                  kind: "pause",
+                  pause: () => pause.call(provider, sandbox.id),
+                  resume: () => resume.call(provider, sandbox.id),
+                }
+              : { kind: "none", reason: "No pause and resume in the adapter" },
           run: async (command, options) => {
             const result = await sandbox.run(command, { cwd: "/", ...options });
 

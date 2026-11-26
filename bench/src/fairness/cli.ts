@@ -1,14 +1,17 @@
 /**
  * `bun bench fairness <check> [--providers a,b] [--concurrency 15] [--out DIR] [--run ID] [--merge-only]`
  *
- * Checks: security-probe, memory-honesty, disk-real, cpu-native, cpu-burst-10. Each runs every
- * listed provider on the same-machine track and writes `<out>/<check>.json`.
+ * Checks: security-probe, memory-honesty, disk-real, cpu-native, cpu-burst-10, state-survival,
+ * memory-pressure. Each runs every listed provider on the same-machine track and writes
+ * `<out>/<check>.json`. `--max-dollars` reserves each provider's worst case (its sandboxes for the
+ * check's whole lifetime at list price) and leaves out the providers that would pass the cap.
  */
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { providerSetups } from "../realistic/setup.js";
+import { attemptBudget } from "../realistic/cli.js";
+import { providerSetups, type ProviderSetup } from "../realistic/setup.js";
 import { cpuBurst } from "./cpu-burst.js";
 import { cpuNative } from "./cpu-native.js";
 import { diskReal } from "./disk-real.js";
@@ -25,7 +28,9 @@ import {
   type Report,
 } from "./framework.js";
 import { memoryHonesty } from "./memory-honesty.js";
+import { memoryPressure } from "./memory-pressure.js";
 import { securityProbe } from "./security-probe.js";
+import { stateSurvival } from "./state-survival.js";
 
 /** Every check, keyed by ID; the record type makes a missing one a compile error (tests check each key matches its id). */
 export const checks = {
@@ -34,6 +39,8 @@ export const checks = {
   "disk-real": diskReal,
   "cpu-native": cpuNative,
   "cpu-burst-10": cpuBurst,
+  "state-survival": stateSurvival,
+  "memory-pressure": memoryPressure,
 } satisfies { readonly [K in CheckId]: Check<unknown> };
 
 const cliSchema = z.object({
@@ -46,12 +53,13 @@ const cliSchema = z.object({
     .regex(/^[A-Za-z0-9._-]+$/, "use letters, digits, '.', '_' and '-'")
     .nullable(),
   mergeOnly: z.boolean(),
+  maxDollars: z.coerce.number().positive().nullable(),
 });
 
 export type FairnessCli = z.infer<typeof cliSchema>;
 
 export const usage =
-  "bun bench fairness <security-probe|memory-honesty|disk-real|cpu-native|cpu-burst-10> [--providers a,b] [--concurrency 15] [--out results/fairness/<check>] [--run ID] [--merge-only]\n";
+  "bun bench fairness <security-probe|memory-honesty|disk-real|cpu-native|cpu-burst-10|state-survival|memory-pressure> [--providers a,b] [--concurrency 15] [--out results/fairness/<check>] [--run ID] [--max-dollars N] [--merge-only]\n";
 
 export function parseCli(args: readonly string[]): FairnessCli {
   const { values, positionals } = parseArgs({
@@ -64,6 +72,7 @@ export function parseCli(args: readonly string[]): FairnessCli {
       out: { type: "string" },
       run: { type: "string" },
       "merge-only": { type: "boolean", default: false },
+      "max-dollars": { type: "string" },
     },
   });
 
@@ -91,7 +100,36 @@ export function parseCli(args: readonly string[]): FairnessCli {
     out: values.out ?? `results/fairness/${check}`,
     run: values.run ?? null,
     mergeOnly: values["merge-only"],
+    maxDollars: values["max-dollars"] ?? null,
   });
+}
+
+/**
+ * Splits providers into those whose worst-case reservation fits `maxDollars` (in order) and those
+ * left out. A provider's reservation is its sandboxes for the check's whole lifetime at list price.
+ */
+export function admitWithin(input: {
+  readonly setups: readonly ProviderSetup[];
+  readonly boxes: number;
+  readonly lifetimeMs: number;
+  readonly maxDollars: number | null;
+}) {
+  const admitted: { setup: ProviderSetup; usd: number }[] = [];
+  const refused: { setup: ProviderSetup; usd: number }[] = [];
+  let reserved = 0;
+
+  for (const setup of input.setups) {
+    const usd = attemptBudget(setup, "same-machine", input.lifetimeMs) * input.boxes;
+
+    if (input.maxDollars !== null && reserved + usd > input.maxDollars)
+      refused.push({ setup, usd });
+    else {
+      reserved += usd;
+      admitted.push({ setup, usd });
+    }
+  }
+
+  return { admitted, refused, reservedUSD: reserved };
 }
 
 const autoRunId = (check: CheckId) =>
@@ -157,8 +195,23 @@ export async function fairnessCommand(args: readonly string[]) {
   process.on("SIGTERM", onSignal);
 
   try {
-    const setups = cli.providers.flatMap((name) => providerSetups.filter((s) => s.name === name));
-    process.stdout.write(`${cli.check} run ${runId}: ${setups.length} providers, out ${out}\n`);
+    const budget = admitWithin({
+      setups: cli.providers.flatMap((name) => providerSetups.filter((s) => s.name === name)),
+      boxes: check.boxes,
+      lifetimeMs: check.lifetimeMs,
+      maxDollars: cli.maxDollars,
+    });
+
+    for (const { setup, usd } of budget.refused)
+      process.stderr.write(
+        `SKIPPED ${setup.name}: reserving $${usd.toFixed(2)} would pass --max-dollars ${cli.maxDollars}\n`,
+      );
+
+    const setups = budget.admitted.map((entry) => entry.setup);
+
+    process.stdout.write(
+      `${cli.check} run ${runId}: ${setups.length} providers, reserved $${budget.reservedUSD.toFixed(2)} at list price, out ${out}\n`,
+    );
 
     const outcome = await runCheck(
       check,
@@ -179,7 +232,7 @@ export async function fairnessCommand(args: readonly string[]) {
     for (const problem of outcome.cleanupProblems)
       process.stderr.write(`CLEANUP ${problem.provider}: ${problem.error}\n`);
 
-    process.exitCode = exitCodeOf(outcome, cli.providers);
+    process.exitCode = budget.refused.length > 0 ? 1 : exitCodeOf(outcome, cli.providers);
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);

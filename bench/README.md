@@ -168,6 +168,19 @@ Every field but `stress` comes from `--report` exactly as before, so adding a st
 
 The run report's "Stress planning estimates" table prices these suites from a pilot's own rows: CPU sustained as 30 dedicated iterations, and each cohort suite at K=10 and K=25 with the configured cohorts, by pricing each observed member lifetime on its own and averaging those prices, so minimum billed time, rounding and creation fees apply per sandbox, then multiplied by the number of sandboxes (the readiness-burst estimates `burst10`/`burst25` are priced the same way); a K above the account cap shows as skipped. It is separate from the existing totals.
 
+## State survival and memory pressure
+
+Two checks in `bun bench fairness` (same-machine track, one sandbox per provider, results in `<out>/<check>.json`). `--max-dollars N` reserves each provider's sandbox for the check's whole lifetime at list price and leaves out providers that would pass the cap.
+
+```
+bun bench fairness state-survival --providers e2b,upstash --max-dollars 3 --out results/fairness/state-survival
+bun bench fairness memory-pressure --providers e2b,daytona --max-dollars 3 --out results/fairness/memory-pressure
+```
+
+**state-survival** writes a 16 MiB random file, starts an HTTP server that holds a random token and 32 MiB of random bytes in memory, and a shell worker with a 1 s heartbeat, all detached from the exec. It SIGKILLs and restarts the server five times; the guest times each from the kill to the new process answering (`restart.medianMs`). Where the adapter has pause and resume, it pauses, holds 60 s, resumes, and times the first command that answers and the server serving again (restarting it when it is gone). Verdicts: `in-ram` (file, server token and memory digest, worker and boot id all survived a frozen hold), `kept-running` (they survived because the guest never froze: the worker beat through the hold), `cold-restart` (files survived, processes did not, or the boot id changed), `files-lost`. A pause or resume the provider refuses is kept as `refused` with its error. Providers without pause in the adapter get `unsupported`; stop and start have no portable SDK call and are recorded as not run.
+
+**memory-pressure** allocates random (incompressible) memory 64 MiB at a time up to 1.5 times the provider's advertised same-machine memory, in a detached process, while the host polls for progress. It records the most it held, the outcome (`reached-target`, `process-killed` with the cgroup OOM count, `refused`, `stalled`, `sandbox-restarted` from a new boot id, `unresponsive`, `sandbox-lost` only when the provider's lookup confirms it), the scope (`process`, `collateral` when a canary process died too, `sandbox`), and whether the sandbox is usable afterwards (it answers, a fresh 256 MiB allocation and a file write succeed). Both checks use the image's `node`, else `python3`.
+
 ## Costs and statistics
 
 `src/pricing.ts` contains official sources retrieved on 2026-10-19, resource rates, currency, increment assumptions, included disk, fixed plan sizes, and caveats. One-second rounding is an explicit estimate when a source does not publish an increment. Unstated creation fees are not invented. Subscriptions, credits, transfer and retained snapshot storage are excluded. Boat uses its default fixed VM rate. Upstash bills active CPU, so allocation × wall time is an upper bound; boxd RAM/disk allocations likewise overestimate used-memory/written-disk billing. boxd is EUR: reports keep EUR and use a conservative 2 USD/EUR only for budget admission, not a claimed exchange-rate quote.
