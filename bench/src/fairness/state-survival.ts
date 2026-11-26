@@ -79,12 +79,14 @@ const quickProbeMs = 2_000;
 
 const resumedProbeMs = 10_000;
 
+const sha256Pattern = /^[0-9a-f]{64}$/;
+
 const bodySchema = z.object({
   nonce: z.string(),
   token: z.string(),
   pid: z.number().int(),
-  digestAtStart: z.string(),
-  digestNow: z.string(),
+  digestAtStart: z.string().regex(sha256Pattern),
+  digestNow: z.string().regex(sha256Pattern),
   upMs: z.number(),
 });
 
@@ -279,7 +281,7 @@ export function parseSnapshot(stdout: string): GuestSnapshot | null {
     dir,
     file,
     size: count("size"),
-    sha: valid(text("sha"), /^[0-9a-f]{64}$/),
+    sha: valid(text("sha"), sha256Pattern),
     boot: valid(text("boot"), bootIdPattern),
     worker: parseSeen(values.get("worker")),
     server: parseSeen(values.get("server")),
@@ -306,11 +308,13 @@ export function judgeSurvival(input: {
   readonly after: GuestSnapshot;
   readonly later: GuestSnapshot;
   readonly token: string;
+  /** The memory digest the server reported when it first served. */
+  readonly digest: string;
   readonly probe: Probe | null;
   readonly window: Window;
   readonly holdMs: number;
 }) {
-  const { before, after, later, token, probe, window, holdMs } = input;
+  const { before, after, later, token, digest, probe, window, holdMs } = input;
   const holdS = holdMs / 1000;
 
   const fileLost =
@@ -350,7 +354,7 @@ export function judgeSurvival(input: {
     body !== null && body.pid === pidOf(before.server) && same(before.server, after.server);
 
   const sameToken = sameProcess && body?.token === token;
-  const memoryIntact = sameToken && body !== null && body.digestNow === body.digestAtStart;
+  const memoryIntact = sameToken && body?.digestAtStart === digest && body.digestNow === digest;
 
   const worker = {
     same: workerSame,
@@ -640,6 +644,7 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
       after,
       later,
       token: serving.body.token,
+      digest: serving.body.digestAtStart,
       probe,
       window: {
         minS: (after.askedAt - before.answeredAt) / 1000,

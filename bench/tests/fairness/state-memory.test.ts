@@ -4,6 +4,7 @@
  * Every fixture lives in its own temporary directory and only signals processes it started.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -99,16 +100,19 @@ const snapshot = (over: Partial<GuestSnapshot> = {}): GuestSnapshot => ({
   ...over,
 });
 
+const D = "d".repeat(64);
+
 const answer = (token: string, over: Partial<NonNullable<Probe["body"]>> = {}): Probe => ({
   ok: true,
   ms: 3,
-  body: { nonce: "n", token, pid: 7, digestAtStart: "d", digestNow: "d", upMs: 1, ...over },
+  body: { nonce: "n", token, pid: 7, digestAtStart: D, digestNow: D, upMs: 1, ...over },
 });
 
 describe("state-survival judge", () => {
   const base = {
     before: snapshot(),
     token: "t",
+    digest: D,
     holdMs: 60_000,
     window: { minS: 64, maxS: 66 },
   };
@@ -223,10 +227,22 @@ describe("state-survival judge", () => {
       ...base,
       ...kept,
       after: snapshot({ beat: 12 }),
-      probe: answer("t", { digestNow: "x" }),
+      probe: answer("t", { digestNow: "e".repeat(64) }),
     });
 
     expect(changed).toMatchObject({ verdict: "inconclusive", server: { memoryIntact: false } });
+
+    // Memory that matches itself but not what the server first reported is not intact either.
+    const replaced = "e".repeat(64);
+
+    const swapped = judgeSurvival({
+      ...base,
+      ...kept,
+      after: snapshot({ beat: 12 }),
+      probe: answer("t", { digestAtStart: replaced, digestNow: replaced }),
+    });
+
+    expect(swapped.server).toMatchObject({ memoryIntact: false });
 
     const other = judgeSurvival({
       ...base,
@@ -293,6 +309,17 @@ describe("state-survival judge", () => {
       body: null,
     });
     expect(parseProbe("not json")).toBeNull();
+
+    const malformed = {
+      nonce: "n",
+      token: "t",
+      pid: 7,
+      digestAtStart: "not-sha",
+      digestNow: "not-sha",
+      upMs: 1,
+    };
+
+    expect(parseProbe(JSON.stringify({ ok: true, ms: 3, body: malformed }))).toBeNull();
   });
 });
 
@@ -343,45 +370,40 @@ describe("memory-pressure judge", () => {
     expect(
       judgePressure({ ...base, ending: exited(137), log: log("refused 64 ENOMEM\n") }),
     ).toMatchObject({ kind: "process-killed", exitCode: 137 });
-    // Gone with its supervisor and no status is a vanish, whatever the shared OOM counter says.
-    expect(judgePressure({ ...base, ending: { kind: "vanished" }, oomDelta: 2 })).toEqual({
-      kind: "vanished",
-      oomKills: 2,
-    });
-    expect(judgePressure({ ...base, ending: { kind: "stalled" } })).toEqual({ kind: "stalled" });
     expect(judgePressure({ ...base, ending: { kind: "restarted" } })).toEqual({
       kind: "sandbox-restarted",
     });
     expect(judgePressure({ ...base, ending: exited(137), bootSame: false })).toEqual({
       kind: "sandbox-restarted",
     });
-    expect(judgePressure({ ...base, ending: { kind: "lost", detail: "404" } })).toEqual({
-      kind: "sandbox-lost",
-      detail: "404",
+    // No recorded status (deadline, silence, a vanished hog) claims nothing about the provider.
+    expect(
+      judgePressure({
+        ...base,
+        ending: { kind: "unsettled", reason: "no status by the deadline" },
+      }),
+    ).toEqual({ kind: "inconclusive", reason: "no status by the deadline" });
+    // A cgroup-wide OOM count does not make an ordinary exit or a runtime abort a kill.
+    expect(judgePressure({ ...base, ending: exited(1), oomDelta: 1 })).toMatchObject({
+      kind: "inconclusive",
+      reason: expect.stringMatching(/no kill evidence/),
     });
-    expect(judgePressure({ ...base, ending: { kind: "unresponsive", detail: "x" } })).toMatchObject(
-      { kind: "unresponsive" },
-    );
-    // A cgroup-wide OOM count does not make an ordinary exit, a runtime abort or a vanish a kill.
-    expect(() => judgePressure({ ...base, ending: exited(1), oomDelta: 1 })).toThrow(
-      /no kill evidence/,
-    );
-    expect(() => judgePressure({ ...base, ending: exited(134) })).toThrow(/no kill evidence/);
+    expect(judgePressure({ ...base, ending: exited(134) })).toMatchObject({ kind: "inconclusive" });
     // A refusal line is a refusal only with the hog's own exit 3.
-    expect(() =>
+    expect(
       judgePressure({ ...base, ending: exited(143), log: log("refused 64 ENOMEM\n") }),
-    ).toThrow(/no kill evidence/);
+    ).toMatchObject({ kind: "inconclusive" });
   });
 
   it("scopes a kill to the process only with a live canary", () => {
-    const killed = { kind: "process-killed" as const, exitCode: 137, oomKills: 1 };
+    const killed = { kind: "process-killed" as const, exitCode: 137 as const, oomKills: 1 };
     expect(scopeOf(killed, true)).toBe("process");
     expect(scopeOf(killed, false)).toBe("collateral");
     expect(scopeOf(killed, null)).toBeNull();
-    expect(scopeOf({ kind: "sandbox-lost", detail: "" }, null)).toBe("sandbox");
+    expect(scopeOf({ kind: "sandbox-restarted" }, null)).toBe("sandbox");
     expect(scopeOf({ kind: "reached-target" }, true)).toBeNull();
-    expect(scopeOf({ kind: "vanished", oomKills: null }, true)).toBe("process");
-    expect(scopeOf({ kind: "vanished", oomKills: null }, null)).toBeNull();
+    expect(scopeOf({ kind: "refused", reason: "ENOMEM" }, true)).toBe("process");
+    expect(scopeOf({ kind: "inconclusive", reason: "x" }, true)).toBeNull();
   });
 });
 
@@ -662,13 +684,14 @@ describe.runIf(linux && available.length > 0)(
       expect(result.health.canaryBeatAgeS).toBeLessThanOrEqual(5);
     }, 60_000);
 
-    it("memory-pressure calls a sandbox lost only when the lookup confirms it, keeping the last progress seen", async () => {
+    it("memory-pressure calls a sandbox that stops answering inconclusive, keeping the last progress seen", async () => {
       const workdir = await scratch("mem-work");
       const real = hostBox();
       let polls = 0;
+      let lookups = 0;
 
       // The first progress poll answers once the hog has held something; every later one fails.
-      const dying: Box = {
+      const silent: Box = {
         ...real,
         run: async (command, options) => {
           if (command.includes("status=done")) {
@@ -678,60 +701,10 @@ describe.runIf(linux && available.length > 0)(
 
           return real.run(command, options);
         },
-        lookup: async () => ({
-          result: "not-found",
-          checkedAt: new Date().toISOString(),
-          method: "fake",
-        }),
-      };
-
-      const open: OpenSession = async () => ({
-        kind: "ready",
-        session: {
-          create: async () => dying,
-          leftovers: async () => [],
-          destroyById: async () => {},
-        },
-      });
-
-      const check = memoryPressureCheck({
-        ...defaultPressureOptions,
-        advertisedMiB: 128,
-        pollMs: 200,
-        unresponsiveMs: 1_000,
-        recoveryMs: 1_000,
-        workdir,
-      });
-
-      const entry = await runOnHost(check, open);
-      expect(entry.status, entry.reason ?? "").toBe("completed");
-      const result = check.resultSchema.parse(entry.result);
-      expect(result.outcome.kind).toBe("sandbox-lost");
-      expect(result).toMatchObject({
-        scope: "sandbox",
-        usableAfter: false,
-        reachedEvidence: "last-poll",
-      });
-      expect(result.reachedMiB).toBeGreaterThan(0);
-    }, 60_000);
-
-    it("memory-pressure looks the sandbox up again before calling it unresponsive and still listed", async () => {
-      const workdir = await scratch("mem-work");
-      const real = hostBox();
-      let polls = 0;
-      let lookups = 0;
-
-      const silent: Box = {
-        ...real,
-        run: async (command, options) => {
-          if (command.includes("status=done") && ++polls > 1) throw new Error("connection reset");
-
-          return real.run(command, options);
-        },
         lookup: async () => {
           lookups++;
 
-          return { result: "present", checkedAt: new Date().toISOString(), method: "fake" };
+          return { result: "not-found", checkedAt: new Date().toISOString(), method: "fake" };
         },
       };
 
@@ -757,52 +730,44 @@ describe.runIf(linux && available.length > 0)(
       expect(entry.status, entry.reason ?? "").toBe("completed");
       const result = check.resultSchema.parse(entry.result);
       expect(result.outcome).toMatchObject({
-        kind: "unresponsive",
-        detail: expect.stringMatching(/still listed/),
+        kind: "inconclusive",
+        reason: expect.stringMatching(/no answer for/),
       });
-      expect(lookups).toBeGreaterThanOrEqual(2);
-      expect(result.scope).toBe("sandbox");
+      // Observing never asks the provider, so a poll's own cleanup cannot become the verdict.
+      expect(lookups).toBe(0);
+      expect(result).toMatchObject({
+        scope: null,
+        usableAfter: null,
+        reachedEvidence: "last-poll",
+      });
+      expect(result.health).toMatchObject({ allocOk: null, fileOk: null });
+      expect(result.reachedMiB).toBeGreaterThan(0);
     }, 60_000);
 
-    it("memory-pressure fails rather than calling a sandbox unresponsive when the lookup cannot answer", async () => {
-      const workdir = await scratch("mem-work");
+    it("memory-pressure calls a hog with no status by the deadline inconclusive", async () => {
       const real = hostBox();
-      let polls = 0;
 
-      const silent: Box = {
+      // Every poll hides the recorded status, so only the deadline can end the wait.
+      const unrecorded: Box = {
         ...real,
         run: async (command, options) => {
-          if (command.includes("status=done") && ++polls > 1) throw new Error("connection reset");
+          const result = await real.run(command, options);
 
-          return real.run(command, options);
+          return command.includes("status=done")
+            ? { ...result, stdout: result.stdout.replace(/^exit=.*$/m, "exit=") }
+            : result;
         },
-        lookup: () => Promise.reject(new Error("provider API down")),
       };
 
       const open: OpenSession = async () => ({
         kind: "ready",
         session: {
-          create: async () => silent,
+          create: async () => unrecorded,
           leftovers: async () => [],
           destroyById: async () => {},
         },
       });
 
-      const check = memoryPressureCheck({
-        ...defaultPressureOptions,
-        advertisedMiB: 128,
-        pollMs: 200,
-        unresponsiveMs: 1_000,
-        recoveryMs: 1_000,
-        workdir,
-      });
-
-      const entry = await runOnHost(check, open);
-      expect(entry.status).not.toBe("completed");
-      expect(entry.reason).toMatch(/provider's state is unknown/);
-    }, 60_000);
-
-    it("memory-pressure calls a hog that ends after the deadline stalled", async () => {
       const check = memoryPressureCheck({
         ...defaultPressureOptions,
         advertisedMiB: 128,
@@ -812,30 +777,35 @@ describe.runIf(linux && available.length > 0)(
         workdir: await scratch("mem-work"),
       });
 
-      const entry = await runOnHost(check, hostSession().open);
+      const entry = await runOnHost(check, open);
       expect(entry.status, entry.reason ?? "").toBe("completed");
       const result = check.resultSchema.parse(entry.result);
-      expect(result.outcome).toEqual({ kind: "stalled" });
-      expect(result.usableAfter).toBe(true);
+      expect(result.outcome).toEqual({ kind: "inconclusive", reason: "no status by the deadline" });
+      expect(result).toMatchObject({ scope: null, usableAfter: null });
     }, 60_000);
 
-    it("memory-pressure leaves usability unknown when its health tests could not run", async () => {
+    it("memory-pressure calls a new boot id a restart and leaves the old boot's health tests unrun", async () => {
       const real = hostBox();
+      const rebooted = `boot=${randomUUID()}`;
+      let polls = 0;
 
-      const flaky: Box = {
+      const rebooting: Box = {
         ...real,
         run: async (command, options) => {
-          if (command.includes("health.bin") || /hog\.(js|py)' 64 64$/.test(command))
-            throw new Error("connection reset");
+          const result = await real.run(command, options);
 
-          return real.run(command, options);
+          if (command.includes("status=done")) polls++;
+
+          return polls > 1
+            ? { ...result, stdout: result.stdout.replace(/^boot=.*$/m, rebooted) }
+            : result;
         },
       };
 
       const open: OpenSession = async () => ({
         kind: "ready",
         session: {
-          create: async () => flaky,
+          create: async () => rebooting,
           leftovers: async () => [],
           destroyById: async () => {},
         },
@@ -852,9 +822,56 @@ describe.runIf(linux && available.length > 0)(
       const entry = await runOnHost(check, open);
       expect(entry.status, entry.reason ?? "").toBe("completed");
       const result = check.resultSchema.parse(entry.result);
-      expect(result.health).toMatchObject({ allocOk: null, fileOk: null });
-      expect(result.usableAfter).toBeNull();
+      expect(result.outcome).toEqual({ kind: "sandbox-restarted" });
+      expect(result).toMatchObject({ scope: "sandbox", usableAfter: null });
+      expect(result.health).toMatchObject({ bootSame: false, allocOk: null, fileOk: null });
     }, 60_000);
+
+    it.each([
+      ["rejected", () => Promise.reject(new Error("connection reset"))],
+      [
+        "timed out before running",
+        async () => ({ ok: false, exitCode: null, stdout: "", stderr: "", timedOut: true }),
+      ],
+    ] as const)(
+      "memory-pressure leaves usability unknown when its health tests were %s",
+      async (_, fail) => {
+        const real = hostBox();
+
+        const flaky: Box = {
+          ...real,
+          run: async (command, options) =>
+            command.includes("health.bin") || /hog\.(js|py)' 64 64$/.test(command)
+              ? fail()
+              : real.run(command, options),
+        };
+
+        const open: OpenSession = async () => ({
+          kind: "ready",
+          session: {
+            create: async () => flaky,
+            leftovers: async () => [],
+            destroyById: async () => {},
+          },
+        });
+
+        const check = memoryPressureCheck({
+          ...defaultPressureOptions,
+          advertisedMiB: 128,
+          healthAllocMiB: 64,
+          pollMs: 200,
+          workdir: await scratch("mem-work"),
+        });
+
+        const entry = await runOnHost(check, open);
+        expect(entry.status, entry.reason ?? "").toBe("completed");
+        const result = check.resultSchema.parse(entry.result);
+        expect(result.outcome).toEqual({ kind: "reached-target" });
+        expect(result.health).toMatchObject({ allocOk: null, fileOk: null });
+        expect(result.usableAfter).toBeNull();
+      },
+      60_000,
+    );
 
     it("cleanup clears a failed sweep delete once an exact lookup finds the sandbox gone", async () => {
       const real = hostBox();
@@ -883,6 +900,37 @@ describe.runIf(linux && available.length > 0)(
 
       const entry = await runOnHost(stateSurvivalCheck(await plan(1_000)), open);
       expect(entry).toMatchObject({ destroyed: true, cleanupError: null });
+    }, 60_000);
+
+    it("cleanup counts a reconciliation delete that succeeds, even when the last lookup cannot answer", async () => {
+      const real = hostBox();
+      let lookups = 0;
+
+      // Deletes fail until the exact lookup has seen the sandbox; after that, lookups are down.
+      const flaky: Box = {
+        ...real,
+        destroy: async () => {
+          if (lookups === 0) throw new Error("503");
+        },
+        lookup: async () => {
+          if (++lookups > 1) throw new Error("provider API down");
+
+          return { result: "present", checkedAt: new Date().toISOString(), method: "fake" };
+        },
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => flaky,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const entry = await runOnHost(stateSurvivalCheck(await plan(1_000)), open);
+      expect(entry).toMatchObject({ destroyed: true, cleanupError: null });
+      expect(lookups).toBe(1);
     }, 60_000);
 
     it("cleanup reports a sandbox whose destroy failed until an exact lookup finds it gone", async () => {

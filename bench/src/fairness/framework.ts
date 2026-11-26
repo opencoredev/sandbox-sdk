@@ -1014,7 +1014,7 @@ async function cleanUp(input: {
     : { destroyed: false, error: problems.join("; ") };
 }
 
-/** An exact lookup; when the sandbox is still there, one more destroy and a second lookup. */
+/** An exact lookup; when the sandbox is still there, one more destroy, then a second lookup if it failed. */
 async function confirmGone(box: Box, delay: number, log: QuietLog) {
   for (let attempt = 1; attempt <= 2; attempt++) {
     const looked = await box.lookup(lookupTimeoutMs).then(
@@ -1029,6 +1029,9 @@ async function confirmGone(box: Box, delay: number, log: QuietLog) {
     if (attempt === 1) {
       const outcome = await destroyWithRetry(() => box.destroy(), delay);
       await log({ kind: "destroy", sandboxId: box.id, ...outcome, at: now() });
+
+      // A confirmed delete counts here as it does everywhere else.
+      if (outcome.ok) return true;
     }
   }
 
