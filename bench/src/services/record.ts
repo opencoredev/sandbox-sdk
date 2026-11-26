@@ -150,7 +150,7 @@ export type Metrics = z.infer<typeof metricsSchema>;
 /**
  * One line of projects.jsonl. `pending` is written before `compose up` can create anything on
  * that daemon; `down` after its `down` exited 0; `with-sandbox` after the sandbox's deletion
- * was confirmed, for a daemon this attempt launched inside it. Recovery treats every pending claim
+ * was confirmed, for a daemon that lived inside it. Recovery treats every pending claim
  * without a later line as an obligation.
  */
 export const projectEventSchema = z.object({
@@ -159,7 +159,12 @@ export const projectEventSchema = z.object({
   project: z.string(),
   /** The daemon that holds it, as method/config. */
   daemon: z.string(),
-  provenance: z.enum(["as-found", "launched"]),
+  /**
+   * Where the daemon lives: `launched` by this attempt inside the sandbox, or found running
+   * `in-sandbox`; both go with it. `as-found` is a daemon that was already there and may outlive
+   * the sandbox, from journals before such daemons were refused; recovery tears it down.
+   */
+  provenance: z.enum(["as-found", "in-sandbox", "launched"]),
   sandboxId: z.string().nullable(),
   /**
    * `sandbox-gone`: an operator abandoned the as-found project's sandbox (`sweep
@@ -181,6 +186,10 @@ export const projectEventSchema = z.object({
 });
 
 export type ProjectEvent = z.infer<typeof projectEventSchema>;
+
+/** Why an as-found daemon not shown to live in the guest is never used (a `skipped` reason). */
+export const outsideSandbox =
+  "as-found daemon outside the sandbox: not used, since its cleanup can't be guaranteed";
 
 export const projectCleanupSchema = z.enum(["none", "down", "with-sandbox", "open"]);
 

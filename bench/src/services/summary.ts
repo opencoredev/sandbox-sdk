@@ -13,7 +13,7 @@ import {
   dockerStatic,
   node,
 } from "./pins.js";
-import { servicePaths, type AttemptRecord, type ServicePath } from "./record.js";
+import { outsideSandbox, servicePaths, type AttemptRecord, type ServicePath } from "./record.js";
 import { nativeServiceDoc, type NativeServiceDoc } from "./docs.js";
 
 export interface RunInfo {
@@ -236,10 +236,16 @@ function capability(provider: string, records: readonly AttemptRecord[]) {
   );
 
   // Negative evidence only from a ladder that finished with no daemon ever answering: a sandbox
-  // that vanished or timed out, or a row from before `finished` existed, says nothing.
-  const neverAnswered = compose.filter(
+  // that vanished or timed out, or a row from before `finished` existed, says nothing. One whose
+  // only Docker was a daemon outside the sandbox, refused, gives no verdict either.
+  const unanswered = compose.filter(
     (r) => r.daemon?.finished === true && !r.daemon.method && !r.daemon.answered,
-  ).length;
+  );
+
+  const external = (r: AttemptRecord) =>
+    r.daemon?.skipped.some((s) => s.reason === outsideSandbox) === true;
+
+  const neverAnswered = unanswered.filter((r) => !external(r)).length;
 
   const tried = compose.flatMap((r) => r.daemon?.tries ?? []);
 
@@ -260,7 +266,9 @@ function capability(provider: string, records: readonly AttemptRecord[]) {
           ? "flaky"
           : neverAnswered > 0
             ? "fails"
-            : "not-reached";
+            : unanswered.length > 0
+              ? "external-unused"
+              : "not-reached";
 
   return {
     probes: probes.length,
@@ -569,6 +577,12 @@ export function summaryMarkdown(site: ServicesSite): string {
         for (const u of row.unsupported)
           lines.push(`- ${p.provider} ${path} #${u.attempt}${from(u.runId)}: ${u.reason}`);
     }
+
+  for (const p of site.providers)
+    if (p.capability.docker === "external-unused")
+      lines.push(
+        `- ${p.provider} compose: its only Docker was a daemon outside the sandbox, not used`,
+      );
 
   lines.push("", "## Not run", "");
 

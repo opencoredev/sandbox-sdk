@@ -2,7 +2,7 @@ import { SandboxError, type RunOptions, type RunResult } from "@opencoredev/sand
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
@@ -17,6 +17,7 @@ import {
   refusedPrerequisite,
   stopTree,
   daemonScan,
+  socketOwner,
   storageIncompatibility,
   cleanupStatus,
   projectCleanupOf,
@@ -39,6 +40,7 @@ import {
 } from "../../src/services/probe.js";
 import {
   attemptRecordSchema,
+  outsideSandbox,
   type AttemptRecord,
   type DaemonRecord,
   type DaemonTry,
@@ -246,14 +248,17 @@ function scriptedBox(rules: [RegExp, (command: string) => Partial<RunResult>][])
       commands.push(command);
       const rule = rules.find(([pattern]) => pattern.test(command));
 
-      // Unscripted, the ownership scan sees no other daemon and every stop is confirmed.
+      // Unscripted, the ownership scan sees no other daemon, a daemon found running on the default
+      // socket lives in the guest, and every stop is confirmed.
       const result = rule
         ? rule[1](command)
         : command.includes('"SCANNED $n"')
           ? { output: "SCANNED 12" }
-          : command.includes("kill -TERM")
-            ? { output: "STOPPED" }
-            : { ok: true, exitCode: 0 };
+          : command.includes("NOT-LISTENING")
+            ? { output: "OWNER 812 dockerd" }
+            : command.includes("kill -TERM")
+              ? { output: "STOPPED" }
+              : { ok: true, exitCode: 0 };
 
       const output = result.output ?? "";
 
@@ -315,6 +320,78 @@ describe("daemon ladder", () => {
     });
     expect(started).toEqual([]);
     expect(d.compose).toBe("docker compose");
+  });
+
+  /** A guest whose default socket answers, with this answer to who serves it; dockerd can start. */
+  const foundWith = async (owner: Partial<RunResult>) => {
+    let starts = 0;
+
+    const { box, commands } = scriptedBox([
+      [/NOT-LISTENING/, () => owner],
+      [
+        /daemon-ping/,
+        (c) =>
+          c.includes("/var/run/docker.sock") || starts > 0
+            ? { output: pingOk }
+            : { ok: false, exitCode: 1, output: "x" },
+      ],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    box.start = async (command: string) => {
+      starts++;
+
+      return { name: command };
+    };
+
+    const d = await getDaemon(guestFor(box), probeOf({ dockerd: "yes" }), 10_000, () => {});
+
+    return { d, commands, starts: () => starts };
+  };
+
+  test("a daemon whose socket is served from outside the guest is not used, and the ladder goes on", async () => {
+    const { d, commands, starts } = await foundWith({
+      ok: false,
+      exitCode: 3,
+      output: "NOT-LISTENING",
+    });
+
+    expect(commands.find((c) => c.includes("NOT-LISTENING"))).toContain(" sh /var/run/docker.sock");
+    expect(d.record.skipped).toContainEqual({
+      method: "preinstalled-running",
+      reason: outsideSandbox,
+    });
+    expect(starts()).toBe(1);
+    expect(d.record).toMatchObject({ method: "preinstalled-started", launched: true });
+    expect(d.record.answered).toBe(`preinstalled-started/${d.record.config}`);
+  });
+
+  test("a daemon not shown to serve the socket from inside the guest is treated as outside", async () => {
+    for (const owner of [
+      { ok: false, exitCode: 3, output: "NO-OWNER 4242" },
+      { ok: false, exitCode: 4, output: "" },
+      { output: "" },
+      { output: "OWNER 77 socat" },
+    ]) {
+      const { d } = await foundWith(owner);
+
+      expect(d.record.skipped).toContainEqual({
+        method: "preinstalled-running",
+        reason: outsideSandbox,
+      });
+      expect(d.record.method).toBe("preinstalled-started");
+    }
+  });
+
+  test("a daemon serving the socket from inside the guest is used as found", async () => {
+    const { d, starts } = await foundWith({ output: "OWNER 77 podman" });
+
+    expect(d.record).toMatchObject({
+      method: "preinstalled-running",
+      config: "as-found",
+      skipped: [],
+    });
+    expect(starts()).toBe(0);
   });
 
   test("root without Docker: fetch the static bundle, fall through a failing config, fetch compose", async () => {
@@ -1932,7 +2009,8 @@ describe("compose cleanup obligation", () => {
       down: false,
       launched: false,
     });
-    expect(projectCleanupOf(d)).toBe("open");
+    // A daemon found running is used only when it lives in the guest: the project goes with it.
+    expect(projectCleanupOf(d)).toBe("with-sandbox");
   });
 
   test("the summary keeps cleanup apart from the outcome", () => {
@@ -2590,9 +2668,9 @@ describe("project claims before up", () => {
     };
 
     await d.claim();
-    expect(events).toEqual(["pending as-found preinstalled-running/as-found sb-1"]);
+    expect(events).toEqual(["pending in-sandbox preinstalled-running/as-found sb-1"]);
     expect(await d.down(guestFor(box), 1000)).toBe(true);
-    expect(events.at(-1)).toBe("down as-found preinstalled-running/as-found sb-1");
+    expect(events.at(-1)).toBe("down in-sandbox preinstalled-running/as-found sb-1");
 
     // A claim that cannot be journaled never lets up run.
     d.onProject = async () => {
@@ -2880,6 +2958,62 @@ describe("the daemon scan reads each daemon's state", () => {
   });
 });
 
+describe("the socket owner check finds the guest process serving the default socket", () => {
+  test("a dockerd holding the listening socket owns it; a socket from outside or held by another process does not", async () => {
+    const root = await mkdtemp(join(tmpdir(), "svc-proc-"));
+
+    const proc = async (pid: string, comm: string, fds: Record<string, string>) => {
+      await mkdir(join(root, pid, "fd"), { recursive: true });
+      await writeFile(join(root, pid, "comm"), `${comm}\n`);
+
+      for (const [fd, target] of Object.entries(fds))
+        await symlink(target, join(root, pid, "fd", fd));
+    };
+
+    const unix = (lines: string[]) =>
+      writeFile(
+        join(root, "net", "unix"),
+        ["Num       RefCount Protocol Flags    Type St Inode Path", ...lines, ""].join("\n"),
+      );
+
+    const owner = () =>
+      new Promise<{ code: number; stdout: string }>((done) =>
+        execFile(
+          "sh",
+          ["-c", socketOwner.replaceAll("/proc", root), "sh", "/var/run/docker.sock"],
+          (error, stdout) => done({ code: error ? Number(error.code) : 0, stdout: stdout.trim() }),
+        ),
+      );
+
+    try {
+      await mkdir(join(root, "net"));
+      await proc("15", "bash", { "0": "/dev/null" });
+      await proc("16", "socat", { "3": "socket:[4242]" });
+      await proc("17", "dockerd", { "3": "pipe:[1]", "4": "socket:[4242]" });
+
+      // Listening (flags 00010000) on the default socket, and an accepted connection beside it.
+      await unix([
+        "0000000000000000: 00000002 00000000 00010000 0001 01 4242 /var/run/docker.sock",
+        "0000000000000000: 00000003 00000000 00000000 0001 03 4343 /var/run/docker.sock",
+      ]);
+      expect(await owner()).toEqual({ code: 0, stdout: "OWNER 17 dockerd" });
+
+      // Nothing listens there in this network namespace: a socket mounted in from outside.
+      await unix(["0000000000000000: 00000002 00000000 00010000 0001 01 5555 /run/other.sock"]);
+      expect(await owner()).toEqual({ code: 3, stdout: "NOT-LISTENING" });
+
+      // Only a process that is neither dockerd nor podman holds it.
+      await rm(join(root, "17"), { recursive: true });
+      await unix([
+        "0000000000000000: 00000002 00000000 00010000 0001 01 4242 /var/run/docker.sock",
+      ]);
+      expect(await owner()).toEqual({ code: 3, stdout: "NO-OWNER 4242" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("placement through the run manifest and the summary", () => {
   const folder = async (id: string, provider: string, placement: Record<string, string | null>) => {
     const dir = await mkdtemp(join(tmpdir(), "svc-placement-"));
@@ -3081,6 +3215,41 @@ describe("storage fallback only for a storage-driver incompatibility", () => {
       "error pulling image: Get https://registry-1.docker.io/v2/: net/http: TLS handshake timeout",
     ])
       expect(storageIncompatibility(output)).toBeNull();
+  });
+
+  test("a provider whose only Docker was a daemon outside the sandbox gets no verdict, and says so", () => {
+    const base = record({ provider: "p", path: "compose", attempt: 1, up: null });
+
+    const outside: AttemptRecord = {
+      ...base,
+      daemon: base.daemon
+        ? { ...base.daemon, skipped: [{ method: "preinstalled-running", reason: outsideSandbox }] }
+        : null,
+    };
+
+    const run = {
+      id: "r1",
+      sdkCommit: "a",
+      startedAt: "x",
+      endedAt: null,
+      location: "evo-1",
+      settings: {},
+      artifacts: { node: "n", fixture: "f", native: "b" },
+    };
+
+    const site = servicesSiteData({ records: [outside], runs: [run] });
+
+    expect(site.providers[0]?.capability.docker).toBe("external-unused");
+    expect(summaryMarkdown(site)).toContain(
+      "- p compose: its only Docker was a daemon outside the sandbox, not used",
+    );
+    // Beside an attempt whose own daemons all failed, the provider fails.
+    expect(
+      servicesSiteData({
+        records: [outside, { ...base, attempt: 2, attemptId: "p-compose-2" }],
+        runs: [run],
+      }).providers[0]?.capability.docker,
+    ).toBe("fails");
   });
 
   test("a daemon that answered stays a Docker start after a storage fallback cleared its method", () => {

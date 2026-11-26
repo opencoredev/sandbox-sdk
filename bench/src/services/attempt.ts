@@ -33,6 +33,7 @@ import { composePlugin, dockerRootlessExtras, dockerStatic, expectedTests } from
 import { canBeRoot, parseProbe, probeScript, rootlessPrerequisites, type Probe } from "./probe.js";
 import {
   attemptSchemaVersion,
+  outsideSandbox,
   type AttemptRecord,
   type DaemonMethod,
   type DaemonRecord,
@@ -605,6 +606,14 @@ export const stopTree = (dir: string) =>
  */
 export const daemonScan = `n=0; for p in /proc/[0-9]*; do [ -d "$p" ] || continue; if ! c=$(cat "$p"/comm 2>/dev/null); then [ -d "$p" ] && echo "UNREADABLE:\${p#/proc/}"; continue; fi; n=$((n + 1)); case "$c" in dockerd|containerd) s=$(sed 's/.*) //' "$p"/stat 2>/dev/null | cut -d' ' -f1); case "$s" in Z|X) ;; '') [ -d "$p" ] && echo "UNREADABLE:\${p#/proc/}" ;; *) echo "\${p#/proc/}:$c" ;; esac ;; esac; done; echo "SCANNED $n"`;
 
+/**
+ * Which process in this guest serves the listening socket at `$1`, at the privilege it runs with:
+ * `OWNER <pid> <comm>` for a dockerd or podman holding the socket's inode, and exit 0; else
+ * `NOT-LISTENING` (nothing in this network namespace listens there: a socket mounted in from
+ * outside) or `NO-OWNER <inode>` (no dockerd or podman here that can be read holds it), and exit 3.
+ */
+export const socketOwner = `s="$1"; r=$(readlink -f "$s" 2>/dev/null || echo "$s"); ino=$(awk -v a="$s" -v b="$r" '$4 == "00010000" && ($NF == a || $NF == b) { print $7; exit }' /proc/net/unix) || exit 4; [ -n "$ino" ] || { echo NOT-LISTENING; exit 3; }; for p in /proc/[0-9]*; do c=$(cat "$p"/comm 2>/dev/null) || continue; case "$c" in dockerd|podman) for f in "$p"/fd/*; do [ "$(readlink "$f" 2>/dev/null)" = "socket:[$ino]" ] && { echo "OWNER \${p#/proc/} $c"; exit 0; }; done ;; esac; done; echo "NO-OWNER $ino"; exit 3`;
+
 /** One method of the ladder: tries it, or records the probe fact that rules it out. */
 /** The attempt a Compose project belongs to, as its journal names it. */
 interface ProjectOwner {
@@ -965,7 +974,7 @@ class Daemon {
       ...this.owner,
       project: this.project,
       daemon: `${this.record.method ?? "?"}/${this.record.config ?? "?"}`,
-      provenance: this.record.method === "preinstalled-running" ? "as-found" : "launched",
+      provenance: this.record.method === "preinstalled-running" ? "in-sandbox" : "launched",
       state: "pending",
       down: `${this.g.prelude()}${this.composeCommand(composeDown)}`,
       quiesce: [
@@ -988,11 +997,11 @@ class Daemon {
     this.projectUsed = true;
   }
 
-  /** Resolve the claims on daemons launched inside a sandbox whose deletion is now confirmed. */
+  /** Resolve the claims on daemons inside a sandbox whose deletion is now confirmed. */
   async releaseWithSandbox() {
-    for (const claim of this.claims.filter((c) => c.provenance === "launched"))
+    for (const claim of this.claims.filter((c) => c.provenance !== "as-found"))
       await this.onProject?.({ ...claim, state: "with-sandbox" }).catch(() => {});
-    this.claims = this.claims.filter((c) => c.provenance !== "launched");
+    this.claims = this.claims.filter((c) => c.provenance === "as-found");
   }
 
   async down(via: Guest, timeoutMs: number): Promise<boolean> {
@@ -1041,7 +1050,9 @@ class Daemon {
   /**
    * A daemon already answering on the default socket, within `readyMs` on the monotonic clock;
    * an answer after that is refused. Anything that does not answer in time is left alone and
-   * the rung is unavailable.
+   * the rung is unavailable. One that answers is used only when its dockerd or podman holds the
+   * socket in this guest (`socketOwner`); otherwise it is ruled out (`outsideSandbox`) and the
+   * ladder goes on to this attempt's own launches.
    */
   async running(): Promise<boolean> {
     this.socket = "/var/run/docker.sock";
@@ -1092,6 +1103,26 @@ class Daemon {
       this.g.dockerHost = null;
 
       return false;
+    }
+
+    // Only a daemon living in this guest goes with the sandbox, so only one is used: its dockerd or
+    // podman must hold the socket here. One outside, or one not shown to be inside, could keep a
+    // project after the sandbox is gone, and no teardown could prove otherwise.
+    const owner = await this.g
+      .exec(
+        `${canBeRoot(this.probe) ? this.sudo : ""}sh -c ${quote(socketOwner)} sh ${this.socket}`,
+        {
+          timeoutMs: 20_000,
+        },
+      )
+      .catch(() => null);
+
+    this.g.diagnostics("socket-owner", owner?.output ?? "no answer");
+
+    if (owner?.ok !== true || !/^OWNER \d+ (?:dockerd|podman)$/m.test(owner.output)) {
+      this.g.dockerHost = null;
+
+      return this.skip("preinstalled-running", outsideSandbox);
     }
 
     this.succeed(
@@ -2110,10 +2141,10 @@ export async function runServicesAttempt(
 
 /**
  * The attempt's Compose project, apart from its sandbox: `none` when it never came up, `down`
- * once its own `down` exited 0, `with-sandbox` when it did not but the daemon holding it was
- * launched inside the sandbox (it goes when the sandbox's deletion is confirmed), and `open` when
- * it may still run on a daemon that was already there and can outlive the sandbox. No sandbox
- * deletion or sweep ever resolves `open`.
+ * once its own `down` exited 0, `with-sandbox` when it did not but the daemon holding it lives
+ * inside the sandbox (launched there, or found running there: `Daemon.running` uses no other), so
+ * it goes when the sandbox's deletion is confirmed, and `open` otherwise. No sandbox deletion or
+ * sweep ever resolves `open`.
  */
 export function projectCleanupOf(
   daemon: { readonly projectUsed: boolean; readonly record: DaemonRecord } | null,
@@ -2122,7 +2153,9 @@ export function projectCleanupOf(
 
   if (daemon.record.down === true) return "down";
 
-  return daemon.record.launched ? "with-sandbox" : "open";
+  return daemon.record.launched || daemon.record.method === "preinstalled-running"
+    ? "with-sandbox"
+    : "open";
 }
 
 /** Everything the attempt made is gone: its sandbox's deletion is confirmed and no project is open. */

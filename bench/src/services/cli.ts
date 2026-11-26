@@ -326,7 +326,7 @@ async function unconfirmedOwned(
   const claims = new Map<string, (typeof projects.items)[number]>();
   const key = (e: { attemptId: string; daemon: string }) => `${e.attemptId} ${e.daemon}`;
 
-  // A project stays claimed until its `down` (or, on a launched daemon, its sandbox's deletion); an
+  // A project stays claimed until its `down` (or, on a daemon in the sandbox, its deletion); an
   // abandoned sandbox's deletion (`sandbox-gone`) leaves the project claimed, with no sandbox.
   for (const event of projects.items)
     if (event.state === "pending" || event.state === "sandbox-gone") claims.set(key(event), event);
@@ -370,10 +370,10 @@ async function unconfirmedOwned(
       ),
       ...asFound.map((c) => [c.attemptId, projectIdentity(c)] as const),
     ]),
-    /** Unresolved claims on daemons launched inside their sandbox: a clean sweep resolves them. */
+    /** Unresolved claims on daemons inside their sandbox: a clean sweep resolves them. */
     launchedProjects: new Map(
       pending.flatMap((c) =>
-        c.provenance === "launched" ? [[c.attemptId, projectIdentity(c)] as const] : [],
+        c.provenance === "as-found" ? [] : [[c.attemptId, projectIdentity(c)] as const],
       ),
     ),
     unreadable: owned.bad + records.bad + submissions.bad + projects.bad,
