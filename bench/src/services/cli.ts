@@ -18,8 +18,13 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { connectSandbox } from "@opencoredev/sandbox-sdk";
-import { fingerprintSchema, journalFingerprint, reapConnection } from "../connections.js";
-import type { FactoryOptions } from "../providers.js";
+import {
+  fingerprintSchema,
+  journalFingerprint,
+  reapConnection,
+  sdkRegionVariables,
+} from "../connections.js";
+import { regionKeys, type FactoryOptions } from "../providers.js";
 import { attemptBudget, loadSlotProvider, sweepProviders, type RunNote } from "../realistic/cli.js";
 import { providerSetup, providerSetups, tracks, type TrackId } from "../realistic/setup.js";
 import type { SlotProvider } from "../realistic/slots.js";
@@ -130,33 +135,24 @@ const runFileSchema = runInfoSchema.extend({
 });
 
 /**
- * Placement variables each adapter reads (packages/sdk providers), recorded per provider so runs
- * placed differently are never pooled. Region values, never secrets.
- */
-const placementEnv = new Map([
-  ["e2b", ["E2B_REGION"]],
-  ["vercel", ["VERCEL_REGION"]],
-  ["modal", ["MODAL_SANDBOX_REGION"]],
-  ["daytona", ["DAYTONA_TARGET"]],
-  ["buddy", ["BUDDY_REGION"]],
-  ["archil", ["ARCHIL_REGION"]],
-  ["sandboxer", ["SANDBOXER_REGION"]],
-]);
-
-/**
- * An adapter's placement as the run resolves it: the shared loader's `BENCH_REGION_<ADAPTER>`,
- * which it passes to the adapter (providerRegion in bench/src/providers.ts), and every native
- * variable the adapter reads itself, each with its value or null.
+ * An adapter's placement as the run resolves it, recorded per provider so runs placed differently
+ * are never pooled: the shared loader's `BENCH_REGION_<ADAPTER>` and native region variable
+ * (`regionKeys`, which providerRegion resolves and passes on), and every region variable the
+ * provider's own SDK reads (`sdkRegionVariables`, the table its connection fingerprint uses), each
+ * with its value or null. Region values, never secrets.
  */
 export function placementOf(
   adapter: string,
   env: NodeJS.ProcessEnv,
 ): Record<string, string | null> {
+  const native = regionKeys.get(adapter);
+
   return Object.fromEntries(
-    [`BENCH_REGION_${adapter.toUpperCase()}`, ...(placementEnv.get(adapter) ?? [])].map((name) => [
-      name,
-      env[name] ?? null,
-    ]),
+    [
+      `BENCH_REGION_${adapter.toUpperCase()}`,
+      ...(native === undefined ? [] : [native]),
+      ...(sdkRegionVariables.get(adapter) ?? []),
+    ].map((name) => [name, env[name] ?? null]),
   );
 }
 
@@ -325,6 +321,12 @@ async function unconfirmedOwned(
 
   const pending = [...claims.values()];
   const asFound = pending.filter((c) => c.provenance === "as-found");
+  // Each project's latest event: a later `down` (recovery's included) clears an older open row,
+  // which stays in the attempt journal for audit.
+  const latest = new Map(projects.items.map((e) => [e.project, e.state]));
+
+  const stillOpen = (r: AttemptRecord) =>
+    projectOpen(r) && (latest.get(r.daemon?.project ?? "") ?? "pending") === "pending";
 
   return {
     known,
@@ -338,7 +340,7 @@ async function unconfirmedOwned(
      */
     openProjects: new Map([
       ...records.items.flatMap((r) =>
-        projectOpen(r)
+        stillOpen(r)
           ? [
               [
                 r.attemptId,
@@ -467,8 +469,9 @@ export const bestEffortNotes =
 const visibilityWindowMs = 60_000;
 
 /**
- * The realistic sweep (label discovery, then every known ID), with a fallback: when it throws
- * before reaching the providers (a torn Modal App journal), every known ID is still deleted by ID.
+ * Every deletion this run makes goes through here: as-found projects are torn down first, a
+ * sandbox whose as-found claim is still unresolved is kept (`retained`, each with its project),
+ * then the sweep runs.
  */
 async function sweepRun(input: {
   label: string;
@@ -476,10 +479,49 @@ async function sweepRun(input: {
   note: (entry: RunNote) => Promise<void>;
   out: string;
   known: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Attempts whose as-found project an operator gave up on (`sweep --abandon-project`). */
+  abandon?: ReadonlySet<string>;
+}) {
+  const names = new Set(input.entries.map((e) => e.name));
+
+  const claims = async () =>
+    (await unconfirmedOwned(input.out)).asFound.filter((c) => names.has(c.provider));
+
+  // A reachable sandbox may be the only way back to an as-found daemon: its project is torn down
+  // first, and while that has not worked the sandbox is kept out of every deletion below.
+  await downAsFound({ ...input, claims: await claims() });
+
+  const kept = (await claims()).filter(
+    (c) => c.sandboxId !== null && !input.abandon?.has(c.attemptId),
+  );
+
+  const retain = new Set(kept.flatMap((c) => (c.sandboxId === null ? [] : [c.sandboxId])));
+
+  for (const claim of kept)
+    await input.note({ kind: "sandbox-retained", project: projectIdentity(claim) }).catch(() => {});
+
+  const swept = await sweepOrDelete({ ...input, retain });
+
+  return { ...swept, retained: kept.map(projectIdentity) };
+}
+
+/**
+ * The realistic sweep (label discovery, then every known ID), with a fallback: when it throws
+ * before reaching the providers (a torn Modal App journal), every known ID is still deleted by ID.
+ * Retained IDs are never deleted.
+ */
+async function sweepOrDelete(input: {
+  label: string;
+  entries: readonly SlotProvider[];
+  note: (entry: RunNote) => Promise<void>;
+  out: string;
+  known: ReadonlyMap<string, ReadonlySet<string>>;
+  retain: ReadonlySet<string>;
 }) {
   try {
     return await sweepProviders(input.label, input.entries, input.note, input.out, {
       known: input.known,
+      retain: input.retain,
     });
   } catch (error) {
     await input
@@ -489,6 +531,8 @@ async function sweepRun(input: {
 
     for (const entry of input.entries)
       for (const id of input.known.get(entry.name) ?? []) {
+        if (input.retain.has(id)) continue;
+
         const removed = await Promise.race([
           entry.provider.destroy(id).then(
             () => true,
@@ -763,7 +807,8 @@ async function run(args: string[]) {
       ...swept,
     }).catch(() => {});
 
-    return !swept.failed && !swept.undeleted && !swept.unchecked;
+    // A sandbox kept for its project is not gone: admission stays closed.
+    return !swept.failed && !swept.undeleted && !swept.unchecked && !swept.retained.length;
   };
 
   const runProvider = async ({ setup, entry }: (typeof entries)[number]) => {
@@ -940,7 +985,7 @@ async function run(args: string[]) {
         ? "complete"
         : "stopped";
   } finally {
-    const { known, unresolved, unreadable, unreadableFiles, asFound } = await unconfirmedOwned(
+    const { known, unresolved, unreadable, unreadableFiles } = await unconfirmedOwned(
       out,
       live,
       unknownLive,
@@ -967,7 +1012,6 @@ async function run(args: string[]) {
       known,
     };
 
-    await downAsFound({ claims: asFound, ...sweepInput });
     let swept = await sweepRun(sweepInput);
     const unknownCreates = [...unresolved.values()].reduce((a, b) => a + b, 0);
 
@@ -1015,6 +1059,7 @@ async function run(args: string[]) {
         unchecked: Math.max(swept.unchecked, more.unchecked),
         failed: swept.failed + more.failed,
         undeleted: swept.undeleted + more.undeleted,
+        retained: more.retained,
       };
     }
 
@@ -1031,6 +1076,8 @@ async function run(args: string[]) {
       process.stderr.write(`Sweep left work: ${JSON.stringify(swept)}; see ${notesPath}\n`);
       process.exitCode = 1;
     }
+
+    reportRetained(swept.retained, notesPath);
 
     const journaled = await unconfirmedOwned(out, live, unknownLive, done);
     // A claim on a daemon launched inside its sandbox is resolved only by a sweep that left nothing.
@@ -1050,6 +1097,20 @@ async function run(args: string[]) {
  * Compose projects that may still run on a daemon that outlived its sandbox: no sweep can remove
  * them, so they are named and the command fails, every time, until someone removes them by hand.
  */
+/**
+ * Sandboxes kept alive because each is the way back to an as-found daemon whose project never came
+ * down: named with their project, and the command fails until a later sweep tears it down or an
+ * operator abandons it.
+ */
+function reportRetained(projects: readonly string[], notesPath: string) {
+  if (!projects.length) return;
+
+  process.stderr.write(
+    `Kept ${projects.length} sandboxes for their unresolved as-found Compose projects: ${projects.join("; ")}. Sweep again once the daemon is reachable, or pass sweep --abandon-project ATTEMPT to delete one anyway; see ${notesPath}\n`,
+  );
+  process.exitCode = 1;
+}
+
 function failOnOpenProjects(projects: readonly string[], notesPath: string) {
   if (!projects.length) return;
 
@@ -1085,7 +1146,9 @@ async function summary(args: string[]) {
   for (const dir of dirs) {
     const run = runFileSchema.parse(JSON.parse(await readFile(join(dir, "run.json"), "utf8")));
     const rows = await readRecords(join(dir, recordsFile));
-    runs.push(run);
+    // Only the public run fields reach the site file: never the owner label, connection
+    // fingerprints, plan or recovery state.
+    runs.push(runInfoSchema.parse(run));
     records.push(...rows);
     notRun.push(...(await readNotRun(dir, run.id)));
 
@@ -1140,6 +1203,8 @@ export async function sweep(args: string[], load: typeof loadSlotProvider = load
       run: { type: "string" },
       providers: { type: "string" },
       track: { type: "string", default: "same-machine" },
+      /** Delete this attempt's kept sandbox although its as-found project never came down. */
+      "abandon-project": { type: "string", multiple: true },
     },
   });
 
@@ -1161,7 +1226,7 @@ export async function sweep(args: string[], load: typeof loadSlotProvider = load
   const notesPath = join(out, "notes.jsonl");
   const note = bestEffortNotes(notesPath);
 
-  const { known, unresolved, unreadable, unreadableFiles, asFound } = await unconfirmedOwned(out);
+  const { known, unresolved, unreadable, unreadableFiles } = await unconfirmedOwned(out);
 
   for (const error of unreadableFiles) await note({ kind: "journal-unreadable", error });
 
@@ -1227,9 +1292,15 @@ export async function sweep(args: string[], load: typeof loadSlotProvider = load
       await note({ kind: "sweep-excluded", provider, ids: [...(known.get(provider) ?? [])] });
     }
 
-  // A reachable sandbox may be the only way back to an as-found daemon: tear down first.
-  await downAsFound({ claims: asFound, entries, label, out, note });
-  const swept = await sweepRun({ label, entries, note, out, known });
+  const swept = await sweepRun({
+    label,
+    entries,
+    note,
+    out,
+    known,
+    abandon: new Set(values["abandon-project"] ?? []),
+  });
+
   const { openProjects, launchedProjects } = await unconfirmedOwned(out);
   const unknownCreates = [...unresolved.values()].reduce((a, b) => a + b, 0);
   const unchecked = swept.unchecked + unreachable + unreadable + unreadableFiles.length;
@@ -1238,10 +1309,11 @@ export async function sweep(args: string[], load: typeof loadSlotProvider = load
   const open = new Map([...(clean ? [] : launchedProjects), ...openProjects]);
 
   process.stdout.write(
-    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, unreachable, unreadableJournalLines: unreadable, unreadableJournals: unreadableFiles.length, unresolvedCreates: unknownCreates, openProjects: open.size })}; see ${notesPath}\n`,
+    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, retained: swept.retained.length, unreachable, unreadableJournalLines: unreadable, unreadableJournals: unreadableFiles.length, unresolvedCreates: unknownCreates, openProjects: open.size })}; see ${notesPath}\n`,
   );
 
   if (swept.failed || swept.undeleted || unchecked || unknownCreates) process.exitCode = 1;
+  reportRetained(swept.retained, notesPath);
   failOnOpenProjects([...open.values()], notesPath);
 }
 

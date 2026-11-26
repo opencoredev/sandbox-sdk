@@ -583,6 +583,13 @@ export const fingerprintSchema = z.string().regex(/^[0-9a-f]{16}$/);
 const connectionFields = z.record(z.string(), z.string().optional());
 
 /**
+ * Region variables a provider's own SDK reads from the environment, with no adapter option: part of
+ * its connection fingerprint here, and of the services run's placement. Boxd's SDK routes machine
+ * calls to BOXD_REGION, else the account's home cluster.
+ */
+export const sdkRegionVariables = new Map([["boxd", ["BOXD_REGION"]]]);
+
+/**
  * What a connection takes from the environment through the provider's own SDK, where
  * `resolveConfig` leaves the field unset: Boxd's and Tenki's endpoints, Boxd's region, Railway's
  * endpoints, Vercel's OIDC token. Modal's are read through its SDK (`modalProfileOf`). Tenki's SDK
@@ -592,17 +599,15 @@ const connectionFields = z.record(z.string(), z.string().optional());
 function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields> {
   const env = process.env;
 
+  const regions = Object.fromEntries(
+    (sdkRegionVariables.get(connection.name) ?? []).map((name) => [name, env[name]]),
+  );
+
   switch (connection.name) {
     case "boxd":
-      // The adapter has no region option: the SDK routes machine calls to BOXD_REGION, else the
-      // account's home cluster.
       return connection.config.baseURL === undefined
-        ? {
-            BOXD_BASE_URL: env.BOXD_BASE_URL,
-            BOXD_API_URL: env.BOXD_API_URL,
-            BOXD_REGION: env.BOXD_REGION,
-          }
-        : { BOXD_REGION: env.BOXD_REGION };
+        ? { BOXD_BASE_URL: env.BOXD_BASE_URL, BOXD_API_URL: env.BOXD_API_URL, ...regions }
+        : regions;
     case "railway": {
       // Railway's SDK takes its endpoints from the environment, and its token from RAILWAY_TOKEN
       // when the adapter passes none.

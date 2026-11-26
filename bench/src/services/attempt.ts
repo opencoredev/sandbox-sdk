@@ -1460,15 +1460,26 @@ export async function getDaemon(
   return d;
 }
 
-/** Output that says the daemon's storage driver cannot work here (overlay mounts refused). */
-const storageFailure =
-  /failed to (?:extract layer|mount|register layer)|error creating overlay mount|overlay.*(?:invalid argument|not supported|operation not permitted)/i;
-
-const storageReason = (output: string) =>
-  output
+/**
+ * The line of a pull or start output that says the daemon's storage driver itself cannot work here
+ * (an overlay or layer mount refused as invalid, unsupported or not permitted), or null. A full
+ * disk, a failed download or extraction, or anything else is the workload's failure, never a
+ * reason to change daemons.
+ */
+export function storageIncompatibility(output: string): string | null {
+  const line = output
     .split("\n")
-    .find((line) => storageFailure.test(line))
-    ?.slice(0, 300) ?? "storage driver failed";
+    .find(
+      (text) =>
+        /(?:overlay|failed to (?:extract|register) layer|failed to mount|storage driver)/i.test(
+          text,
+        ) &&
+        /(?:invalid argument|not supported|operation not permitted)/i.test(text) &&
+        !/no space left on device/i.test(text),
+    );
+
+  return line === undefined ? null : line.slice(0, 300);
+}
 
 async function composePath(
   g: Guest,
@@ -1528,11 +1539,9 @@ async function composePath(
       if (start?.ok) break;
       const failed = start ?? pull;
 
-      if (
-        !g.signal.aborted &&
-        storageFailure.test(failed.output) &&
-        (await daemon.switchStorage(storageReason(failed.output)))
-      )
+      const incompatible = storageIncompatibility(failed.output);
+
+      if (!g.signal.aborted && incompatible !== null && (await daemon.switchStorage(incompatible)))
         continue;
 
       throw new StageFailure(
@@ -1971,7 +1980,19 @@ export async function runServicesAttempt(
   // output writing afterwards are ours, not the provider's.
   let stoppedAt = now();
 
-  if (target || strayId) {
+  // The sandbox may be the only way back to a daemon that was already there: while the project on
+  // it did not come down, the sandbox stays, unconfirmed, for recovery to retry its teardown.
+  if (projectCleanupOf(st.daemonRef) === "open")
+    phases.push({
+      name: "destroy",
+      startedAt: cleanupStart,
+      endedAt: now(),
+      ok: false,
+      exitCode: null,
+      timedOut: false,
+      note: "kept: its as-found Compose project did not come down",
+    });
+  else if (target || strayId) {
     const destroy = target
       ? () => target.destroy()
       : () => plan.entry.provider.destroy(strayId ?? "");

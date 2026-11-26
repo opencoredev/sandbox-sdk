@@ -17,6 +17,7 @@ import {
   refusedPrerequisite,
   stopTree,
   daemonScan,
+  storageIncompatibility,
   cleanupStatus,
   projectCleanupOf,
   systemBin,
@@ -2363,7 +2364,7 @@ describe("open Compose projects in recovery", () => {
     };
   };
 
-  const sweepWith = async (row: AttemptRecord) => {
+  const sweepWith = async (row: AttemptRecord, projects: object[] = []) => {
     const dir = await mkdtemp(join(tmpdir(), "svc-project-"));
     const before = process.exitCode;
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -2372,6 +2373,10 @@ describe("open Compose projects in recovery", () => {
     try {
       await writeFile(join(dir, "run.json"), JSON.stringify(runFile));
       await writeFile(join(dir, "services-attempts.jsonl"), `${JSON.stringify(row)}\n`);
+      await writeFile(
+        join(dir, "projects.jsonl"),
+        projects.map((p) => `${JSON.stringify(p)}\n`).join(""),
+      );
       await servicesCommand(["sweep", "--out", dir, "--run", "r1"]);
 
       return {
@@ -2397,6 +2402,37 @@ describe("open Compose projects in recovery", () => {
     const launched = await sweepWith(leftOn("with-sandbox"));
     expect(launched.exitCode).not.toBe(1);
     expect(launched.stdout).toContain('"openProjects":0');
+  });
+
+  test("a later teardown of the same project clears the row's open obligation; the row stays", async () => {
+    const base = leftOn("open");
+
+    const row: AttemptRecord = {
+      ...base,
+      daemon: base.daemon ? { ...base.daemon, project: "sbx-p-compose-1-abc123" } : null,
+    };
+
+    const claim = {
+      provider: "p",
+      attemptId: "p-compose-1",
+      project: "sbx-p-compose-1-abc123",
+      daemon: "preinstalled-running/as-found",
+      provenance: "as-found",
+      sandboxId: "sb",
+    };
+
+    const pending = await sweepWith(row, [{ ...claim, state: "pending" }]);
+    expect(pending.exitCode).toBe(1);
+    expect(pending.stdout).toContain('"openProjects":1');
+
+    const recovered = await sweepWith(row, [
+      { ...claim, state: "pending" },
+      { ...claim, state: "down" },
+    ]);
+
+    expect(recovered.exitCode).not.toBe(1);
+    expect(recovered.stdout).toContain('"openProjects":0');
+    expect(recovered.stderr).not.toContain("Compose project cleanup unresolved");
   });
 });
 
@@ -2842,7 +2878,7 @@ describe("the daemon scan reads each daemon's state", () => {
 });
 
 describe("placement through the run manifest and the summary", () => {
-  const folder = async (id: string, placement: Record<string, string | null>) => {
+  const folder = async (id: string, provider: string, placement: Record<string, string | null>) => {
     const dir = await mkdtemp(join(tmpdir(), "svc-placement-"));
 
     await writeFile(
@@ -2858,17 +2894,18 @@ describe("placement through the run manifest and the summary", () => {
         conditions: {
           attemptTimeoutMs: 1_500_000,
           daemonReadyMs: 45_000,
-          placement: { modal: placement },
+          placement: { [provider]: placement },
         },
         artifacts: { node: "n", fixture: "f", native: "b" },
-        providers: ["modal"],
+        providers: [provider],
+        connections: { [provider]: "0123456789abcdef" },
         plan: { paths: ["native"], attempts: 1 },
         disposition: "complete",
       }),
     );
     await writeFile(
       join(dir, "services-attempts.jsonl"),
-      `${JSON.stringify({ ...record({ provider: "modal", path: "native", attempt: 1, up: id === "r1" ? 2000 : 8000 }), runId: id })}\n`,
+      `${JSON.stringify({ ...record({ provider, path: "native", attempt: 1, up: id === "r1" ? 2000 : 8000 }), runId: id })}\n`,
     );
 
     return dir;
@@ -2881,8 +2918,8 @@ describe("placement through the run manifest and the summary", () => {
         MODAL_SANDBOX_REGION: name === "MODAL_SANDBOX_REGION" ? "us-east" : null,
       });
 
-      const a = await folder("r1", placementOf("modal", { [name]: "us-east" }));
-      const b = await folder("r2", placementOf("modal", { [name]: "eu-west" }));
+      const a = await folder("r1", "modal", placementOf("modal", { [name]: "us-east" }));
+      const b = await folder("r2", "modal", placementOf("modal", { [name]: "eu-west" }));
 
       try {
         await expect(servicesCommand(["summary", "--out", a, "--out", b])).rejects.toThrow(
@@ -2893,6 +2930,99 @@ describe("placement through the run manifest and the summary", () => {
         await rm(b, { recursive: true, force: true });
       }
     }
+  });
+
+  test("Boxd's SDK region is recorded from the fingerprint's table and never pooled across values", async () => {
+    expect(placementOf("boxd", { BOXD_REGION: "nyc" })).toEqual({
+      BENCH_REGION_BOXD: null,
+      BOXD_REGION: "nyc",
+    });
+
+    const a = await folder("r1", "boxd", placementOf("boxd", { BOXD_REGION: "nyc" }));
+    const b = await folder("r2", "boxd", placementOf("boxd", { BOXD_REGION: "fra" }));
+
+    try {
+      await expect(servicesCommand(["summary", "--out", a, "--out", b])).rejects.toThrow(
+        "boxd was placed differently",
+      );
+    } finally {
+      await rm(a, { recursive: true, force: true });
+      await rm(b, { recursive: true, force: true });
+    }
+  });
+
+  test("services.json carries only the public run fields", async () => {
+    const dir = await folder("r1", "modal", placementOf("modal", {}));
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await servicesCommand(["summary", "--out", dir]);
+      const text = await readFile(join(dir, "services.json"), "utf8");
+
+      for (const field of ["0123456789abcdef", "connections", "ownerLabel", "disposition", "plan"])
+        expect(text).not.toContain(`"${field}"`);
+      expect(JSON.parse(text).runs[0]).toMatchObject({ id: "r1", location: "evo-1" });
+    } finally {
+      stdout.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("storage fallback only for a storage-driver incompatibility", () => {
+  test("an overlay mount refused falls back; a full disk or a failed download does not", () => {
+    expect(
+      storageIncompatibility(
+        "x\nfailed to register layer: error creating overlay mount to /var/lib/docker/overlay2/l/merged: invalid argument",
+      ),
+    ).toContain("error creating overlay mount");
+    expect(
+      storageIncompatibility("failed to mount overlay: operation not permitted"),
+    ).not.toBeNull();
+
+    for (const output of [
+      "failed to extract layer sha256:abc: write /var/lib/docker/overlay2/x/diff/y: no space left on device",
+      "failed to extract layer: unexpected EOF",
+      "error pulling image: Get https://registry-1.docker.io/v2/: net/http: TLS handshake timeout",
+    ])
+      expect(storageIncompatibility(output)).toBeNull();
+  });
+
+  test("a pull that fails on a working daemon keeps Docker's start apart from the workload verdict", () => {
+    const base = record({ provider: "p", path: "compose", attempt: 1, up: 5000 });
+
+    const pullFailed: AttemptRecord = {
+      ...base,
+      outcome: {
+        kind: "failed",
+        stage: "image-pull",
+        reason: "image-pull exited 1",
+        detail: "failed to extract layer: no space left on device",
+      },
+    };
+
+    const run = {
+      id: "r1",
+      sdkCommit: "a",
+      startedAt: "x",
+      endedAt: null,
+      location: "evo-1",
+      settings: {},
+      artifacts: { node: "n", fixture: "f", native: "b" },
+    };
+
+    const provider = servicesSiteData({ records: [pullFailed], runs: [run] }).providers[0];
+
+    expect(provider?.capability.docker).toBe("works");
+    expect(provider?.compose.failures).toEqual([
+      {
+        runId: "r1",
+        attempt: 1,
+        attemptId: "p-compose-1",
+        stage: "image-pull",
+        reason: "image-pull exited 1",
+      },
+    ]);
   });
 });
 

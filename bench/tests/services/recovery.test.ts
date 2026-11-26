@@ -31,28 +31,41 @@ const runFile = (providers: string[], connections: Record<string, string>) => ({
 const lines = (rows: object[]) => rows.map((row) => `${JSON.stringify(row)}\n`).join("");
 
 /**
- * Run `services sweep` on a folder holding these journals, loading providers with the realistic
- * loader or as `entry`; its exit code and output.
+ * Run `services sweep` once per entry of `runs` (its extra arguments) on one folder holding these
+ * journals, loading providers with the realistic loader or as `entry`; each run's exit code and
+ * output.
  */
-async function sweep(files: Record<string, string>, entry?: SlotProvider) {
+async function sweeps(
+  files: Record<string, string>,
+  entry: SlotProvider | undefined,
+  runs: readonly (readonly string[])[],
+) {
   const dir = await mkdtemp(join(tmpdir(), "svc-recovery-"));
   const before = process.exitCode;
   const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  const results = [];
 
   try {
     for (const [name, text] of Object.entries(files)) await writeFile(join(dir, name), text);
-    await servicesSweep(
-      ["--out", dir, "--run", "r1"],
-      entry === undefined ? undefined : () => Promise.resolve({ kind: "ready", entry }),
-    );
 
-    return {
-      exitCode: process.exitCode,
-      stderr: stderr.mock.calls.map(([text]) => String(text)).join(""),
-      stdout: stdout.mock.calls.map(([text]) => String(text)).join(""),
-      projects: await readFile(join(dir, "projects.jsonl"), "utf8").catch(() => ""),
-    };
+    for (const extra of runs) {
+      process.exitCode = undefined;
+      stderr.mockClear();
+      stdout.mockClear();
+      await servicesSweep(
+        ["--out", dir, "--run", "r1", ...extra],
+        entry === undefined ? undefined : () => Promise.resolve({ kind: "ready", entry }),
+      );
+      results.push({
+        exitCode: process.exitCode,
+        stderr: stderr.mock.calls.map(([text]) => String(text)).join(""),
+        stdout: stdout.mock.calls.map(([text]) => String(text)).join(""),
+        projects: await readFile(join(dir, "projects.jsonl"), "utf8").catch(() => ""),
+      });
+    }
+
+    return results;
   } finally {
     stderr.mockRestore();
     stdout.mockRestore();
@@ -60,6 +73,21 @@ async function sweep(files: Record<string, string>, entry?: SlotProvider) {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+/** One `services sweep` run; see {@link sweeps}. */
+async function sweep(files: Record<string, string>, entry?: SlotProvider, extra: string[] = []) {
+  const [result] = await sweeps(files, entry, [extra]);
+
+  if (result === undefined) throw new Error("no sweep ran");
+
+  return result;
+}
+
+const states = (projects: string) =>
+  projects
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line).state);
 
 describe("sweep uses the connection that created the sandboxes", () => {
   test("a Buddy run in EU is not swept from a shell that reaches the US API", async () => {
@@ -98,9 +126,11 @@ describe("sweep uses the connection that created the sandboxes", () => {
 });
 
 describe("recovery tears an as-found project down before it deletes the sandbox", () => {
-  const setup = async (downExit: number) => {
+  /** `connectFailures`: how many of the first connects fail, as a transient 503 would. */
+  const setup = async (downExit: number, connectFailures = 0) => {
     const provider = bindConnection(memory(), {});
     const order: string[] = [];
+    let failures = connectFailures;
 
     const box = await createSandbox(provider, {
       labels: { "sandbox-bench-run": "r1-abcd", "svc-attempt": "e2b-compose-1" },
@@ -108,6 +138,13 @@ describe("recovery tears an as-found project down before it deletes the sandbox"
 
     const exec = provider.exec.bind(provider);
     const destroy = provider.destroy.bind(provider);
+    const connect = provider.connect.bind(provider);
+
+    provider.connect = async (id) => {
+      if (failures-- > 0) throw new Error("503 Service Unavailable");
+
+      return connect(id);
+    };
 
     provider.exec = async (id, input) => {
       if (!input.command.includes("compose -p")) return exec(id, input);
@@ -159,26 +196,50 @@ describe("recovery tears an as-found project down before it deletes the sandbox"
     expect(order[0]).toBe("down true");
     expect(order).toContain("destroy true");
     expect(order.indexOf("destroy true")).toBeGreaterThan(0);
-    expect(
-      swept.projects
-        .trim()
-        .split("\n")
-        .map((l) => JSON.parse(l).state),
-    ).toEqual(["pending", "down"]);
+    expect(states(swept.projects)).toEqual(["pending", "down"]);
     expect(swept.stdout).toContain('"openProjects":0');
     expect(swept.stderr).not.toContain("Compose project cleanup unresolved");
   });
 
-  test("a teardown that fails leaves the claim open with the project's full identity", async () => {
+  test("a teardown that fails keeps the sandbox and the claim open with the project's full identity", async () => {
     const { order, files, entry } = await setup(1);
     const swept = await sweep(files, entry);
 
-    expect(order.slice(0, 2)).toEqual(["down true", "down true"]);
-    expect(order.indexOf("destroy true")).toBeGreaterThan(1);
-    expect(swept.projects.trim().split("\n")).toHaveLength(1);
+    // Two tries, and the sandbox, the way back to that daemon, is never deleted.
+    expect(order).toEqual(["down true", "down true"]);
+    expect(states(swept.projects)).toEqual(["pending"]);
     expect(swept.exitCode).toBe(1);
+    expect(swept.stdout).toContain('"retained":1');
+    expect(swept.stderr).toContain(
+      "Kept 1 sandboxes for their unresolved as-found Compose projects: e2b-compose-1 (project sbx-e2b-compose-1-abc123 on e2b sandbox",
+    );
     expect(swept.stderr).toContain(
       "Compose project cleanup unresolved for e2b-compose-1 (project sbx-e2b-compose-1-abc123 on e2b sandbox",
     );
+  });
+
+  test("a connect that fails once keeps the sandbox, and the next sweep tears down and deletes", async () => {
+    const { order, files, entry } = await setup(0, 1);
+    const [first, second] = await sweeps(files, entry, [[], []]);
+
+    // The first sweep never reached the guest, so it deleted nothing.
+    expect(first?.exitCode).toBe(1);
+    expect(first?.stdout).toContain('"retained":1');
+    expect(states(first?.projects ?? "")).toEqual(["pending"]);
+
+    expect(order).toEqual(["down true", "destroy true"]);
+    expect(second?.exitCode).toBeUndefined();
+    expect(second?.stdout).toContain('"retained":0');
+    expect(states(second?.projects ?? "")).toEqual(["pending", "down"]);
+  });
+
+  test("only --abandon-project deletes a kept sandbox, and its project stays open", async () => {
+    const { order, files, entry } = await setup(1);
+    const swept = await sweep(files, entry, ["--abandon-project", "e2b-compose-1"]);
+
+    expect(order).toEqual(["down true", "down true", "destroy true"]);
+    expect(swept.stdout).toContain('"retained":0');
+    expect(swept.exitCode).toBe(1);
+    expect(swept.stderr).toContain("Compose project cleanup unresolved for e2b-compose-1");
   });
 });

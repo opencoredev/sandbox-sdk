@@ -695,6 +695,8 @@ export async function sweepProviders(
     readonly known?: ReadonlyMap<string, ReadonlySet<string>>;
     /** Bound on each provider call. Default 120 s. */
     readonly callTimeoutMs?: number;
+    /** Sandbox IDs never deleted, whether listed or known: the caller still needs them. */
+    readonly retain?: ReadonlySet<string>;
   } = {},
 ): Promise<SweepResult> {
   const callTimeoutMs = options.callTimeoutMs ?? sweepCallTimeoutMs;
@@ -721,6 +723,12 @@ export async function sweepProviders(
     };
 
     const remove = async (id: string) => {
+      if (options.retain?.has(id)) {
+        await note({ kind: "retained", provider: name, id }).catch(() => {});
+
+        return;
+      }
+
       const removed = await bounded(`destroy ${id}`, () => provider.destroy(id), callTimeoutMs)
         .then(() => true)
         .catch(() => false);
