@@ -2,23 +2,29 @@
  * memory-pressure: what happens when a process allocates up to the advertised memory and past it.
  *
  * 1. Limits as memory-honesty reads them (MemTotal, the cgroup limit, swap, overcommit), a canary
- *    process that rewrites a heartbeat file every second, the boot id and the cgroup OOM counter.
+ *    process that writes the time every second, the boot id and the cgroup OOM counter.
  * 2. A detached hog allocates 64 MiB at a time of random (incompressible) bytes, up to `overshoot`
- *    times the provider's advertised memory, logging each chunk to a file. The host polls the
- *    sandbox every `pollMs` for its progress and exit code, and records the longest wait for an answer.
- * 3. Afterwards: does the sandbox answer, is the boot id the same, is the canary alive, can a fresh
- *    256 MiB allocation and a file write still succeed.
+ *    times the provider's advertised memory, logging each chunk; its supervisor shell records the
+ *    exit status. The host polls every `pollMs` for the boot id, progress, the hog's liveness and its
+ *    exit, and records the longest wait for an answer. It keeps polling through a spell of silence
+ *    and evaluates the sandbox only after the hog has ended.
+ * 3. Afterwards: is the boot id the same, is the canary the same live process with a fresh beat, do a
+ *    fresh 256 MiB allocation and a file write succeed.
  *
  * Outcomes are only what the evidence shows. `reached-target`: the hog held every byte it asked for
- * (swap, or no enforcement at the advertised size). `process-killed`: it died by a signal or the
- * cgroup counted a new OOM kill. `refused`: the runtime's allocation failed. `stalled`: still
- * allocating at the deadline (thrashing), then killed. `sandbox-restarted`: a new boot id.
- * `unresponsive`: no answer for `unresponsiveMs` and still listed. `sandbox-lost`: no answer and the provider's
- * exact lookup says it is gone. The scope is `process` when only the hog died, `collateral` when the
- * canary died with it, and `sandbox` when the whole sandbox was lost, rebooted or stopped answering.
+ * (swap, or no enforcement at the advertised size). `process-killed`: it died of SIGKILL (shell status
+ * 137), or vanished with its supervisor while the cgroup counted a new OOM kill; the OOM count is kept
+ * as corroboration. `refused`: the runtime's allocation failed. `stalled`: still running at the
+ * deadline (thrashing), then killed. `sandbox-restarted`: a new boot id. `unresponsive`: no answer for
+ * `unresponsiveMs + recoveryMs` while the provider still lists it. `sandbox-lost`: no answer and the
+ * provider's exact lookup says it is gone. Anything else fails the check. The scope is `process` only
+ * when the canary is confirmed alive, `collateral` when it is confirmed gone, and `sandbox` when the
+ * whole sandbox was lost, rebooted or stopped answering; unknown otherwise.
  */
+import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
+import { deadline } from "../timing.js";
 import { quote } from "../workloads.js";
 import { diskTarget } from "./disk-real.js";
 import {
@@ -33,6 +39,8 @@ import {
   bootIdCommand,
   detached,
   guestScripts,
+  identityFunction,
+  ownKillFunction,
   parseRuntime,
   runtimeCommand,
   runtimes,
@@ -55,13 +63,15 @@ export interface PressureOptions {
   /** Longest the hog may run before it counts as stalled. */
   readonly deadlineMs: number;
   readonly pollMs: number;
-  /** No answer for this long ends polling and asks the provider whether the sandbox is gone. */
+  /** No answer for this long asks the provider whether the sandbox is gone. */
   readonly unresponsiveMs: number;
-  /** After an unresponsive spell, how long to wait for the sandbox to come back. */
+  /** After that, how much longer to wait for the sandbox to answer again. */
   readonly recoveryMs: number;
   readonly healthAllocMiB: number;
   /** The advertised memory; the provider's same-machine size when null. */
   readonly advertisedMiB: number | null;
+  /** Where the attempt's directory goes; the disk test's directory when null. */
+  readonly workdir: string | null;
 }
 
 export const defaultPressureOptions: PressureOptions = {
@@ -73,9 +83,13 @@ export const defaultPressureOptions: PressureOptions = {
   recoveryMs: 120_000,
   healthAllocMiB: 256,
   advertisedMiB: null,
+  workdir: null,
 };
 
 const pollTimeoutMs = 20_000;
+
+/** A canary beat older than this (guest seconds) means the canary is stuck, not alive. */
+const freshBeatS = 5;
 
 const progressSchema = z.object({ mib: z.number().int(), ms: z.number().int() });
 
@@ -83,7 +97,9 @@ const outcomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("reached-target") }),
   z.object({
     kind: z.literal("process-killed"),
+    /** 137 (SIGKILL by shell convention), or null when the hog and its supervisor vanished. */
     exitCode: z.number().int().nullable(),
+    /** New OOM kills the hog's cgroup counted; corroboration only, null when unreadable. */
     oomKills: z.number().int().nullable(),
   }),
   z.object({ kind: z.literal("refused"), reason: z.string() }),
@@ -97,7 +113,7 @@ export type PressureOutcome = z.infer<typeof outcomeSchema>;
 
 const healthSchema = z.object({
   answered: z.boolean(),
-  /** How long the sandbox took to answer again after an unresponsive spell; null when it never stopped. */
+  /** How long the sandbox was silent before it answered again; null when it never went silent. */
   recoveredAfterMs: z.number().nullable(),
   bootSame: z.boolean().nullable(),
   canaryAlive: z.boolean().nullable(),
@@ -110,9 +126,11 @@ export const pressureResultSchema = z.object({
   limits: limitsSchema,
   advertisedMiB: z.number().int(),
   targetMiB: z.number().int(),
-  /** The most the hog held before it ended. */
-  reachedMiB: z.number().int(),
-  reachedFraction: z.number(),
+  /** The most the hog was seen holding; null when nothing was observed. */
+  reachedMiB: z.number().int().nullable(),
+  /** `log`: from the hog's whole log; `last-poll`: a lower bound from the last progress seen. */
+  reachedEvidence: z.enum(["log", "last-poll", "none"]),
+  reachedFraction: z.number().nullable(),
   /** One point per 512 MiB held, for a slowdown chart. */
   progress: z.array(progressSchema),
   outcome: outcomeSchema,
@@ -129,21 +147,22 @@ export function parseHogLog(text: string) {
   const progress: { mib: number; ms: number }[] = [];
   let reached = false;
   let refused: string | null = null;
+  let heldMiB = 0;
 
   for (const line of text.split("\n")) {
     const [word, mib, rest] = line.trim().split(/\s+/);
     const value = Number(mib);
 
-    if (!Number.isInteger(value)) continue;
+    if (!Number.isInteger(value) || (word !== "held" && word !== "reached" && word !== "refused"))
+      continue;
 
-    if (word === "held" || word === "reached") progress.push({ mib: value, ms: Number(rest) || 0 });
-
-    if (word === "reached") reached = true;
+    heldMiB = Math.max(heldMiB, value);
 
     if (word === "refused") refused = rest ?? "unknown";
-  }
+    else progress.push({ mib: value, ms: Number(rest) || 0 });
 
-  const heldMiB = progress.reduce((most, point) => Math.max(most, point.mib), 0);
+    if (word === "reached") reached = true;
+  }
 
   return { progress, heldMiB, reached, refused };
 }
@@ -156,34 +175,61 @@ export function thinProgress(progress: readonly { mib: number; ms: number }[], s
   return last && kept.at(-1) !== last ? [...kept, last] : kept;
 }
 
-/** Judges the hog from its exit and log, the OOM counter and what the sandbox looked like after. */
+export type Ending =
+  | { readonly kind: "exited"; readonly exitCode: number }
+  | { readonly kind: "vanished" }
+  | { readonly kind: "stalled" }
+  | { readonly kind: "restarted" }
+  | { readonly kind: "unresponsive"; readonly detail: string }
+  | { readonly kind: "lost"; readonly detail: string };
+
+/** Judges the hog from how it ended, its log and the OOM counter. */
 export function judgePressure(input: {
-  readonly exitCode: number | null;
+  readonly ending: Ending;
   readonly log: ReturnType<typeof parseHogLog>;
   readonly oomDelta: number | null;
-  readonly stalled: boolean;
-  readonly lost: { readonly kind: "absent" | "unresponsive"; readonly detail: string } | null;
   readonly bootSame: boolean | null;
 }): PressureOutcome {
-  const { exitCode, log, oomDelta, stalled, lost, bootSame } = input;
+  const { ending, log, oomDelta, bootSame } = input;
 
-  if (lost?.kind === "absent") return { kind: "sandbox-lost", detail: lost.detail };
+  switch (ending.kind) {
+    case "lost":
+      return { kind: "sandbox-lost", detail: ending.detail };
+    case "unresponsive":
+      return { kind: "unresponsive", detail: ending.detail };
+    case "restarted":
+      return { kind: "sandbox-restarted" };
+    case "stalled":
+      return bootSame === false ? { kind: "sandbox-restarted" } : { kind: "stalled" };
+    case "vanished":
+      if (bootSame === false) return { kind: "sandbox-restarted" };
 
-  if (lost?.kind === "unresponsive") return { kind: "unresponsive", detail: lost.detail };
+      if (oomDelta !== null && oomDelta > 0)
+        return { kind: "process-killed", exitCode: null, oomKills: oomDelta };
 
-  if (bootSame === false) return { kind: "sandbox-restarted" };
+      throw new CheckStop(
+        `The hog and its supervisor vanished with no OOM kill counted (held ${log.heldMiB} MiB)`,
+      );
+    case "exited":
+      if (bootSame === false) return { kind: "sandbox-restarted" };
 
-  if (stalled) return { kind: "stalled" };
+      if (ending.exitCode === 0 && log.reached) return { kind: "reached-target" };
 
-  if (exitCode === 0 && log.reached) return { kind: "reached-target" };
+      if (log.refused !== null || ending.exitCode === 3)
+        return { kind: "refused", reason: log.refused ?? "exit 3" };
 
-  if (log.refused !== null || exitCode === 3)
-    return { kind: "refused", reason: log.refused ?? "exit 3" };
+      if (ending.exitCode === 137)
+        return { kind: "process-killed", exitCode: 137, oomKills: oomDelta };
 
-  if ((exitCode !== null && exitCode > 128) || (oomDelta !== null && oomDelta > 0))
-    return { kind: "process-killed", exitCode, oomKills: oomDelta };
+      throw new CheckStop(
+        `The hog exited ${ending.exitCode} with no kill evidence (held ${log.heldMiB} MiB)`,
+      );
+    default: {
+      const exhaustive: never = ending;
 
-  throw new CheckStop(`The hog exited ${exitCode} with no kill evidence (held ${log.heldMiB} MiB)`);
+      return exhaustive;
+    }
+  }
 }
 
 export function scopeOf(outcome: PressureOutcome, canaryAlive: boolean | null) {
@@ -194,10 +240,15 @@ export function scopeOf(outcome: PressureOutcome, canaryAlive: boolean | null) {
       return "sandbox" as const;
     case "process-killed":
     case "refused":
-      return canaryAlive === false ? ("collateral" as const) : ("process" as const);
     case "reached-target":
     case "stalled":
-      return canaryAlive === false ? ("collateral" as const) : null;
+      return canaryAlive === true
+        ? outcome.kind === "process-killed" || outcome.kind === "refused"
+          ? ("process" as const)
+          : null
+        : canaryAlive === false
+          ? ("collateral" as const)
+          : null;
     default: {
       const exhaustive: never = outcome;
 
@@ -206,287 +257,315 @@ export function scopeOf(outcome: PressureOutcome, canaryAlive: boolean | null) {
   }
 }
 
+/** Boot id first (no dependency on the directory), then the hog's progress, liveness and exit. */
 const statusCommand = (dir: string) =>
   [
-    `cd ${quote(dir)} || exit 1`,
-    `echo "exit=$(cat hog.exit 2>/dev/null)"`,
-    `echo "last=$(tail -n 1 hog.log 2>/dev/null)"`,
+    identityFunction,
+    `echo "boot=$(${bootIdCommand})"`,
+    `if [ -d ${quote(dir)} ]; then echo dir=1; else echo dir=0; fi`,
+    `echo "exit=$(cat ${quote(`${dir}/hog.exit`)} 2>/dev/null)"`,
+    `echo "last=$(tail -n 1 ${quote(`${dir}/hog.log`)} 2>/dev/null)"`,
+    `echo "running=$(identity ${quote(`${dir}/hog.pid`)} ${quote(dir)})"`,
+    "echo status=done",
   ].join("\n");
 
 const healthCommand = (dir: string) =>
   [
-    `cd ${quote(dir)} || exit 1`,
+    identityFunction,
     `echo "boot=$(${bootIdCommand})"`,
-    `p=$(cat canary.pid 2>/dev/null); if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "canaryStart=$(cut -d' ' -f22 /proc/$p/stat 2>/dev/null)"; else echo canaryStart=; fi`,
+    `echo "canary=$(identity ${quote(`${dir}/canary.pid`)} ${quote(dir)})"`,
+    `echo "canaryBeat=$(cat ${quote(`${dir}/canary.beat`)} 2>/dev/null)"`,
+    `echo "now=$(date +%s)"`,
   ].join("\n");
 
-/** Polls the sandbox until `check` says done, the deadline passes, or it stops answering. */
+type Polled = {
+  readonly ending: Ending;
+  readonly heldMiB: number;
+  readonly maxGapMs: number;
+  readonly recoveredAfterMs: number | null;
+};
+
+/** Polls until the hog has ended, the deadline passes, the guest reboots, or it stays silent. */
 async function pollHog(input: {
   readonly context: CheckContext;
   readonly box: Box;
   readonly dir: string;
+  readonly boot: string;
   readonly options: PressureOptions;
-}) {
-  const { context, box, dir, options } = input;
+}): Promise<Polled> {
+  const { context, box, dir, boot, options } = input;
   const started = performance.now();
   let lastAnswer = started;
   let maxGapMs = 0;
   let heldMiB = 0;
+  let recoveredAfterMs: number | null = null;
+  let asked = false;
+  let vanishedOnce = false;
+  const polled = (ending: Ending): Polled => ({ ending, heldMiB, maxGapMs, recoveredAfterMs });
 
   for (;;) {
     const askedAt = performance.now();
+    let values: Map<string, string> | null = null;
 
     try {
       const result = await context.exec(box, statusCommand(dir), pollTimeoutMs);
 
-      if (result.exitCode !== null && !result.timedOut) {
-        const answeredAt = performance.now();
-        maxGapMs = Math.max(maxGapMs, answeredAt - lastAnswer);
-        lastAnswer = answeredAt;
-        const values = keyValues(result.stdout);
-        const exit = values.get("exit") ?? "";
-        heldMiB = Math.max(heldMiB, parseHogLog(values.get("last") ?? "").heldMiB);
-
-        if (/^\d+$/.test(exit))
-          return { kind: "exited" as const, exitCode: Number(exit), maxGapMs, heldMiB };
-      }
+      if (!result.timedOut && result.stdout.includes("status=done"))
+        values = keyValues(result.stdout);
     } catch (cause) {
       context.say(`poll: ${errorText(cause).slice(0, 120)}`);
     }
 
     const now = performance.now();
-    maxGapMs = Math.max(maxGapMs, now - lastAnswer);
 
-    if (now - lastAnswer > options.unresponsiveMs)
-      return {
-        kind: "unresponsive" as const,
-        maxGapMs,
-        heldMiB,
-        silentMs: Math.round(now - lastAnswer),
-      };
+    if (values !== null) {
+      const silence = now - lastAnswer;
 
-    if (now - started > options.deadlineMs) return { kind: "stalled" as const, maxGapMs, heldMiB };
-    await sleep(Math.max(0, options.pollMs - (now - askedAt)), undefined, {
+      if (silence > options.unresponsiveMs) recoveredAfterMs = Math.round(silence);
+      maxGapMs = Math.max(maxGapMs, silence);
+      lastAnswer = now;
+      const seenBoot = values.get("boot") ?? "";
+
+      if (seenBoot !== "" && seenBoot !== "unknown" && seenBoot !== boot)
+        return polled({ kind: "restarted" });
+
+      if (values.get("dir") !== "1")
+        throw new CheckStop("The attempt's directory vanished with the same boot id");
+      heldMiB = Math.max(heldMiB, parseHogLog(values.get("last") ?? "").heldMiB);
+      const exit = values.get("exit") ?? "";
+
+      if (/^\d+$/.test(exit)) return polled({ kind: "exited", exitCode: Number(exit) });
+
+      // Not running and no exit status: let the supervisor write it once, then call it vanished.
+      if ((values.get("running") ?? "") === "") {
+        if (vanishedOnce) return polled({ kind: "vanished" });
+        vanishedOnce = true;
+      } else vanishedOnce = false;
+
+      if (now - started > options.deadlineMs) return polled({ kind: "stalled" });
+    } else {
+      const silence = now - lastAnswer;
+      maxGapMs = Math.max(maxGapMs, silence);
+
+      if (silence > options.unresponsiveMs && !asked) {
+        asked = true;
+        const liveness = await lookUpLiveness(box, `no answer for ${Math.round(silence)} ms`);
+
+        if (liveness.kind === "absent") return polled({ kind: "lost", detail: liveness.detail });
+      }
+
+      if (silence > options.unresponsiveMs + options.recoveryMs)
+        return polled({
+          kind: "unresponsive",
+          detail: `no answer for ${Math.round(silence)} ms; still listed`,
+        });
+    }
+
+    await sleep(Math.max(0, options.pollMs - (performance.now() - askedAt)), undefined, {
       signal: context.signal,
     });
   }
 }
 
-/** Retries a trivial command until it answers or `limitMs` passes; the wait in ms, or null. */
-async function answersWithin(context: CheckContext, box: Box, limitMs: number) {
-  const started = performance.now();
+async function measure(context: CheckContext, options: PressureOptions): Promise<PressureResult> {
+  const box = context.boxes[0]?.box;
 
-  while (performance.now() - started < limitMs) {
-    try {
-      const result = await context.exec(box, "echo ok", 30_000);
+  if (!box) throw new CheckStop("No sandbox");
+  const found = parseRuntime((await context.exec(box, runtimeCommand, 60_000)).stdout);
 
-      if (result.exitCode === 0) return Math.round(performance.now() - started);
-    } catch {
-      // Not answering yet.
+  if (!found) throw new CheckStop("The image has neither node nor python3");
+  const limits = parseLimits((await context.exec(box, limitsCommand, 60_000)).stdout);
+  await context.note("limits", limits);
+
+  const advertisedMiB =
+    options.advertisedMiB ?? Math.round(machineOf(context.setup).memoryGiB * 1024);
+
+  const targetMiB =
+    Math.ceil((advertisedMiB * options.overshoot) / options.chunkMiB) * options.chunkMiB;
+
+  const base = options.workdir ?? (await diskTarget(context, box)).dir;
+  const dir = `${base}/.sbx-mem-${randomBytes(4).toString("hex")}`;
+  const script = guestScripts[found.runtime];
+  const hog = `${dir}/hog.${script.extension}`;
+  const rt = quote(found.path);
+  await context.exec(box, `mkdir -p ${quote(dir)}`, 60_000);
+  await box.write(hog, new TextEncoder().encode(script.hog));
+
+  try {
+    const canary = `echo $$ > canary.pid; while :; do date +%s > canary.beat; sleep 1; done`;
+
+    const prepared = await context.exec(
+      box,
+      [
+        `cd ${quote(dir)} || exit 1`,
+        detached(`cd ${quote(dir)} && ${canary}`, `${dir}/canary.log`),
+        "sleep 2",
+        healthCommand(dir),
+        oomCommand,
+      ].join("\n"),
+      60_000,
+    );
+
+    const before = keyValues(prepared.stdout);
+    const boot = before.get("boot") ?? "";
+    const canaryBefore = before.get("canary") ?? "";
+
+    if (boot === "" || canaryBefore === "")
+      throw new CheckStop("The baseline has no boot id or canary");
+    const oomBefore = parseOomKills(prepared.stdout);
+    const oomFileBefore = oomFileOf(prepared.stdout);
+
+    context.say(
+      `${found.runtime}: advertised ${advertisedMiB} MiB, MemTotal ${limits.memTotalGiB ?? "?"} GiB, limit ${limits.memLimitGiB ?? "none"}, target ${targetMiB} MiB`,
+    );
+
+    await context.exec(
+      box,
+      detached(
+        `cd ${quote(dir)} && { ${rt} ${quote(hog)} ${targetMiB} ${options.chunkMiB} > hog.log 2>&1 & echo $! > hog.pid; wait $!; echo $? > hog.exit; }`,
+        `${dir}/hog.wrap`,
+      ),
+      60_000,
+    );
+
+    const polled = await pollHog({ context, box, dir, boot, options });
+    const answered = polled.ending.kind !== "lost" && polled.ending.kind !== "unresponsive";
+
+    if (polled.ending.kind === "stalled") {
+      await context.exec(
+        box,
+        [ownKillFunction, `ownkill ${quote(`${dir}/hog.pid`)} ${quote(dir)}`].join("\n"),
+        30_000,
+      );
+
+      // Measure usability only once the hog is gone.
+      for (let tries = 0; tries < 15; tries++) {
+        const status = keyValues(
+          (await context.exec(box, statusCommand(dir), pollTimeoutMs)).stdout,
+        );
+
+        if ((status.get("running") ?? "") === "") break;
+        await sleep(2_000, undefined, { signal: context.signal });
+      }
     }
 
-    await sleep(2_000, undefined, { signal: context.signal });
-  }
+    let logText = "";
+    let after = new Map<string, string>();
+    let oomDelta: number | null = null;
+    let allocOk: boolean | null = null;
+    let fileOk: boolean | null = null;
 
-  return null;
-}
-
-export const memoryPressureCheck = (
-  options: PressureOptions = defaultPressureOptions,
-): Check<PressureResult> => ({
-  id: "memory-pressure",
-  boxes: 1,
-  minBoxes: 1,
-  lifetimeMs: 25 * 60_000,
-  resultSchema: pressureResultSchema,
-  async run(context) {
-    const box = context.boxes[0]?.box;
-
-    if (!box) throw new CheckStop("No sandbox");
-    const found = parseRuntime((await context.exec(box, runtimeCommand, 60_000)).stdout);
-
-    if (!found) throw new CheckStop("The image has neither node nor python3");
-    const limits = parseLimits((await context.exec(box, limitsCommand, 60_000)).stdout);
-    await context.note("limits", limits);
-
-    const advertisedMiB =
-      options.advertisedMiB ?? Math.round(machineOf(context.setup).memoryGiB * 1024);
-
-    const targetMiB =
-      Math.ceil((advertisedMiB * options.overshoot) / options.chunkMiB) * options.chunkMiB;
-
-    const target = await diskTarget(context, box);
-    const dir = `${target.dir}/.sbx-mem`;
-    const script = guestScripts[found.runtime];
-    const hog = `${dir}/hog.${script.extension}`;
-    const rt = quote(found.path);
-    await context.exec(box, `mkdir -p ${quote(dir)} && rm -f ${quote(dir)}/hog.*`, 60_000);
-    await box.write(hog, new TextEncoder().encode(script.hog));
-
-    try {
-      const canary = `echo $$ > canary.pid; while :; do date +%s > canary.beat; sleep 1; done`;
-
-      const prepared = await context.exec(
+    if (answered) {
+      const read = await context.exec(
         box,
         [
-          `cd ${quote(dir)} || exit 1`,
-          detached(`cd ${quote(dir)} && ${canary}`, `${dir}/canary.log`),
-          "sleep 1",
+          `cat ${quote(`${dir}/hog.log`)} 2>/dev/null`,
+          "echo '#end-log'",
           healthCommand(dir),
           oomCommand,
         ].join("\n"),
         60_000,
       );
 
-      const before = keyValues(prepared.stdout);
-      const oomBefore = parseOomKills(prepared.stdout);
-      const oomFileBefore = oomFileOf(prepared.stdout);
+      const at = read.stdout.indexOf("#end-log");
+      logText = at < 0 ? "" : read.stdout.slice(0, at);
+      after = keyValues(at < 0 ? read.stdout : read.stdout.slice(at));
+      const oomAfter = parseOomKills(read.stdout);
+      const sameCgroup = oomFileBefore !== null && oomFileOf(read.stdout) === oomFileBefore;
+      oomDelta =
+        oomBefore !== null && oomAfter !== null && sameCgroup
+          ? Math.max(0, oomAfter - oomBefore)
+          : null;
 
-      context.say(
-        `${found.runtime}: advertised ${advertisedMiB} MiB, MemTotal ${limits.memTotalGiB ?? "?"} GiB, limit ${limits.memLimitGiB ?? "none"}, target ${targetMiB} MiB`,
-      );
+      const alloc = await context
+        .exec(box, `${rt} ${quote(hog)} ${options.healthAllocMiB} ${options.chunkMiB}`, 120_000)
+        .catch(() => null);
 
-      await context.exec(
-        box,
-        detached(
-          `cd ${quote(dir)} && { ${rt} ${quote(hog)} ${targetMiB} ${options.chunkMiB} > hog.log 2>&1 & echo $! > hog.pid; wait $!; echo $? > hog.exit; }`,
-          `${dir}/hog.wrap`,
-        ),
-        60_000,
-      );
+      allocOk = alloc !== null && alloc.exitCode === 0 && /^reached /m.test(alloc.stdout);
 
-      const polled = await pollHog({ context, box, dir, options });
-      let recoveredAfterMs: number | null = null;
-      let lost: { kind: "absent" | "unresponsive"; detail: string } | null = null;
-
-      if (polled.kind === "unresponsive") {
-        const liveness = await lookUpLiveness(box, `no answer for ${polled.silentMs} ms`);
-
-        if (liveness.kind === "absent") lost = { kind: "absent", detail: liveness.detail };
-        else {
-          recoveredAfterMs = await answersWithin(context, box, options.recoveryMs);
-
-          if (recoveredAfterMs === null)
-            lost = {
-              kind: "unresponsive",
-              detail: `no answer for ${polled.silentMs + options.recoveryMs} ms; ${liveness.kind === "present" ? "still listed" : liveness.detail}`,
-            };
-          else recoveredAfterMs += polled.silentMs;
-        }
-      }
-
-      if (polled.kind === "stalled")
-        await context
-          .exec(box, `kill -9 "$(cat ${quote(`${dir}/hog.pid`)})" 2>/dev/null; true`, 30_000)
-          .catch(() => undefined);
-
-      const answered = lost === null;
-      let logText = "";
-      let exitCode: number | null = polled.kind === "exited" ? polled.exitCode : null;
-      let after = new Map<string, string>();
-      let oomDelta: number | null = null;
-      let allocOk: boolean | null = null;
-      let fileOk: boolean | null = null;
-
-      if (answered) {
-        const read = await context.exec(
+      const file = await context
+        .exec(
           box,
-          [
-            `cat ${quote(`${dir}/hog.log`)} 2>/dev/null`,
-            "echo '#end-log'",
-            healthCommand(dir),
-            oomCommand,
-            `echo "exit=$(cat ${quote(`${dir}/hog.exit`)} 2>/dev/null)"`,
-          ].join("\n"),
+          `cd ${quote(dir)} && head -c 1048576 /dev/urandom > health.bin && sync && test "$(wc -c < health.bin)" -eq 1048576 && rm -f health.bin && echo fileok`,
           60_000,
-        );
-
-        [logText = ""] = read.stdout.split("#end-log");
-        after = keyValues(read.stdout.slice(logText.length));
-        const exit = after.get("exit") ?? "";
-
-        if (exitCode === null && /^\d+$/.test(exit)) exitCode = Number(exit);
-        const oomAfter = parseOomKills(read.stdout);
-        const sameCgroup = oomFileBefore !== null && oomFileOf(read.stdout) === oomFileBefore;
-
-        oomDelta =
-          oomBefore !== null && oomAfter !== null && sameCgroup
-            ? Math.max(0, oomAfter - oomBefore)
-            : null;
-
-        const alloc = await context
-          .exec(box, `${rt} ${quote(hog)} ${options.healthAllocMiB} ${options.chunkMiB}`, 120_000)
-          .catch(() => null);
-
-        allocOk = alloc !== null && alloc.exitCode === 0 && /^reached /m.test(alloc.stdout);
-
-        const file = await context
-          .exec(
-            box,
-            `cd ${quote(dir)} && head -c 1048576 /dev/urandom > health.bin && sync && test "$(wc -c < health.bin)" -eq 1048576 && rm -f health.bin && echo fileok`,
-            60_000,
-          )
-          .catch(() => null);
-
-        fileOk = file !== null && file.stdout.includes("fileok");
-      }
-
-      const bootBefore = before.get("boot") ?? "";
-      const bootAfter = after.get("boot") ?? "";
-
-      const bootSame =
-        !answered ||
-        bootBefore === "" ||
-        bootBefore === "unknown" ||
-        bootAfter === "" ||
-        bootAfter === "unknown"
-          ? null
-          : bootBefore === bootAfter;
-
-      const canaryBefore = before.get("canaryStart") ?? "";
-
-      const canaryAlive =
-        !answered || canaryBefore === "" ? null : after.get("canaryStart") === canaryBefore;
-
-      const log = parseHogLog(logText);
-      const reachedMiB = Math.max(log.heldMiB, polled.heldMiB);
-
-      const outcome = judgePressure({
-        exitCode,
-        log,
-        oomDelta,
-        stalled: polled.kind === "stalled",
-        lost,
-        bootSame,
-      });
-
-      const scope = scopeOf(outcome, canaryAlive);
-      context.say(`memory: ${outcome.kind} at ${reachedMiB} MiB, scope ${scope ?? "-"}`);
-
-      return {
-        runtime: found.runtime,
-        limits,
-        advertisedMiB,
-        targetMiB,
-        reachedMiB,
-        reachedFraction: Math.round((reachedMiB / advertisedMiB) * 1000) / 1000,
-        progress: thinProgress(log.progress),
-        outcome,
-        scope,
-        usableAfter: answered && allocOk === true && fileOk === true,
-        health: { answered, recoveredAfterMs, bootSame, canaryAlive, allocOk, fileOk },
-        maxPollGapMs: Math.round(polled.maxGapMs),
-      };
-    } finally {
-      await context
-        .execCleanup(
-          box,
-          `for f in hog.pid canary.pid; do kill -9 "$(cat ${quote(dir)}/$f 2>/dev/null)" 2>/dev/null; done; true`,
-          30_000,
         )
-        .catch(() => undefined);
+        .catch(() => null);
+
+      fileOk = file !== null && file.stdout.includes("fileok");
     }
-  },
-});
+
+    const bootAfter = after.get("boot") ?? "";
+
+    const bootSame =
+      !answered || bootAfter === "" || bootAfter === "unknown" ? null : bootAfter === boot;
+
+    const canaryNow = after.get("canary");
+    const beatAge = Number(after.get("now")) - Number(after.get("canaryBeat"));
+
+    const canaryAlive =
+      !answered || canaryNow === undefined
+        ? null
+        : canaryNow === canaryBefore && Number.isFinite(beatAge) && beatAge <= freshBeatS;
+
+    const log = parseHogLog(logText);
+    const outcome = judgePressure({ ending: polled.ending, log, oomDelta, bootSame });
+    const scope = scopeOf(outcome, canaryAlive);
+    const fromLog = log.heldMiB > 0 && log.heldMiB >= polled.heldMiB;
+    const reachedMiB = fromLog ? log.heldMiB : polled.heldMiB > 0 ? polled.heldMiB : null;
+    context.say(`memory: ${outcome.kind} at ${reachedMiB ?? "?"} MiB, scope ${scope ?? "-"}`);
+
+    return {
+      runtime: found.runtime,
+      limits,
+      advertisedMiB,
+      targetMiB,
+      reachedMiB,
+      reachedEvidence: fromLog ? "log" : reachedMiB !== null ? "last-poll" : "none",
+      reachedFraction:
+        reachedMiB === null ? null : Math.round((reachedMiB / advertisedMiB) * 1000) / 1000,
+      progress: thinProgress(log.progress),
+      outcome,
+      scope,
+      usableAfter: answered && allocOk === true && fileOk === true,
+      health: {
+        answered,
+        recoveredAfterMs: polled.recoveredAfterMs,
+        bootSame,
+        canaryAlive,
+        allocOk,
+        fileOk,
+      },
+      maxPollGapMs: Math.round(polled.maxGapMs),
+    };
+  } finally {
+    await context
+      .execCleanup(
+        box,
+        [
+          ownKillFunction,
+          `ownkill ${quote(`${dir}/hog.pid`)} ${quote(dir)}`,
+          `ownkill ${quote(`${dir}/canary.pid`)} ${quote(dir)}`,
+        ].join("\n"),
+        30_000,
+      )
+      .catch(() => undefined);
+  }
+}
+
+export const memoryPressureCheck = (
+  options: PressureOptions = defaultPressureOptions,
+): Check<PressureResult> => {
+  const lifetimeMs = 25 * 60_000;
+
+  return {
+    id: "memory-pressure",
+    boxes: 1,
+    minBoxes: 1,
+    lifetimeMs,
+    resultSchema: pressureResultSchema,
+    // The check ends a minute before the sandbox's lifetime, so cleanup still finds it.
+    run: (context) => deadline(lifetimeMs - 60_000, () => measure(context, options)),
+  };
+};
 
 export const memoryPressure = memoryPressureCheck();

@@ -2,25 +2,29 @@
  * state-survival: what a sandbox keeps across the adapter's pause and resume, and how fast a killed
  * process comes back.
  *
- * 1. Setup, in the disk test's directory: a 16 MiB random file (sha256 noted), an HTTP server that
- *    holds a random token and 32 MiB of random bytes in memory, and a shell worker that rewrites a
- *    heartbeat file every second. Both run detached from the exec, as an agent's dev server would.
+ * 1. Setup, in a fresh directory of this attempt: a 16 MiB random file (sha256 noted), an HTTP
+ *    server that holds a random token and 32 MiB of random bytes in memory, and a shell worker that
+ *    bumps a heartbeat counter every second. Both run detached from the exec, as an agent's dev
+ *    server would. The baseline must show all three, or the check fails rather than judging.
  * 2. Restart speed: `restarts` times, SIGKILL the server and start it again; the guest times each
- *    from the kill to the new pid answering on its port.
- * 3. Pause and resume (only where the adapter has both): pause, hold `holdMs`, resume, then time the
- *    first command that answers. Check the file's sha256, the boot id, the worker (same pid and
- *    start time, heartbeat moving again) and the server (same token, memory digest unchanged).
- *    A server that is gone is started again and timed, so `servingMs` is resume-to-serving either way.
+ *    from the kill to the new child answering on its port with its own launch nonce.
+ * 3. Pause and resume (only where the adapter has both): pause, hold `holdMs`, resume. From resume
+ *    returning, time the first command that answers and the server serving again (restarted when it
+ *    is confirmed gone). Then compare the file's sha256, the boot id, and each process's pid and start
+ *    time with the baseline.
  *
- * Verdicts: `in-ram` when the server, its memory, the worker and the boot id all survived a frozen
- * hold; `kept-running` when they survived because the worker beat through the hold (the pause did
- * not suspend the guest); `cold-restart`
- * when the files survived but the processes did not; `files-lost` when the file did not. A pause or
- * resume the provider refuses is recorded with its error. The SDK has no portable stop and start, so
- * that half is recorded as not run rather than guessed.
+ * Verdicts: `in-ram` when the server (same process, token and memory digest) and the worker (same
+ * process, heartbeat moving again) survived and the worker missed most of the hold's heartbeats (it
+ * was frozen); `kept-running` when they survived but the worker missed almost none (the pause did not
+ * freeze the guest); `cold-restart` when the boot id changed or both processes are confirmed gone
+ * with the file intact; `files-lost` when the directory or file is gone or changed; `inconclusive`
+ * for anything in between, with the reason. A pause or resume the provider refuses is recorded as
+ * `refused` with its error. The SDK has no portable stop and start, so that half is recorded as not run.
  */
+import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
+import { deadline } from "../timing.js";
 import { quote } from "../workloads.js";
 import { diskTarget } from "./disk-real.js";
 import { CheckStop, errorText, type Box, type Check, type CheckContext } from "./framework.js";
@@ -28,6 +32,8 @@ import {
   bootIdCommand,
   detached,
   guestScripts,
+  identityFunction,
+  ownKillFunction,
   parseRuntime,
   runtimeCommand,
   runtimes,
@@ -38,6 +44,8 @@ export interface StateOptions {
   readonly restarts: number;
   readonly port: number;
   readonly fileMiB: number;
+  /** Where the attempt's directory goes; the disk test's directory when null. */
+  readonly workdir: string | null;
 }
 
 export const defaultStateOptions: StateOptions = {
@@ -45,46 +53,62 @@ export const defaultStateOptions: StateOptions = {
   restarts: 5,
   port: 18_731,
   fileMiB: 16,
+  workdir: null,
 };
 
-/** Each pause or resume call may take this long before it counts as failed. */
+/** Each pause or resume call may take this long before it counts as refused. */
 const suspendCallMs = 5 * 60_000;
-/** How long after resume the first command may take to answer. */
 
+/** How long after resume the first command may take to answer. */
 const firstCommandMs = 3 * 60_000;
+
 const probeMs = 30_000;
 
-const probeSchema = z.object({
-  ok: z.boolean(),
-  ms: z.number(),
-  body: z
-    .object({
-      token: z.string(),
-      pid: z.number().int(),
-      digestAtStart: z.string(),
-      digestNow: z.string(),
-      upMs: z.number(),
-    })
-    .nullable(),
+/** After resume, a first quick look for the original server, then a longer wait when it is still alive. */
+const quickProbeMs = 2_000;
+
+const resumedProbeMs = 10_000;
+
+const bodySchema = z.object({
+  nonce: z.string(),
+  token: z.string(),
+  pid: z.number().int(),
+  digestAtStart: z.string(),
+  digestNow: z.string(),
+  upMs: z.number(),
 });
 
-type Probe = z.infer<typeof probeSchema>;
+const probeSchema = z.object({ ok: z.boolean(), ms: z.number(), body: bodySchema.nullable() });
+
+export type Probe = z.infer<typeof probeSchema>;
 
 const workerSchema = z.object({
-  alive: z.boolean(),
-  sameStart: z.boolean(),
-  /** Heartbeats between the snapshots either side of the pause; null when the worker restarted. */
+  /** The same pid and start time before the pause, after resume and 2.5 s later. */
+  same: z.boolean(),
+  /** No live process of this attempt holds the worker's pid file. */
+  gone: z.boolean(),
+  /** Heartbeats between the snapshots either side of the pause; null unless \`same\`. */
   beatsDuringHold: z.number().int().nullable(),
-  /** The worker beat through at least half the hold, so the pause did not freeze it. */
-  keptRunning: z.boolean(),
+  /** Host seconds between those snapshots minus the heartbeats: about the hold when it froze. */
+  missedBeats: z.number().nullable(),
   advancing: z.boolean(),
 });
 
 const serverSchema = z.object({
   answered: z.boolean(),
+  sameProcess: z.boolean(),
   sameToken: z.boolean(),
   memoryIntact: z.boolean(),
+  gone: z.boolean(),
 });
+
+export const verdicts = [
+  "in-ram",
+  "kept-running",
+  "cold-restart",
+  "files-lost",
+  "inconclusive",
+] as const;
 
 const suspendSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("unsupported"), reason: z.string() }),
@@ -97,15 +121,19 @@ const suspendSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("measured"),
-    verdict: z.enum(["in-ram", "kept-running", "cold-restart", "files-lost"]),
+    verdict: z.enum(verdicts),
+    /** Why the evidence was not enough for another verdict; null otherwise. */
+    reason: z.string().nullable(),
     holdMs: z.number(),
     pauseMs: z.number(),
     resumeMs: z.number(),
     /** From resume returning to the first command answering. */
     firstCommandMs: z.number(),
-    /** From resume returning to the server answering, restarting it when it is gone. */
+    /**
+     * From resume returning to the original server answering; for a server confirmed gone, the first
+     * command plus the guest-timed restart. Null when it never served.
+     */
     servingMs: z.number().nullable(),
-    /** The server had to be started again after resume. */
     serverRestarted: z.boolean(),
     filesystem: z.boolean(),
     bootSame: z.boolean().nullable(),
@@ -129,8 +157,6 @@ export const stateResultSchema = z.object({
 });
 
 export type StateResult = z.infer<typeof stateResultSchema>;
-
-export type Suspended = z.infer<typeof suspendSchema>;
 
 const median = (values: readonly number[]) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -174,27 +200,34 @@ export function keyValues(stdout: string) {
   return values;
 }
 
-/** What the guest looked like at one moment: file digest, boot id, worker pid, start and beat. */
+/** The guest at one moment: directory, file digest, boot id, each process's pid:start, heartbeat. */
 export const snapshotCommand = (dir: string) =>
   [
-    `cd ${quote(dir)} || exit 1`,
-    `echo "sha=$(sha256sum data.bin 2>/dev/null | cut -d' ' -f1)"`,
+    identityFunction,
     `echo "boot=$(${bootIdCommand})"`,
-    `p=$(cat worker.pid 2>/dev/null); echo "workerPid=$p"`,
-    `if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "workerStart=$(cut -d' ' -f22 /proc/$p/stat 2>/dev/null)"; else echo workerStart=; fi`,
-    `echo "beat=$(cut -d' ' -f1 worker.beat 2>/dev/null)"`,
+    `if [ -d ${quote(dir)} ]; then echo dir=1; else echo dir=0; fi`,
+    `echo "sha=$(sha256sum ${quote(`${dir}/data.bin`)} 2>/dev/null | cut -d' ' -f1)"`,
+    `echo "worker=$(identity ${quote(`${dir}/worker.pid`)} ${quote(dir)})"`,
+    `echo "server=$(identity ${quote(`${dir}/server.pid`)} ${quote(dir)})"`,
+    `echo "beat=$(cat ${quote(`${dir}/worker.beat`)} 2>/dev/null)"`,
   ].join("\n");
 
 export interface GuestSnapshot {
+  readonly dirExists: boolean;
   readonly sha: string | null;
   readonly boot: string | null;
-  readonly workerPid: string | null;
-  readonly workerStart: string | null;
+  /** `pid:start` of a live, owned, non-zombie process; null when there is none. */
+  readonly worker: string | null;
+  readonly server: string | null;
   readonly beat: number | null;
 }
 
-export function parseSnapshot(stdout: string): GuestSnapshot {
+/** Null when the output is not a complete snapshot (the command did not run to the end). */
+export function parseSnapshot(stdout: string): GuestSnapshot | null {
   const values = keyValues(stdout);
+  const dir = values.get("dir");
+
+  if (!values.has("boot") || (dir !== "0" && dir !== "1") || !values.has("beat")) return null;
 
   const text = (key: string) => {
     const value = values.get(key);
@@ -205,60 +238,98 @@ export function parseSnapshot(stdout: string): GuestSnapshot {
   const beat = text("beat");
 
   return {
+    dirExists: dir === "1",
     sha: text("sha"),
     boot: text("boot"),
-    workerPid: text("workerPid"),
-    workerStart: text("workerStart"),
+    worker: text("worker"),
+    server: text("server"),
     beat: beat !== null && /^\d+$/.test(beat) ? Number(beat) : null,
   };
 }
 
-/** Judges what survived from the snapshots and probe around the pause. */
+const pidOf = (identity: string | null) =>
+  identity === null ? null : Number(identity.split(":")[0]);
+
+/** Judges what survived from the snapshots around the pause and the server probe after resume. */
 export function judgeSurvival(input: {
   readonly before: GuestSnapshot;
   readonly after: GuestSnapshot;
   readonly later: GuestSnapshot;
-  readonly server: { readonly token: string };
+  readonly token: string;
   readonly probe: Probe | null;
+  /** Host seconds between the before and after snapshots. */
+  readonly elapsedS: number;
   readonly holdMs: number;
 }) {
-  const { before, after, later, server, probe, holdMs } = input;
-  const filesystem = before.sha !== null && after.sha === before.sha;
+  const { before, after, later, token, probe, elapsedS, holdMs } = input;
+  const filesystem = after.dirExists && before.sha !== null && after.sha === before.sha;
   const bootSame = before.boot === null || after.boot === null ? null : before.boot === after.boot;
-  const alive = after.workerStart !== null && after.workerPid === before.workerPid;
-  const sameStart = alive && after.workerStart === before.workerStart;
+
+  const workerSame =
+    before.worker !== null && after.worker === before.worker && later.worker === before.worker;
+
+  const advancing = later.beat !== null && after.beat !== null && later.beat > after.beat;
 
   const beatsDuringHold =
-    sameStart && before.beat !== null && after.beat !== null && after.beat >= before.beat
+    workerSame && before.beat !== null && after.beat !== null && after.beat >= before.beat
       ? after.beat - before.beat
       : null;
 
-  // A worker that beat through most of the hold was never frozen: the pause did not suspend it.
-  const keptRunning = beatsDuringHold !== null && beatsDuringHold >= holdMs / 2_000;
+  const missedBeats =
+    beatsDuringHold === null ? null : Math.round((elapsedS - beatsDuringHold) * 10) / 10;
 
-  const advancing = later.beat !== null && after.beat !== null && later.beat > after.beat;
   const body = probe?.ok ? probe.body : null;
-  const answered = body !== null;
-  const sameToken = body?.token === server.token;
+
+  const sameProcess =
+    body !== null && body.pid === pidOf(before.server) && after.server === before.server;
+
+  const sameToken = sameProcess && body?.token === token;
   const memoryIntact = sameToken && body !== null && body.digestNow === body.digestAtStart;
 
-  const survived = sameToken && memoryIntact && sameStart && advancing && bootSame !== false;
-
-  const verdict = !filesystem
-    ? ("files-lost" as const)
-    : !survived
-      ? ("cold-restart" as const)
-      : keptRunning
-        ? ("kept-running" as const)
-        : ("in-ram" as const);
-
-  return {
-    verdict,
-    filesystem,
-    bootSame,
-    worker: { alive, sameStart, beatsDuringHold, keptRunning, advancing },
-    server: { answered, sameToken, memoryIntact },
+  const worker = {
+    same: workerSame,
+    gone: after.worker === null,
+    beatsDuringHold,
+    missedBeats,
+    advancing,
   };
+
+  const server = {
+    answered: body !== null,
+    sameProcess,
+    sameToken,
+    memoryIntact,
+    gone: body === null && after.server === null,
+  };
+
+  const shared = { filesystem, bootSame, worker, server };
+  const holdS = holdMs / 1000;
+
+  const judged = (verdict: (typeof verdicts)[number], reason: string | null = null) => ({
+    verdict,
+    reason,
+    ...shared,
+  });
+
+  if (!filesystem) return judged("files-lost");
+
+  if (bootSame === false) return judged("cold-restart");
+
+  if (worker.gone && server.gone) return judged("cold-restart");
+
+  if (!(workerSame && advancing && memoryIntact))
+    return judged(
+      "inconclusive",
+      `worker ${workerSame ? (advancing ? "kept" : "kept but stuck") : worker.gone ? "gone" : "changed"}, server ${memoryIntact ? "kept" : server.gone ? "gone" : server.answered ? "answered with other state" : "alive but not answering"}`,
+    );
+
+  if (missedBeats === null) return judged("inconclusive", "no heartbeat count across the hold");
+
+  if (missedBeats >= holdS * 0.8) return judged("in-ram");
+
+  if (missedBeats <= holdS * 0.2) return judged("kept-running");
+
+  return judged("inconclusive", `the worker missed ${missedBeats} of the ${holdS} s hold`);
 }
 
 async function timed<T>(action: () => Promise<T>) {
@@ -268,17 +339,17 @@ async function timed<T>(action: () => Promise<T>) {
   return { value, ms: Math.round(performance.now() - started) };
 }
 
-/** Runs `command` until it exits 0, for up to `limitMs`; the time from the first try to success. */
-async function firstAnswer(context: CheckContext, box: Box, limitMs: number) {
-  const started = performance.now();
+/** Retries `echo ok` until it answers or `limitMs` passes, timing from `since`. */
+async function firstAnswer(context: CheckContext, box: Box, since: number, limitMs: number) {
   let last = "no answer";
 
-  while (performance.now() - started < limitMs) {
+  while (performance.now() - since < limitMs) {
     try {
       const result = await context.exec(box, "echo ok", 30_000);
 
       if (result.exitCode === 0 && result.stdout.includes("ok"))
-        return { ok: true as const, ms: Math.round(performance.now() - started) };
+        return { ok: true as const, ms: Math.round(performance.now() - since) };
+
       last = `exit ${result.exitCode}`;
     } catch (cause) {
       last = errorText(cause);
@@ -289,197 +360,6 @@ async function firstAnswer(context: CheckContext, box: Box, limitMs: number) {
 
   return { ok: false as const, error: last };
 }
-
-export const stateSurvivalCheck = (
-  options: StateOptions = defaultStateOptions,
-): Check<StateResult> => ({
-  id: "state-survival",
-  boxes: 1,
-  minBoxes: 1,
-  lifetimeMs: 20 * 60_000 + options.holdMs,
-  resultSchema: stateResultSchema,
-  async run(context) {
-    const box = context.boxes[0]?.box;
-
-    if (!box) throw new CheckStop("No sandbox");
-    const found = parseRuntime((await context.exec(box, runtimeCommand, 60_000)).stdout);
-
-    if (!found) throw new CheckStop("The image has neither node nor python3");
-    const target = await diskTarget(context, box);
-    const dir = `${target.dir}/.sbx-state`;
-    const script = guestScripts[found.runtime];
-    const state = `${dir}/state.${script.extension}`;
-    const rt = quote(found.path);
-    const port = String(options.port);
-    const pidfile = `${dir}/server.pid`;
-    const serverLog = `${dir}/server.log`;
-    await context.exec(box, `mkdir -p ${quote(dir)}`, 60_000);
-    await box.write(state, new TextEncoder().encode(script.state));
-
-    try {
-      const worker = `echo $$ > ${quote(`${dir}/worker.pid`)}; i=0; while :; do i=$((i+1)); echo "$i $(date +%s)" > ${quote(`${dir}/worker.beat.tmp`)} && mv ${quote(`${dir}/worker.beat.tmp`)} ${quote(`${dir}/worker.beat`)}; sleep 1; done`;
-
-      const setup = await timed(() =>
-        context.exec(
-          box,
-          [
-            `cd ${quote(dir)} || exit 1`,
-            `head -c ${options.fileMiB * 1_048_576} /dev/urandom > data.bin && sync`,
-            detached(`exec ${rt} ${quote(state)} serve ${port} ${quote(pidfile)}`, serverLog),
-            detached(worker, `${dir}/worker.log`),
-            `${rt} ${quote(state)} probe ${port} ${probeMs}`,
-          ].join("\n"),
-          probeMs + 60_000,
-        ),
-      );
-
-      const first = parseProbe(setup.value.stdout);
-
-      if (!first?.ok || !first.body)
-        throw new CheckStop(
-          `The server did not answer after setup: exit ${setup.value.exitCode} ${errorText(setup.value.stderr).slice(-200)}`,
-        );
-
-      context.say(`${found.runtime} server up in ${first.ms} ms, setup ${setup.ms} ms`);
-      const samplesMs: number[] = [];
-      let failures = 0;
-
-      for (let index = 0; index < options.restarts; index++) {
-        const restarted = parseProbe(
-          (
-            await context.exec(
-              box,
-              `${rt} ${quote(state)} restart ${port} ${quote(pidfile)} ${quote(serverLog)} ${probeMs}`,
-              probeMs + 30_000,
-            )
-          ).stdout,
-        );
-
-        if (restarted?.ok) samplesMs.push(restarted.ms);
-        else failures++;
-      }
-
-      const restart = { samplesMs, medianMs: median(samplesMs), failures };
-      await context.note("restart", restart);
-      context.say(`restart median ${restart.medianMs ?? "?"} ms (${failures} failed)`);
-
-      const base = {
-        runtime: found.runtime,
-        workdir: dir,
-        fileMiB: options.fileMiB,
-        setupMs: setup.ms,
-        restart,
-        stopStart: {
-          kind: "not-run" as const,
-          reason: "The SDK has no portable stop and start call",
-        },
-      };
-
-      if (box.suspend.kind === "none")
-        return { ...base, suspend: { kind: "unsupported", reason: box.suspend.reason } };
-
-      const current = parseProbe(
-        (
-          await context.exec(
-            box,
-            `${rt} ${quote(state)} probe ${port} ${probeMs}`,
-            probeMs + 30_000,
-          )
-        ).stdout,
-      );
-
-      if (!current?.ok || !current.body)
-        throw new CheckStop("The server stopped answering before the pause");
-      const server = { token: current.body.token };
-      const before = parseSnapshot((await context.exec(box, snapshotCommand(dir), 60_000)).stdout);
-      const { pause, resume } = box.suspend;
-      let pauseMs: number | null = null;
-      let resumeMs: number | null = null;
-
-      const refused = (stage: "pause" | "resume" | "first-command", error: string) => ({
-        ...base,
-        suspend: { kind: "refused" as const, stage, error, pauseMs, resumeMs },
-      });
-
-      try {
-        pauseMs = (await timed(() => withLimit(pause(), suspendCallMs, "pause"))).ms;
-      } catch (cause) {
-        return refused("pause", errorText(cause));
-      }
-
-      context.say(`paused in ${pauseMs} ms; holding ${options.holdMs / 1000} s`);
-      await sleep(options.holdMs, undefined, { signal: context.signal });
-
-      try {
-        resumeMs = (await timed(() => withLimit(resume(), suspendCallMs, "resume"))).ms;
-      } catch (cause) {
-        return refused("resume", errorText(cause));
-      }
-
-      const answered = await firstAnswer(context, box, firstCommandMs);
-
-      if (!answered.ok) return refused("first-command", answered.error);
-      const servingStart = performance.now();
-      const after = parseSnapshot((await context.exec(box, snapshotCommand(dir), 60_000)).stdout);
-
-      const probe = parseProbe(
-        (await context.exec(box, `${rt} ${quote(state)} probe ${port} 2000`, 60_000)).stdout,
-      );
-
-      let serverRestarted = false;
-
-      let servingMs: number | null = probe?.ok
-        ? Math.round(performance.now() - servingStart)
-        : null;
-
-      // A gone server is the cold path an agent would take: start it again and time it to serving.
-      if (!probe?.ok) {
-        serverRestarted = true;
-
-        const again = parseProbe(
-          (
-            await context.exec(
-              box,
-              `${rt} ${quote(state)} restart ${port} ${quote(pidfile)} ${quote(serverLog)} ${probeMs}`,
-              probeMs + 30_000,
-            )
-          ).stdout,
-        );
-
-        servingMs = again?.ok ? Math.round(performance.now() - servingStart) : null;
-      }
-
-      await sleep(2_500, undefined, { signal: context.signal });
-      const later = parseSnapshot((await context.exec(box, snapshotCommand(dir), 60_000)).stdout);
-      const judged = judgeSurvival({ before, after, later, server, probe, holdMs: options.holdMs });
-      context.say(
-        `resume: ${judged.verdict} (first command ${answered.ms} ms, serving ${servingMs ?? "?"} ms)`,
-      );
-
-      return {
-        ...base,
-        suspend: {
-          kind: "measured",
-          holdMs: options.holdMs,
-          pauseMs,
-          resumeMs,
-          firstCommandMs: answered.ms,
-          servingMs,
-          serverRestarted,
-          ...judged,
-        },
-      };
-    } finally {
-      await context
-        .execCleanup(
-          box,
-          `for f in server.pid worker.pid; do kill -9 "$(cat ${quote(dir)}/$f 2>/dev/null)" 2>/dev/null; done; true`,
-          30_000,
-        )
-        .catch(() => undefined);
-    }
-  },
-});
 
 /** Rejects when `work` has not settled within `ms`; the call itself keeps running. */
 async function withLimit<T>(work: Promise<T>, ms: number, name: string): Promise<T> {
@@ -496,5 +376,244 @@ async function withLimit<T>(work: Promise<T>, ms: number, name: string): Promise
     clearTimeout(timer);
   }
 }
+
+async function measure(context: CheckContext, options: StateOptions): Promise<StateResult> {
+  const box = context.boxes[0]?.box;
+
+  if (!box) throw new CheckStop("No sandbox");
+  const found = parseRuntime((await context.exec(box, runtimeCommand, 60_000)).stdout);
+
+  if (!found) throw new CheckStop("The image has neither node nor python3");
+  const base = options.workdir ?? (await diskTarget(context, box)).dir;
+  const dir = `${base}/.sbx-state-${randomBytes(4).toString("hex")}`;
+  const script = guestScripts[found.runtime];
+  const state = `${dir}/state.${script.extension}`;
+  const run = `${quote(found.path)} ${quote(state)}`;
+  const port = String(options.port);
+  const pidfile = quote(`${dir}/server.pid`);
+  const serverLog = quote(`${dir}/server.log`);
+
+  const snapshot = async () => {
+    const parsed = parseSnapshot((await context.exec(box, snapshotCommand(dir), 60_000)).stdout);
+
+    if (parsed === null) throw new CheckStop("A guest snapshot did not complete");
+
+    return parsed;
+  };
+
+  await context.exec(box, `mkdir -p ${quote(dir)}`, 60_000);
+  await box.write(state, new TextEncoder().encode(script.state));
+
+  try {
+    const beat = quote(`${dir}/worker.beat`);
+    const worker = `echo $$ > ${quote(`${dir}/worker.pid`)}; i=0; while :; do i=$((i+1)); echo $i > ${beat}.tmp && mv ${beat}.tmp ${beat}; sleep 1; done`;
+    const nonce = randomBytes(8).toString("hex");
+
+    const setup = await timed(() =>
+      context.exec(
+        box,
+        [
+          `cd ${quote(dir)} || exit 1`,
+          `head -c ${options.fileMiB * 1_048_576} /dev/urandom > data.bin && sync`,
+          detached(`exec ${run} serve ${port} ${pidfile} ${nonce}`, `${dir}/server.log`),
+          detached(worker, `${dir}/worker.log`),
+          `${run} probe ${port} ${probeMs} ${nonce}`,
+        ].join("\n"),
+        probeMs + 60_000,
+      ),
+    );
+
+    const first = parseProbe(setup.value.stdout);
+
+    if (!first?.ok || !first.body)
+      throw new CheckStop(
+        `The server did not answer after setup: exit ${setup.value.exitCode} ${errorText(setup.value.stderr).slice(-200)}`,
+      );
+
+    context.say(`${found.runtime} server up in ${first.ms} ms, setup ${setup.ms} ms`);
+    const samplesMs: number[] = [];
+    let failures = 0;
+    let current = first.body.nonce;
+
+    for (let index = 0; index < options.restarts; index++) {
+      const restarted = parseProbe(
+        (
+          await context.exec(
+            box,
+            `${run} restart ${port} ${pidfile} ${serverLog} ${probeMs}`,
+            probeMs + 30_000,
+          )
+        ).stdout,
+      );
+
+      if (restarted?.ok && restarted.body) {
+        samplesMs.push(restarted.ms);
+        current = restarted.body.nonce;
+      } else failures++;
+    }
+
+    const restart = { samplesMs, medianMs: median(samplesMs), failures };
+    await context.note("restart", restart);
+    context.say(`restart median ${restart.medianMs ?? "?"} ms (${failures} failed)`);
+
+    const result = {
+      runtime: found.runtime,
+      workdir: dir,
+      fileMiB: options.fileMiB,
+      setupMs: setup.ms,
+      restart,
+      stopStart: {
+        kind: "not-run" as const,
+        reason: "The SDK has no portable stop and start call",
+      },
+    };
+
+    if (box.suspend.kind === "none")
+      return { ...result, suspend: { kind: "unsupported", reason: box.suspend.reason } };
+
+    const probeServer = async (timeoutMs: number) =>
+      parseProbe(
+        (
+          await context.exec(
+            box,
+            `${run} probe ${port} ${timeoutMs} ${current}`,
+            timeoutMs + 60_000,
+          )
+        ).stdout,
+      );
+
+    const serving = await probeServer(probeMs);
+
+    if (!serving?.ok || !serving.body)
+      throw new CheckStop("The server stopped answering before the pause");
+    const before = await snapshot();
+    const beforeAt = performance.now();
+
+    if (
+      before.sha === null ||
+      before.worker === null ||
+      before.server === null ||
+      before.beat === null
+    )
+      throw new CheckStop(`The baseline is incomplete: ${JSON.stringify(before)}`);
+
+    const { pause, resume } = box.suspend;
+    let pauseMs: number | null = null;
+    let resumeMs: number | null = null;
+
+    const refused = (stage: "pause" | "resume" | "first-command", error: string): StateResult => ({
+      ...result,
+      suspend: { kind: "refused", stage, error, pauseMs, resumeMs },
+    });
+
+    try {
+      pauseMs = (await timed(() => withLimit(pause(), suspendCallMs, "pause"))).ms;
+    } catch (cause) {
+      return refused("pause", errorText(cause));
+    }
+
+    context.say(`paused in ${pauseMs} ms; holding ${options.holdMs / 1000} s`);
+    await sleep(options.holdMs, undefined, { signal: context.signal });
+
+    try {
+      resumeMs = (await timed(() => withLimit(resume(), suspendCallMs, "resume"))).ms;
+    } catch (cause) {
+      return refused("resume", errorText(cause));
+    }
+
+    const resumedAt = performance.now();
+    const answered = await firstAnswer(context, box, resumedAt, firstCommandMs);
+
+    if (!answered.ok) return refused("first-command", answered.error);
+    let probe = await probeServer(quickProbeMs);
+    let servingMs = probe?.ok ? Math.round(performance.now() - resumedAt) : null;
+    const after = await snapshot();
+    const elapsedS = (performance.now() - beforeAt) / 1000;
+    let serverRestarted = false;
+
+    // Still alive but slow to answer: give it longer before judging.
+    if (!probe?.ok && after.server !== null) {
+      probe = await probeServer(resumedProbeMs);
+      servingMs = probe?.ok ? Math.round(performance.now() - resumedAt) : null;
+    }
+
+    // A confirmed-gone server is the cold path an agent would take: start it again. Serving is then
+    // the first command plus the guest-timed restart, leaving out the harness's own checks.
+    if (!probe?.ok && after.server === null) {
+      serverRestarted = true;
+
+      const again = parseProbe(
+        (
+          await context.exec(
+            box,
+            `${run} restart ${port} ${pidfile} ${serverLog} ${probeMs}`,
+            probeMs + 30_000,
+          )
+        ).stdout,
+      );
+
+      servingMs = again?.ok ? Math.round(answered.ms + again.ms) : null;
+    }
+
+    await sleep(2_500, undefined, { signal: context.signal });
+    const later = await snapshot();
+
+    const judged = judgeSurvival({
+      before,
+      after,
+      later,
+      token: serving.body.token,
+      probe,
+      elapsedS,
+      holdMs: options.holdMs,
+    });
+
+    context.say(
+      `resume: ${judged.verdict}${judged.reason ? ` (${judged.reason})` : ""}; first command ${answered.ms} ms, serving ${servingMs ?? "?"} ms`,
+    );
+
+    return {
+      ...result,
+      suspend: {
+        kind: "measured",
+        holdMs: options.holdMs,
+        pauseMs,
+        resumeMs,
+        firstCommandMs: answered.ms,
+        servingMs,
+        serverRestarted,
+        ...judged,
+      },
+    };
+  } finally {
+    await context
+      .execCleanup(
+        box,
+        [
+          ownKillFunction,
+          `ownkill ${pidfile} ${quote(dir)}`,
+          `ownkill ${quote(`${dir}/worker.pid`)} ${quote(dir)}`,
+        ].join("\n"),
+        30_000,
+      )
+      .catch(() => undefined);
+  }
+}
+
+export const stateSurvivalCheck = (
+  options: StateOptions = defaultStateOptions,
+): Check<StateResult> => {
+  const lifetimeMs = 20 * 60_000 + options.holdMs;
+
+  return {
+    id: "state-survival",
+    boxes: 1,
+    minBoxes: 1,
+    lifetimeMs,
+    resultSchema: stateResultSchema,
+    // The check ends a minute before the sandbox's lifetime, so cleanup still finds it.
+    run: (context) => deadline(lifetimeMs - 60_000, () => measure(context, options)),
+  };
+};
 
 export const stateSurvival = stateSurvivalCheck();
