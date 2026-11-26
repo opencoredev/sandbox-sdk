@@ -11,12 +11,17 @@ import type {
   OpenSession,
   RunOptions,
   Session,
+  Suspend,
 } from "../../src/fairness/framework.js";
 
 let counter = 0;
 
 export function hostBox(
-  options: { readonly env?: NodeJS.ProcessEnv; readonly id?: string } = {},
+  options: {
+    readonly env?: NodeJS.ProcessEnv;
+    readonly id?: string;
+    readonly suspend?: Suspend;
+  } = {},
 ): Box & {
   readonly destroyed: () => boolean;
 } {
@@ -25,6 +30,7 @@ export function hostBox(
 
   return {
     id,
+    suspend: options.suspend ?? { kind: "none", reason: "The host has no pause" },
     destroyed: () => destroyed,
     run: (command: string, run: RunOptions) =>
       new Promise<CommandResult>((done, fail) => {
@@ -72,7 +78,9 @@ export function hostBox(
 }
 
 /** A session whose creates make host boxes, recording them; `leftovers` lists none. */
-export function hostSession(options: { readonly env?: NodeJS.ProcessEnv } = {}) {
+export function hostSession(
+  options: { readonly env?: NodeJS.ProcessEnv; readonly suspend?: Suspend } = {},
+) {
   const boxes: ReturnType<typeof hostBox>[] = [];
 
   const session: Session = {

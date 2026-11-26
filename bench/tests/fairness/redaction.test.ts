@@ -319,6 +319,7 @@ describe("a completed security probe", () => {
 
     const box: Box = {
       id: "probe-box",
+      suspend: { kind: "none", reason: "fake" },
       run: async (command) => ({
         ok: true,
         exitCode: 0,
