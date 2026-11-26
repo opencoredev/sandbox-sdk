@@ -191,7 +191,7 @@ describe("state-survival judge", () => {
     expect(late.verdict).toBe("inconclusive");
   });
 
-  it("calls a cold restart only on a new boot or both processes confirmed gone", () => {
+  it("calls a cold restart only with both processes confirmed gone", () => {
     const bothGone = snapshot({ worker: gone, server: gone });
     expect(judgeSurvival({ ...base, after: bothGone, later: bothGone, probe: null }).verdict).toBe(
       "cold-restart",
@@ -204,7 +204,33 @@ describe("state-survival judge", () => {
       server: { gone: false },
     });
     const rebooted = snapshot({ boot: "boot-2", beat: 11 });
-    expect(judgeSurvival({ ...base, ...kept, after: rebooted }).verdict).toBe("cold-restart");
+    const rebootedGone = snapshot({ boot: "boot-2", worker: gone, server: gone });
+
+    expect(
+      judgeSurvival({ ...base, after: rebootedGone, later: rebootedGone, probe: null }).verdict,
+    ).toBe("cold-restart");
+
+    // A changed boot id with the original processes still there, but no proof of the server's
+    // memory, is no verdict either way.
+    for (const probe of [answer("t2"), null])
+      expect(judgeSurvival({ ...base, ...kept, after: rebooted, probe })).toMatchObject({
+        verdict: "inconclusive",
+        reason: expect.stringMatching(/boot id changed/),
+      });
+
+    // The original server answering with its token and memory outweighs a changed boot id; the
+    // freeze is then judged as usual.
+    expect(judgeSurvival({ ...base, ...kept, after: rebooted })).toMatchObject({
+      verdict: "in-ram",
+      reason: expect.stringMatching(/boot id changed/),
+      bootSame: false,
+    });
+    expect(
+      judgeSurvival({ ...base, ...kept, after: snapshot({ boot: "boot-2", beat: 74 }) }),
+    ).toMatchObject({ verdict: "kept-running", reason: expect.stringMatching(/boot id changed/) });
+    expect(
+      judgeSurvival({ ...base, ...kept, after: snapshot({ boot: "boot-2", beat: 40 }) }).verdict,
+    ).toBe("inconclusive");
     // A server that is alive but not answering, or only one process gone, is not enough.
 
     const slow = judgeSurvival({
