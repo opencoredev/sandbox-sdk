@@ -17,8 +17,9 @@
  * Verdicts: `in-ram` when the server (same process, token and memory digest) and the worker (same
  * process, heartbeat moving again) survived and the worker missed at least 80% of the hold's
  * heartbeats even if every second outside the hold was frozen too (it was frozen during the hold);
- * `kept-running` when they survived and the worker missed at most 20%; `cold-restart` when the boot id
- * changed or both processes are confirmed gone with the file intact; `files-lost` when the directory
+ * `kept-running` when they survived and the worker missed at most 20%; `cold-restart` when both
+ * processes are confirmed gone with the file intact (the original server answering with its token and
+ * memory outweighs a changed boot id, and a changed boot id with neither is inconclusive); `files-lost` when the directory
  * or file is confirmed absent or the file's hash changed; `inconclusive` for anything in between, an
  * unreadable file or process included, with the reason. A pause, resume or first command that fails,
  * times out or goes unanswered is recorded as `failed` with its stage and error. The SDK has no portable stop and start, so that half is recorded as not run.
@@ -384,7 +385,16 @@ export function judgeSurvival(input: {
 
   if (!filesystem) return judged("inconclusive", "the file could not be read");
 
-  if (bootSame === false) return judged("cold-restart");
+  // The original server answering with its random token and memory digest is its state preserved,
+  // whatever the boot id says (a restored checkpoint keeps both).
+  const survivedReboot = bootSame === false && memoryIntact;
+
+  // A changed boot id alone proves nothing either way: a cold restart needs both processes gone.
+  if (bootSame === false && !survivedReboot && !(worker.gone && server.gone))
+    return judged(
+      "inconclusive",
+      "the boot id changed, but neither the original server's memory nor both processes gone was confirmed",
+    );
 
   if (worker.gone && server.gone) return judged("cold-restart");
 
@@ -396,9 +406,13 @@ export function judgeSurvival(input: {
 
   if (rawMissed === null) return judged("inconclusive", "no heartbeat count across the hold");
 
-  if (rawMissed.min - outsideS >= holdS * 0.8) return judged("in-ram");
+  const note = survivedReboot
+    ? "the boot id changed, but the original processes kept their memory"
+    : null;
 
-  if (rawMissed.max + beatSlackS <= holdS * 0.2) return judged("kept-running");
+  if (rawMissed.min - outsideS >= holdS * 0.8) return judged("in-ram", note);
+
+  if (rawMissed.max + beatSlackS <= holdS * 0.2) return judged("kept-running", note);
 
   return judged(
     "inconclusive",
