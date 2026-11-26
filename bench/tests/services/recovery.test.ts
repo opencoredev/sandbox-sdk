@@ -127,10 +127,11 @@ describe("sweep uses the connection that created the sandboxes", () => {
 
 describe("recovery tears an as-found project down before it deletes the sandbox", () => {
   /** `connectFailures`: how many of the first connects fail, as a transient 503 would. */
-  const setup = async (downExit: number, connectFailures = 0) => {
+  const setup = async (downExit: number, connectFailures = 0, destroyFailures = 0) => {
     const provider = bindConnection(memory(), {});
     const order: string[] = [];
     let failures = connectFailures;
+    let destroyFails = destroyFailures;
 
     const box = await createSandbox(provider, {
       labels: { "sandbox-bench-run": "r1-abcd", "svc-attempt": "e2b-compose-1" },
@@ -154,6 +155,11 @@ describe("recovery tears an as-found project down before it deletes the sandbox"
     };
 
     provider.destroy = async (id) => {
+      if (destroyFails-- > 0) {
+        order.push("destroy failed");
+        throw new Error("503 Service Unavailable");
+      }
+
       order.push(`destroy ${id === box.id}`);
 
       return destroy(id);
@@ -231,6 +237,29 @@ describe("recovery tears an as-found project down before it deletes the sandbox"
     expect(second?.exitCode).toBeUndefined();
     expect(second?.stdout).toContain('"retained":0');
     expect(states(second?.projects ?? "")).toEqual(["pending", "down"]);
+  });
+
+  test("an abandoned sandbox whose first delete fails is journaled gone by the retry that deletes it", async () => {
+    const { order, files, entry } = await setup(1, 0, 1);
+    const abandon = ["--abandon-project", "e2b-compose-1"];
+    const [failed, retried, later] = await sweeps(files, entry, [abandon, abandon, []]);
+
+    expect(failed?.exitCode).toBe(1);
+    expect(states(failed?.projects ?? "")).toEqual(["pending"]);
+    expect(states(retried?.projects ?? "")).toEqual(["pending", "sandbox-gone"]);
+
+    // Once its deletion is confirmed: the project stays open, and no sandbox is kept, recovered in
+    // the guest or deleted again.
+    expect(later?.stdout).toContain('"retained":0');
+    expect(later?.stdout).toContain('"openProjects":1');
+    expect(order).toEqual([
+      "down true",
+      "down true",
+      "destroy failed",
+      "down true",
+      "down true",
+      "destroy true",
+    ]);
   });
 
   test("only --abandon-project deletes a kept sandbox, and its project stays open", async () => {

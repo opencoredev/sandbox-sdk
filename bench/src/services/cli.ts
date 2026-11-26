@@ -266,9 +266,16 @@ async function unconfirmedOwned(
   const owned = await readJournal(join(out, ownedFile), ownedSchema);
   const records = await readJournal(join(out, recordsFile), attemptRecordSchema);
 
-  const confirmed = new Set(
-    records.items.flatMap((r) => (r.deletionConfirmed ? r.sandboxIds : [])),
-  );
+  // Project claims journaled before `up`, even when the attempt row never reached the disk.
+  const projects = await readJournal(join(out, projectsFile), projectEventSchema);
+
+  // Deleted for sure: an attempt's confirmed deletion, or an abandoned sandbox's (`sandbox-gone`).
+  const confirmed = new Set([
+    ...records.items.flatMap((r) => (r.deletionConfirmed ? r.sandboxIds : [])),
+    ...projects.items.flatMap((e) =>
+      e.state === "sandbox-gone" && e.sandboxId !== null ? [e.sandboxId] : [],
+    ),
+  ]);
 
   const known = new Map<string, Set<string>>();
 
@@ -316,8 +323,6 @@ async function unconfirmedOwned(
   for (const provider of unknownAttempts.values())
     unresolved.set(provider, (unresolved.get(provider) ?? 0) + 1);
 
-  // Project claims journaled before `up`, even when the attempt row never reached the disk.
-  const projects = await readJournal(join(out, projectsFile), projectEventSchema);
   const claims = new Map<string, (typeof projects.items)[number]>();
   const key = (e: { attemptId: string; daemon: string }) => `${e.attemptId} ${e.daemon}`;
 
@@ -509,29 +514,19 @@ async function sweepRun(input: {
   await downAsFound({ ...input, claims: await claims() });
   const left = await claims();
 
-  // An operator gave up on these: the sandbox goes, and a confirmed deletion is journaled so later
-  // sweeps keep reporting the project open without claiming a sandbox is kept for it.
-  for (const claim of left.filter((c) => input.abandon?.has(c.attemptId))) {
-    const entry = input.entries.find((e) => e.name === claim.provider);
+  // An operator gave up on these: the sweep below deletes the sandbox like any other, and whichever
+  // try confirms that journals `sandbox-gone`, so later sweeps keep reporting the project open
+  // without keeping, recovering or deleting a sandbox for it.
+  const abandoned = new Map(
+    left.flatMap((c) =>
+      input.abandon?.has(c.attemptId) && c.sandboxId !== null ? [[c.sandboxId, c] as const] : [],
+    ),
+  );
 
-    const gone =
-      entry !== undefined &&
-      claim.sandboxId !== null &&
-      (await bounded(entry.provider.destroy(claim.sandboxId), 120_000, "destroy").then(
-        () => true,
-        () => false,
-      ));
-
+  for (const claim of abandoned.values())
     await input
-      .note({ kind: "project-abandoned", project: projectIdentity(claim), sandboxDeleted: gone })
+      .note({ kind: "project-abandoned", project: projectIdentity(claim) })
       .catch(() => {});
-
-    if (gone)
-      await appendFile(
-        join(input.out, projectsFile),
-        `${JSON.stringify({ ...claim, state: "sandbox-gone", at: new Date().toISOString() })}\n`,
-      ).catch(() => {});
-  }
 
   const kept = left.filter((c) => !input.abandon?.has(c.attemptId));
 
@@ -540,7 +535,17 @@ async function sweepRun(input: {
   for (const claim of kept)
     await input.note({ kind: "sandbox-retained", project: projectIdentity(claim) }).catch(() => {});
 
-  const swept = await sweepOrDelete({ ...input, retain });
+  const onRemoved = async (id: string) => {
+    const claim = abandoned.get(id);
+
+    if (claim)
+      await appendFile(
+        join(input.out, projectsFile),
+        `${JSON.stringify({ ...claim, state: "sandbox-gone", at: new Date().toISOString() })}\n`,
+      );
+  };
+
+  const swept = await sweepOrDelete({ ...input, retain, onRemoved });
 
   return { ...swept, retained: kept.map(projectIdentity) };
 }
@@ -557,11 +562,13 @@ async function sweepOrDelete(input: {
   out: string;
   known: ReadonlyMap<string, ReadonlySet<string>>;
   retain: ReadonlySet<string>;
+  onRemoved: (id: string) => Promise<void>;
 }) {
   try {
     return await sweepProviders(input.label, input.entries, input.note, input.out, {
       known: input.known,
       retain: input.retain,
+      onRemoved: input.onRemoved,
     });
   } catch (error) {
     await input
@@ -582,6 +589,7 @@ async function sweepOrDelete(input: {
         ]);
 
         if (!removed) undeleted++;
+        else await input.onRemoved(id).catch(() => {});
         await input
           .note({ kind: "leftover", provider: entry.name, id, removed, via: "fallback" })
           .catch(() => {});

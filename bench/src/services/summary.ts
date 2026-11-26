@@ -223,19 +223,23 @@ function capability(provider: string, records: readonly AttemptRecord[]) {
   const facts = <K extends keyof Probe>(key: K) => tally(probes.map((p) => String(p[key] ?? "")));
   const first = (key: keyof Probe) => facts(key)[0]?.value ?? null;
   const compose = records.filter((r) => r.path === "compose");
-  // Only attempts whose ladder finished count: a sandbox that vanished or timed out, or a row from
-  // before `finished` existed, says nothing about Docker, in either direction.
-  const decided = compose.filter((r) => r.daemon?.finished === true);
 
-  // A daemon that answered started, whatever its workload did: a storage fallback that cleared
-  // `method` afterwards keeps that start in `answered`.
-  const worked = decided.flatMap((r) =>
-    r.daemon?.method
+  // A daemon that answered started, whatever its workload did and whether its ladder then
+  // finished: a storage fallback that cleared `method`, even one cut short, keeps that start in
+  // `answered`. A row from before `answered` existed counts only once its ladder finished.
+  const worked = compose.flatMap((r) =>
+    r.daemon?.finished && r.daemon.method
       ? [`${r.daemon.method}/${r.daemon.config ?? "?"}`]
       : r.daemon?.answered
         ? [r.daemon.answered]
         : [],
   );
+
+  // Negative evidence only from a ladder that finished with no daemon ever answering: a sandbox
+  // that vanished or timed out, or a row from before `finished` existed, says nothing.
+  const neverAnswered = compose.filter(
+    (r) => r.daemon?.finished === true && !r.daemon.method && !r.daemon.answered,
+  ).length;
 
   const tried = compose.flatMap((r) => r.daemon?.tries ?? []);
 
@@ -250,11 +254,11 @@ function capability(provider: string, records: readonly AttemptRecord[]) {
   const docker =
     compose.length === 0
       ? "not-tried"
-      : worked.length === decided.length && worked.length > 0
+      : worked.length > 0 && neverAnswered === 0
         ? "works"
         : worked.length > 0
           ? "flaky"
-          : decided.length > 0
+          : neverAnswered > 0
             ? "fails"
             : "not-reached";
 

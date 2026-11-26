@@ -697,6 +697,8 @@ export async function sweepProviders(
     readonly callTimeoutMs?: number;
     /** Sandbox IDs never deleted, whether listed or known: the caller still needs them. */
     readonly retain?: ReadonlySet<string>;
+    /** Called once a sandbox's deletion is confirmed, by whichever try deleted it. */
+    readonly onRemoved?: (id: string) => Promise<void>;
   } = {},
 ): Promise<SweepResult> {
   const callTimeoutMs = options.callTimeoutMs ?? sweepCallTimeoutMs;
@@ -736,7 +738,9 @@ export async function sweepProviders(
       // Billing treats a Modal sandbox as settled only after its confirmed stop. A failed write
       // leaves its cost provisional, the safe side, and never stops the sweep.
       if (!removed) undeleted++;
-      else
+      else await options.onRemoved?.(id).catch(() => {});
+
+      if (removed)
         await recordStop({
           path: join(journalDir, stopJournalFile),
           provider: provider.name,

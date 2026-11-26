@@ -417,6 +417,8 @@ type Binding =
       readonly connection: Connection;
       /** The fingerprint's input from the options and environment at bind time. */
       readonly configured: readonly (string | FieldList)[];
+      /** The control-plane hosts that same resolution sends requests to (controlPlaneHosts). */
+      readonly hosts: readonly string[];
     }
   | { readonly kind: "in-process"; readonly fingerprint: string }
   | { readonly kind: "failed"; readonly reason: string };
@@ -454,7 +456,12 @@ export function bindConnection<P extends Provider>(provider: P, options: Factory
 
   try {
     const connection = resolve(provider.name, parsed.data);
-    bindings.set(provider, { kind: "resolved", connection, configured: configured(connection) });
+    bindings.set(provider, {
+      kind: "resolved",
+      connection,
+      configured: configured(connection),
+      hosts: endpointHosts(connection),
+    });
   } catch (error) {
     bindings.set(provider, { kind: "failed", reason: reasonOf(error) });
   }
@@ -638,6 +645,45 @@ function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields
   }
 }
 
+/**
+ * Endpoint variables a provider's own SDK reads, in groups: within a group the first one set wins,
+ * as the SDK resolves it (Boxd: BOXD_BASE_URL, then the legacy BOXD_API_URL).
+ */
+const sdkEndpointPrecedence = new Map([
+  ["boxd", [["BOXD_BASE_URL", "BOXD_API_URL"]]],
+  ["tenki", [["LUXOR_API_ENDPOINT", "LUXOR_API_URL", "TENKI_API_ENDPOINT", "TENKI_API_URL"]]],
+  ["railway", [["RAILWAY_GRAPHQL_ENDPOINT"], ["RAILWAY_TCP_PROXY_WS_ENDPOINT"]]],
+]);
+
+/**
+ * The hosts a connection sends control-plane requests to, from the fingerprint's own inputs: each
+ * URL in its resolved configuration, and the endpoint its SDK takes from the environment where the
+ * configuration leaves it unset (sdkEnvironment, by sdkEndpointPrecedence). Hosts only, sorted.
+ */
+function endpointHosts(connection: Connection): string[] {
+  const sdk = sdkEnvironment(connection);
+
+  const chosen = (sdkEndpointPrecedence.get(connection.name) ?? []).flatMap((group) => {
+    const name = group.find((key) => sdk[key]?.trim());
+
+    return name === undefined ? [] : [sdk[name]];
+  });
+
+  const hosts = [...Object.values(connectionFields.parse(connection.config)), ...chosen].flatMap(
+    (value) => {
+      try {
+        const url = new URL(value ?? "");
+
+        return ["https:", "http:", "wss:", "ws:"].includes(url.protocol) ? [url.host] : [];
+      } catch {
+        return [];
+      }
+    },
+  );
+
+  return [...new Set(hosts)].sort();
+}
+
 /** A connection's set fields, sorted by name. */
 type FieldList = [string, string][];
 
@@ -776,31 +822,15 @@ export async function journalFingerprint(provider: Provider): Promise<Fingerprin
 }
 
 /**
- * The control-plane hosts this instance's resolved connection sends requests to: the host of each
- * http(s) URL in its configuration (never its path, query or credentials), sorted, or null when it
- * was not resolved. Where the endpoint encodes placement (Superserve's region from its key, an
- * endpoint override), runs with different hosts ran somewhere else.
+ * The control-plane hosts this instance's connection sends requests to, resolved at bind time from
+ * the fingerprint's own inputs (endpointHosts): never a path, query or credential. Null when it was
+ * not resolved. Where the endpoint encodes placement (Superserve's region from its key, Boxd's
+ * BOXD_BASE_URL), runs with different hosts ran somewhere else.
  */
-export function controlPlaneHosts(provider: Provider): string[] | null {
+export function controlPlaneHosts(provider: Provider): readonly string[] | null {
   const binding = bindings.get(provider);
 
-  if (binding?.kind !== "resolved") return null;
-
-  const hosts = Object.values(binding.connection.config).flatMap((value) => {
-    const text = z.string().safeParse(value);
-
-    if (!text.success) return [];
-
-    try {
-      const url = new URL(text.data);
-
-      return url.protocol === "https:" || url.protocol === "http:" ? [url.host] : [];
-    } catch {
-      return [];
-    }
-  });
-
-  return [...new Set(hosts)].sort();
+  return binding?.kind === "resolved" ? binding.hosts : null;
 }
 
 /** {@link journalFingerprint}'s value, or null when the instance has none. */

@@ -514,7 +514,7 @@ function record(input: {
             project: null,
             launched: green && input.method !== "preinstalled-running",
             down: null,
-            answered: green ? `${input.method ?? "static-rootful"}/default` : null,
+            answered: null,
             finished: true,
           }
         : null,
@@ -2990,6 +2990,50 @@ describe("placement through the run manifest and the summary", () => {
     }
   });
 
+  test("Boxd endpoint overrides with no region place runs apart, by the SDK's precedence", async () => {
+    const placed = async (env: Record<string, string>) => {
+      vi.stubEnv("BOXD_API_KEY", "k");
+      vi.stubEnv("BOXD_REGION", "");
+
+      for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+
+      try {
+        const loaded = await loadSlotProvider(providerSetup("boxd"), "same-machine", 0);
+
+        if (loaded.kind !== "ready") throw new Error(loaded.note);
+
+        return placementOf("boxd", process.env, loaded.entry.provider);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    };
+
+    const nyc = await placed({ BOXD_BASE_URL: "https://nyc.boxd.example/v1", BOXD_API_URL: "" });
+    // The legacy alias, read only when BOXD_BASE_URL is unset.
+    const fra = await placed({ BOXD_BASE_URL: "", BOXD_API_URL: "https://fra.boxd.example" });
+
+    const both = await placed({
+      BOXD_BASE_URL: "https://nyc.boxd.example",
+      BOXD_API_URL: "https://fra.boxd.example",
+    });
+
+    expect(nyc.controlPlane).toBe("nyc.boxd.example");
+    expect(fra.controlPlane).toBe("fra.boxd.example");
+    expect(both.controlPlane).toBe("nyc.boxd.example");
+
+    const a = await folder("r1", "boxd", nyc);
+    const b = await folder("r2", "boxd", fra);
+
+    try {
+      await expect(servicesCommand(["summary", "--out", a, "--out", b])).rejects.toThrow(
+        "boxd was placed differently",
+      );
+    } finally {
+      await rm(a, { recursive: true, force: true });
+      await rm(b, { recursive: true, force: true });
+    }
+  });
+
   test("services.json carries only the public run fields", async () => {
     const dir = await folder("r1", "modal", placementOf("modal", {}));
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -3024,6 +3068,8 @@ describe("storage fallback only for a storage-driver incompatibility", () => {
       "failed to extract layer: unexpected EOF",
       // A layer's file ownership, not the storage mount: the image, on this daemon, at image-pull.
       "failed to register layer: lchown /var/lib/docker/overlay2/x/diff/usr/bin/su: operation not permitted",
+      // A container's runtime mount, not the daemon's storage: the workload, at services-start.
+      'OCI runtime create failed: runc create failed: unable to start container process: error during container init: error mounting "proc" to rootfs at "/proc": mount proc:/proc (via /proc/self/fd/7), flags: 0xe: operation not permitted',
       "error pulling image: Get https://registry-1.docker.io/v2/: net/http: TLS handshake timeout",
     ])
       expect(storageIncompatibility(output)).toBeNull();
@@ -3053,6 +3099,24 @@ describe("storage fallback only for a storage-driver incompatibility", () => {
     expect(
       servicesSiteData({ records: [answered], runs: [run] }).providers[0]?.capability.docker,
     ).toBe("works");
+
+    const docker = (...records: AttemptRecord[]) =>
+      servicesSiteData({
+        records: records.map((r, i) => ({ ...r, attempt: i + 1, attemptId: `p-compose-${i + 1}` })),
+        runs: [run],
+      }).providers[0]?.capability.docker;
+
+    const unfinished = (r: AttemptRecord): AttemptRecord => ({
+      ...r,
+      daemon: r.daemon ? { ...r.daemon, finished: false } : null,
+    });
+
+    // A fallback cut short after the ping: the answer still counts, on its own and beside an
+    // attempt that says nothing; only a finished ladder that never answered says no.
+    expect(docker(unfinished(answered))).toBe("works");
+    expect(docker(unfinished(answered), unfinished(base))).toBe("works");
+    expect(docker(unfinished(answered), base)).toBe("flaky");
+    expect(docker(unfinished(base))).toBe("not-reached");
   });
 
   test("a pull that fails on a working daemon keeps Docker's start apart from the workload verdict", () => {
