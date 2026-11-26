@@ -253,6 +253,21 @@ async function unconfirmedOwned(
   };
 }
 
+/**
+ * notes.jsonl writes that never throw: a note that cannot be written goes to stderr, and listing
+ * and deletion carry on without it.
+ */
+export const bestEffortNotes =
+  (path: string) =>
+  (entry: RunNote): Promise<void> =>
+    appendFile(path, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`).catch(
+      (error: Error) => {
+        process.stderr.write(
+          `Could not write ${path} (${error.message}); going on without this note: ${JSON.stringify(entry)}\n`,
+        );
+      },
+    );
+
 /** Wait for a sandbox from an unknown-outcome create to show up in its provider's listing. */
 const visibilityWindowMs = 60_000;
 
@@ -411,9 +426,7 @@ async function run(args: string[]) {
   // `wx`: a run folder is never reused for a new collection.
   await writeFile(join(out, "run.json"), `${JSON.stringify(info, null, 2)}\n`, { flag: "wx" });
   const notesPath = join(out, "notes.jsonl");
-
-  const note = (entry: RunNote) =>
-    appendFile(notesPath, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+  const note = bestEffortNotes(notesPath);
 
   const entries: { setup: (typeof setups)[number]; entry: SlotProvider }[] = [];
 
@@ -471,6 +484,8 @@ async function run(args: string[]) {
   const done = new Set<string>();
   // Cleanups of creates that answered after their attempt returned: awaited before the end.
   const lateCleanups = new Set<Promise<void>>();
+  // Attempts whose sandbox went but whose Compose project was not confirmed gone.
+  const cleanupUnconfirmed: string[] = [];
 
   // An attempt whose sandbox may still exist (a create with an unknown outcome, or a deletion that
   // was not confirmed) holds admission for the whole run while it is reconciled, so no provider
@@ -479,8 +494,33 @@ async function run(args: string[]) {
   let hold: Promise<boolean> = Promise.resolve(true);
 
   const reconcile = async (entry: SlotProvider, record: AttemptRecord): Promise<boolean> => {
-    // A create with no ID can never be proven absent: only the end-of-run sweeps look for it.
-    if (record.sandboxIds.length === 0) return false;
+    // A create with no ID can never be proven absent, so it never clears the hold. Its provider runs
+    // nothing else now, so its label is listed and whatever carries it deleted at once, then again
+    // once the visibility window has passed, without waiting for the other workers.
+    if (record.sandboxIds.length === 0) {
+      for (const discovery of ["immediate", "after-window"] as const) {
+        if (discovery === "after-window")
+          await new Promise((resolve) => setTimeout(resolve, visibilityWindowMs));
+
+        const swept = await sweepRun({
+          label: info.ownerLabel,
+          entries: [entry],
+          note,
+          out,
+          known: new Map(),
+        });
+
+        await note({
+          kind: "unknown-create-discovery",
+          provider: entry.name,
+          attemptId: record.attemptId,
+          discovery,
+          ...swept,
+        });
+      }
+
+      return false;
+    }
 
     const swept = await sweepRun({
       label: info.ownerLabel,
@@ -610,9 +650,22 @@ async function run(args: string[]) {
 
         guard.settle(reservation, record.estimatedUSD);
         await appendFile(join(out, recordsFile), `${JSON.stringify(record)}\n`);
+
+        // The sandbox is gone but its Compose project may not be: the run cannot claim a clean end.
+        if (record.cleanup === "unconfirmed") {
+          cleanupUnconfirmed.push(attemptId);
+          await note({
+            kind: "cleanup-unconfirmed",
+            provider: entry.name,
+            attemptId,
+            project: record.daemon?.project ?? null,
+            method: record.daemon?.method ?? null,
+          });
+        }
+
         const o = record.outcome;
         process.stdout.write(
-          `${attemptId}: ${o.kind === "green" ? `green, services up ${((record.metrics.servicesUpMs ?? 0) / 1000).toFixed(1)} s, ${record.daemon?.method ?? "native"}` : o.kind === "unsupported" ? `unsupported: ${o.reason}` : `failed at ${o.stage}: ${o.reason}`}\n`,
+          `${attemptId}: ${o.kind === "green" ? `green, services up ${((record.metrics.servicesUpMs ?? 0) / 1000).toFixed(1)} s, ${record.daemon?.method ?? "native"}` : o.kind === "unsupported" ? `unsupported: ${o.reason}` : `failed at ${o.stage}: ${o.reason}`}; cleanup ${record.cleanup}\n`,
         );
       }
     }
@@ -730,6 +783,13 @@ async function run(args: string[]) {
       process.stderr.write(`Sweep left work: ${JSON.stringify(swept)}; see ${notesPath}\n`);
       process.exitCode = 1;
     }
+
+    if (cleanupUnconfirmed.length) {
+      process.stderr.write(
+        `Compose cleanup unconfirmed for ${cleanupUnconfirmed.join(", ")}: their project may still run on a daemon that outlived the sandbox; see ${notesPath}\n`,
+      );
+      process.exitCode = 1;
+    }
   }
 }
 
@@ -794,9 +854,7 @@ async function sweep(args: string[]) {
   const label = runFile.ownerLabel;
   const track = z.enum(tracks).parse(values.track);
   const notesPath = join(out, "notes.jsonl");
-
-  const note = (entry: RunNote) =>
-    appendFile(notesPath, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+  const note = bestEffortNotes(notesPath);
 
   const { known, unresolved, unreadable, unreadableFiles } = await unconfirmedOwned(out);
 

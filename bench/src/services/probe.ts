@@ -10,11 +10,28 @@ export const probeScript = readFileSync(new URL("./guest/probe.sh", import.meta.
 
 const yesNo = z.enum(["yes", "no"]);
 
+/** Architectures `uname -m` reports on Linux. Anything else (an empty or garbled answer) is no probe. */
+const arches = [
+  "x86_64",
+  "aarch64",
+  "armv7l",
+  "armv6l",
+  "i686",
+  "i386",
+  "riscv64",
+  "s390x",
+  "ppc64le",
+  "ppc64",
+  "mips64",
+  "loongarch64",
+] as const;
+
 /** The probe's facts. Unknown or garbled values stay strings so nothing is invented. */
 export const probeSchema = z.object({
   uid: z.string(),
   user: z.string(),
-  arch: z.string(),
+  /** Decides the architecture verdict, so it must be one the kernel really reports. */
+  arch: z.enum(arches),
   kernel: z.string(),
   os: z.string(),
   libc: z.string(),

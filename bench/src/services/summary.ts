@@ -88,9 +88,9 @@ export type PathStatus = "measured" | "unsupported" | "failed" | "not-run";
 /**
  * Why one compose attempt shows the sandbox cannot run Docker; null when it shows no such thing.
  * Its ladder must have finished without a daemon, and every try that failed must be conclusive:
- * skips are probe facts, and a failed try counts only when it found no daemon on the socket, its
- * log named a missing capability, or its storage could not mount. One download, checksum,
- * transport or timeout failure makes the attempt inconclusive.
+ * skips are probe facts, and a failed try counts only when it found no daemon on the socket or
+ * its log or storage error refused a named prerequisite (attempt.ts prerequisiteRefusals). Any
+ * other failure (a download, checksum, transport, timeout, full disk) makes it inconclusive.
  */
 function noDocker(record: AttemptRecord): string | null {
   const daemon = record.daemon;
@@ -130,11 +130,15 @@ function unsupportedReasonOf(record: AttemptRecord): string | null {
 function pathSummary(records: readonly AttemptRecord[]) {
   const green = records.flatMap((r) => (r.outcome.kind === "green" ? [sample(r)] : []));
 
-  const reasons = records.flatMap((r) => {
+  // Each attempt that is evidence the path cannot run there, kept per attempt and apart from
+  // failures, whatever the rest of the row did.
+  const unsupported = records.flatMap((r) => {
     const reason = unsupportedReasonOf(r);
 
-    return reason === null ? [] : [reason];
+    return reason === null ? [] : [{ attempt: r.attempt, attemptId: r.attemptId, reason }];
   });
+
+  const reasons = unsupported.map((u) => u.reason);
 
   // Only when every attempt is conclusive: one inconclusive failure keeps the row `failed`.
   const unsupportedReason =
@@ -154,7 +158,7 @@ function pathSummary(records: readonly AttemptRecord[]) {
           : "failed";
 
   const failures = records.flatMap((r) =>
-    r.outcome.kind === "failed"
+    r.outcome.kind === "failed" && !unsupported.some((u) => u.attemptId === r.attemptId)
       ? [
           {
             attempt: r.attempt,
@@ -173,6 +177,14 @@ function pathSummary(records: readonly AttemptRecord[]) {
     attempts: records.length,
     green: green.length,
     failures,
+    unsupported,
+    /**
+     * Attempts whose sandbox or Compose project was not confirmed gone: separate from the outcome,
+     * so a green attempt can be listed here.
+     */
+    cleanupUnconfirmed: records.flatMap((r) =>
+      r.cleanup === "unconfirmed" ? [{ attempt: r.attempt, attemptId: r.attemptId }] : [],
+    ),
     samples: green,
     medians: {
       servicesUpS: medianOf(green, "servicesUpS"),
@@ -438,7 +450,8 @@ export function servicesSiteData(input: {
       "readyToGreenS: from the first upload after the probe to all fixture tests passing; sandbox creation and the measurement-only probe are excluded.",
       "The compose path fetches Docker and pulls images from the internet inside the sandbox; the no-Docker path uploads its bundle from the harness host. Their transfer sources differ, so the two rankings are separate.",
       "Medians are over green attempts only; failures are listed with the stage they stopped at.",
-      "A row is unsupported only when every attempt is conclusive evidence: a guest architecture without pinned artifacts, or a finished daemon ladder whose every failed try found no daemon on the socket, named a missing privilege or kernel feature, or could not mount storage. Download, checksum, transport and timeout failures keep a row failed. unsupportedReason says what ruled each method out.",
+      "A row is unsupported only when every attempt is conclusive evidence: a guest architecture without pinned artifacts, or a finished daemon ladder whose every failed try found no daemon on the socket or refused a named prerequisite (root, iptables, an overlay mount, a writable cgroup, user namespaces). Download, checksum, transport, timeout and disk-space failures keep a row failed. unsupportedReason says what ruled each method out; unsupported lists every such attempt, also in rows that are measured or failed.",
+      "cleanupUnconfirmed lists attempts whose sandbox deletion, or whose Compose project's removal on a daemon that may outlive the sandbox, was not confirmed. It is separate from the outcome: a green attempt can be listed.",
     ],
   };
 }
@@ -471,9 +484,12 @@ export function summaryMarkdown(site: ServicesSite): string {
 
   for (const p of site.providers)
     for (const path of servicePaths) {
-      const reason = p[path].unsupportedReason;
+      const row = p[path];
 
-      if (reason) lines.push(`- ${p.provider} ${path}: ${reason}`);
+      if (row.unsupportedReason) lines.push(`- ${p.provider} ${path}: ${row.unsupportedReason}`);
+      else
+        for (const u of row.unsupported)
+          lines.push(`- ${p.provider} ${path} #${u.attempt}: ${u.reason}`);
     }
 
   lines.push("", "## Not run", "");
@@ -485,8 +501,14 @@ export function summaryMarkdown(site: ServicesSite): string {
   for (const p of site.providers)
     for (const path of servicePaths)
       for (const f of p[path].failures)
-        if (p[path].status !== "unsupported" || f.stage !== "daemon")
-          lines.push(`- ${p.provider} ${path} #${f.attempt}: ${f.stage}: ${f.reason}`);
+        lines.push(`- ${p.provider} ${path} #${f.attempt}: ${f.stage}: ${f.reason}`);
+
+  lines.push("", "## Cleanup unconfirmed", "");
+
+  for (const p of site.providers)
+    for (const path of servicePaths)
+      for (const c of p[path].cleanupUnconfirmed)
+        lines.push(`- ${p.provider} ${path} #${c.attempt}: ${c.attemptId}`);
 
   lines.push("", "## Daemon tries that failed", "");
 

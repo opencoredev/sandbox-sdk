@@ -17,6 +17,8 @@ export interface NativeServiceDoc {
   readonly checkedAt: string;
   readonly docker: DocClaim;
   readonly sidecar: DocClaim;
+  /** What the provider documents for its CI product only: never evidence about its sandboxes. */
+  readonly ciOnly?: { readonly docker: DocClaim; readonly sidecar: DocClaim };
 }
 
 const checkedAt = "2026-11-23";
@@ -148,17 +150,21 @@ const docs = {
   tenki: { checkedAt, docker: none("Not in Luxor's quickstart"), sidecar: none() },
   boat: {
     checkedAt,
-    docker: {
-      documented: true,
-      how: "CI docs only: jobs run on full VMs with Docker; sandbox docs say nothing",
-      quote: "Each job runs on a full Linux virtual machine with Docker, not in a container.",
-      url: "https://docs.boat.dev/ci",
-    },
-    sidecar: {
-      documented: true,
-      how: "CI docs only: services containers next to a CI job, not for sandboxes",
-      quote: "services: containers (Postgres, Redis) start next to the job, on localhost.",
-      url: "https://docs.boat.dev/ci",
+    docker: none("Sandbox docs say nothing; CI docs only (ciOnly)"),
+    sidecar: none("Sandbox docs say nothing; CI docs only (ciOnly)"),
+    ciOnly: {
+      docker: {
+        documented: true,
+        how: "CI jobs run on full VMs with Docker",
+        quote: "Each job runs on a full Linux virtual machine with Docker, not in a container.",
+        url: "https://docs.boat.dev/ci",
+      },
+      sidecar: {
+        documented: true,
+        how: "CI services containers next to a job",
+        quote: "services: containers (Postgres, Redis) start next to the job, on localhost.",
+        url: "https://docs.boat.dev/ci",
+      },
     },
   },
 } satisfies Readonly<Record<string, NativeServiceDoc>>;

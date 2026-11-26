@@ -84,6 +84,11 @@ const daemonSchema = z.object({
   compose: z.enum(["preinstalled", "fetched"]).nullable(),
   /** This attempt's own Compose project name, so no other attempt's containers are touched. */
   project: z.string().nullable().default(null),
+  /**
+   * The chosen daemon was launched by this attempt inside the sandbox (every method but
+   * preinstalled-running), so it and everything it holds go with the sandbox.
+   */
+  launched: z.boolean().default(false),
   /** `compose down -v` of that project before the sandbox went: true when it exited 0. */
   down: z.boolean().nullable().default(null),
   /**
@@ -155,6 +160,13 @@ export const attemptRecordSchema = z.object({
   outcome: outcomeSchema,
   metrics: metricsSchema,
   deletionConfirmed: z.boolean(),
+  /**
+   * Everything the attempt made is gone: the sandbox's deletion is confirmed, and its Compose
+   * project came down, or lived on a daemon this attempt launched inside that sandbox. Separate
+   * from the outcome: a green workload can leave cleanup unconfirmed. Rows from before this field
+   * read as unconfirmed.
+   */
+  cleanup: z.enum(["confirmed", "unconfirmed"]).default("unconfirmed"),
   estimatedUSD: z.number().nullable(),
   artifacts: z.object({ node: z.string(), fixture: z.string(), native: z.string().nullable() }),
   outputDir: z.string().nullable(),

@@ -1,9 +1,10 @@
 import { SandboxError, type RunOptions, type RunResult } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   runServicesAttempt,
   Guest,
@@ -12,6 +13,9 @@ import {
   composeProject,
   metricsOf,
   stepTimeoutMs,
+  refusedPrerequisite,
+  stopTree,
+  cleanupStatus,
   type GuestBox,
 } from "../../src/services/attempt.js";
 import { stalePins, type Artifacts } from "../../src/services/artifacts.js";
@@ -104,6 +108,14 @@ describe("probe", () => {
   test("parses key=value output and ignores other lines", () => {
     const parsed = parseProbe(`noise\n${probeOutput()}\n`);
     expect(parsed.kind).toBe("parsed");
+  });
+
+  test("an empty or unknown architecture is no probe, so it cannot decide a verdict", () => {
+    expect(parseProbe(probeOutput({ arch: "" }))).toMatchObject({ kind: "invalid" });
+    expect(parseProbe(probeOutput({ arch: "uname: not found" }))).toMatchObject({
+      kind: "invalid",
+    });
+    expect(probeOf({ arch: "aarch64" }).arch).toBe("aarch64");
   });
 
   test("a garbled probe is reported, not invented", () => {
@@ -445,6 +457,7 @@ function record(input: {
   attempt: number;
   up: number | null;
   method?: "preinstalled-running" | "static-rootful";
+  cleanup?: "confirmed" | "unconfirmed";
 }): AttemptRecord {
   const green = input.up !== null;
 
@@ -482,6 +495,7 @@ function record(input: {
             serverVersion: null,
             compose: green ? "fetched" : null,
             project: null,
+            launched: green && input.method !== "preinstalled-running",
             down: null,
             finished: true,
           }
@@ -503,6 +517,7 @@ function record(input: {
       readyToGreenMs: input.up === null ? null : input.up + 3000,
     },
     deletionConfirmed: true,
+    cleanup: input.cleanup ?? "confirmed",
     estimatedUSD: 0.01,
     artifacts: { node: "n", fixture: "f", native: input.path === "native" ? "b" : null },
     outputDir: null,
@@ -615,9 +630,31 @@ describe("site data", () => {
 
   test("failures stay in the data with their stage", () => {
     const a = site.providers.find((p) => p.provider === "a");
-    expect(a?.compose.failures).toEqual([
+    // a-compose-3's only try is conclusive, so it is an unsupported attempt, not a failure.
+    expect(a?.compose.failures).toEqual([]);
+    expect(a?.compose.unsupported).toEqual([
+      {
+        attempt: 3,
+        attemptId: "a-compose-3",
+        reason:
+          "No Docker daemon started. tried and refused: static-rootful/default: daemon exited",
+      },
+    ]);
+
+    const base = record({ provider: "a", path: "compose", attempt: 3, up: null });
+
+    const inconclusive: AttemptRecord = {
+      ...base,
+      daemon: base.daemon
+        ? { ...base.daemon, tries: base.daemon.tries.map((t) => ({ ...t, conclusive: false })) }
+        : null,
+    };
+
+    const failed = servicesSiteData({ records: [inconclusive], runs: site.runs }).providers[0];
+    expect(failed?.compose.failures).toEqual([
       { attempt: 3, attemptId: "a-compose-3", stage: "daemon", reason: "no daemon method worked" },
     ]);
+    expect(failed?.compose.unsupported).toEqual([]);
     expect(a?.capability.docker).toBe("flaky");
     expect(site.providers.find((p) => p.provider === "b")?.capability.docker).toBe("fails");
   });
@@ -638,7 +675,9 @@ describe("site data", () => {
     expect(markdown).toContain("| unsupported (0/1) |");
     expect(markdown).toContain("- b compose: No Docker daemon started.");
     expect(markdown).not.toContain("- b compose #1: daemon");
-    expect(markdown).toContain("- a compose #3: daemon: no daemon method worked");
+    // In a measured row, the unsupported attempt keeps its own reason.
+    expect(markdown).toContain("- a compose #3: No Docker daemon started.");
+    expect(markdown).not.toContain("- a compose #3: daemon: no daemon method worked");
   });
 
   test("unsupported attempts and skipped providers are results, not failures", () => {
@@ -1275,7 +1314,7 @@ describe("conclusive Docker evidence", () => {
 describe("daemon evidence and fallbacks", () => {
   const pingFail = { ok: false, exitCode: 1, output: '{"ok":false}' };
 
-  test("no daemon on the socket and a log that names a missing capability are conclusive; a failed download is not", async () => {
+  test("no daemon on the socket and a log that refuses a named prerequisite are conclusive; a failed download is not", async () => {
     const { box } = scriptedBox([
       [
         /daemon-ping/,
@@ -1295,7 +1334,10 @@ describe("daemon evidence and fallbacks", () => {
       ],
       [
         /tail -c 6000/,
-        () => ({ output: 'level=fatal msg="failed to start daemon: operation not permitted"' }),
+        () => ({
+          output:
+            "level=fatal msg=\"failed to start daemon: Error initializing network controller: iptables v1.8.9 (legacy): can't initialize iptables table `nat': Permission denied (you must be root)\"",
+        }),
       ],
       [/docker-compose version/, () => ({ output: "5.6.1" })],
     ]);
@@ -1315,7 +1357,56 @@ describe("daemon evidence and fallbacks", () => {
 
     expect(conclusive("preinstalled-running", "as-found")).toBe(true);
     expect(conclusive("preinstalled-started", "default")).toBe(true);
+    expect(
+      d.record.tries.find((t) => t.method === "preinstalled-started" && t.config === "default")
+        ?.error,
+    ).toContain("refused: iptables");
     expect(conclusive("static-rootful", "fetch")).toBe(false);
+  });
+
+  test("a log that only mentions a subsystem, or a full disk, is inconclusive", async () => {
+    expect(
+      refusedPrerequisite(
+        "failed to start daemon: open /var/lib/docker/overlay2/state: no space left on device",
+      ),
+    ).toBeNull();
+    expect(refusedPrerequisite('level=error msg="cgroup controller list"')).toBeNull();
+    expect(refusedPrerequisite("operation not permitted")).toBeNull();
+    expect(
+      refusedPrerequisite(
+        "error creating overlay mount to /var/lib/docker/overlay2/x/merged: invalid argument",
+      ),
+    ).toBe("an overlay mount");
+    expect(refusedPrerequisite("dockerd needs to be started with root privileges")).toBe(
+      "root privileges",
+    );
+
+    // Sol's reproduction: every launch logs ENOSPC on an overlay path. The ladder must not publish
+    // that as unsupported.
+    const { box } = scriptedBox([
+      [/daemon-ping/, () => pingFail],
+      [
+        /tail -c 6000/,
+        () => ({
+          output:
+            'level=fatal msg="failed to start daemon: open /var/lib/docker/overlay2/state: no space left on device"',
+        }),
+      ],
+    ]);
+
+    const kept: DaemonRecord[] = [];
+
+    const failure = await getDaemon(guestFor(box), probeOf({ dockerd: "yes" }), 10_000, (d) => {
+      kept.push(d.record);
+    }).then(
+      () => null,
+      (error: Error) => error,
+    );
+
+    expect(failure instanceof StageFailure && failure.reason).toBe("no daemon method worked");
+    const tries = kept[0]?.tries ?? [];
+    expect(tries.some((t) => t.error?.includes("no space left on device"))).toBe(true);
+    expect(tries.every((t) => !t.conclusive)).toBe(true);
   });
 
   test("after the same method's vfs configs fail, the ladder goes on to the next methods", async () => {
@@ -1347,7 +1438,11 @@ describe("daemon evidence and fallbacks", () => {
     );
 
     expect(d.record.method).toBe("preinstalled-started");
-    expect(await d.switchStorage("failed to extract layer: invalid argument")).toBe(true);
+    expect(
+      await d.switchStorage(
+        "failed to register layer: error creating overlay mount to /var/lib/docker/overlay2/l/merged: invalid argument",
+      ),
+    ).toBe(true);
     expect(d.record.method).toBe("podman");
     expect(d.record.finished).toBe(true);
     expect(new Set(d.record.tries.map((t) => t.method))).toEqual(
@@ -1391,14 +1486,12 @@ describe("daemon evidence and fallbacks", () => {
     expect(d.record.method).toBe("preinstalled-running");
     expect(await d.switchStorage("failed to register layer: operation not permitted")).toBe(true);
     expect(d.record.method).toBe("podman");
-    expect(d.record.skipped).toEqual(
-      expect.arrayContaining([
-        { method: "preinstalled-started", reason: expect.stringContaining("never restarted") },
-        { method: "static-rootful", reason: expect.stringContaining("never restarted") },
-      ]),
-    );
-    expect(started.every((c) => c.includes("podman system service"))).toBe(true);
-    expect(commands.some((c) => c.includes("pkill -x dockerd"))).toBe(false);
+    // The ladder goes on with daemons of its own, each on its own socket: the running daemon, its
+    // socket and its PID file are never touched.
+    expect(d.record.tries.some((t) => t.method === "preinstalled-started")).toBe(true);
+    expect(started.length).toBeGreaterThan(1);
+    expect(started.every((c) => !c.includes("/var/run/docker"))).toBe(true);
+    expect(commands.some((c) => /pkill|killall|rm -f \/var\/run/.test(c))).toBe(false);
   });
 
   test("a root-only socket is reached through sudo and never chmod; the project is the attempt's own and comes down", async () => {
@@ -1435,7 +1528,8 @@ describe("daemon evidence and fallbacks", () => {
       "docker compose -p 'sbx-p-compose-1-abc123' -f compose.yaml pull --quiet",
     );
 
-    await d.down(guestFor(box), 1000);
+    d.projectUsed = true;
+    expect(await d.down(guestFor(box), 1000)).toBe(true);
     expect(d.record.down).toBe(true);
     expect(commands.at(-1)).toContain("-p 'sbx-p-compose-1-abc123' -f compose.yaml down -v");
   });
@@ -1595,6 +1689,372 @@ describe("journal read errors", () => {
       expect(process.exitCode).toBe(1);
       expect(await readFile(join(dir, "notes.jsonl"), "utf8")).toContain("journal-unreadable");
     } finally {
+      process.exitCode = before;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("daemons this attempt did not launch", () => {
+  /** A sandbox with an unrelated Docker daemon: its default socket exists but does not answer. */
+  const unrelatedProbe = probeOf({
+    uid: "1000",
+    user: "dev",
+    sudo: "passwordless",
+    dockerd: "yes",
+    newuidmap: "yes",
+    subuid: "yes",
+    podman: "podman version 5.0.0",
+  });
+
+  const unresponsive = {
+    ok: false,
+    exitCode: 1,
+    output: '{"ok":false,"error":"context deadline exceeded"}',
+  };
+
+  test.each([
+    ["the first rung finds the default socket unresponsive", "none"],
+    ["storage fails on the daemon that was already running", "running"],
+    ["storage fails on a daemon this attempt launched", "launched"],
+  ] as const)("%s: only this attempt's own daemons are ever stopped", async (_name, answers) => {
+    let starts = 0;
+    let asFound = true;
+
+    const { box, commands, started } = scriptedBox([
+      [
+        /daemon-ping/,
+        (c) => {
+          if (c.includes("podman.sock")) return { output: pingOk };
+
+          if (c.includes("/var/run/docker.sock")) {
+            const first = asFound;
+            asFound = false;
+
+            return answers === "running" && first ? { output: pingOk } : unresponsive;
+          }
+
+          return answers === "launched" && starts === 1 ? { output: pingOk } : unresponsive;
+        },
+      ],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    box.start = async (command: string) => {
+      starts++;
+      started.push(command);
+
+      return { name: command };
+    };
+
+    const g = guestFor(box);
+    const d = await getDaemon(g, unrelatedProbe, 10_000, () => {});
+
+    if (answers !== "none") {
+      expect(d.record.method).toBe(
+        answers === "running" ? "preinstalled-running" : "preinstalled-started",
+      );
+      expect(
+        await d.switchStorage("error creating overlay mount to /x/merged: invalid argument"),
+      ).toBe(true);
+    }
+
+    expect(d.record.method).toBe("podman");
+    // Every fallback family ran: the rootful methods, rootless and podman.
+    expect(new Set(d.record.tries.map((t) => t.method))).toEqual(
+      new Set([
+        "preinstalled-running",
+        "preinstalled-started",
+        "static-rootful",
+        "rootless",
+        "podman",
+      ]),
+    );
+
+    // An unresponsive socket says nothing about Docker here.
+    if (answers === "none")
+      expect(d.record.tries.find((t) => t.config === "as-found")?.conclusive).toBe(false);
+
+    // Nothing is killed by name and no default PID file or socket is removed.
+    expect(
+      commands.some((c) => /pkill|killall|rm -f \/var\/|docker\.pid|containerd\.pid/.test(c)),
+    ).toBe(false);
+
+    // Every signal goes to one launch's recorded PID, once for each daemon this attempt launched
+    // and gave up.
+    const stops = commands.filter((c) => /\bkill\b/.test(c));
+    expect(stops.every((c) => c.includes(`cat ${g.tools}/`) && c.includes("/launch.pid"))).toBe(
+      true,
+    );
+    expect(stops).toHaveLength(
+      d.record.tries.filter((t) => !t.ok && t.config !== "as-found" && t.config !== "fetch").length,
+    );
+
+    // Every daemon serves its own socket, PID and state under the attempt's tool directory.
+    for (const s of started) {
+      expect(s).not.toContain("/var/run/docker");
+      expect(s).toContain(`echo $$ > ${g.tools}/`);
+    }
+  });
+
+  test("stopping a launch signals its own process tree and nothing else, not even a reused PID", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "svc-stop-"));
+    const other = await mkdtemp(join(tmpdir(), "svc-other-"));
+    // Stands in for a daemon this attempt did not start.
+    const unrelated = spawn("sleep", ["300"], { stdio: "ignore" });
+    // A launched daemon with a child of its own; its command line names its directory.
+    const launched = spawn("sh", ["-c", `sleep 300; : ${dir}`], { stdio: "ignore" });
+    const exited = new Promise((resolve) => launched.once("exit", resolve));
+
+    const sh = (script: string) =>
+      new Promise<void>((resolve, reject) =>
+        execFile("sh", ["-c", script], (error) => (error ? reject(error) : resolve())),
+      );
+
+    const gone = async (pid: string) => {
+      for (let i = 0; i < 40; i++) {
+        const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => null);
+
+        if (stat === null || /\) [ZX] /.test(stat)) return true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      return false;
+    };
+
+    try {
+      let child = "";
+
+      for (let i = 0; i < 40 && !child; i++) {
+        child = (
+          await readFile(`/proc/${launched.pid}/task/${launched.pid}/children`, "utf8")
+        ).trim();
+
+        if (!child) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      expect(child).toMatch(/^\d+$/);
+
+      // A launch file holding a PID this attempt never launched stops nothing.
+      await writeFile(join(other, "launch.pid"), String(unrelated.pid));
+      await sh(stopTree(other));
+      await writeFile(join(dir, "launch.pid"), String(launched.pid));
+      await sh(stopTree(dir));
+      await exited;
+
+      expect(await gone(child)).toBe(true);
+      expect(unrelated.exitCode).toBeNull();
+      expect(unrelated.signalCode).toBeNull();
+    } finally {
+      unrelated.kill("SIGKILL");
+      launched.kill("SIGKILL");
+      await rm(dir, { recursive: true, force: true });
+      await rm(other, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describe("compose cleanup obligation", () => {
+  const daemonOf = (launched: boolean, down: boolean | null, projectUsed = true) => {
+    const base = record({ provider: "p", path: "compose", attempt: 1, up: 1 }).daemon;
+
+    if (!base) throw new Error("compose record without a daemon");
+
+    return { projectUsed, record: { ...base, launched, down } };
+  };
+
+  test("cleanup is confirmed only when the project came down or went with a sandbox that held its daemon", () => {
+    expect(cleanupStatus(true, daemonOf(false, true))).toBe("confirmed");
+    expect(cleanupStatus(true, daemonOf(false, false))).toBe("unconfirmed");
+    // A cleanup down that never finished is no proof either.
+    expect(cleanupStatus(true, daemonOf(false, null))).toBe("unconfirmed");
+    expect(cleanupStatus(true, daemonOf(true, false))).toBe("confirmed");
+    expect(cleanupStatus(false, daemonOf(true, false))).toBe("unconfirmed");
+    expect(cleanupStatus(false, daemonOf(false, true))).toBe("unconfirmed");
+    expect(cleanupStatus(true, daemonOf(false, null, false))).toBe("confirmed");
+    expect(cleanupStatus(true, null)).toBe("confirmed");
+  });
+
+  test("a project that does not come down holds its daemon: down is retried once and no other rung runs", async () => {
+    const { box, commands, started } = scriptedBox([
+      [/ down -v/, () => ({ ok: false, exitCode: 1, output: "context deadline exceeded" })],
+      [/daemon-ping/, () => ({ output: pingOk })],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    const d = await getDaemon(
+      guestFor(box),
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      10_000,
+      () => {},
+      "sbx-p-compose-1-abc123",
+    );
+
+    d.projectUsed = true;
+    expect(
+      await d.switchStorage("error creating overlay mount to /x/merged: invalid argument"),
+    ).toBe(false);
+    expect(commands.filter((c) => c.includes(" down -v"))).toHaveLength(2);
+    expect(started).toEqual([]);
+    expect(d.record).toMatchObject({
+      method: "preinstalled-running",
+      down: false,
+      launched: false,
+    });
+    expect(cleanupStatus(true, d)).toBe("unconfirmed");
+  });
+
+  test("the summary keeps cleanup apart from the outcome", () => {
+    const run = {
+      id: "r1",
+      sdkCommit: "a",
+      startedAt: "x",
+      endedAt: null,
+      location: "t",
+      settings: {},
+      artifacts: { node: "n", fixture: "f", native: "b" },
+    };
+
+    const site = servicesSiteData({
+      records: [
+        record({ provider: "p", path: "compose", attempt: 1, up: 20_000, cleanup: "unconfirmed" }),
+        record({ provider: "p", path: "compose", attempt: 2, up: 21_000 }),
+      ],
+      runs: [run],
+    });
+
+    const p = site.providers[0];
+    expect(p?.compose).toMatchObject({ status: "measured", green: 2 });
+    expect(p?.compose.cleanupUnconfirmed).toEqual([{ attempt: 1, attemptId: "p-compose-1" }]);
+    expect(summaryMarkdown(site)).toContain(
+      "## Cleanup unconfirmed\n\n- p compose #1: p-compose-1",
+    );
+  });
+});
+
+describe("readiness deadlines", () => {
+  test("a daemon already on the default socket that answers after the budget is not used", async () => {
+    let clock = 0;
+
+    const { box } = scriptedBox([
+      [
+        /daemon-ping/,
+        () => {
+          clock += 1000;
+
+          return { output: pingOk };
+        },
+      ],
+    ]);
+
+    const g = new Guest(box, new AbortController().signal, [], () => clock);
+    g.pollMs = 0;
+    g.mono = () => clock;
+    const kept: DaemonRecord[] = [];
+
+    const failure = await getDaemon(g, probeOf(), 10, (d) => {
+      kept.push(d.record);
+    }).then(
+      () => null,
+      (error: Error) => error,
+    );
+
+    expect(failure).toBeInstanceOf(StageFailure);
+    expect(kept[0]?.tries.find((t) => t.config === "as-found")).toMatchObject({
+      ok: false,
+      error: "answered only after 10 ms",
+      conclusive: false,
+    });
+  });
+
+  test("a launch that never returns ends its config at the deadline, the ladder goes on, and a late return is stopped", async () => {
+    const pending: { command: string; resolve: () => void }[] = [];
+
+    const { box, commands } = scriptedBox([
+      [
+        /daemon-ping/,
+        (c) =>
+          c.includes("podman.sock")
+            ? { output: pingOk }
+            : {
+                ok: false,
+                exitCode: 1,
+                output: '{"ok":false,"error":"connect ENOENT /var/run/docker.sock"}',
+              },
+      ],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    box.start = (command: string) =>
+      command.includes("podman.sock")
+        ? Promise.resolve({ name: command })
+        : new Promise((resolve) => {
+            pending.push({ command, resolve: () => resolve({ name: command }) });
+          });
+
+    const g = new Guest(box, new AbortController().signal, [], () => 0);
+    g.pollMs = 0;
+    g.mono = () => 0;
+
+    const d = await getDaemon(
+      g,
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      20,
+      () => {},
+    );
+
+    expect(d.record.method).toBe("podman");
+    expect(
+      d.record.tries.find((t) => t.method === "preinstalled-started" && t.config === "default")
+        ?.error,
+    ).toBe("launch did not return within 20 ms");
+
+    const stopsOf = (dir: string) =>
+      commands.filter((c) => /\bkill\b/.test(c) && c.includes(`${dir}/launch.pid`)).length;
+
+    const dir = `${g.tools}/preinstalled-started-default`;
+    expect(stopsOf(dir)).toBe(1);
+    pending[0]?.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stopsOf(dir)).toBe(2);
+  });
+});
+
+describe("recovery notes", () => {
+  test("sweep goes on when notes.jsonl cannot be written, and says so on stderr", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "svc-notes-"));
+    const before = process.exitCode;
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await writeFile(
+        join(dir, "run.json"),
+        JSON.stringify({
+          id: "r1",
+          ownerLabel: "r1-abcd",
+          sdkCommit: "a",
+          startedAt: "x",
+          endedAt: null,
+          location: "t",
+          settings: {},
+          artifacts: { node: "n", fixture: "f", native: "b" },
+          providers: [],
+        }),
+      );
+      await mkdir(join(dir, "owned.jsonl"));
+      await mkdir(join(dir, "notes.jsonl"));
+      await servicesCommand(["sweep", "--out", dir, "--run", "r1"]);
+      expect(process.exitCode).toBe(1);
+      expect(stderr.mock.calls.some(([text]) => String(text).includes("Could not write"))).toBe(
+        true,
+      );
+      expect(stdout.mock.calls.some(([text]) => String(text).startsWith("Swept 0 providers"))).toBe(
+        true,
+      );
+    } finally {
+      stderr.mockRestore();
+      stdout.mockRestore();
       process.exitCode = before;
       await rm(dir, { recursive: true, force: true });
     }

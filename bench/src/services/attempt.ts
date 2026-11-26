@@ -464,10 +464,11 @@ async function nativeDiagnostics(g: Guest) {
 interface LadderInput {
   readonly method: DaemonMethod;
   readonly configs: readonly DaemonConfig[];
-  readonly command: (config: DaemonConfig, log: string) => string;
-  readonly socket: string;
+  /** The daemon command for one config, with every path it writes inside `dir`. */
+  readonly command: (config: DaemonConfig, dir: string) => string;
+  /** The socket that daemon serves, inside its own directory. */
+  readonly socket: (dir: string) => string;
   readonly asRoot: boolean;
-  readonly cleanup: string;
 }
 
 interface DaemonConfig {
@@ -522,15 +523,55 @@ function pingResult(output: string): Ping | null {
 }
 
 /**
- * Daemon log lines that name a privilege, namespace or kernel feature the sandbox lacks. Only a
- * failed start whose log says one of these is evidence about Docker here; a daemon that stayed
- * silent or died without saying why is not.
+ * Daemon and storage errors that refuse one named prerequisite. Only these make a failed try
+ * conclusive; any other error (no space left, a crash, a timeout, a log that merely mentions a
+ * subsystem) says nothing about whether Docker can run here.
  */
-const capabilityRefusal =
-  /operation not permitted|permission denied|must be run as root|are you root|requires root|cgroup|iptables|nf_tables|overlay|user namespace|newuidmap|newgidmap|subuid|unshare|rootlesskit|failed to mount|no such device|not supported|read-only file system/i;
+export const prerequisiteRefusals: readonly {
+  readonly prerequisite: string;
+  readonly pattern: RegExp;
+}[] = [
+  {
+    prerequisite: "root privileges",
+    pattern: /dockerd needs to be started with root privileges|must be run as root/i,
+  },
+  {
+    prerequisite: "iptables",
+    pattern:
+      /iptables[^\n]*(?:executable file not found|not found in \$PATH|permission denied \(you must be root\)|can't initialize iptables table)/i,
+  },
+  {
+    prerequisite: "an overlay mount",
+    pattern:
+      /overlay[^\n]*mount[^\n]*: (?:invalid argument|operation not permitted|no such device)|mount[^\n]*overlay[^\n]*: (?:invalid argument|operation not permitted|no such device)|driver not supported: overlay/i,
+  },
+  {
+    prerequisite: "a writable cgroup",
+    pattern:
+      /cgroup[^\n]*: (?:read-only file system|operation not permitted|permission denied)|cannot find cgroup mount destination/i,
+  },
+  {
+    prerequisite: "user namespaces",
+    pattern:
+      /(?:unshare|clone)[^\n]*: (?:operation not permitted|invalid argument)|newuidmap[^\n]*(?:operation not permitted|not found)|user namespaces? (?:are |is )?not (?:enabled|permitted|supported)/i,
+  },
+];
 
-/** A ping refused this way found no daemon it may use on that socket: a fact, not a fault. */
-const noDaemonOnSocket = /ENOENT|ECONNREFUSED|EACCES/;
+/** The prerequisite `text` refuses, or null when it refuses none. */
+export function refusedPrerequisite(text: string): string | null {
+  return prerequisiteRefusals.find((r) => r.pattern.test(text))?.prerequisite ?? null;
+}
+
+/** A ping refused this way found no daemon serving that socket: a fact, not a fault. */
+const noDaemonOnSocket = /ENOENT|ECONNREFUSED/;
+
+/**
+ * Stop the process tree a launch in `dir` recorded, and nothing else: only when the recorded PID
+ * is still that launch (its command line names `dir`, so a reused PID is left alone), TERM to its
+ * root, then KILL to whatever of the tree, read before the TERM, is still there.
+ */
+export const stopTree = (dir: string) =>
+  `p=$(cat ${dir}/launch.pid 2>/dev/null); [ -n "$p" ] || exit 0; tr '\\0' ' ' < /proc/"$p"/cmdline 2>/dev/null | grep -qF -- ${quote(dir)} || exit 0; t() { echo "$1"; for c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do t "$c"; done; }; all=$(t "$p"); kill -TERM "$p" 2>/dev/null; i=0; while [ $i -lt 20 ] && [ -d /proc/"$p" ]; do sleep 0.5; i=$((i + 1)); done; kill -KILL $all 2>/dev/null; true`;
 
 /** One method of the ladder: tries it, or records the probe fact that rules it out. */
 interface Rung {
@@ -548,17 +589,16 @@ class Daemon {
   compose = "";
   /** Every method in ladder order (getDaemon). */
   rungs: readonly Rung[] = [];
+  /** The attempt's project was brought up on the chosen daemon, so it must come down there. */
+  projectUsed = false;
   /** The ladder and config index that answered, so a storage failure can continue past it. */
   private resume: { input: LadderInput; index: number } | null = null;
   /** The rung whose daemon is in use, so a storage failure can go on to the methods after it. */
   private rung = -1;
+  /** The daemon this attempt launched and is using: the only process it ever stops. */
+  private launched: { readonly dir: string; readonly asRoot: boolean } | null = null;
   /** What this attempt fetched and verified into its own tool directory. */
   private readonly fetched = { static: false, rootless: false };
-  /**
-   * A daemon was already answering when the attempt began and was given up: the rootful methods
-   * would restart it, and it is not ours to restart.
-   */
-  keepRunningDaemon = false;
   /** The daemon's socket needs root: every docker and compose call goes through sudo. */
   private viaSudo = false;
   private socket = "/var/run/docker.sock";
@@ -579,6 +619,7 @@ class Daemon {
       serverVersion: null,
       compose: null,
       project,
+      launched: false,
       down: null,
       finished: false,
     };
@@ -630,20 +671,39 @@ class Daemon {
     return false;
   }
 
+  /** The time left before `deadline` on the monotonic clock, as a command timeout. */
+  private left(deadline: number) {
+    return Math.max(1, Math.min(20_000, Math.ceil(deadline - this.g.mono())));
+  }
+
+  /** Stop a daemon this attempt launched, by the PID its launch recorded; nothing else is signalled. */
+  private stop(dir: string, asRoot: boolean) {
+    const runner = asRoot && this.sudo ? this.sudo : "";
+
+    return this.g
+      .exec(`${runner}sh -c ${quote(stopTree(dir))}`, { timeoutMs: 30_000 })
+      .catch(() => null);
+  }
+
   /**
    * The daemon answered but cannot use its storage driver (Daytona: overlay layers fail to mount
-   * inside the sandbox's own overlay). Records that try as failed, tears down this attempt's
-   * project on it, and goes on: the same method's later vfs configs first, then every method after
-   * it in the ladder. False when nothing else answers.
+   * inside the sandbox's own overlay). This attempt's project comes down on it first: when that
+   * fails, the project is an open cleanup obligation on that daemon, so no other rung runs. Then
+   * the try is recorded as failed, a daemon this attempt launched is stopped, and the ladder goes
+   * on: the same method's later vfs configs, then every method after it. False when nothing else
+   * answers or the project did not come down.
    */
   async switchStorage(reason: string): Promise<boolean> {
+    if (!(await this.down(this.g, composeDownMs))) return false;
+
     const resume = this.resume;
     const last = lastOf(this.record.tries, (t) => t.ok);
+    const refused = refusedPrerequisite(reason);
 
     if (last) {
       last.ok = false;
-      last.error = `answered, but ${tail(reason, 300)}`;
-      last.conclusive = true;
+      last.error = `answered, but ${tail(reason, 300)}${refused ? `; refused: ${refused}` : ""}`;
+      last.conclusive = refused !== null;
 
       const phase = lastOf(
         this.g.phases,
@@ -656,17 +716,17 @@ class Daemon {
       }
     }
 
-    await this.down(this.g, 30_000);
+    if (this.launched) await this.stop(this.launched.dir, this.launched.asRoot);
+    this.launched = null;
     this.record.method = null;
     this.record.config = null;
+    this.record.launched = false;
     this.record.down = null;
+    this.projectUsed = false;
     this.resume = null;
     this.viaSudo = false;
     // Unfinished until the fallback picks a config or runs out; an abort in between leaves it so.
     this.record.finished = false;
-
-    // A daemon that was running before the attempt is never restarted.
-    if (!resume) this.keepRunningDaemon = true;
 
     const found =
       (resume !== null &&
@@ -681,11 +741,11 @@ class Daemon {
   }
 
   /** Readiness only: the helper exits as soon as /_ping answers. */
-  private ping(asRoot: boolean, timeoutMs = 20_000) {
+  private ping(asRoot: boolean, timeoutMs: number) {
     const runner = asRoot && this.sudo ? `${this.sudo}env PATH="$PATH" ` : "";
 
     return this.g.exec(`${runner}node ${guest.root}/daemon-ping.mjs ${quote(this.socket)}`, {
-      timeoutMs: Math.max(1, Math.ceil(timeoutMs)),
+      timeoutMs,
     });
   }
 
@@ -693,7 +753,7 @@ class Daemon {
 
   /**
    * Each started daemon's log into the diagnostics, and a failed try's reason from its log. A try
-   * whose log names a missing capability becomes conclusive. `via` runs the reads: after the
+   * whose log refuses a named prerequisite becomes conclusive. `via` runs the reads: after the
    * verdict, a guest on its own short signal, never the workload's.
    */
   async collectLogs(via: Guest = this.g) {
@@ -713,8 +773,12 @@ class Daemon {
           .join(" | ");
 
         if (reason) attempt.error = `${attempt.error}: ${tail(reason, 400)}`;
+        const refused = refusedPrerequisite(reason);
 
-        if (capabilityRefusal.test(reason)) attempt.conclusive = true;
+        if (refused) {
+          attempt.error = `${attempt.error}; refused: ${refused}`;
+          attempt.conclusive = true;
+        }
       }
     }
   }
@@ -742,22 +806,34 @@ class Daemon {
   }
 
   /**
-   * `compose down -v` of this attempt's project on the chosen daemon, bounded: whatever runs the
-   * daemon, the attempt's containers, networks and volumes go before the sandbox does.
+   * `compose down -v` of this attempt's project on the daemon that ran it, tried twice within
+   * `timeoutMs`. True once it exits 0, or when the project never came up; false leaves the
+   * project as an open cleanup obligation on that daemon (`record.down`).
    */
-  async down(via: Guest, timeoutMs: number) {
-    if (!this.record.method || !this.compose) return;
+  async down(via: Guest, timeoutMs: number): Promise<boolean> {
+    if (!this.projectUsed || !this.record.method || !this.compose) return true;
     via.dockerHost = this.g.dockerHost;
 
-    const result = await via
-      .exec(this.composeCommand("down -v --remove-orphans --timeout 5"), {
-        cwd: guest.app,
-        timeoutMs,
-      })
-      .catch((error: Error) => ({ ok: false, output: error.message }));
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const result = await via
+        .exec(this.composeCommand("down -v --remove-orphans --timeout 5"), {
+          cwd: guest.app,
+          timeoutMs: Math.floor(timeoutMs / 2),
+        })
+        .catch((error: Error) => ({ ok: false, output: error.message }));
 
-    this.record.down = result.ok;
-    this.g.diagnostics("compose-down", result.output);
+      this.g.diagnostics("compose-down", result.output);
+
+      if (result.ok) {
+        this.record.down = true;
+
+        return true;
+      }
+    }
+
+    this.record.down = false;
+
+    return false;
   }
 
   private succeed(method: DaemonMethod, config: DaemonConfig, ping: Ping | null, root: boolean) {
@@ -766,34 +842,39 @@ class Daemon {
     this.record.network = config.network;
     this.record.serverVersion = ping?.serverVersion ?? null;
     this.record.storageDriver = ping?.storageDriver ?? null;
+    this.record.launched = method !== "preinstalled-running";
     this.viaSudo = root && this.sudo !== "";
   }
 
-  /** The daemon the probe found answering. */
+  /**
+   * A daemon already answering on the default socket, within `readyMs` on the monotonic clock;
+   * an answer after that is refused. Anything that does not answer in time is left alone and
+   * the rung is unavailable.
+   */
   async running(): Promise<boolean> {
-    // Bound to the default socket, the one later docker and compose calls use.
     this.socket = "/var/run/docker.sock";
     this.g.dockerHost = this.socket;
     const startedAt = this.g.now();
+    const deadline = this.g.mono() + this.readyMs;
     // Checked on the socket itself, whatever DOCKER_HOST or a saved context told the probe's
     // `docker info`: as the sandbox user, then through sudo for a root-only socket.
     let asRoot = false;
-    let result = await this.ping(false);
+    let result = await this.ping(false, this.left(deadline));
 
-    if (!result.ok && this.probe.sudo === "passwordless") {
+    if (!result.ok && this.probe.sudo === "passwordless" && this.g.mono() < deadline) {
       asRoot = true;
-      result = await this.ping(true);
+      result = await this.ping(true, this.left(deadline));
     }
 
-    const ok = result.ok;
-    const config = { id: "as-found", flags: "", network: "bridge" } as const;
+    const late = result.ok && this.g.mono() > deadline;
+    const ok = result.ok && !late;
     this.record.tries.push({
       method: "preinstalled-running",
-      config: config.id,
+      config: "as-found",
       ok,
       ms: this.g.now() - startedAt,
-      error: ok ? null : tail(result.output, 300),
-      conclusive: !ok && noDaemonOnSocket.test(result.output),
+      error: ok ? null : late ? `answered only after ${this.readyMs} ms` : tail(result.output, 300),
+      conclusive: !result.ok && noDaemonOnSocket.test(result.output),
     });
     this.g.phases.push({
       name: "daemon-start:preinstalled-running:as-found",
@@ -810,23 +891,28 @@ class Daemon {
       return false;
     }
 
-    this.succeed("preinstalled-running", config, pingResult(result.output), asRoot);
+    this.succeed(
+      "preinstalled-running",
+      { id: "as-found", flags: "", network: "bridge" },
+      pingResult(result.output),
+      asRoot,
+    );
 
     return true;
   }
 
   /**
-   * Start a daemon with each config in turn until one answers /_ping within `readyMs`, counted on
-   * the monotonic clock from just before the launch; an answer after that is not accepted.
+   * Launch a daemon with each config in turn until one answers /_ping within `readyMs`, counted
+   * on the monotonic clock from just before the launch: the launch call, every poll and every
+   * liveness check share that budget, and an answer after it is refused. Each config gets its own
+   * directory under the attempt's tool directory for its socket, PID, exec root and log, and a
+   * config that fails is stopped by the PID its launch recorded.
    */
   async ladder(
     input: LadderInput,
     from = 0,
     only: (config: DaemonConfig) => boolean = () => true,
   ): Promise<boolean> {
-    this.socket = input.socket;
-    this.g.dockerHost = input.socket;
-
     for (const [index, config] of input.configs.entries()) {
       if (index < from || !only(config)) continue;
 
@@ -837,38 +923,45 @@ class Daemon {
           "attempt timeout",
           "Stopped before starting another daemon",
         );
+      const dir = `${this.g.tools}/${input.method}-${config.id}`;
+      const log = `${dir}/daemon.log`;
+      this.socket = input.socket(dir);
+      this.g.dockerHost = this.socket;
       const startedAt = this.g.now();
-      const log = `${guest.root}/${input.method}-${config.id}.log`;
-
-      await this.g.exec(input.cleanup, { timeoutMs: 30_000 }).catch(() => null);
-
       let error: string | null = null;
       let ping: Ping | null = null;
       // When /_ping first answered: the phase ends there, not after the log read below.
       let readyAt: number | null = null;
 
       try {
-        // Rechecked after the cleanup above: no daemon starts once the attempt is aborted.
         this.g.signal.throwIfAborted();
-        const launchedAt = this.g.mono();
-        const deadline = launchedAt + this.readyMs;
-        await this.g.box.start(
-          `${this.g.prelude()}exec ${input.command(config, log)} >${log} 2>&1`,
-          {
-            name: `sbx-${input.method}-${config.id}`,
-          },
+        const deadline = this.g.mono() + this.readyMs;
+
+        const start = this.g.box.start(
+          `${this.g.prelude()}mkdir -p -m 700 ${dir} && echo $$ > ${dir}/launch.pid && exec ${input.command(config, dir)} >${log} 2>&1`,
+          { name: `sbx-${input.method}-${config.id}` },
         );
 
-        for (;;) {
-          this.g.signal.throwIfAborted();
-          const left = deadline - this.g.mono();
+        const launched = await Promise.race([
+          start.then(() => true),
+          after(Math.max(0, deadline - this.g.mono())).then(() => false),
+        ]);
 
-          if (left <= 0) {
+        // A launch that returns late is stopped by its own PID once it does.
+        if (!launched) {
+          void start.then(() => this.stop(dir, input.asRoot)).catch(() => {});
+          error = `launch did not return within ${this.readyMs} ms`;
+        }
+
+        for (; launched;) {
+          this.g.signal.throwIfAborted();
+
+          if (this.g.mono() >= deadline) {
             error = `no answer within ${this.readyMs} ms`;
             break;
           }
 
-          const result = await this.ping(input.asRoot, Math.min(20_000, left));
+          const result = await this.ping(input.asRoot, this.left(deadline));
 
           if (result.ok) {
             // An answer that arrives past the deadline does not count.
@@ -883,10 +976,10 @@ class Daemon {
           }
 
           // A daemon that already exited will never answer; give it a few seconds to appear first.
-          if (this.g.mono() - launchedAt > 3000) {
+          if (this.g.mono() < deadline) {
             const alive = await this.g.exec(
-              `if command -v pgrep >/dev/null 2>&1; then pgrep -x ${input.method === "podman" ? "podman" : "dockerd"} >/dev/null || echo DEAD; fi`,
-              { timeoutMs: 20_000 },
+              `p=$(cat ${dir}/launch.pid 2>/dev/null); [ -n "$p" ] && [ -d /proc/"$p" ] || echo DEAD`,
+              { timeoutMs: this.left(deadline) },
             );
 
             if (alive.output.includes("DEAD")) {
@@ -922,7 +1015,7 @@ class Daemon {
         ok,
         ms: endedAt - startedAt,
         error,
-        // Conclusive only once its log names a missing capability (collectLogs).
+        // Conclusive only once its log refuses a named prerequisite (collectLogs).
         conclusive: false,
       };
 
@@ -940,13 +1033,15 @@ class Daemon {
 
       if (ok) {
         this.succeed(input.method, config, ping, input.asRoot);
+        this.launched = { dir, asRoot: input.asRoot };
         this.resume = { input, index };
 
         return true;
       }
+
+      await this.stop(dir, input.asRoot);
     }
 
-    await this.g.exec(input.cleanup, { timeoutMs: 30_000 }).catch(() => null);
     this.g.dockerHost = null;
 
     return false;
@@ -1043,9 +1138,6 @@ class Daemon {
   }
 }
 
-const rootfulCleanup = (sudo: string) =>
-  `${sudo}sh -c 'pkill -x dockerd; pkill -x containerd; sleep 2; pkill -9 -x dockerd; pkill -9 -x containerd; rm -f /var/run/docker.pid /var/run/docker.sock /var/run/docker/containerd/containerd.pid' 2>/dev/null; true`;
-
 export async function getDaemon(
   g: Guest,
   probe: Probe,
@@ -1056,27 +1148,28 @@ export async function getDaemon(
   const d = new Daemon(g, probe, readyMs, project);
   keep(d);
   const sudo = probe.uid === "0" ? "" : "sudo -n ";
-  const kept = "a daemon was already running here; it is never restarted";
+  // Storage of a rootful daemon stays on the root disk, in a directory only this attempt uses, and
+  // its containers in containerd namespaces of its own, so a system containerd it finds and joins
+  // never shares state with another daemon.
+  const tag = g.tools.split("/").at(-1) ?? "attempt";
+  const dataRoot = `/var/lib/sbx-docker/${tag}`;
 
   const rootful = (method: DaemonMethod, dockerd: string) =>
     d.ladder({
       method,
       configs: rootfulConfigs,
-      socket: "/var/run/docker.sock",
+      socket: (dir) => `${dir}/docker.sock`,
       asRoot: true,
-      cleanup: rootfulCleanup(sudo),
-      command: (config, _log) =>
-        `${sudo}env PATH="$PATH" ${dockerd} --host unix:///var/run/docker.sock --data-root /var/lib/sbx-docker/${config.id} ${config.flags}`.trim(),
+      command: (config, dir) =>
+        `${sudo}env PATH="$PATH" ${dockerd} --host unix://${dir}/docker.sock --pidfile ${dir}/docker.pid --exec-root ${dir}/exec --data-root ${dataRoot}/${method}-${config.id} --containerd-namespace ${tag}-${method}-${config.id} --containerd-plugins-namespace ${tag}-${method}-${config.id}-plugins ${config.flags}`.trim(),
     });
 
   d.rungs = [
-    // Always checked first: a healthy daemon on the default socket is used, never restarted.
+    // Always checked first: a healthy daemon on the default socket is used as it is.
     { method: "preinstalled-running", run: () => d.running() },
     {
       method: "preinstalled-started",
       run: async () => {
-        if (d.keepRunningDaemon) return d.skip("preinstalled-started", kept);
-
         if (probe.dockerd !== "yes")
           return d.skip("preinstalled-started", "the image has no dockerd");
 
@@ -1089,8 +1182,6 @@ export async function getDaemon(
     {
       method: "static-rootful",
       run: async () => {
-        if (d.keepRunningDaemon) return d.skip("static-rootful", kept);
-
         if (!canBeRoot(probe)) return d.skip("static-rootful", "not root and no passwordless sudo");
 
         if (probe.arch !== "x86_64")
@@ -1110,19 +1201,16 @@ export async function getDaemon(
 
         if (probe.arch !== "x86_64")
           return d.skip("rootless", `no pinned static bundle for ${probe.arch}`);
-        const xdg = `${guest.root}/xdg`;
 
         return (
           (await d.fetchStatic(true)) &&
           d.ladder({
             method: "rootless",
             configs: rootlessConfigs,
-            socket: `${xdg}/docker.sock`,
+            socket: (dir) => `${dir}/xdg/docker.sock`,
             asRoot: false,
-            // Exact process names: `pkill -f dockerd-rootless` would match this shell's own command line.
-            cleanup: `pkill -x rootlesskit 2>/dev/null; pkill -x dockerd 2>/dev/null; sleep 2; mkdir -p ${xdg} && chmod 700 ${xdg}; true`,
-            command: (config) =>
-              `env XDG_RUNTIME_DIR=${xdg} ${g.tools}/docker-rootless-extras/dockerd-rootless.sh --data-root ${guest.root}/rootless-${config.id} ${config.flags}`.trim(),
+            command: (config, dir) =>
+              `env XDG_RUNTIME_DIR=${dir}/xdg sh -c 'mkdir -p -m 700 "$XDG_RUNTIME_DIR" && exec "$0" "$@"' ${g.tools}/docker-rootless-extras/dockerd-rootless.sh --data-root ${dir}/data ${config.flags}`.trim(),
           })
         );
       },
@@ -1135,10 +1223,10 @@ export async function getDaemon(
         return d.ladder({
           method: "podman",
           configs: [{ id: "service", flags: "", network: "bridge" }],
-          socket: `${guest.root}/podman.sock`,
+          socket: (dir) => `${dir}/podman.sock`,
           asRoot: false,
-          cleanup: "true",
-          command: () => `podman system service --time=0 unix://${guest.root}/podman.sock`,
+          command: (_config, dir) =>
+            `podman --root ${dir}/storage --runroot ${dir}/run system service --time=0 unix://${dir}/podman.sock`,
         });
       },
     },
@@ -1207,6 +1295,9 @@ async function composePath(
         env: composeEnv,
         timeoutMs: stepTimeoutMs.imagePull,
       });
+
+      // From here the project may hold containers, networks or volumes on this daemon.
+      if (pull.ok) daemon.projectUsed = true;
 
       const start = pull.ok
         ? await g.step("services-start", daemon.composeCommand("up -d --no-build"), {
@@ -1713,6 +1804,7 @@ export async function runServicesAttempt(
     outcome,
     metrics: metricsOf(plan.path, phases, outcome.kind === "green"),
     deletionConfirmed: st.deletionConfirmed,
+    cleanup: cleanupStatus(st.deletionConfirmed, st.daemonRef),
     // From the create request to the confirmed stop whenever a sandbox may exist; a clean refusal
     // costs nothing.
     estimatedUSD:
@@ -1726,6 +1818,23 @@ export async function runServicesAttempt(
     },
     outputDir,
   };
+}
+
+/**
+ * Whether everything an attempt made is gone. The sandbox's deletion must be confirmed. Its Compose
+ * project's containers, networks and volumes are gone once its own `down` exited 0, or with the
+ * sandbox when the daemon holding them was launched inside it; a daemon that was already running
+ * may outlive the sandbox, so there only the `down` counts.
+ */
+export function cleanupStatus(
+  deletionConfirmed: boolean,
+  daemon: { readonly projectUsed: boolean; readonly record: DaemonRecord } | null,
+): "confirmed" | "unconfirmed" {
+  const projectLeft = daemon !== null && daemon.projectUsed && daemon.record.down !== true;
+
+  return deletionConfirmed && (!projectLeft || daemon?.record.launched === true)
+    ? "confirmed"
+    : "unconfirmed";
 }
 
 function pick(error: StageFailure) {
