@@ -13,7 +13,13 @@ import {
   dockerStatic,
   node,
 } from "./pins.js";
-import { outsideSandbox, servicePaths, type AttemptRecord, type ServicePath } from "./record.js";
+import {
+  outsideSandbox,
+  ownershipUnverified,
+  servicePaths,
+  type AttemptRecord,
+  type ServicePath,
+} from "./record.js";
 import { nativeServiceDoc, type NativeServiceDoc } from "./docs.js";
 
 export interface RunInfo {
@@ -236,16 +242,25 @@ function capability(provider: string, records: readonly AttemptRecord[]) {
   );
 
   // Negative evidence only from a ladder that finished with no daemon ever answering: a sandbox
-  // that vanished or timed out, or a row from before `finished` existed, says nothing. One whose
-  // only Docker was a daemon outside the sandbox, refused, gives no verdict either.
+  // that vanished or timed out, or a row from before `finished` existed, says nothing. Within
+  // one, only conclusive refusals count: one of this attempt's own launches, or, when none could
+  // be tried, no daemon on the default socket. A silent ping, a download or an as-found daemon
+  // refused as outside or unverified says nothing about Docker in the guest.
   const unanswered = compose.filter(
     (r) => r.daemon?.finished === true && !r.daemon.method && !r.daemon.answered,
   );
 
-  const external = (r: AttemptRecord) =>
-    r.daemon?.skipped.some((s) => s.reason === outsideSandbox) === true;
+  const neverAnswered = unanswered.filter((r) => {
+    const tries = r.daemon?.tries ?? [];
+    const launches = tries.filter((t) => t.method !== "preinstalled-running");
 
-  const neverAnswered = unanswered.filter((r) => !external(r)).length;
+    return launches.length
+      ? launches.some((t) => !t.ok && t.conclusive)
+      : tries.some((t) => !t.ok && t.conclusive);
+  }).length;
+
+  const refused = (reason: string) =>
+    unanswered.some((r) => r.daemon?.skipped.some((s) => s.reason === reason));
 
   const tried = compose.flatMap((r) => r.daemon?.tries ?? []);
 
@@ -266,9 +281,11 @@ function capability(provider: string, records: readonly AttemptRecord[]) {
           ? "flaky"
           : neverAnswered > 0
             ? "fails"
-            : unanswered.length > 0
+            : refused(outsideSandbox)
               ? "external-unused"
-              : "not-reached";
+              : refused(ownershipUnverified)
+                ? "ownership-unverified"
+                : "not-reached";
 
   return {
     probes: probes.length,
@@ -583,6 +600,8 @@ export function summaryMarkdown(site: ServicesSite): string {
       lines.push(
         `- ${p.provider} compose: its only Docker was a daemon outside the sandbox, not used`,
       );
+    else if (p.capability.docker === "ownership-unverified")
+      lines.push(`- ${p.provider} compose: ${ownershipUnverified}`);
 
   lines.push("", "## Not run", "");
 

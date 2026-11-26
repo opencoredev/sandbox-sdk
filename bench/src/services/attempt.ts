@@ -34,6 +34,7 @@ import { canBeRoot, parseProbe, probeScript, rootlessPrerequisites, type Probe }
 import {
   attemptSchemaVersion,
   outsideSandbox,
+  ownershipUnverified,
   type AttemptRecord,
   type DaemonMethod,
   type DaemonRecord,
@@ -608,11 +609,12 @@ export const daemonScan = `n=0; for p in /proc/[0-9]*; do [ -d "$p" ] || continu
 
 /**
  * Which process in this guest serves the listening socket at `$1`, at the privilege it runs with:
- * `OWNER <pid> <comm>` for a dockerd or podman holding the socket's inode, and exit 0; else
- * `NOT-LISTENING` (nothing in this network namespace listens there: a socket mounted in from
- * outside) or `NO-OWNER <inode>` (no dockerd or podman here that can be read holds it), and exit 3.
+ * `OWNER <pid> <comm>` for a dockerd or podman holding the socket's inode, and exit 0; else, with
+ * exit 3, `NOT-LISTENING` (nothing in this network namespace listens there: a socket mounted in
+ * from outside), `AMBIGUOUS <n>` (more than one listener carries that path, so which one a client
+ * reaches is unknown) or `NO-OWNER <inode>` (no dockerd or podman here that can be read holds it).
  */
-export const socketOwner = `s="$1"; r=$(readlink -f "$s" 2>/dev/null || echo "$s"); ino=$(awk -v a="$s" -v b="$r" '$4 == "00010000" && ($NF == a || $NF == b) { print $7; exit }' /proc/net/unix) || exit 4; [ -n "$ino" ] || { echo NOT-LISTENING; exit 3; }; for p in /proc/[0-9]*; do c=$(cat "$p"/comm 2>/dev/null) || continue; case "$c" in dockerd|podman) for f in "$p"/fd/*; do [ "$(readlink "$f" 2>/dev/null)" = "socket:[$ino]" ] && { echo "OWNER \${p#/proc/} $c"; exit 0; }; done ;; esac; done; echo "NO-OWNER $ino"; exit 3`;
+export const socketOwner = `s="$1"; r=$(readlink -f "$s" 2>/dev/null || echo "$s"); found=$(awk -v a="$s" -v b="$r" '$4 == "00010000" && ($NF == a || $NF == b) && !seen[$7]++ { n++; i = $7 } END { print n + 0, i }' /proc/net/unix) || exit 4; ino=\${found#* }; case "\${found%% *}" in 0) echo NOT-LISTENING; exit 3 ;; 1) ;; *) echo "AMBIGUOUS \${found%% *}"; exit 3 ;; esac; for p in /proc/[0-9]*; do c=$(cat "$p"/comm 2>/dev/null) || continue; case "$c" in dockerd|podman) for f in "$p"/fd/*; do [ "$(readlink "$f" 2>/dev/null)" = "socket:[$ino]" ] && { echo "OWNER \${p#/proc/} $c"; exit 0; }; done ;; esac; done; echo "NO-OWNER $ino"; exit 3`;
 
 /** One method of the ladder: tries it, or records the probe fact that rules it out. */
 /** The attempt a Compose project belongs to, as its journal names it. */
@@ -1075,25 +1077,54 @@ class Daemon {
     }
 
     const late = result?.ok === true && this.g.mono() > deadline;
-    const ok = result?.ok === true && !late;
+    const answered = result?.ok === true && !late;
+    const answeredAt = this.g.now();
+
+    // Only a daemon living in this guest goes with the sandbox, so only one is used: its dockerd or
+    // podman must hold the socket here, shown within the same budget. One outside, or one not shown
+    // to be inside, could keep a project after the sandbox is gone; it is never used, and since that
+    // says nothing about Docker inside the guest, the try is inconclusive.
+    const owner = answered
+      ? await this.within(deadline, (signal) =>
+          this.g.exec(
+            `${canBeRoot(this.probe) ? this.sudo : ""}sh -c ${quote(socketOwner)} sh ${this.socket}`,
+            { timeoutMs: this.left(deadline), signal },
+          ),
+        ).catch(() => null)
+      : null;
+
+    if (answered)
+      this.g.diagnostics("socket-owner", owner?.value.output ?? "no answer within the budget");
+
+    const refused = !answered
+      ? null
+      : owner?.value.ok === true && /^OWNER \d+ (?:dockerd|podman)$/m.test(owner.value.output)
+        ? null
+        : owner?.value.exitCode === 3 && owner.value.output.trim() === "NOT-LISTENING"
+          ? outsideSandbox
+          : ownershipUnverified;
+
+    const ok = answered && refused === null;
     this.record.tries.push({
       method: "preinstalled-running",
       config: "as-found",
       ok,
-      ms: this.g.now() - startedAt,
+      ms: answeredAt - startedAt,
       error: ok
         ? null
-        : result === null
-          ? `no answer within ${this.readyMs} ms`
-          : late
-            ? `answered only after ${this.readyMs} ms`
-            : tail(result.output, 300),
+        : (refused ??
+          (result === null
+            ? `no answer within ${this.readyMs} ms`
+            : late
+              ? `answered only after ${this.readyMs} ms`
+              : tail(result.output, 300))),
       conclusive: result !== null && !result.ok && noDaemonOnSocket.test(result.output),
     });
+    // The start is the ping's answer, recorded as one only once the daemon is shown to be ours.
     this.g.phases.push({
       name: "daemon-start:preinstalled-running:as-found",
       startedAt,
-      endedAt: this.g.now(),
+      endedAt: answeredAt,
       ok,
       exitCode: result?.exitCode ?? null,
       timedOut: result === null || result.timedOut,
@@ -1102,27 +1133,7 @@ class Daemon {
     if (!ok || result === null) {
       this.g.dockerHost = null;
 
-      return false;
-    }
-
-    // Only a daemon living in this guest goes with the sandbox, so only one is used: its dockerd or
-    // podman must hold the socket here. One outside, or one not shown to be inside, could keep a
-    // project after the sandbox is gone, and no teardown could prove otherwise.
-    const owner = await this.g
-      .exec(
-        `${canBeRoot(this.probe) ? this.sudo : ""}sh -c ${quote(socketOwner)} sh ${this.socket}`,
-        {
-          timeoutMs: 20_000,
-        },
-      )
-      .catch(() => null);
-
-    this.g.diagnostics("socket-owner", owner?.output ?? "no answer");
-
-    if (owner?.ok !== true || !/^OWNER \d+ (?:dockerd|podman)$/m.test(owner.output)) {
-      this.g.dockerHost = null;
-
-      return this.skip("preinstalled-running", outsideSandbox);
+      return refused === null ? false : this.skip("preinstalled-running", refused);
     }
 
     this.succeed(

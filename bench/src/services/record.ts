@@ -187,9 +187,17 @@ export const projectEventSchema = z.object({
 
 export type ProjectEvent = z.infer<typeof projectEventSchema>;
 
-/** Why an as-found daemon not shown to live in the guest is never used (a `skipped` reason). */
+/**
+ * Why an as-found daemon is never used (`skipped` reasons): nothing in the guest listens on its
+ * socket, so it is served from outside; or the guest's owner of that socket could not be shown (no
+ * privilege to read the daemon's fds, more than one listener on the path, a check that did not
+ * finish). Neither is evidence about Docker inside the guest.
+ */
 export const outsideSandbox =
   "as-found daemon outside the sandbox: not used, since its cleanup can't be guaranteed";
+
+export const ownershipUnverified =
+  "socket answered; in-sandbox ownership couldn't be verified, not used";
 
 export const projectCleanupSchema = z.enum(["none", "down", "with-sandbox", "open"]);
 

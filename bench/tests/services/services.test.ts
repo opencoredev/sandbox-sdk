@@ -41,6 +41,7 @@ import {
 import {
   attemptRecordSchema,
   outsideSandbox,
+  ownershipUnverified,
   type AttemptRecord,
   type DaemonRecord,
   type DaemonTry,
@@ -366,9 +367,11 @@ describe("daemon ladder", () => {
     expect(d.record.answered).toBe(`preinstalled-started/${d.record.config}`);
   });
 
-  test("a daemon not shown to serve the socket from inside the guest is treated as outside", async () => {
+  test("a daemon not shown to serve the socket from inside the guest is unverified: not used, and no evidence", async () => {
     for (const owner of [
+      // A docker-group user without sudo cannot read a root dockerd's fds.
       { ok: false, exitCode: 3, output: "NO-OWNER 4242" },
+      { ok: false, exitCode: 3, output: "AMBIGUOUS 2" },
       { ok: false, exitCode: 4, output: "" },
       { output: "" },
       { output: "OWNER 77 socat" },
@@ -377,10 +380,50 @@ describe("daemon ladder", () => {
 
       expect(d.record.skipped).toContainEqual({
         method: "preinstalled-running",
-        reason: outsideSandbox,
+        reason: ownershipUnverified,
+      });
+      expect(d.record.tries[0]).toMatchObject({
+        method: "preinstalled-running",
+        ok: false,
+        error: ownershipUnverified,
+        conclusive: false,
       });
       expect(d.record.method).toBe("preinstalled-started");
     }
+  });
+
+  test("the ownership proof runs within the rung's budget, and the start counts only once it passes", async () => {
+    const { box } = scriptedBox([[/daemon-ping/, () => ({ output: pingOk })]]);
+    const run = box.run.bind(box);
+    const g = guestFor(box);
+    let clock = 0;
+    g.mono = () => clock;
+
+    // The ping answers at once; the proof is still running when the budget ends.
+    box.run = (command, options) => {
+      if (!command.includes("NOT-LISTENING")) return run(command, options);
+      clock += 60_000;
+
+      return new Promise(() => {});
+    };
+
+    let kept: Parameters<Parameters<typeof getDaemon>[3]>[0] | undefined;
+
+    await expect(
+      getDaemon(g, probeOf({ arch: "aarch64", dockerd: "no", podman: "none" }), 10_000, (d) => {
+        kept = d;
+      }),
+    ).rejects.toThrow("no daemon method");
+
+    expect(kept?.record.method).toBeNull();
+    expect(kept?.record.skipped).toContainEqual({
+      method: "preinstalled-running",
+      reason: ownershipUnverified,
+    });
+    expect(kept?.record.tries[0]).toMatchObject({ ok: false, error: ownershipUnverified });
+    expect(g.phases.find((p) => p.name === "daemon-start:preinstalled-running:as-found")?.ok).toBe(
+      false,
+    );
   });
 
   test("a daemon serving the socket from inside the guest is used as found", async () => {
@@ -3002,6 +3045,13 @@ describe("the socket owner check finds the guest process serving the default soc
       await unix(["0000000000000000: 00000002 00000000 00010000 0001 01 5555 /run/other.sock"]);
       expect(await owner()).toEqual({ code: 3, stdout: "NOT-LISTENING" });
 
+      // Two listeners on the path: which one a client reaches is unknown.
+      await unix([
+        "0000000000000000: 00000002 00000000 00010000 0001 01 4242 /var/run/docker.sock",
+        "0000000000000000: 00000002 00000000 00010000 0001 01 4444 /var/run/docker.sock",
+      ]);
+      expect(await owner()).toEqual({ code: 3, stdout: "AMBIGUOUS 2" });
+
       // Only a process that is neither dockerd nor podman holds it.
       await rm(join(root, "17"), { recursive: true });
       await unix([
@@ -3217,15 +3267,41 @@ describe("storage fallback only for a storage-driver incompatibility", () => {
       expect(storageIncompatibility(output)).toBeNull();
   });
 
-  test("a provider whose only Docker was a daemon outside the sandbox gets no verdict, and says so", () => {
+  test("an as-found daemon refused as outside or unverified, or a silent ping, gives no verdict; only our own launches' refusals do", () => {
+    // A conclusive failure of this attempt's own launch.
     const base = record({ provider: "p", path: "compose", attempt: 1, up: null });
 
-    const outside: AttemptRecord = {
+    // Only the as-found try, inconclusive, with every launch ruled out by the probe.
+    const asFoundOnly = (attempt: number, reason: string | null, error: string): AttemptRecord => ({
       ...base,
+      attempt,
+      attemptId: `p-compose-${attempt}`,
       daemon: base.daemon
-        ? { ...base.daemon, skipped: [{ method: "preinstalled-running", reason: outsideSandbox }] }
+        ? {
+            ...base.daemon,
+            skipped: [
+              ...(reason === null ? [] : [{ method: "preinstalled-running" as const, reason }]),
+              { method: "static-rootful", reason: "no pinned static bundle for aarch64" },
+            ],
+            tries: [
+              {
+                method: "preinstalled-running",
+                config: "as-found",
+                ok: false,
+                ms: 1,
+                error,
+                conclusive: false,
+              },
+            ],
+          }
         : null,
-    };
+    });
+
+    const outside = asFoundOnly(1, outsideSandbox, outsideSandbox);
+    const unverified = asFoundOnly(2, ownershipUnverified, ownershipUnverified);
+    const silent = asFoundOnly(3, null, "no answer within 10000 ms");
+    const green = record({ provider: "p", path: "compose", attempt: 4, up: 20_000 });
+    const failed: AttemptRecord = { ...base, attempt: 5, attemptId: "p-compose-5" };
 
     const run = {
       id: "r1",
@@ -3237,19 +3313,34 @@ describe("storage fallback only for a storage-driver incompatibility", () => {
       artifacts: { node: "n", fixture: "f", native: "b" },
     };
 
-    const site = servicesSiteData({ records: [outside], runs: [run] });
+    const site = (...records: AttemptRecord[]) => servicesSiteData({ records, runs: [run] });
 
-    expect(site.providers[0]?.capability.docker).toBe("external-unused");
-    expect(summaryMarkdown(site)).toContain(
+    const docker = (...records: AttemptRecord[]) =>
+      site(...records).providers[0]?.capability.docker;
+
+    expect(docker(outside)).toBe("external-unused");
+    expect(summaryMarkdown(site(outside))).toContain(
       "- p compose: its only Docker was a daemon outside the sandbox, not used",
     );
-    // Beside an attempt whose own daemons all failed, the provider fails.
-    expect(
-      servicesSiteData({
-        records: [outside, { ...base, attempt: 2, attemptId: "p-compose-2" }],
-        runs: [run],
-      }).providers[0]?.capability.docker,
-    ).toBe("fails");
+    expect(docker(unverified)).toBe("ownership-unverified");
+    expect(summaryMarkdown(site(unverified))).toContain(
+      "- p compose: socket answered; in-sandbox ownership couldn't be verified, not used",
+    );
+
+    // Inconclusive attempts beside them change nothing.
+    expect(docker(outside, silent)).toBe("external-unused");
+    expect(docker(green, silent, unverified)).toBe("works");
+
+    // A conclusive refusal of our own launch is real evidence.
+    expect(docker(outside, failed)).toBe("fails");
+    expect(docker(green, failed)).toBe("flaky");
+
+    // The inconclusive attempts stay failures, never evidence that Compose is unsupported.
+    const compose = site(unverified, silent).providers[0]?.compose;
+
+    expect(compose?.failures.map((f) => f.stage)).toEqual(["daemon", "daemon"]);
+    expect(compose?.unsupportedReason ?? null).toBeNull();
+    expect(summaryMarkdown(site(unverified, silent))).not.toContain("No Docker daemon started");
   });
 
   test("a daemon that answered stays a Docker start after a storage fallback cleared its method", () => {
