@@ -2,7 +2,7 @@
 title: OpenAI Agents SDK sandbox in TypeScript
 description: Two ways to give an OpenAI Agents SDK agent a sandbox in TypeScript, SandboxAgent with a sandbox client or sandbox tools on a regular Agent, and which to use.
 published: 2026-11-19
-updated: 2026-11-24
+updated: 2026-11-26
 ---
 
 The OpenAI Agents SDK for TypeScript gives an agent a sandbox in two ways. The first is the SDK's own `SandboxAgent`, which runs its shell and file tools through a sandbox client: local processes, Docker, or a hosted provider such as E2B, Daytona, Modal or Vercel Sandbox. The second is a regular `Agent` with function tools that act on a sandbox you created yourself, such as `sandboxTools(box)` from [Sandbox SDK](/) (`@opencoredev/sandbox-sdk`).
@@ -98,7 +98,7 @@ const result = await run(coder, "Run the tests and summarize any failures.");
 console.log(result.finalOutput);
 ```
 
-`local()` is Docker on your machine. Beyond E2B, Daytona, Modal and Vercel Sandbox, which both routes reach, Sandbox SDK also runs on Upstash Box, Railway, Baseten, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, Instabox, Archil and agentOS. OpenAI's clients reach Blaxel, Cloudflare and Runloop, which Sandbox SDK doesn't.
+`local()` is Docker on your machine. Beyond E2B, Daytona, Modal and Vercel Sandbox, which both routes reach, Sandbox SDK also runs on Upstash Box, Railway, Baseten, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, Instabox, Archil, Maritime, Microsandbox, Styne and agentOS. OpenAI's clients reach Blaxel and Cloudflare, which Sandbox SDK doesn't (`@openai/agents-extensions` 0.20 also had Runloop; 0.21 removed it).
 
 Providers don't all do the same things. On Vercel Sandbox and Local, a dev server's port must be listed in `ports` when you create the sandbox, and agentOS has no background processes or previews, so `start_process` fails there. An option a provider can't enforce fails with an `unsupported` error instead of being ignored. The [capability matrix](/docs/reference/capabilities) lists the differences.
 
