@@ -72,7 +72,18 @@ boat_window() {
        boat_batch "$track" cost 1 ;;
   esac
 }
+services() {
+  # Docker and services inside the sandbox (bench/README.md). Both paths, same-machine size, one
+  # fresh sandbox per attempt. Modal runs Docker only on its VM runtime, so it gets its own run;
+  # its no-Docker attempts then also run on the VM runtime, and the run's settings say so.
+  local providers=e2b,daytona,upstash,boxd,freestyle,tenki,superserve,vercel,instabox,archil,beam,baseten,boat,maritime,styne,buddy,microsandbox,microsandbox-shared
+  run bun bench services prepare
+  run bun bench services run --providers "$providers" --attempts 10 --track same-machine --max-dollars 40 --concurrency 4 --run sbx-services-main --out "$results_root/sbx-services-main"
+  run bun bench services run --providers modal --modal-runtime vm --attempts 10 --track same-machine --max-dollars 10 --concurrency 1 --run sbx-services-modal-vm --out "$results_root/sbx-services-modal-vm"
+  run bun bench services summary --out "$results_root/sbx-services-main" --out "$results_root/sbx-services-modal-vm" --to "$results_root/sbx-services-main/services.json"
+}
 case $mode in
+  services) services ;;
   default-nonboat) non_boat default ;;
   same-spec-nonboat) non_boat same-spec ;;
   boat-default-0) boat_window default 0 ;;
@@ -101,6 +112,7 @@ Boat requires an otherwise idle account (12 starts/minute, 60/hour, 200/day):
  Generate policy with `bash bench/src/collection-plan.sh policy > /tmp/swarm/collection-policy.json`.
  Other account-cap skips require verified reasons in that policy. All 27 site metric IDs are
  covered across main, snapshot and burst suites; provider capability/quota exceptions stay explicit.
+ Docker and services inside the sandbox: `services` (both paths, 10 attempts each; Modal on its VM runtime in its own run).
  Preview commands without credentials, sleeps or cloud calls: BENCH_PLAN_DRY_RUN=1 bash SCRIPT MODE.
 HELP
     ;;

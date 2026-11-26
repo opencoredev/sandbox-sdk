@@ -6,7 +6,7 @@
     "bench": "bun src/cli.ts",
     "lint": "oxlint src tests scripts",
     "typecheck": "tsc --noEmit",
-    "test": "timeout 300s vitest run --maxWorkers=2"
+    "test": "timeout 300s vitest run --dir tests --maxWorkers=2"
   },
   "dependencies": {
     "@opencoredev/sandbox-sdk": "workspace:*",

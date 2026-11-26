@@ -43,7 +43,7 @@ import { pick, type Candidate } from "../cost/picks.js";
 import { reservationResources } from "../billed-resources.js";
 import { pendingForRun, prepareJournaledApps, reconcileDiscovered } from "../modal-apps.js";
 import { budgetUSD, computeHourly, estimateCost, pricing } from "../pricing.js";
-import { loadProvider, providerRegion } from "../providers.js";
+import { loadProvider, providerRegion, type FactoryOptions } from "../providers.js";
 import {
   appJournalFile,
   attemptAllocation,
@@ -304,6 +304,8 @@ export async function loadSlotProvider(
   journalDir?: string,
   /** A profile with its own factory options (`profileFactory`); unset loads the plain adapter. */
   profile?: string,
+  /** Extra factory options for this suite's adapter (the services suite's Modal runtime). */
+  extraFactory?: FactoryOptions,
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
@@ -318,11 +320,16 @@ export async function loadSlotProvider(
     ? { [setup.adapter]: slotMs + 15 * 60_000 }
     : {};
 
+  const factory: FactoryOptions = { ...extraFactory };
+  const profileFactory = profile === undefined ? undefined : setup.profileFactory?.[profile];
+
+  if (profileFactory?.volume) factory.volume = profileFactory.volume;
+
   const loaded = await loadProvider(setup.adapter, process.env, undefined, {
     template: config.template ? { [setup.adapter]: config.template } : {},
     product: setup.product ? { [setup.adapter]: setup.product } : {},
     "lifetime-ms": lifetime,
-    factory: profile === undefined ? undefined : setup.profileFactory?.[profile],
+    factory: profile === undefined && extraFactory === undefined ? undefined : factory,
   });
 
   if (loaded.kind !== "ready") return { kind: "skipped", note: loaded.note };

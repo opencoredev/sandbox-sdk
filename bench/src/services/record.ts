@@ -1,0 +1,152 @@
+/**
+ * One services attempt (`svc-attempt/1`), one JSON line in services-attempts.jsonl. A failed
+ * attempt is a record like any other: its stage, reason and the phases it reached are kept.
+ */
+import { z } from "zod";
+import { expectedTests } from "./pins.js";
+import { probeSchema } from "./probe.js";
+
+export const attemptSchemaVersion = "svc-attempt/1";
+
+/** compose: Docker (or a Docker-compatible daemon) runs compose.yaml. native: plain processes. */
+export const servicePaths = ["compose", "native"] as const;
+
+export type ServicePath = (typeof servicePaths)[number];
+
+export const servicePathSchema = z.enum(servicePaths);
+
+/** Where an attempt stopped. */
+export const stages = [
+  "create",
+  "probe",
+  "upload",
+  "toolchain",
+  "daemon",
+  "image-pull",
+  "services-start",
+  "services-ready",
+  "tests",
+  "timeout",
+  "error",
+] as const;
+
+export type Stage = (typeof stages)[number];
+
+/** How the compose path got a daemon, in the order the ladder tries them. */
+export const daemonMethods = [
+  "preinstalled-running",
+  "preinstalled-started",
+  "static-rootful",
+  "rootless",
+  "podman",
+] as const;
+
+export type DaemonMethod = (typeof daemonMethods)[number];
+
+const phaseSchema = z.object({
+  name: z.string(),
+  startedAt: z.number(),
+  endedAt: z.number(),
+  ok: z.boolean(),
+  exitCode: z.number().nullable(),
+  timedOut: z.boolean(),
+  note: z.string().optional(),
+});
+
+export type Phase = z.infer<typeof phaseSchema>;
+
+const daemonTrySchema = z.object({
+  method: z.enum(daemonMethods),
+  config: z.string(),
+  ok: z.boolean(),
+  ms: z.number(),
+  error: z.string().nullable(),
+});
+
+export type DaemonTry = z.infer<typeof daemonTrySchema>;
+
+const daemonSchema = z.object({
+  method: z.enum(daemonMethods).nullable(),
+  config: z.string().nullable(),
+  /** Methods the ladder did not try, with the probe fact that ruled each out. */
+  skipped: z.array(z.object({ method: z.enum(daemonMethods), reason: z.string() })),
+  tries: z.array(daemonTrySchema),
+  storageDriver: z.string().nullable(),
+  network: z.enum(["bridge", "host"]).nullable(),
+  serverVersion: z.string().nullable(),
+  compose: z.enum(["preinstalled", "fetched"]).nullable(),
+  /**
+   * The ladder ran to its end: a method was chosen, or every method failed or was skipped (a storage
+   * fallback that ran out included). False when a timeout, abort or vanished sandbox cut it short,
+   * so the attempt says nothing about Docker.
+   */
+  // Rows from before this field read as unfinished: their daemon result stays out of the verdict.
+  finished: z.boolean().default(false),
+});
+
+export type DaemonRecord = z.infer<typeof daemonSchema>;
+
+const outcomeSchema = z.discriminatedUnion("kind", [
+  // Green means every fixture test passed: a record claiming fewer is refused at the boundary.
+  z.object({ kind: z.literal("green"), testsPassed: z.literal(expectedTests) }),
+  z.object({
+    kind: z.literal("failed"),
+    stage: z.enum(stages),
+    reason: z.string(),
+    detail: z.string(),
+  }),
+  // The harness cannot measure this sandbox (its pinned artifacts do not run there): a result
+  // about the provider, never counted as a failure.
+  z.object({ kind: z.literal("unsupported"), reason: z.string(), detail: z.string() }),
+]);
+
+export type Outcome = z.infer<typeof outcomeSchema>;
+
+const ms = z.number().nullable();
+
+/**
+ * Durations in ms; null when the attempt never got there.
+ * - servicesUpMs: from the path's first service step (daemon setup or bundle upload) to both
+ *   services answering. The headline.
+ * - readyToGreenMs: from the first upload after the probe to the tests passing (create and the
+ *   measurement-only probe excluded).
+ */
+export const metricsSchema = z.object({
+  createMs: ms,
+  probeMs: ms,
+  uploadMs: ms,
+  daemonReadyMs: ms,
+  imagePullMs: ms,
+  servicesStartMs: ms,
+  servicesReadyMs: ms,
+  servicesUpMs: ms,
+  testsMs: ms,
+  readyToGreenMs: ms,
+});
+
+export type Metrics = z.infer<typeof metricsSchema>;
+
+export const attemptRecordSchema = z.object({
+  schema: z.literal(attemptSchemaVersion),
+  runId: z.string(),
+  attemptId: z.string(),
+  provider: z.string(),
+  track: z.string(),
+  path: servicePathSchema,
+  attempt: z.number().int().positive(),
+  sandboxIds: z.array(z.string()),
+  startedAt: z.number(),
+  endedAt: z.number(),
+  probe: probeSchema.nullable(),
+  probeError: z.string().nullable(),
+  daemon: daemonSchema.nullable(),
+  phases: z.array(phaseSchema),
+  outcome: outcomeSchema,
+  metrics: metricsSchema,
+  deletionConfirmed: z.boolean(),
+  estimatedUSD: z.number().nullable(),
+  artifacts: z.object({ node: z.string(), fixture: z.string(), native: z.string().nullable() }),
+  outputDir: z.string().nullable(),
+});
+
+export type AttemptRecord = z.infer<typeof attemptRecordSchema>;

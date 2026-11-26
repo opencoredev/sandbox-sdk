@@ -1,0 +1,28 @@
+# Override for a daemon started with --bridge=none (no bridge or NAT in the sandbox): both
+# services share the sandbox's network and listen on 127.0.0.1 at the harness's ports directly.
+# docker compose -f compose.yaml -f compose.host-network.yaml up -d
+services:
+  postgres:
+    network_mode: host
+    ports: !reset []
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1", "-c", "port=${SBX_PG_PORT:-5432}"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "app", "-h", "127.0.0.1", "-p", "${SBX_PG_PORT:-5432}"]
+
+  redis:
+    network_mode: host
+    ports: !reset []
+    command:
+      [
+        "redis-server",
+        "--bind",
+        "127.0.0.1",
+        "--port",
+        "${SBX_REDIS_PORT:-6379}",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+      ]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "${SBX_REDIS_PORT:-6379}", "ping"]

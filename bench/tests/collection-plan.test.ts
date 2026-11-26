@@ -201,3 +201,13 @@ it("sets verified explicit account limits for every launched provider", () => {
     }
   }
 });
+
+it("plans the services suite: both paths everywhere, Modal on its VM runtime in its own run", () => {
+  const output = plan("services");
+  const runs = output.split("\n").filter((line) => line.includes("services run"));
+  expect(runs).toHaveLength(2);
+  expect(runs[0]).not.toContain("modal");
+  expect(runs[1]).toContain("--providers modal --modal-runtime vm");
+  expect(output).toContain("services summary");
+  expect(output).toContain("services prepare");
+});
