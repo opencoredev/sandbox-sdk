@@ -12,13 +12,15 @@
  *    fresh 256 MiB allocation and a file write succeed.
  *
  * Outcomes are only what the evidence shows. `reached-target`: the hog held every byte it asked for
- * (swap, or no enforcement at the advertised size). `process-killed`: it died of SIGKILL (shell status
- * 137), or vanished with its supervisor while the cgroup counted a new OOM kill; the OOM count is kept
- * as corroboration. `refused`: the runtime's allocation failed. `stalled`: still running at the
- * deadline (thrashing), then killed. `sandbox-restarted`: a new boot id. `unresponsive`: no answer for
+ * (swap, or no enforcement at the advertised size). `process-killed`: its supervisor shell recorded
+ * SIGKILL (status 137); the cgroup's OOM count is kept as corroboration only, since other processes
+ * share it. `vanished`: the hog and its supervisor were both confirmed gone with no exit status, so
+ * how it died is unknown. `refused`: the runtime's allocation failed. `stalled`: confirmed still
+ * running at the deadline (thrashing), then killed; usability is measured only once it is confirmed
+ * gone. `sandbox-restarted`: a new boot id. `unresponsive`: no answer for
  * `unresponsiveMs + recoveryMs` while the provider still lists it. `sandbox-lost`: no answer and the
- * provider's exact lookup says it is gone. Anything else fails the check. The scope is `process` only
- * when the canary is confirmed alive, `collateral` when it is confirmed gone, and `sandbox` when the
+ * provider's exact lookup, made at that moment, says it is gone. Anything else fails the check. The
+ * scope is `process` only when the canary is the same live process with a fresh beat, `collateral` when it is confirmed gone, and `sandbox` when the
  * whole sandbox was lost, rebooted or stopped answering; unknown otherwise.
  */
 import { randomBytes } from "node:crypto";
@@ -42,6 +44,7 @@ import {
   identityFunction,
   ownKillFunction,
   parseRuntime,
+  parseSeen,
   runtimeCommand,
   runtimes,
 } from "./guest-scripts.js";
@@ -103,6 +106,8 @@ const outcomeSchema = z.discriminatedUnion("kind", [
     oomKills: z.number().int().nullable(),
   }),
   z.object({ kind: z.literal("refused"), reason: z.string() }),
+  /** The hog and its supervisor are gone with no exit status: how it died is unknown. */
+  z.object({ kind: z.literal("vanished"), oomKills: z.number().int().nullable() }),
   z.object({ kind: z.literal("stalled") }),
   z.object({ kind: z.literal("sandbox-restarted") }),
   z.object({ kind: z.literal("unresponsive"), detail: z.string() }),
@@ -202,24 +207,20 @@ export function judgePressure(input: {
     case "stalled":
       return bootSame === false ? { kind: "sandbox-restarted" } : { kind: "stalled" };
     case "vanished":
-      if (bootSame === false) return { kind: "sandbox-restarted" };
-
-      if (oomDelta !== null && oomDelta > 0)
-        return { kind: "process-killed", exitCode: null, oomKills: oomDelta };
-
-      throw new CheckStop(
-        `The hog and its supervisor vanished with no OOM kill counted (held ${log.heldMiB} MiB)`,
-      );
+      return bootSame === false
+        ? { kind: "sandbox-restarted" }
+        : { kind: "vanished", oomKills: oomDelta };
     case "exited":
       if (bootSame === false) return { kind: "sandbox-restarted" };
+
+      // The hog never exits 137 itself, so the shell's 137 is SIGKILL, even after a refusal line.
+      if (ending.exitCode === 137)
+        return { kind: "process-killed", exitCode: 137, oomKills: oomDelta };
 
       if (ending.exitCode === 0 && log.reached) return { kind: "reached-target" };
 
       if (log.refused !== null || ending.exitCode === 3)
         return { kind: "refused", reason: log.refused ?? "exit 3" };
-
-      if (ending.exitCode === 137)
-        return { kind: "process-killed", exitCode: 137, oomKills: oomDelta };
 
       throw new CheckStop(
         `The hog exited ${ending.exitCode} with no kill evidence (held ${log.heldMiB} MiB)`,
@@ -240,10 +241,13 @@ export function scopeOf(outcome: PressureOutcome, canaryAlive: boolean | null) {
       return "sandbox" as const;
     case "process-killed":
     case "refused":
+    case "vanished":
     case "reached-target":
     case "stalled":
       return canaryAlive === true
-        ? outcome.kind === "process-killed" || outcome.kind === "refused"
+        ? outcome.kind === "process-killed" ||
+          outcome.kind === "refused" ||
+          outcome.kind === "vanished"
           ? ("process" as const)
           : null
         : canaryAlive === false
@@ -266,6 +270,7 @@ const statusCommand = (dir: string) =>
     `echo "exit=$(cat ${quote(`${dir}/hog.exit`)} 2>/dev/null)"`,
     `echo "last=$(tail -n 1 ${quote(`${dir}/hog.log`)} 2>/dev/null)"`,
     `echo "running=$(identity ${quote(`${dir}/hog.pid`)} ${quote(dir)})"`,
+    `echo "supervisor=$(identity ${quote(`${dir}/hog.sup`)} ${quote(dir)})"`,
     "echo status=done",
   ].join("\n");
 
@@ -322,6 +327,7 @@ async function pollHog(input: {
       const silence = now - lastAnswer;
 
       if (silence > options.unresponsiveMs) recoveredAfterMs = Math.round(silence);
+      asked = false;
       maxGapMs = Math.max(maxGapMs, silence);
       lastAnswer = now;
       const seenBoot = values.get("boot") ?? "";
@@ -336,13 +342,22 @@ async function pollHog(input: {
 
       if (/^\d+$/.test(exit)) return polled({ kind: "exited", exitCode: Number(exit) });
 
-      // Not running and no exit status: let the supervisor write it once, then call it vanished.
-      if ((values.get("running") ?? "") === "") {
+      const running = parseSeen(values.get("running"));
+      const supervisor = parseSeen(values.get("supervisor"));
+
+      // Hog and supervisor both confirmed gone with no exit status, twice in a row: vanished.
+      if (running.kind === "gone" && supervisor.kind === "gone") {
         if (vanishedOnce) return polled({ kind: "vanished" });
         vanishedOnce = true;
       } else vanishedOnce = false;
 
-      if (now - started > options.deadlineMs) return polled({ kind: "stalled" });
+      if (now - started > options.deadlineMs) {
+        if (running.kind === "alive") return polled({ kind: "stalled" });
+
+        throw new CheckStop(
+          `No evidence how the hog ended by the deadline (hog ${running.kind}, supervisor ${supervisor.kind})`,
+        );
+      }
     } else {
       const silence = now - lastAnswer;
       maxGapMs = Math.max(maxGapMs, silence);
@@ -354,11 +369,21 @@ async function pollHog(input: {
         if (liveness.kind === "absent") return polled({ kind: "lost", detail: liveness.detail });
       }
 
-      if (silence > options.unresponsiveMs + options.recoveryMs)
+      if (silence > options.unresponsiveMs + options.recoveryMs) {
+        const liveness = await lookUpLiveness(box, `no answer for ${Math.round(silence)} ms`);
+
+        if (liveness.kind === "absent") return polled({ kind: "lost", detail: liveness.detail });
+
+        const listed =
+          liveness.kind === "present"
+            ? "still listed"
+            : `provider state unknown: ${liveness.detail}`;
+
         return polled({
           kind: "unresponsive",
-          detail: `no answer for ${Math.round(silence)} ms; still listed`,
+          detail: `no answer for ${Math.round(silence)} ms; ${listed}`,
         });
+      }
     }
 
     await sleep(Math.max(0, options.pollMs - (performance.now() - askedAt)), undefined, {
@@ -392,7 +417,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
   await box.write(hog, new TextEncoder().encode(script.hog));
 
   try {
-    const canary = `echo $$ > canary.pid; while :; do date +%s > canary.beat; sleep 1; done`;
+    const canary = `echo $$ > canary.pid; while :; do date +%s > canary.beat.tmp && mv canary.beat.tmp canary.beat; sleep 1; done`;
 
     const prepared = await context.exec(
       box,
@@ -408,9 +433,9 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
 
     const before = keyValues(prepared.stdout);
     const boot = before.get("boot") ?? "";
-    const canaryBefore = before.get("canary") ?? "";
+    const canaryBefore = parseSeen(before.get("canary"));
 
-    if (boot === "" || canaryBefore === "")
+    if (boot === "" || canaryBefore.kind !== "alive")
       throw new CheckStop("The baseline has no boot id or canary");
     const oomBefore = parseOomKills(prepared.stdout);
     const oomFileBefore = oomFileOf(prepared.stdout);
@@ -422,7 +447,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     await context.exec(
       box,
       detached(
-        `cd ${quote(dir)} && { ${rt} ${quote(hog)} ${targetMiB} ${options.chunkMiB} > hog.log 2>&1 & echo $! > hog.pid; wait $!; echo $? > hog.exit; }`,
+        `cd ${quote(dir)} && { echo $$ > hog.sup; ${rt} ${quote(hog)} ${targetMiB} ${options.chunkMiB} > hog.log 2>&1 & echo $! > hog.pid; wait $!; echo $? > hog.exit; }`,
         `${dir}/hog.wrap`,
       ),
       60_000,
@@ -430,6 +455,8 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
 
     const polled = await pollHog({ context, box, dir, boot, options });
     const answered = polled.ending.kind !== "lost" && polled.ending.kind !== "unresponsive";
+    // Usability is measured only once the hog is confirmed gone (or the guest rebooted).
+    let ended = polled.ending.kind !== "stalled";
 
     if (polled.ending.kind === "stalled") {
       await context.exec(
@@ -440,11 +467,18 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
 
       // Measure usability only once the hog is gone.
       for (let tries = 0; tries < 15; tries++) {
-        const status = keyValues(
-          (await context.exec(box, statusCommand(dir), pollTimeoutMs)).stdout,
-        );
+        const status = await context
+          .exec(box, statusCommand(dir), pollTimeoutMs)
+          .then((result) =>
+            result.stdout.includes("status=done") ? keyValues(result.stdout) : null,
+          )
+          .catch(() => null);
 
-        if ((status.get("running") ?? "") === "") break;
+        if (status !== null && parseSeen(status.get("running")).kind === "gone") {
+          ended = true;
+          break;
+        }
+
         await sleep(2_000, undefined, { signal: context.signal });
       }
     }
@@ -477,21 +511,27 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
           ? Math.max(0, oomAfter - oomBefore)
           : null;
 
-      const alloc = await context
-        .exec(box, `${rt} ${quote(hog)} ${options.healthAllocMiB} ${options.chunkMiB}`, 120_000)
-        .catch(() => null);
+      const alloc = !ended
+        ? null
+        : await context
+            .exec(box, `${rt} ${quote(hog)} ${options.healthAllocMiB} ${options.chunkMiB}`, 120_000)
+            .catch(() => null);
 
-      allocOk = alloc !== null && alloc.exitCode === 0 && /^reached /m.test(alloc.stdout);
+      allocOk = !ended
+        ? null
+        : alloc !== null && alloc.exitCode === 0 && /^reached /m.test(alloc.stdout);
 
-      const file = await context
-        .exec(
-          box,
-          `cd ${quote(dir)} && head -c 1048576 /dev/urandom > health.bin && sync && test "$(wc -c < health.bin)" -eq 1048576 && rm -f health.bin && echo fileok`,
-          60_000,
-        )
-        .catch(() => null);
+      const file = !ended
+        ? null
+        : await context
+            .exec(
+              box,
+              `cd ${quote(dir)} && head -c 1048576 /dev/urandom > health.bin && sync && test "$(wc -c < health.bin)" -eq 1048576 && rm -f health.bin && echo fileok`,
+              60_000,
+            )
+            .catch(() => null);
 
-      fileOk = file !== null && file.stdout.includes("fileok");
+      fileOk = !ended ? null : file !== null && file.stdout.includes("fileok");
     }
 
     const bootAfter = after.get("boot") ?? "";
@@ -499,13 +539,20 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     const bootSame =
       !answered || bootAfter === "" || bootAfter === "unknown" ? null : bootAfter === boot;
 
-    const canaryNow = after.get("canary");
+    const canaryNow = parseSeen(after.get("canary"));
     const beatAge = Number(after.get("now")) - Number(after.get("canaryBeat"));
 
-    const canaryAlive =
-      !answered || canaryNow === undefined
-        ? null
-        : canaryNow === canaryBefore && Number.isFinite(beatAge) && beatAge <= freshBeatS;
+    // Alive needs the same process and a fresh beat; gone needs it confirmed gone; else unknown.
+    const canaryAlive = !answered
+      ? null
+      : canaryNow.kind === "gone"
+        ? false
+        : canaryNow.kind === "alive" &&
+            canaryNow.id === canaryBefore.id &&
+            Number.isFinite(beatAge) &&
+            beatAge <= freshBeatS
+          ? true
+          : null;
 
     const log = parseHogLog(logText);
     const outcome = judgePressure({ ending: polled.ending, log, oomDelta, bootSame });

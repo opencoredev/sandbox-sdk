@@ -78,12 +78,18 @@ async function runOnHost<R>(check: Check<R>, open: OpenSession) {
   return entry;
 }
 
+const alive_ = (id: string) => ({ kind: "alive" as const, id });
+const gone = { kind: "gone" as const };
+const unknown = { kind: "unknown" as const };
+
 const snapshot = (over: Partial<GuestSnapshot> = {}): GuestSnapshot => ({
   dirExists: true,
+  file: "present",
+  size: 1_048_576,
   sha: "abc",
   boot: "boot-1",
-  worker: "41:1000",
-  server: "7:2000",
+  worker: alive_("41:1000"),
+  server: alive_("7:2000"),
   beat: 10,
   ...over,
 });
@@ -95,7 +101,14 @@ const answer = (token: string, over: Partial<NonNullable<Probe["body"]>> = {}): 
 });
 
 describe("state-survival judge", () => {
-  const base = { before: snapshot(), token: "t", holdMs: 60_000, elapsedS: 65 };
+  const base = {
+    before: snapshot(),
+    token: "t",
+    holdMs: 60_000,
+    window: { minS: 64, maxS: 66 },
+    callsMs: 3_000,
+  };
+
   const kept = { later: snapshot({ beat: 80 }), probe: answer("t") };
 
   it("calls a frozen hold that kept everything in-ram", () => {
@@ -104,7 +117,7 @@ describe("state-survival judge", () => {
     expect(judged.worker).toMatchObject({
       same: true,
       beatsDuringHold: 2,
-      missedBeats: 63,
+      missedBeats: { min: 62, max: 64 },
       advancing: true,
     });
     expect(judged.server).toEqual({
@@ -122,14 +135,42 @@ describe("state-survival judge", () => {
     );
     const partial = judgeSurvival({ ...base, ...kept, after: snapshot({ beat: 40 }) });
     expect(partial.verdict).toBe("inconclusive");
-    expect(partial.reason).toMatch(/missed 35 of the 60 s/);
+    expect(partial.reason).toMatch(/missed 34 to 36 s/);
+  });
+
+  it("does not credit a freeze to the hold when the pause and resume calls were long", () => {
+    const slowCalls = judgeSurvival({
+      ...base,
+      ...kept,
+      after: snapshot({ beat: 12 }),
+      callsMs: 20_000,
+    });
+
+    expect(slowCalls.verdict).toBe("inconclusive");
+    // A snapshot answered late widens the window, so the missed range is too wide to call either way.
+
+    const late = judgeSurvival({
+      ...base,
+      ...kept,
+      after: snapshot({ beat: 40 }),
+      window: { minS: 31, maxS: 90 },
+    });
+
+    expect(late.verdict).toBe("inconclusive");
   });
 
   it("calls a cold restart only on a new boot or both processes confirmed gone", () => {
-    const gone = snapshot({ worker: null, server: null });
-    expect(judgeSurvival({ ...base, after: gone, later: gone, probe: null }).verdict).toBe(
+    const bothGone = snapshot({ worker: gone, server: gone });
+    expect(judgeSurvival({ ...base, after: bothGone, later: bothGone, probe: null }).verdict).toBe(
       "cold-restart",
     );
+    // Processes that could not be read are not processes lost.
+    const unread = snapshot({ worker: unknown, server: unknown });
+    expect(judgeSurvival({ ...base, after: unread, later: unread, probe: null })).toMatchObject({
+      verdict: "inconclusive",
+      worker: { gone: false },
+      server: { gone: false },
+    });
     const rebooted = snapshot({ boot: "boot-2", beat: 11 });
     expect(judgeSurvival({ ...base, ...kept, after: rebooted }).verdict).toBe("cold-restart");
     // A server that is alive but not answering, or only one process gone, is not enough.
@@ -145,7 +186,7 @@ describe("state-survival judge", () => {
       verdict: "inconclusive",
       server: { gone: false, answered: false },
     });
-    const half = snapshot({ worker: null });
+    const half = snapshot({ worker: gone });
     expect(judgeSurvival({ ...base, after: half, later: half, probe: answer("t") }).verdict).toBe(
       "inconclusive",
     );
@@ -171,25 +212,42 @@ describe("state-survival judge", () => {
     expect(other.server).toMatchObject({ answered: true, sameProcess: false, sameToken: false });
   });
 
-  it("calls a missing directory or a changed file files-lost", () => {
+  it("calls a missing directory or file, or a changed file, files-lost", () => {
     for (const after of [
       snapshot({ dirExists: false }),
+      snapshot({ file: "absent", sha: null, size: null }),
       snapshot({ sha: "def" }),
-      snapshot({ sha: null }),
     ])
       expect(judgeSurvival({ ...base, ...kept, after }).verdict).toBe("files-lost");
   });
 
+  it("calls a file it could not read inconclusive, not lost", () => {
+    for (const after of [snapshot({ file: "unknown", sha: null }), snapshot({ sha: null })])
+      expect(judgeSurvival({ ...base, ...kept, after })).toMatchObject({
+        verdict: "inconclusive",
+        reason: "the file could not be read",
+      });
+  });
+
   it("parses only complete snapshots and probe lines", () => {
-    expect(parseSnapshot("boot=unknown\ndir=1\nsha=aa\nworker=9:5\nserver=\nbeat=12\n")).toEqual({
+    expect(
+      parseSnapshot(
+        "boot=unknown\ndir=1\nfile=present\nsize=1048576\nsha=aa\nworker=9:5\nserver=gone\nbeat=12\nsnapshot=done\n",
+      ),
+    ).toEqual({
       dirExists: true,
+      file: "present",
+      size: 1_048_576,
       sha: "aa",
       boot: null,
-      worker: "9:5",
-      server: null,
+      worker: alive_("9:5"),
+      server: gone,
       beat: 12,
     });
-    expect(parseSnapshot("boot=b\ndir=1\nsha=aa\n")).toBeNull();
+    expect(
+      parseSnapshot("boot=b\ndir=1\nfile=unknown\nworker=\nserver=unknown\nbeat=\nsnapshot=done\n"),
+    ).toMatchObject({ file: "unknown", worker: unknown, server: unknown, beat: null });
+    expect(parseSnapshot("boot=b\ndir=1\nfile=present\nsha=aa\n")).toBeNull();
     expect(parseProbe('noise\n{"ok":false,"ms":30001,"body":null}\n')).toEqual({
       ok: false,
       ms: 30_001,
@@ -242,9 +300,13 @@ describe("memory-pressure judge", () => {
       kind: "refused",
       reason: "ENOMEM",
     });
+    // SIGKILL after a refusal line is still a kill.
+    expect(
+      judgePressure({ ...base, ending: exited(137), log: log("refused 64 ENOMEM\n") }),
+    ).toMatchObject({ kind: "process-killed", exitCode: 137 });
+    // Gone with its supervisor and no status is a vanish, whatever the shared OOM counter says.
     expect(judgePressure({ ...base, ending: { kind: "vanished" }, oomDelta: 2 })).toEqual({
-      kind: "process-killed",
-      exitCode: null,
+      kind: "vanished",
       oomKills: 2,
     });
     expect(judgePressure({ ...base, ending: { kind: "stalled" } })).toEqual({ kind: "stalled" });
@@ -266,7 +328,6 @@ describe("memory-pressure judge", () => {
       /no kill evidence/,
     );
     expect(() => judgePressure({ ...base, ending: exited(134) })).toThrow(/no kill evidence/);
-    expect(() => judgePressure({ ...base, ending: { kind: "vanished" } })).toThrow(/no OOM kill/);
   });
 
   it("scopes a kill to the process only with a live canary", () => {
@@ -276,6 +337,8 @@ describe("memory-pressure judge", () => {
     expect(scopeOf(killed, null)).toBeNull();
     expect(scopeOf({ kind: "sandbox-lost", detail: "" }, null)).toBe("sandbox");
     expect(scopeOf({ kind: "reached-target" }, true)).toBeNull();
+    expect(scopeOf({ kind: "vanished", oomKills: null }, true)).toBe("process");
+    expect(scopeOf({ kind: "vanished", oomKills: null }, null)).toBeNull();
   });
 });
 
@@ -485,7 +548,9 @@ describe.runIf(linux && available.length > 0)(
         filesystem: true,
       });
 
-      if (result.suspend.kind === "measured") expect(result.suspend.servingMs).toBeGreaterThan(0);
+      expect(result.suspend).toMatchObject({ servingMs: null, coldServeMs: expect.any(Number) });
+
+      if (result.suspend.kind === "measured") expect(result.suspend.coldServeMs).toBeGreaterThan(0);
     }, 60_000);
 
     it("records a refused pause instead of failing", async () => {
@@ -590,6 +655,55 @@ describe.runIf(linux && available.length > 0)(
         reachedEvidence: "last-poll",
       });
       expect(result.reachedMiB).toBeGreaterThan(0);
+    }, 60_000);
+
+    it("memory-pressure looks the sandbox up again before calling it unresponsive and still listed", async () => {
+      const workdir = await scratch("mem-work");
+      const real = hostBox();
+      let polls = 0;
+      let lookups = 0;
+
+      const silent: Box = {
+        ...real,
+        run: async (command, options) => {
+          if (command.includes("status=done") && ++polls > 1) throw new Error("connection reset");
+
+          return real.run(command, options);
+        },
+        lookup: async () => {
+          lookups++;
+
+          return { result: "present", checkedAt: new Date().toISOString(), method: "fake" };
+        },
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => silent,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const check = memoryPressureCheck({
+        ...defaultPressureOptions,
+        advertisedMiB: 128,
+        pollMs: 200,
+        unresponsiveMs: 1_000,
+        recoveryMs: 1_000,
+        workdir,
+      });
+
+      const entry = await runOnHost(check, open);
+      expect(entry.status, entry.reason ?? "").toBe("completed");
+      const result = check.resultSchema.parse(entry.result);
+      expect(result.outcome).toMatchObject({
+        kind: "unresponsive",
+        detail: expect.stringMatching(/still listed/),
+      });
+      expect(lookups).toBeGreaterThanOrEqual(2);
+      expect(result.scope).toBe("sandbox");
     }, 60_000);
   },
 );

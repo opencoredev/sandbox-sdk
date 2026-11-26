@@ -292,18 +292,34 @@ export const ownKillFunction = [
 ].join("\n");
 
 /**
- * A shell function, `identity PIDFILE MARKER`: prints the pid's start time (field 22 of its stat)
- * when it is alive, owned as for `ownkill` and not a zombie; prints nothing otherwise.
+ * A shell function, `identity PIDFILE MARKER`: prints `pid:start` (start is field 22 of its stat) for a
+ * live, non-zombie process whose command line contains MARKER (this attempt's own directory);
+ * `gone` when the file names a pid that no longer exists, is a zombie, or now belongs to another
+ * process; `unknown` when the file or the process's details cannot be read.
  */
 export const identityFunction = [
   `identity() {`,
-  `  p=$(cat "$1" 2>/dev/null)`,
-  `  case "$p" in ''|*[!0-9]*) return 0;; esac`,
-  `  [ "$p" -gt 1 ] || return 0`,
-  `  tr '\\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -qF -- "$2" || return 0`,
-  `  s=$(sed 's/^.*) //' "/proc/$p/stat" 2>/dev/null)`,
+  `  p=$(cat "$1" 2>/dev/null) || { echo unknown; return 0; }`,
+  `  case "$p" in ''|*[!0-9]*) echo unknown; return 0;; esac`,
+  `  [ "$p" -gt 1 ] || { echo unknown; return 0; }`,
+  `  [ -d "/proc/$p" ] || { echo gone; return 0; }`,
+  `  c=$(tr '\\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || { echo unknown; return 0; }`,
+  `  case "$c" in *"$2"*) ;; *) echo gone; return 0;; esac`,
+  `  s=$(sed 's/^.*) //' "/proc/$p/stat" 2>/dev/null) || { echo unknown; return 0; }`,
   `  set -- $s`,
-  `  [ "$1" = Z ] && return 0`,
+  `  [ "$1" = Z ] && { echo gone; return 0; }`,
   `  echo "$p:\${20}"`,
   `}`,
 ].join("\n");
+
+/** What `identity` printed: a live process's `pid:start`, `gone`, or `unknown`. */
+export type Seen =
+  | { readonly kind: "alive"; readonly id: string }
+  | { readonly kind: "gone" }
+  | { readonly kind: "unknown" };
+
+export function parseSeen(text: string | undefined): Seen {
+  if (text !== undefined && /^\d+:\d+$/.test(text)) return { kind: "alive", id: text };
+
+  return text === "gone" ? { kind: "gone" } : { kind: "unknown" };
+}

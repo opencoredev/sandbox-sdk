@@ -35,8 +35,10 @@ import {
   identityFunction,
   ownKillFunction,
   parseRuntime,
+  parseSeen,
   runtimeCommand,
   runtimes,
+  type Seen,
 } from "./guest-scripts.js";
 
 export interface StateOptions {
@@ -89,8 +91,8 @@ const workerSchema = z.object({
   gone: z.boolean(),
   /** Heartbeats between the snapshots either side of the pause; null unless \`same\`. */
   beatsDuringHold: z.number().int().nullable(),
-  /** Host seconds between those snapshots minus the heartbeats: about the hold when it froze. */
-  missedBeats: z.number().nullable(),
+  /** Bounded host seconds between those snapshots minus the heartbeats: about the hold when it froze. */
+  missedBeats: z.object({ min: z.number(), max: z.number() }).nullable(),
   advancing: z.boolean(),
 });
 
@@ -129,12 +131,14 @@ const suspendSchema = z.discriminatedUnion("kind", [
     resumeMs: z.number(),
     /** From resume returning to the first command answering. */
     firstCommandMs: z.number(),
-    /**
-     * From resume returning to the original server answering; for a server confirmed gone, the first
-     * command plus the guest-timed restart. Null when it never served.
-     */
+    /** Observed: from resume returning to the original server answering; null when it did not. */
     servingMs: z.number().nullable(),
     serverRestarted: z.boolean(),
+    /**
+     * Composed, for a server confirmed gone: the first command plus the guest-timed restart, so it
+     * leaves out the harness's own checks. Not an observed elapsed time. Null otherwise.
+     */
+    coldServeMs: z.number().nullable(),
     filesystem: z.boolean(),
     bootSame: z.boolean().nullable(),
     worker: workerSchema,
@@ -200,25 +204,28 @@ export function keyValues(stdout: string) {
   return values;
 }
 
-/** The guest at one moment: directory, file digest, boot id, each process's pid:start, heartbeat. */
+/** The guest at one moment: directory, file, boot id, each process's identity, heartbeat. */
 export const snapshotCommand = (dir: string) =>
   [
     identityFunction,
     `echo "boot=$(${bootIdCommand})"`,
     `if [ -d ${quote(dir)} ]; then echo dir=1; else echo dir=0; fi`,
-    `echo "sha=$(sha256sum ${quote(`${dir}/data.bin`)} 2>/dev/null | cut -d' ' -f1)"`,
+    `f=${quote(`${dir}/data.bin`)}`,
+    `if [ -f "$f" ]; then echo file=present; echo "size=$(wc -c < "$f" 2>/dev/null)"; echo "sha=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)"; elif [ -d ${quote(dir)} ] || [ ! -e ${quote(dir)} ]; then echo file=absent; else echo file=unknown; fi`,
     `echo "worker=$(identity ${quote(`${dir}/worker.pid`)} ${quote(dir)})"`,
     `echo "server=$(identity ${quote(`${dir}/server.pid`)} ${quote(dir)})"`,
     `echo "beat=$(cat ${quote(`${dir}/worker.beat`)} 2>/dev/null)"`,
+    "echo snapshot=done",
   ].join("\n");
 
 export interface GuestSnapshot {
   readonly dirExists: boolean;
+  readonly file: "present" | "absent" | "unknown";
+  readonly size: number | null;
   readonly sha: string | null;
   readonly boot: string | null;
-  /** `pid:start` of a live, owned, non-zombie process; null when there is none. */
-  readonly worker: string | null;
-  readonly server: string | null;
+  readonly worker: Seen;
+  readonly server: Seen;
   readonly beat: number | null;
 }
 
@@ -226,8 +233,11 @@ export interface GuestSnapshot {
 export function parseSnapshot(stdout: string): GuestSnapshot | null {
   const values = keyValues(stdout);
   const dir = values.get("dir");
+  const file = values.get("file");
 
-  if (!values.has("boot") || (dir !== "0" && dir !== "1") || !values.has("beat")) return null;
+  if (values.get("snapshot") !== "done" || (dir !== "0" && dir !== "1")) return null;
+
+  if (file !== "present" && file !== "absent" && file !== "unknown") return null;
 
   const text = (key: string) => {
     const value = values.get(key);
@@ -235,20 +245,36 @@ export function parseSnapshot(stdout: string): GuestSnapshot | null {
     return value === undefined || value === "" || value === "unknown" ? null : value;
   };
 
-  const beat = text("beat");
+  const count = (key: string) => {
+    const value = text(key);
+
+    return value !== null && /^\d+$/.test(value) ? Number(value) : null;
+  };
 
   return {
     dirExists: dir === "1",
+    file,
+    size: count("size"),
     sha: text("sha"),
     boot: text("boot"),
-    worker: text("worker"),
-    server: text("server"),
-    beat: beat !== null && /^\d+$/.test(beat) ? Number(beat) : null,
+    worker: parseSeen(values.get("worker")),
+    server: parseSeen(values.get("server")),
+    beat: count("beat"),
   };
 }
 
-const pidOf = (identity: string | null) =>
-  identity === null ? null : Number(identity.split(":")[0]);
+const same = (a: Seen, b: Seen) => a.kind === "alive" && b.kind === "alive" && a.id === b.id;
+
+const pidOf = (seen: Seen) => (seen.kind === "alive" ? Number(seen.id.split(":")[0]) : null);
+
+/**
+ * Host seconds between the two snapshots' samples, bounded: at least from the first snapshot's
+ * reply to the second's request, at most from the first's request to the second's reply.
+ */
+export interface Window {
+  readonly minS: number;
+  readonly maxS: number;
+}
 
 /** Judges what survived from the snapshots around the pause and the server probe after resume. */
 export function judgeSurvival(input: {
@@ -257,17 +283,20 @@ export function judgeSurvival(input: {
   readonly later: GuestSnapshot;
   readonly token: string;
   readonly probe: Probe | null;
-  /** Host seconds between the before and after snapshots. */
-  readonly elapsedS: number;
+  readonly window: Window;
   readonly holdMs: number;
+  /** The pause and resume calls' own time, when a freeze cannot be told from the hold. */
+  readonly callsMs: number;
 }) {
-  const { before, after, later, token, probe, elapsedS, holdMs } = input;
-  const filesystem = after.dirExists && before.sha !== null && after.sha === before.sha;
+  const { before, after, later, token, probe, window, holdMs, callsMs } = input;
+  const holdS = holdMs / 1000;
+
+  const fileLost =
+    !after.dirExists || after.file === "absent" || (after.sha !== null && after.sha !== before.sha);
+
+  const filesystem = after.dirExists && after.file === "present" && after.sha === before.sha;
   const bootSame = before.boot === null || after.boot === null ? null : before.boot === after.boot;
-
-  const workerSame =
-    before.worker !== null && after.worker === before.worker && later.worker === before.worker;
-
+  const workerSame = same(before.worker, after.worker) && same(before.worker, later.worker);
   const advancing = later.beat !== null && after.beat !== null && later.beat > after.beat;
 
   const beatsDuringHold =
@@ -275,22 +304,27 @@ export function judgeSurvival(input: {
       ? after.beat - before.beat
       : null;
 
-  const missedBeats =
-    beatsDuringHold === null ? null : Math.round((elapsedS - beatsDuringHold) * 10) / 10;
+  const missed =
+    beatsDuringHold === null
+      ? null
+      : {
+          min: Math.round((window.minS - beatsDuringHold) * 10) / 10,
+          max: Math.round((window.maxS - beatsDuringHold) * 10) / 10,
+        };
 
   const body = probe?.ok ? probe.body : null;
 
   const sameProcess =
-    body !== null && body.pid === pidOf(before.server) && after.server === before.server;
+    body !== null && body.pid === pidOf(before.server) && same(before.server, after.server);
 
   const sameToken = sameProcess && body?.token === token;
   const memoryIntact = sameToken && body !== null && body.digestNow === body.digestAtStart;
 
   const worker = {
     same: workerSame,
-    gone: after.worker === null,
+    gone: after.worker.kind === "gone",
     beatsDuringHold,
-    missedBeats,
+    missedBeats: missed,
     advancing,
   };
 
@@ -299,11 +333,10 @@ export function judgeSurvival(input: {
     sameProcess,
     sameToken,
     memoryIntact,
-    gone: body === null && after.server === null,
+    gone: body === null && after.server.kind === "gone",
   };
 
   const shared = { filesystem, bootSame, worker, server };
-  const holdS = holdMs / 1000;
 
   const judged = (verdict: (typeof verdicts)[number], reason: string | null = null) => ({
     verdict,
@@ -311,7 +344,9 @@ export function judgeSurvival(input: {
     ...shared,
   });
 
-  if (!filesystem) return judged("files-lost");
+  if (fileLost) return judged("files-lost");
+
+  if (!filesystem) return judged("inconclusive", "the file could not be read");
 
   if (bootSame === false) return judged("cold-restart");
 
@@ -320,16 +355,19 @@ export function judgeSurvival(input: {
   if (!(workerSame && advancing && memoryIntact))
     return judged(
       "inconclusive",
-      `worker ${workerSame ? (advancing ? "kept" : "kept but stuck") : worker.gone ? "gone" : "changed"}, server ${memoryIntact ? "kept" : server.gone ? "gone" : server.answered ? "answered with other state" : "alive but not answering"}`,
+      `worker ${workerSame ? (advancing ? "kept" : "kept but not beating") : after.worker.kind}, server ${memoryIntact ? "kept" : server.gone ? "gone" : server.answered ? "answered with other state" : "not answering"}`,
     );
 
-  if (missedBeats === null) return judged("inconclusive", "no heartbeat count across the hold");
+  if (missed === null) return judged("inconclusive", "no heartbeat count across the hold");
 
-  if (missedBeats >= holdS * 0.8) return judged("in-ram");
+  if (missed.min >= holdS * 0.8 && callsMs / 1000 <= holdS * 0.2) return judged("in-ram");
 
-  if (missedBeats <= holdS * 0.2) return judged("kept-running");
+  if (missed.max <= holdS * 0.2) return judged("kept-running");
 
-  return judged("inconclusive", `the worker missed ${missedBeats} of the ${holdS} s hold`);
+  return judged(
+    "inconclusive",
+    `the worker missed ${missed.min} to ${missed.max} s of heartbeats around a ${holdS} s hold with ${Math.round(callsMs / 100) / 10} s of pause and resume calls`,
+  );
 }
 
 async function timed<T>(action: () => Promise<T>) {
@@ -393,12 +431,15 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
   const pidfile = quote(`${dir}/server.pid`);
   const serverLog = quote(`${dir}/server.log`);
 
+  /** A snapshot with the host times its request left and its reply came back. */
   const snapshot = async () => {
+    const askedAt = performance.now();
     const parsed = parseSnapshot((await context.exec(box, snapshotCommand(dir), 60_000)).stdout);
+    const answeredAt = performance.now();
 
     if (parsed === null) throw new CheckStop("A guest snapshot did not complete");
 
-    return parsed;
+    return { ...parsed, askedAt, answeredAt };
   };
 
   await context.exec(box, `mkdir -p ${quote(dir)}`, 60_000);
@@ -414,7 +455,7 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
         box,
         [
           `cd ${quote(dir)} || exit 1`,
-          `head -c ${options.fileMiB * 1_048_576} /dev/urandom > data.bin && sync`,
+          `head -c ${options.fileMiB * 1_048_576} /dev/urandom > data.bin && sync || exit 3`,
           detached(`exec ${run} serve ${port} ${pidfile} ${nonce}`, `${dir}/server.log`),
           detached(worker, `${dir}/worker.log`),
           `${run} probe ${port} ${probeMs} ${nonce}`,
@@ -487,12 +528,13 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
     if (!serving?.ok || !serving.body)
       throw new CheckStop("The server stopped answering before the pause");
     const before = await snapshot();
-    const beforeAt = performance.now();
 
     if (
+      before.file !== "present" ||
+      before.size !== options.fileMiB * 1_048_576 ||
       before.sha === null ||
-      before.worker === null ||
-      before.server === null ||
+      before.worker.kind !== "alive" ||
+      before.server.kind !== "alive" ||
       before.beat === null
     )
       throw new CheckStop(`The baseline is incomplete: ${JSON.stringify(before)}`);
@@ -528,18 +570,18 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
     let probe = await probeServer(quickProbeMs);
     let servingMs = probe?.ok ? Math.round(performance.now() - resumedAt) : null;
     const after = await snapshot();
-    const elapsedS = (performance.now() - beforeAt) / 1000;
     let serverRestarted = false;
+    let coldServeMs: number | null = null;
 
     // Still alive but slow to answer: give it longer before judging.
-    if (!probe?.ok && after.server !== null) {
+    if (!probe?.ok && after.server.kind === "alive") {
       probe = await probeServer(resumedProbeMs);
       servingMs = probe?.ok ? Math.round(performance.now() - resumedAt) : null;
     }
 
     // A confirmed-gone server is the cold path an agent would take: start it again. Serving is then
     // the first command plus the guest-timed restart, leaving out the harness's own checks.
-    if (!probe?.ok && after.server === null) {
+    if (!probe?.ok && after.server.kind === "gone") {
       serverRestarted = true;
 
       const again = parseProbe(
@@ -552,7 +594,7 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
         ).stdout,
       );
 
-      servingMs = again?.ok ? Math.round(answered.ms + again.ms) : null;
+      coldServeMs = again?.ok ? Math.round(answered.ms + again.ms) : null;
     }
 
     await sleep(2_500, undefined, { signal: context.signal });
@@ -564,12 +606,16 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
       later,
       token: serving.body.token,
       probe,
-      elapsedS,
+      window: {
+        minS: (after.askedAt - before.answeredAt) / 1000,
+        maxS: (after.answeredAt - before.askedAt) / 1000,
+      },
       holdMs: options.holdMs,
+      callsMs: pauseMs + resumeMs,
     });
 
     context.say(
-      `resume: ${judged.verdict}${judged.reason ? ` (${judged.reason})` : ""}; first command ${answered.ms} ms, serving ${servingMs ?? "?"} ms`,
+      `resume: ${judged.verdict}${judged.reason ? ` (${judged.reason})` : ""}; first command ${answered.ms} ms, serving ${servingMs ?? coldServeMs ?? "?"} ms`,
     );
 
     return {
@@ -582,6 +628,7 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
         firstCommandMs: answered.ms,
         servingMs,
         serverRestarted,
+        coldServeMs,
         ...judged,
       },
     };
