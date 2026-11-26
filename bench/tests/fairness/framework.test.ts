@@ -29,6 +29,7 @@ function fakeBox(id: string, behavior: { destroyFails?: boolean } = {}) {
 
   const box: Box = {
     id,
+    suspend: { kind: "none", reason: "fake" },
     run: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", timedOut: false }),
     write: async () => {},
     lookup: async () => ({

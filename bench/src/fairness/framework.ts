@@ -24,10 +24,11 @@ import { join } from "node:path";
 import { createSandbox, type CreateOptions } from "@opencoredev/sandbox-sdk";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import { z } from "zod";
-import { lookupSandbox, type LookupEvidence } from "../existence.js";
+import { isAbsent, lookupSandbox, type LookupEvidence } from "../existence.js";
 import { isMissingFile } from "../files.js";
 import { loadProvider } from "../providers.js";
 import { collectMetadata } from "../publication.js";
+import { managedIdleCapabilities } from "../realistic/idle.js";
 import { providerSetups, type ProviderSetup } from "../realistic/setup.js";
 import { labelsFor, listedLeftovers, type Attempt } from "../sustained-cpu.js";
 import { deadline } from "../timing.js";
@@ -46,6 +47,8 @@ export const checkIds = [
   "disk-real",
   "cpu-native",
   "cpu-burst-10",
+  "state-survival",
+  "memory-pressure",
 ] as const;
 
 export const checkIdSchema = z.enum(checkIds);
@@ -57,6 +60,7 @@ const destroyTimeoutMs = 120_000;
 const destroyAttempts = 3;
 const destroyRetryDelayMs = 5_000;
 const listTimeoutMs = 60_000;
+const lookupTimeoutMs = 30_000;
 /** How long cleanup waits for creates still in flight past their deadline. */
 
 const lateCreateWaitMs = 5 * 60_000;
@@ -80,8 +84,18 @@ export interface RunOptions {
   readonly signal: AbortSignal;
 }
 
+/** How a sandbox can be suspended with its state: the adapter's pause and resume, or nothing. */
+export type Suspend =
+  | {
+      readonly kind: "pause";
+      pause(): Promise<void>;
+      resume(): Promise<void>;
+    }
+  | { readonly kind: "none"; readonly reason: string };
+
 export interface Box {
   readonly id: string;
+  readonly suspend: Suspend;
   run(command: string, options: RunOptions): Promise<CommandResult>;
   write(path: string, data: Uint8Array): Promise<void>;
   /** The provider's exact, read-only lookup of this sandbox; never runs anything in it. */
@@ -136,9 +150,18 @@ export const openLiveSession: OpenSession = async (setup, plan) => {
         // Upstash, Superserve and Boat refuse `timeoutMs`; every other adapter gets the lifetime.
         if (setup.lifetime) options.timeoutMs = plan.lifetimeMs;
         const sandbox = await createSandbox(provider, options);
+        const { pause, resume } = provider;
 
         return {
           id: sandbox.id,
+          suspend:
+            managedIdleCapabilities(provider).pause && pause && resume
+              ? {
+                  kind: "pause",
+                  pause: () => pause.call(provider, sandbox.id),
+                  resume: () => resume.call(provider, sandbox.id),
+                }
+              : { kind: "none", reason: "No pause and resume in the adapter" },
           run: async (command, options) => {
             const result = await sandbox.run(command, { cwd: "/", ...options });
 
@@ -287,6 +310,13 @@ export const logLineSchema = z.discriminatedUnion("kind", [
     ok: z.boolean(),
     attempts: z.number().int().nonnegative(),
     error: z.string().nullable(),
+    at: z.string(),
+  }),
+  z.object({
+    kind: z.literal("lookup"),
+    sandboxId: z.string(),
+    /** The provider's exact lookup, or the error text when it threw. */
+    evidence: z.union([z.string(), jsonSchema]),
     at: z.string(),
   }),
   z.object({
@@ -807,6 +837,9 @@ async function attempt<R>(input: {
       say,
     });
 
+    // A check that returns after the run was interrupted measured something the interrupt (or the
+    // cleanup it set off) may have changed, so its result is never published.
+    dependencies.signal.throwIfAborted();
     result = check.resultSchema.parse(raw);
     status = "completed";
   } catch (cause) {
@@ -884,6 +917,7 @@ async function cleanUp(input: {
 }): Promise<Cleanup> {
   const { boxes, session, log, say, delay } = input;
   const known = new Set(boxes.map((entry) => entry.box.id));
+  const byId = new Map(boxes.map((entry) => [entry.box.id, entry.box]));
   const problems: string[] = [];
 
   const destroyBox = async (box: Box) => {
@@ -913,6 +947,7 @@ async function cleanUp(input: {
           late = true;
           await log({ kind: "sandbox", id: box.id, createS: -1, at: now() });
           say(`late create returned ${box.id}; destroying`);
+          byId.set(box.id, box);
           const id = await destroyBox(box);
 
           if (id !== null) failed.push(id);
@@ -944,29 +979,83 @@ async function cleanUp(input: {
           error: [...problems, ...failed.map((id) => `${id} did not destroy`)].join("; "),
         };
 
-  let error = await sweep({ session, failed, log, say, delay });
+  const first = await sweep({ session, failed, log, say, delay });
+  let { listError } = first;
+  const swept = new Set(first.destroyed);
+  const stuck = new Map(first.undestroyed.map((entry) => [entry.id, entry.error]));
 
-  if (error === null && (late || input.createFailed || stillPending > 0)) {
+  if (listError === null && stuck.size === 0 && (late || input.createFailed || stillPending > 0)) {
     await sleep(input.lateSweepDelayMs);
-    error = await sweep({ session, failed: [], log, say, delay });
+    const second = await sweep({ session, failed: [], log, say, delay });
+    listError = second.listError;
+
+    for (const id of second.destroyed) swept.add(id);
+
+    for (const entry of second.undestroyed) stuck.set(entry.id, entry.error);
   }
 
-  if (error !== null) problems.push(error);
+  if (listError !== null) problems.push(listError);
 
-  // A sandbox whose destroy failed is gone when the listing no longer shows it or the sweep got it.
+  // A listing can miss a sandbox whose destroy failed (a paused one may not show its labels), and a
+  // delete can fail on a sandbox already going, so each destroy that failed, directly or in a
+  // sweep, is settled by the provider's exact lookup.
+  for (const id of new Set([...failed, ...stuck.keys()])) {
+    if (swept.has(id)) continue;
+    const box = byId.get(id);
+
+    const failure = stuck.has(id)
+      ? `Could not destroy ${id} (${stuck.get(id)})`
+      : `${id}'s destroy failed`;
+
+    if (box === undefined) problems.push(failure);
+    else if (!(await confirmGone(box, delay, log)))
+      problems.push(`${failure}; it may still exist, as no exact lookup found it gone`);
+  }
+
   return problems.length === 0
     ? { destroyed: true, error: null }
     : { destroyed: false, error: problems.join("; ") };
 }
 
-/** Lists the attempt's sandboxes and destroys any left. Returns null only when all are gone. */
+/** An exact lookup; when the sandbox is still there, one more destroy, then a second lookup if it failed. */
+async function confirmGone(box: Box, delay: number, log: QuietLog) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const looked = await box.lookup(lookupTimeoutMs).then(
+      (evidence) => ({ evidence, gone: isAbsent(evidence) }),
+      (cause: unknown) => ({ evidence: errorText(cause), gone: false }),
+    );
+
+    await log({ kind: "lookup", sandboxId: box.id, evidence: looked.evidence, at: now() });
+
+    if (looked.gone) return true;
+
+    if (attempt === 1) {
+      const outcome = await destroyWithRetry(() => box.destroy(), delay);
+      await log({ kind: "destroy", sandboxId: box.id, ...outcome, at: now() });
+
+      // A confirmed delete counts here as it does everywhere else.
+      if (outcome.ok) return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Lists the attempt's sandboxes and destroys any left. `listError` is set when the listing failed;
+ * `undestroyed` holds each listed sandbox whose delete failed.
+ */
 async function sweep(input: {
   readonly session: Session;
   readonly failed: readonly string[];
   readonly log: QuietLog;
   readonly say: (text: string) => void;
   readonly delay: number;
-}): Promise<string | null> {
+}): Promise<{
+  readonly listError: string | null;
+  readonly destroyed: readonly string[];
+  readonly undestroyed: readonly { readonly id: string; readonly error: string }[];
+}> {
   const { session, failed, log, say, delay } = input;
   let found: string[];
 
@@ -977,26 +1066,30 @@ async function sweep(input: {
     await log({ kind: "sweep", found: [], destroyed: [], error, at: now() });
     say(`SWEEP FAILED: ${error}`);
 
-    return error;
+    return { listError: error, destroyed: [], undestroyed: [] };
   }
 
   const destroyed: string[] = [];
-  const failures: string[] = [];
+  const undestroyed: { id: string; error: string }[] = [];
 
   for (const id of found) {
     const outcome = await destroyWithRetry(() => session.destroyById(id), delay);
 
     if (outcome.ok) destroyed.push(id);
-    else failures.push(`${id} (${outcome.error ?? "unknown error"})`);
+    else undestroyed.push({ id, error: outcome.error ?? "unknown error" });
   }
 
-  const error = failures.length === 0 ? null : `Could not destroy ${failures.join("; ")}`;
+  const error =
+    undestroyed.length === 0
+      ? null
+      : `Could not destroy ${undestroyed.map((entry) => `${entry.id} (${entry.error})`).join("; ")}`;
+
   await log({ kind: "sweep", found, destroyed, error, at: now() });
 
   if (error !== null) say(`SWEEP FAILED: ${error}`);
   else if (found.length > 0) say(`sweep found ${found.join(", ")}; destroyed ${destroyed.length}`);
 
-  return error;
+  return { listError: null, destroyed, undestroyed };
 }
 
 const round = (value: number, places: number) => {
