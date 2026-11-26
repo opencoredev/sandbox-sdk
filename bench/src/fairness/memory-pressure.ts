@@ -94,6 +94,23 @@ const pollTimeoutMs = 20_000;
 /** A canary beat older than this (guest seconds) means the canary is stuck, not alive. */
 const freshBeatS = 5;
 
+/** The canary after the hog, judged against the one seen before it started. */
+function canaryOf(after: Map<string, string>, beforeId: string) {
+  const seen = parseSeen(after.get("canary"));
+  const now = after.get("now") ?? "";
+  const beat = after.get("canaryBeat") ?? "";
+  const beatAgeS = /^\d+$/.test(now) && /^\d+$/.test(beat) ? Number(now) - Number(beat) : null;
+
+  if (seen.kind === "gone") return { kind: "gone" as const, beatAgeS };
+
+  if (seen.kind !== "alive" || seen.id !== beforeId) return { kind: "unknown" as const, beatAgeS };
+
+  return {
+    kind: beatAgeS !== null && beatAgeS <= freshBeatS ? ("alive" as const) : ("stale" as const),
+    beatAgeS,
+  };
+}
+
 const progressSchema = z.object({ mib: z.number().int(), ms: z.number().int() });
 
 const outcomeSchema = z.discriminatedUnion("kind", [
@@ -122,6 +139,9 @@ const healthSchema = z.object({
   recoveredAfterMs: z.number().nullable(),
   bootSame: z.boolean().nullable(),
   canaryAlive: z.boolean().nullable(),
+  /** What the last read saw: the same process beating, gone, alive but not beating, or unreadable. */
+  canary: z.enum(["alive", "gone", "stale", "unknown"]).nullable(),
+  canaryBeatAgeS: z.number().nullable(),
   allocOk: z.boolean().nullable(),
   fileOk: z.boolean().nullable(),
 });
@@ -511,6 +531,19 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
           ? Math.max(0, oomAfter - oomBefore)
           : null;
 
+      // A canary the thrashing starved can take a few seconds to beat again once the hog is gone.
+      for (
+        let tries = 0;
+        ended && tries < 4 && canaryOf(after, canaryBefore.id).kind === "stale";
+        tries++
+      ) {
+        await sleep(2_000, undefined, { signal: context.signal });
+        const again = await context.exec(box, healthCommand(dir), 60_000).catch(() => null);
+
+        if (again === null) break;
+        after = new Map([...after, ...keyValues(again.stdout)]);
+      }
+
       const alloc = !ended
         ? null
         : await context
@@ -539,20 +572,11 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     const bootSame =
       !answered || bootAfter === "" || bootAfter === "unknown" ? null : bootAfter === boot;
 
-    const canaryNow = parseSeen(after.get("canary"));
-    const beatAge = Number(after.get("now")) - Number(after.get("canaryBeat"));
-
     // Alive needs the same process and a fresh beat; gone needs it confirmed gone; else unknown.
-    const canaryAlive = !answered
-      ? null
-      : canaryNow.kind === "gone"
-        ? false
-        : canaryNow.kind === "alive" &&
-            canaryNow.id === canaryBefore.id &&
-            Number.isFinite(beatAge) &&
-            beatAge <= freshBeatS
-          ? true
-          : null;
+    const canaryAfter = answered ? canaryOf(after, canaryBefore.id) : null;
+
+    const canaryAlive =
+      canaryAfter?.kind === "alive" ? true : canaryAfter?.kind === "gone" ? false : null;
 
     const log = parseHogLog(logText);
     const outcome = judgePressure({ ending: polled.ending, log, oomDelta, bootSame });
@@ -579,6 +603,8 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
         recoveredAfterMs: polled.recoveredAfterMs,
         bootSame,
         canaryAlive,
+        canary: canaryAfter?.kind ?? null,
+        canaryBeatAgeS: canaryAfter?.beatAgeS ?? null,
         allocOk,
         fileOk,
       },

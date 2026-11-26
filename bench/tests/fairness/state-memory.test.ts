@@ -599,9 +599,11 @@ describe.runIf(linux && available.length > 0)(
         answered: true,
         bootSame: true,
         canaryAlive: true,
+        canary: "alive",
         allocOk: true,
         fileOk: true,
       });
+      expect(result.health.canaryBeatAgeS).toBeLessThanOrEqual(5);
     }, 60_000);
 
     it("memory-pressure calls a sandbox lost only when the lookup confirms it, keeping the last progress seen", async () => {
