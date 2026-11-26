@@ -26,12 +26,19 @@ import { composeDownMs, deadlineGraceMs, runServicesAttempt } from "./attempt.js
 import { SpendGuard, parseProviderCaps } from "./budget.js";
 import {
   attemptRecordSchema,
+  projectEventSchema,
   projectOpen,
   servicePathSchema,
   type AttemptRecord,
   type ServicePath,
 } from "./record.js";
-import { servicesSiteData, summaryMarkdown, type NotRun, type RunInfo } from "./summary.js";
+import {
+  servicesSiteData,
+  summaryMarkdown,
+  type Missing,
+  type NotRun,
+  type RunInfo,
+} from "./summary.js";
 
 export const recordsFile = "services-attempts.jsonl";
 const ownedFile = "owned.jsonl";
@@ -66,15 +73,23 @@ const runInfoSchema = z.object({
   endedAt: z.string().nullable(),
   location: z.string(),
   settings: z.record(z.string(), z.string()),
-  /** The run's effective timing settings; null in runs from before they were recorded. */
+  /** The run's effective timing settings and placement; null in runs from before they were recorded. */
   conditions: z
-    .object({ attemptTimeoutMs: z.number(), daemonReadyMs: z.number() })
+    .object({
+      attemptTimeoutMs: z.number(),
+      daemonReadyMs: z.number(),
+      /** Per provider: each placement variable its adapter reads, and its value (null when unset). */
+      placement: z.record(z.string(), z.record(z.string(), z.string().nullable())).default({}),
+    })
     .nullable()
     .default(null),
   artifacts: z.object({ node: z.string(), fixture: z.string(), native: z.string() }),
 });
 
 const ownedSchema = z.object({ provider: z.string(), id: z.string(), attemptId: z.string() });
+
+/** projects.jsonl: each Compose project claim before `up`, and the line that resolves it. */
+const projectsFile = "projects.jsonl";
 
 /** submissions.jsonl: one line just before each create request. */
 const submissionsFile = "submissions.jsonl";
@@ -92,7 +107,31 @@ const runFileSchema = runInfoSchema.extend({
   ownerLabel: z.string().min(1).optional(),
   /** Providers the run admitted, so a later sweep knows where to look. */
   providers: z.array(z.string()).optional(),
+  /** What the run set out to do: every admitted provider, each path, attempts 1..attempts. */
+  plan: z
+    .object({ paths: z.array(servicePathSchema), attempts: z.number().int().positive() })
+    .nullable()
+    .default(null),
+  /**
+   * How the run ended: `complete` only when every planned attempt has a result and nothing stopped
+   * admission; `stopped` (budget, signal, an unreconciled deletion, a provider stopped early) or
+   * `failed` (a worker error) otherwise. `running` until the run finalizes, so a folder left by a
+   * crash says so.
+   */
+  disposition: z.enum(["running", "complete", "stopped", "failed"]).default("running"),
 });
+
+/**
+ * Placement variables each adapter reads (packages/sdk providers), recorded per provider so runs
+ * placed differently are never pooled. Region values, never secrets.
+ */
+const placementEnv = new Map([
+  ["modal", ["MODAL_SANDBOX_REGION"]],
+  ["daytona", ["DAYTONA_TARGET"]],
+  ["buddy", ["BUDDY_REGION"]],
+  ["archil", ["ARCHIL_REGION"]],
+  ["sandboxer", ["SANDBOXER_REGION"]],
+]);
 
 /** A file's text; null only when it does not exist, so a real read error is never an empty file. */
 async function readText(path: string): Promise<string | null> {
@@ -248,14 +287,37 @@ async function unconfirmedOwned(
   for (const provider of unknownAttempts.values())
     unresolved.set(provider, (unresolved.get(provider) ?? 0) + 1);
 
+  // Project claims journaled before `up`, even when the attempt row never reached the disk.
+  const projects = await readJournal(join(out, projectsFile), projectEventSchema);
+  const claims = new Map<string, (typeof projects.items)[number]>();
+  const key = (e: { attemptId: string; daemon: string }) => `${e.attemptId} ${e.daemon}`;
+
+  for (const event of projects.items)
+    if (event.state === "pending") claims.set(key(event), event);
+    else claims.delete(key(event));
+
+  const pending = [...claims.values()];
+
   return {
     known,
     unresolved,
-    /** Attempts whose Compose project obligation no sandbox deletion resolves. */
-    openProjects: records.items.flatMap((r) => (projectOpen(r) ? [r.attemptId] : [])),
-    unreadable: owned.bad + records.bad + submissions.bad,
+    /**
+     * Attempts whose Compose project obligation no sandbox deletion resolves: an open project in
+     * its row, or a claim on a daemon that was already there with no line resolving it.
+     */
+    openProjects: [
+      ...new Set([
+        ...records.items.flatMap((r) => (projectOpen(r) ? [r.attemptId] : [])),
+        ...pending.flatMap((c) => (c.provenance === "as-found" ? [c.attemptId] : [])),
+      ]),
+    ],
+    /** Unresolved claims on daemons launched inside their sandbox: a clean sweep resolves them. */
+    launchedProjects: [
+      ...new Set(pending.flatMap((c) => (c.provenance === "launched" ? [c.attemptId] : []))),
+    ],
+    unreadable: owned.bad + records.bad + submissions.bad + projects.bad,
     /** Journals that exist but could not be read: what they held is unknown. */
-    unreadableFiles: [owned.error, records.error, submissions.error].filter(
+    unreadableFiles: [owned.error, records.error, submissions.error, projects.error].filter(
       (error): error is string => error !== null,
     ),
   };
@@ -424,7 +486,20 @@ async function run(args: string[]) {
     location: values.location,
     // Per provider: the setting applies to that provider's rows only.
     settings: modalRuntime ? { modal: `runtime=${modalRuntime}` } : {},
-    conditions: { attemptTimeoutMs: timeoutMs, daemonReadyMs },
+    conditions: {
+      attemptTimeoutMs: timeoutMs,
+      daemonReadyMs,
+      placement: Object.fromEntries(
+        setups.map((s) => [
+          s.name,
+          Object.fromEntries(
+            (placementEnv.get(s.adapter) ?? []).map((name) => [name, process.env[name] ?? null]),
+          ),
+        ]),
+      ),
+    },
+    plan: { paths, attempts },
+    disposition: "running",
     artifacts: {
       node: artifacts.node.sha256,
       fixture: artifacts.fixture.sha256,
@@ -609,6 +684,11 @@ async function run(args: string[]) {
                 join(out, submissionsFile),
                 `${JSON.stringify({ provider, attemptId: id, sent: false, at: new Date().toISOString() })}\n`,
               ),
+            onProject: (event) =>
+              appendFile(
+                join(out, projectsFile),
+                `${JSON.stringify({ ...event, at: new Date().toISOString() })}\n`,
+              ),
             onSandbox: async (provider, id) => {
               live.set(provider, (live.get(provider) ?? new Set()).add(id));
               await appendFile(
@@ -682,6 +762,7 @@ async function run(args: string[]) {
   };
 
   const queue = [...entries];
+  let disposition: "complete" | "stopped" | "failed" = "failed";
 
   try {
     // A worker that fails stops admission everywhere; the others finish their attempt, and the
@@ -701,7 +782,21 @@ async function run(args: string[]) {
       }),
     );
 
-    if (results.some((r) => r.status === "rejected")) process.exitCode = 1;
+    const failed = results.some((r) => r.status === "rejected");
+
+    if (failed) process.exitCode = 1;
+
+    const planned = entries.flatMap(({ entry }) =>
+      paths.flatMap((path) =>
+        Array.from({ length: attempts }, (_, i) => `${entry.name}-${path}-${i + 1}`),
+      ),
+    );
+
+    disposition = failed
+      ? "failed"
+      : !stopping && planned.every((id) => done.has(id))
+        ? "complete"
+        : "stopped";
   } finally {
     const { known, unresolved, unreadable, unreadableFiles } = await unconfirmedOwned(
       out,
@@ -782,7 +877,7 @@ async function run(args: string[]) {
 
     await writeFile(
       join(out, "run.json"),
-      `${JSON.stringify({ ...info, providers: entries.map((e) => e.entry.name), endedAt: new Date().toISOString() }, null, 2)}\n`,
+      `${JSON.stringify({ ...info, providers: entries.map((e) => e.entry.name), endedAt: new Date().toISOString(), disposition }, null, 2)}\n`,
     );
     const spend = guard.state();
     process.stdout.write(
@@ -795,7 +890,19 @@ async function run(args: string[]) {
     }
 
     const journaled = await unconfirmedOwned(out, live, unknownLive, done);
-    failOnOpenProjects([...new Set([...projectsOpen, ...journaled.openProjects])], notesPath);
+    // A claim on a daemon launched inside its sandbox is resolved only by a sweep that left nothing.
+    const clean = !swept.failed && !swept.undeleted && !swept.unchecked;
+
+    failOnOpenProjects(
+      [
+        ...new Set([
+          ...projectsOpen,
+          ...journaled.openProjects,
+          ...(clean ? [] : journaled.launchedProjects),
+        ]),
+      ],
+      notesPath,
+    );
   }
 }
 
@@ -818,6 +925,8 @@ async function summary(args: string[]) {
     options: {
       out: { type: "string", multiple: true },
       to: { type: "string" },
+      /** Publish runs that did not complete, listing every planned attempt without a result. */
+      partial: { type: "boolean", default: false },
     },
   });
 
@@ -830,14 +939,50 @@ async function summary(args: string[]) {
   const records: AttemptRecord[] = [];
   const notRun: NotRun[] = [];
 
+  const missing: Missing[] = [];
+  const incomplete: string[] = [];
+
   for (const dir of dirs) {
-    const run = runInfoSchema.parse(JSON.parse(await readFile(join(dir, "run.json"), "utf8")));
+    const run = runFileSchema.parse(JSON.parse(await readFile(join(dir, "run.json"), "utf8")));
+    const rows = await readRecords(join(dir, recordsFile));
     runs.push(run);
-    records.push(...(await readRecords(join(dir, recordsFile))));
+    records.push(...rows);
     notRun.push(...(await readNotRun(dir, run.id)));
+
+    // Every planned attempt needs a result: a run cut short publishes a smaller sample.
+    const have = new Set(rows.map((r) => r.attemptId));
+
+    const absent = (run.providers ?? []).flatMap((provider) =>
+      (run.plan?.paths ?? []).flatMap((path) =>
+        Array.from({ length: run.plan?.attempts ?? 0 }, (_, i) => ({
+          runId: run.id,
+          provider,
+          path,
+          attempt: i + 1,
+        })).filter((m) => !have.has(`${provider}-${path}-${m.attempt}`)),
+      ),
+    );
+
+    missing.push(...absent);
+
+    if (run.disposition !== "complete" || run.plan === null || absent.length)
+      incomplete.push(
+        `${run.id} (disposition ${run.disposition}${run.plan === null ? ", no attempt plan recorded" : ""}${absent.length ? `, ${absent.length} planned attempts without a result` : ""})`,
+      );
   }
 
-  const site = servicesSiteData({ records, runs, notRun });
+  if (incomplete.length && !values.partial)
+    throw new Error(
+      `Not every run completed: ${incomplete.join("; ")}. Rerun them, or pass --partial to publish what ran and list what did not.`,
+    );
+
+  const site = servicesSiteData({
+    records,
+    runs,
+    notRun,
+    partial: values.partial ? { incomplete, missing } : undefined,
+  });
+
   const first = dirs[0] ?? ".";
   const to = resolve(values.to ?? join(first, "services.json"));
   await writeFile(to, `${JSON.stringify(site, null, 2)}\n`);
@@ -875,7 +1020,7 @@ async function sweep(args: string[]) {
   const notesPath = join(out, "notes.jsonl");
   const note = bestEffortNotes(notesPath);
 
-  const { known, unresolved, unreadable, unreadableFiles, openProjects } =
+  const { known, unresolved, unreadable, unreadableFiles, openProjects, launchedProjects } =
     await unconfirmedOwned(out);
 
   for (const error of unreadableFiles) await note({ kind: "journal-unreadable", error });
@@ -937,13 +1082,16 @@ async function sweep(args: string[]) {
   const swept = await sweepRun({ label, entries, note, out, known });
   const unknownCreates = [...unresolved.values()].reduce((a, b) => a + b, 0);
   const unchecked = swept.unchecked + unreachable + unreadable + unreadableFiles.length;
+  // A claim on a daemon launched inside its sandbox is resolved only by a sweep that left nothing.
+  const clean = !swept.failed && !swept.undeleted && !unchecked;
+  const open = [...new Set([...openProjects, ...(clean ? [] : launchedProjects)])];
 
   process.stdout.write(
-    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, unreachable, unreadableJournalLines: unreadable, unreadableJournals: unreadableFiles.length, unresolvedCreates: unknownCreates, openProjects: openProjects.length })}; see ${notesPath}\n`,
+    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, unreachable, unreadableJournalLines: unreadable, unreadableJournals: unreadableFiles.length, unresolvedCreates: unknownCreates, openProjects: open.length })}; see ${notesPath}\n`,
   );
 
   if (swept.failed || swept.undeleted || unchecked || unknownCreates) process.exitCode = 1;
-  failOnOpenProjects(openProjects, notesPath);
+  failOnOpenProjects(open, notesPath);
 }
 
 export async function servicesCommand(args: string[]) {

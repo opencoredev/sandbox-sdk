@@ -142,6 +142,25 @@ export const metricsSchema = z.object({
 
 export type Metrics = z.infer<typeof metricsSchema>;
 
+/**
+ * One line of projects.jsonl. `pending` is written before `compose up` can create anything on
+ * that daemon; `down` after its `down` exited 0; `with-sandbox` after the sandbox's deletion
+ * was confirmed, for a daemon this attempt launched inside it. Recovery treats every pending claim
+ * without a later line as an obligation.
+ */
+export const projectEventSchema = z.object({
+  provider: z.string(),
+  attemptId: z.string(),
+  project: z.string(),
+  /** The daemon that holds it, as method/config. */
+  daemon: z.string(),
+  provenance: z.enum(["as-found", "launched"]),
+  sandboxId: z.string().nullable(),
+  state: z.enum(["pending", "down", "with-sandbox"]),
+});
+
+export type ProjectEvent = z.infer<typeof projectEventSchema>;
+
 export const projectCleanupSchema = z.enum(["none", "down", "with-sandbox", "open"]);
 
 export type ProjectCleanup = z.infer<typeof projectCleanupSchema>;

@@ -40,6 +40,7 @@ import {
   type Metrics,
   type Outcome,
   type ProjectCleanup,
+  type ProjectEvent,
   type Phase,
   type ServicePath,
   type Stage,
@@ -90,6 +91,11 @@ export interface ServicesEnvironment {
   onSubmit?(provider: string, attemptId: string): Promise<void>;
   /** Called when the attempt ended after `onSubmit` but before its create was sent. */
   onNotSent?(provider: string, attemptId: string): Promise<void>;
+  /**
+   * Journals the Compose project's obligation on a daemon (projects.jsonl): awaited before `up`,
+   * so a failed write stops the attempt before anything is created.
+   */
+  onProject?(event: ProjectEvent): Promise<void>;
   /** Receives the cleanup of a create that answers after the attempt returned; the run awaits it. */
   onLateCleanup?(work: Promise<void>): void;
   /** List-price estimate for a sandbox of this provider and track held this long. */
@@ -479,6 +485,11 @@ interface LadderInput {
   /** The socket that daemon serves, inside its own directory. */
   readonly socket: (dir: string) => string;
   readonly asRoot: boolean;
+  /**
+   * The daemon shares the guest's network namespace (rootful dockerd: `docker0` and firewall
+   * rules), so no two may run at once: each launch needs the one before it confirmed stopped.
+   */
+  readonly sharedNetwork: boolean;
 }
 
 interface DaemonConfig {
@@ -580,18 +591,27 @@ const noDaemonOnSocket = /ENOENT|ECONNREFUSED/;
  * is still that launch (its command line names `dir`, so a reused PID is left alone), TERM to its
  * root, then KILL to whatever of the tree, read before the TERM, is still there. Each process is
  * known by its PID and start time, and KILL goes only to one whose start time still matches.
+ * Prints STOPPED once none of that tree is alive (or the launch was already gone), SURVIVED when
+ * some of it still is, and NOPID when the launch never recorded its PID: only STOPPED confirms.
  */
 export const stopTree = (dir: string) =>
-  `p=$(cat ${dir}/launch.pid 2>/dev/null); [ -n "$p" ] || exit 0; tr '\\0' ' ' < /proc/"$p"/cmdline 2>/dev/null | grep -qF -- ${quote(dir)} || exit 0; st() { sed 's/.*) //' /proc/"$1"/stat 2>/dev/null | cut -d' ' -f20; }; t() { echo "$1:$(st "$1")"; for c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do t "$c"; done; }; all=$(t "$p"); kill -TERM "$p" 2>/dev/null; i=0; while [ $i -lt 20 ] && [ -d /proc/"$p" ]; do sleep 0.5; i=$((i + 1)); done; for e in $all; do q=\${e%%:*}; [ -n "\${e#*:}" ] && [ "$(st "$q")" = "\${e#*:}" ] && kill -KILL "$q" 2>/dev/null; done; true`;
+  `p=$(cat ${dir}/launch.pid 2>/dev/null); [ -n "$p" ] || { echo NOPID; exit 0; }; tr '\\0' ' ' < /proc/"$p"/cmdline 2>/dev/null | grep -qF -- ${quote(dir)} || { echo STOPPED; exit 0; }; st() { sed 's/.*) //' /proc/"$1"/stat 2>/dev/null | cut -d' ' -f20; }; up() { s=$(sed 's/.*) //' /proc/"$1"/stat 2>/dev/null | cut -d' ' -f1,20); [ -n "$2" ] && [ "\${s#* }" = "$2" ] && [ "\${s%% *}" != Z ] && [ "\${s%% *}" != X ]; }; t() { echo "$1:$(st "$1")"; for c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do t "$c"; done; }; all=$(t "$p"); kill -TERM "$p" 2>/dev/null; i=0; while [ $i -lt 20 ] && [ -d /proc/"$p" ]; do sleep 0.5; i=$((i + 1)); done; for e in $all; do up "\${e%%:*}" "\${e#*:}" && kill -KILL "\${e%%:*}" 2>/dev/null; done; j=0; while :; do left=; for e in $all; do up "\${e%%:*}" "\${e#*:}" && left=1; done; [ -z "$left" ] && { echo STOPPED; exit 0; }; [ $j -ge 10 ] && { echo SURVIVED; exit 0; }; sleep 0.2; j=$((j + 1)); done`;
 
 /**
- * Lists every dockerd or containerd this attempt did not launch (its command line does not name
- * the attempt's tool directory), one `pid:name` per line.
+ * Lists every dockerd or containerd running, one `pid:name` per line, and any PID still there
+ * whose name could not be read (`UNREADABLE:pid`), then `SCANNED <count>` exactly. Processes
+ * that exit during the scan are skipped.
  */
-const foreignDaemons = (tools: string) =>
-  `for p in /proc/[0-9]*; do c=$(cat "$p"/comm 2>/dev/null); case "$c" in dockerd|containerd) a=$(tr '\\0' ' ' < "$p"/cmdline 2>/dev/null); case "$a" in *${tools}/*) ;; *) echo "\${p#/proc/}:$c" ;; esac ;; esac; done; echo SCANNED`;
+const daemonScan = `n=0; for p in /proc/[0-9]*; do [ -d "$p" ] || continue; if ! c=$(cat "$p"/comm 2>/dev/null); then [ -d "$p" ] && echo "UNREADABLE:\${p#/proc/}"; continue; fi; n=$((n + 1)); case "$c" in dockerd|containerd) echo "\${p#/proc/}:$c" ;; esac; done; echo "SCANNED $n"`;
 
 /** One method of the ladder: tries it, or records the probe fact that rules it out. */
+/** The attempt a Compose project belongs to, as its journal names it. */
+interface ProjectOwner {
+  readonly provider: string;
+  readonly attemptId: string;
+  readonly sandboxId: string | null;
+}
+
 interface Rung {
   readonly method: DaemonMethod;
   readonly run: () => Promise<boolean>;
@@ -609,12 +629,22 @@ class Daemon {
   rungs: readonly Rung[] = [];
   /** The attempt's project was brought up on the chosen daemon, so it must come down there. */
   projectUsed = false;
+  /** Journals project claims (ServicesEnvironment.onProject); set by composePath. */
+  onProject: ((event: ProjectEvent) => Promise<void>) | null = null;
+  /** Whose project this is, for the journal; set by composePath. */
+  owner: ProjectOwner = { provider: "", attemptId: "", sandboxId: null };
+  /** Claims journaled as pending and not yet resolved. */
+  private claims: ProjectEvent[] = [];
   /** The ladder and config index that answered, so a storage failure can continue past it. */
   private resume: { input: LadderInput; index: number } | null = null;
   /** The rung whose daemon is in use, so a storage failure can go on to the methods after it. */
   private rung = -1;
   /** The daemon this attempt launched and is using: the only process it ever stops. */
-  private launched: { readonly dir: string; readonly asRoot: boolean } | null = null;
+  private launched: {
+    readonly dir: string;
+    readonly asRoot: boolean;
+    readonly sharedNetwork: boolean;
+  } | null = null;
   /** What this attempt fetched and verified into its own tool directory. */
   private readonly fetched = { static: false, rootless: false };
   /** The daemon's socket needs root: every docker and compose call goes through sudo. */
@@ -695,13 +725,16 @@ class Daemon {
   }
 
   /** Stop a daemon this attempt launched, by the PID its launch recorded; nothing else is signalled. */
-  private stop(dir: string, asRoot: boolean) {
+  /** True once that launch's whole process tree is confirmed gone (stopTree's STOPPED). */
+  private async stop(dir: string, asRoot: boolean): Promise<boolean> {
     const runner = asRoot && this.sudo ? this.sudo : "";
 
     // On its own bounded timer: a stalled stop never holds the next rung.
-    return this.within(this.g.mono() + 30_000, (signal) =>
+    const result = await this.within(this.g.mono() + 30_000, (signal) =>
       this.g.exec(`${runner}sh -c ${quote(stopTree(dir))}`, { timeoutMs: 30_000, signal }),
     ).catch(() => null);
+
+    return result?.value.output.split("\n").includes("STOPPED") ?? false;
   }
 
   /**
@@ -736,33 +769,47 @@ class Daemon {
   }
 
   /**
-   * Before a rootful launch: true when no dockerd or containerd this attempt did not launch is
-   * running. A second rootful daemon beside one would share its bridge and firewall rules, so
-   * otherwise (or when the check itself fails) the method is recorded as an inconclusive failed
-   * try and not launched.
+   * Why no further shared-network (rootful) daemon may start in this guest, once known: another
+   * daemon is running beside us, or one of ours was never confirmed stopped. It stays set.
    */
-  async ownsNetwork(method: DaemonMethod): Promise<boolean> {
+  private sharedBlocked: string | null = null;
+
+  /**
+   * Right before each shared-network launch: true when none may be blocking it. The guest is
+   * scanned at launch privilege for any dockerd or containerd (ours are all confirmed stopped by
+   * then); one there, an unreadable PID or a scan that did not finish exactly blocks every later
+   * shared-network launch, recorded once as an inconclusive failed try.
+   */
+  async mayShareNetwork(method: DaemonMethod): Promise<boolean> {
     const startedAt = this.g.now();
 
-    const scan = await this.within(this.g.mono() + 20_000, (signal) =>
-      this.g.exec(foreignDaemons(this.g.tools), { timeoutMs: 20_000, signal }),
-    ).catch(() => null);
+    if (this.sharedBlocked === null) {
+      const scan = await this.within(this.g.mono() + 20_000, (signal) =>
+        this.g.exec(`${this.sudo}sh -c ${quote(daemonScan)}`, { timeoutMs: 20_000, signal }),
+      ).catch(() => null);
 
-    const output = scan?.value.output ?? "";
-    const others = output.split("\n").filter((line) => /^\d+:/.test(line));
+      const lines = (scan?.value.output ?? "").split("\n").filter((line) => line.trim());
+      const others = lines.filter((line) => /^\d+:/.test(line));
+      const unreadable = lines.filter((line) => line.startsWith("UNREADABLE:"));
+      const finished = scan?.value.ok === true && /^SCANNED [1-9]\d*$/.test(lines.at(-1) ?? "");
 
-    if (output.includes("SCANNED") && others.length === 0) return true;
+      if (others.length)
+        this.sharedBlocked = `another daemon owns the network namespace (${others.join(", ")})`;
+      else if (!finished || unreadable.length)
+        this.sharedBlocked = `could not check for another daemon in the network namespace${unreadable.length ? ` (${unreadable.join(", ")})` : ""}`;
+    }
 
-    this.record.tries.push({
-      method,
-      config: "ownership",
-      ok: false,
-      ms: this.g.now() - startedAt,
-      error: others.length
-        ? `another daemon owns the network namespace (${others.join(", ")})`
-        : "could not check for another daemon in the network namespace",
-      conclusive: false,
-    });
+    if (this.sharedBlocked === null) return true;
+
+    if (!this.record.tries.some((t) => t.config === "ownership" && t.method === method))
+      this.record.tries.push({
+        method,
+        config: "ownership",
+        ok: false,
+        ms: this.g.now() - startedAt,
+        error: this.sharedBlocked,
+        conclusive: false,
+      });
 
     return false;
   }
@@ -798,7 +845,12 @@ class Daemon {
       }
     }
 
-    if (this.launched) await this.stop(this.launched.dir, this.launched.asRoot);
+    if (
+      this.launched &&
+      !(await this.stop(this.launched.dir, this.launched.asRoot)) &&
+      this.launched.sharedNetwork
+    )
+      this.sharedBlocked = `the ${this.record.method ?? "?"}/${this.record.config ?? "?"} daemon was not confirmed stopped`;
     this.launched = null;
     this.record.method = null;
     this.record.config = null;
@@ -893,6 +945,31 @@ class Daemon {
    * `timeoutMs`. True once it exits 0, or when the project never came up; false leaves the
    * project as an open cleanup obligation on that daemon (`record.down`).
    */
+  /**
+   * The project's obligation on the chosen daemon, journaled before `up` can create anything
+   * there; a write that fails rejects, and `up` is never sent.
+   */
+  async claim() {
+    const event: ProjectEvent = {
+      ...this.owner,
+      project: this.project,
+      daemon: `${this.record.method ?? "?"}/${this.record.config ?? "?"}`,
+      provenance: this.record.method === "preinstalled-running" ? "as-found" : "launched",
+      state: "pending",
+    };
+
+    await this.onProject?.(event);
+    this.claims.push(event);
+    this.projectUsed = true;
+  }
+
+  /** Resolve the claims on daemons launched inside a sandbox whose deletion is now confirmed. */
+  async releaseWithSandbox() {
+    for (const claim of this.claims.filter((c) => c.provenance === "launched"))
+      await this.onProject?.({ ...claim, state: "with-sandbox" }).catch(() => {});
+    this.claims = this.claims.filter((c) => c.provenance !== "launched");
+  }
+
   async down(via: Guest, timeoutMs: number): Promise<boolean> {
     if (!this.projectUsed || !this.record.method || !this.compose) return true;
     via.dockerHost = this.g.dockerHost;
@@ -909,6 +986,12 @@ class Daemon {
 
       if (result.ok) {
         this.record.down = true;
+        const daemon = `${this.record.method}/${this.record.config ?? "?"}`;
+
+        // A clearing line that fails to write leaves the claim pending: the safe side.
+        for (const claim of this.claims.filter((c) => c.daemon === daemon))
+          await this.onProject?.({ ...claim, state: "down" }).catch(() => {});
+        this.claims = this.claims.filter((c) => c.daemon !== daemon);
 
         return true;
       }
@@ -1017,6 +1100,9 @@ class Daemon {
           "attempt timeout",
           "Stopped before starting another daemon",
         );
+
+      // Never beside another shared-network daemon: checked again right before each launch.
+      if (input.sharedNetwork && !(await this.mayShareNetwork(input.method))) break;
       const dir = `${this.g.tools}/${input.method}-${config.id}`;
       const log = `${dir}/daemon.log`;
       this.socket = input.socket(dir);
@@ -1045,6 +1131,10 @@ class Daemon {
         if (!launched) {
           void start.then(() => this.stop(dir, input.asRoot)).catch(() => {});
           error = `launch did not return within ${this.readyMs} ms`;
+
+          // It may be running already: no other shared-network daemon starts beside it.
+          if (input.sharedNetwork)
+            this.sharedBlocked = `the ${input.method}/${config.id} launch did not return`;
         }
 
         for (; launched;) {
@@ -1134,13 +1224,14 @@ class Daemon {
 
       if (ok) {
         this.succeed(input.method, config, ping, input.asRoot);
-        this.launched = { dir, asRoot: input.asRoot };
+        this.launched = { dir, asRoot: input.asRoot, sharedNetwork: input.sharedNetwork };
         this.resume = { input, index };
 
         return true;
       }
 
-      await this.stop(dir, input.asRoot);
+      if (!(await this.stop(dir, input.asRoot)) && input.sharedNetwork)
+        this.sharedBlocked ??= `the ${input.method}/${config.id} daemon was not confirmed stopped`;
     }
 
     this.g.dockerHost = null;
@@ -1261,6 +1352,7 @@ export async function getDaemon(
       configs: rootfulConfigs,
       socket: (dir) => `${dir}/docker.sock`,
       asRoot: true,
+      sharedNetwork: true,
       command: (config, dir) =>
         `${sudo}env PATH="$PATH" ${dockerd} --config-file ${dir}/daemon.json --host unix://${dir}/docker.sock --pidfile ${dir}/docker.pid --exec-root ${dir}/exec --data-root ${dataRoot}/${method}-${config.id} --containerd-namespace ${tag}-${method}-${config.id} --containerd-plugins-namespace ${tag}-${method}-${config.id}-plugins ${config.flags}`.trim(),
     });
@@ -1278,7 +1370,7 @@ export async function getDaemon(
           return d.skip("preinstalled-started", "not root and no passwordless sudo");
 
         return (
-          (await d.ownsNetwork("preinstalled-started")) &&
+          (await d.mayShareNetwork("preinstalled-started")) &&
           rootful("preinstalled-started", "dockerd")
         );
       },
@@ -1292,7 +1384,7 @@ export async function getDaemon(
           return d.skip("static-rootful", `no pinned static bundle for ${probe.arch}`);
 
         return (
-          (await d.ownsNetwork("static-rootful")) &&
+          (await d.mayShareNetwork("static-rootful")) &&
           (await d.fetchStatic(false)) &&
           rootful("static-rootful", `${g.tools}/docker/dockerd`)
         );
@@ -1315,6 +1407,8 @@ export async function getDaemon(
             configs: rootlessConfigs,
             socket: (dir) => `${dir}/xdg/docker.sock`,
             asRoot: false,
+            // rootlesskit gives the daemon a network namespace of its own.
+            sharedNetwork: false,
             command: (config, dir) =>
               `env XDG_RUNTIME_DIR=${dir}/xdg sh -c 'mkdir -p -m 700 "$XDG_RUNTIME_DIR" && exec "$0" "$@"' ${g.tools}/docker-rootless-extras/dockerd-rootless.sh --config-file ${dir}/daemon.json --data-root ${dir}/data ${config.flags}`.trim(),
           })
@@ -1331,6 +1425,7 @@ export async function getDaemon(
           configs: [{ id: "service", flags: "", network: "bridge" }],
           socket: (dir) => `${dir}/podman.sock`,
           asRoot: false,
+          sharedNetwork: false,
           command: (_config, dir) =>
             `podman --root ${dir}/storage --runroot ${dir}/run system service --time=0 unix://${dir}/podman.sock`,
         });
@@ -1379,6 +1474,8 @@ async function composePath(
   probe: Probe,
   /** Receives the ladder's record as soon as it exists, so a later failure keeps it. */
   keep: (daemon: Daemon) => void,
+  env: ServicesEnvironment,
+  sandboxId: string | null,
 ): Promise<Outcome> {
   const daemon = await getDaemon(
     g,
@@ -1387,6 +1484,9 @@ async function composePath(
     keep,
     composeProject(plan.attemptId),
   );
+
+  daemon.owner = { provider: plan.entry.name, attemptId: plan.attemptId, sandboxId };
+  daemon.onProject = env.onProject?.bind(env) ?? null;
 
   const ports = plan.ports ?? servicePorts;
   const composeEnv = { SBX_PG_PORT: String(ports.postgres), SBX_REDIS_PORT: String(ports.redis) };
@@ -1402,8 +1502,18 @@ async function composePath(
         timeoutMs: stepTimeoutMs.imagePull,
       });
 
-      // From here the project may hold containers, networks or volumes on this daemon.
-      if (pull.ok) daemon.projectUsed = true;
+      // From `up` on the project may hold containers, networks or volumes on this daemon: its
+      // obligation is journaled first, and `up` is never sent when that write fails.
+      if (pull.ok)
+        try {
+          await daemon.claim();
+        } catch (error) {
+          throw new StageFailure(
+            "services-start",
+            "project journal write failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
 
       const start = pull.ok
         ? await g.step("services-start", daemon.composeCommand("up -d --no-build"), {
@@ -1722,10 +1832,17 @@ export async function runServicesAttempt(
     await prepareBase(runner, plan, env);
 
     return plan.path === "compose"
-      ? composePath(runner, plan, parsed.probe, (found) => {
-          st.daemon = found.record;
-          st.daemonRef = found;
-        })
+      ? composePath(
+          runner,
+          plan,
+          parsed.probe,
+          (found) => {
+            st.daemon = found.record;
+            st.daemonRef = found;
+          },
+          env,
+          st.box?.id ?? null,
+        )
       : nativePath(runner, plan, env, parsed.probe);
   };
 
@@ -1873,6 +1990,9 @@ export async function runServicesAttempt(
     });
     await bounded(st.app?.destroyed(target?.id ?? strayId ?? ""));
   }
+
+  // A daemon launched inside the sandbox went with it: its project claims are resolved.
+  if (st.deletionConfirmed && st.daemonRef) await bounded(st.daemonRef.releaseWithSandbox());
 
   let outputDir: string | null = null;
 

@@ -208,6 +208,10 @@ it("plans the services suite: both paths everywhere, Modal on its VM runtime in 
   expect(runs).toHaveLength(4);
   expect(runs[0]).not.toContain("modal");
   expect(runs[1]).toContain("--providers modal --modal-runtime vm");
+  // The summary refuses runs without a runner location.
+
+  for (const run of runs) expect(run).toMatch(/--location \S+/);
+
   expect(output).toContain("services summary");
   expect(output).toContain("services prepare");
 

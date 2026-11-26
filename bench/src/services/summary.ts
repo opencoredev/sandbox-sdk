@@ -24,10 +24,12 @@ export interface RunInfo {
   readonly location: string;
   /** Per-provider settings the run used, such as `{ modal: "runtime=vm" }`. */
   readonly settings: Readonly<Record<string, string>>;
-  /** Effective timing settings; null or absent in runs from before they were recorded. */
+  /** Effective timing settings and placement; null or absent in runs from before they were recorded. */
   readonly conditions?: {
     readonly attemptTimeoutMs: number;
     readonly daemonReadyMs: number;
+    /** Per provider: each placement variable its adapter reads, and its value. */
+    readonly placement?: Readonly<Record<string, Readonly<Record<string, string | null>>>>;
   } | null;
   readonly artifacts: { readonly node: string; readonly fixture: string; readonly native: string };
 }
@@ -140,8 +142,13 @@ function pathSummary(records: readonly AttemptRecord[]) {
   const unsupported = records.flatMap((r) => {
     const reason = unsupportedReasonOf(r);
 
-    return reason === null ? [] : [{ attempt: r.attempt, attemptId: r.attemptId, reason }];
+    return reason === null
+      ? []
+      : [{ runId: r.runId, attempt: r.attempt, attemptId: r.attemptId, reason }];
   });
+
+  // One attempt is its run plus its ID: two runs (Boat's batches) reuse the same ordinals.
+  const unsupportedIds = new Set(unsupported.map((u) => `${u.runId}/${u.attemptId}`));
 
   const reasons = unsupported.map((u) => u.reason);
 
@@ -163,9 +170,10 @@ function pathSummary(records: readonly AttemptRecord[]) {
           : "failed";
 
   const failures = records.flatMap((r) =>
-    r.outcome.kind === "failed" && !unsupported.some((u) => u.attemptId === r.attemptId)
+    r.outcome.kind === "failed" && !unsupportedIds.has(`${r.runId}/${r.attemptId}`)
       ? [
           {
+            runId: r.runId,
             attempt: r.attempt,
             attemptId: r.attemptId,
             stage: r.outcome.stage,
@@ -188,7 +196,9 @@ function pathSummary(records: readonly AttemptRecord[]) {
      * so a green attempt can be listed here.
      */
     cleanupUnconfirmed: records.flatMap((r) =>
-      r.cleanup === "unconfirmed" ? [{ attempt: r.attempt, attemptId: r.attemptId }] : [],
+      r.cleanup === "unconfirmed"
+        ? [{ runId: r.runId, attempt: r.attempt, attemptId: r.attemptId }]
+        : [],
     ),
     samples: green,
     medians: {
@@ -279,10 +289,26 @@ export interface NotRun {
   readonly reason: string;
 }
 
+/** A planned attempt with no result, listed when a partial run is published. */
+export interface Missing {
+  readonly runId: string;
+  readonly provider: string;
+  readonly path: ServicePath;
+  readonly attempt: number;
+}
+
 export interface ServicesSite {
   readonly schema: 1;
   readonly generatedAt: string;
   readonly runs: readonly RunInfo[];
+  /**
+   * Set only when runs that did not complete were published on purpose (summary --partial): which
+   * runs, and every planned attempt without a result.
+   */
+  readonly partial: {
+    readonly incomplete: readonly string[];
+    readonly missing: readonly Missing[];
+  } | null;
   readonly tracks: readonly string[];
   readonly fixture: {
     readonly name: string;
@@ -330,6 +356,7 @@ export function servicesSiteData(input: {
   runs: readonly RunInfo[];
   notRun?: readonly NotRun[];
   generatedAt?: string;
+  partial?: { readonly incomplete: readonly string[]; readonly missing: readonly Missing[] };
 }): ServicesSite {
   const settingsOf = new Map<string, ReadonlyMap<string, string>>();
 
@@ -345,7 +372,7 @@ export function servicesSiteData(input: {
         r.artifacts.fixture,
         r.artifacts.native,
         r.location,
-        r.conditions ?? null,
+        r.conditions ? [r.conditions.attemptTimeoutMs, r.conditions.daemonReadyMs] : null,
       ]),
     ),
   );
@@ -354,6 +381,29 @@ export function servicesSiteData(input: {
     throw new Error(
       `Runs differ in SDK commit, artifacts, runner location or timing settings (${input.runs.map((r) => `${r.id}: ${r.sdkCommit.slice(0, 7)} at ${r.location}, ${r.conditions ? `attempt ${r.conditions.attemptTimeoutMs} ms, daemon ${r.conditions.daemonReadyMs} ms` : "timing not recorded"}`).join("; ")}); summarize them separately`,
     );
+
+  // Upload and round-trip times depend on where the runner sits: a public summary names it.
+  const unplaced = input.runs.filter((r) => !r.location || r.location === "unknown");
+
+  if (unplaced.length)
+    throw new Error(
+      `Runs ${unplaced.map((r) => r.id).join(", ")} have no runner location; collect with --location NAME so runs from different places are never pooled`,
+    );
+
+  // A provider placed differently (another region or target) is another measurement.
+  const placements = new Map<string, { runId: string; value: string }>();
+
+  for (const run of input.runs)
+    for (const [provider, vars] of Object.entries(run.conditions?.placement ?? {})) {
+      const value = JSON.stringify(vars);
+      const earlier = placements.get(provider);
+
+      if (earlier && earlier.value !== value)
+        throw new Error(
+          `${provider} was placed differently in ${earlier.runId} (${earlier.value}) and ${run.id} (${value}); summarize them separately`,
+        );
+      placements.set(provider, { runId: run.id, value });
+    }
 
   for (const run of input.runs) {
     if (settingsOf.has(run.id)) throw new Error(`Run ${run.id} appears twice`);
@@ -459,6 +509,7 @@ export function servicesSiteData(input: {
     providers,
     rankings: { compose: ranking("compose"), native: ranking("native") },
     notRun: input.notRun ?? [],
+    partial: input.partial ?? null,
     notes: [
       "servicesUpS: compose path from the first daemon step (including fetching Docker when the image has none) to Postgres answering SELECT 1 and Redis answering PING; no-Docker path from the bundle upload to the same check.",
       "readyToGreenS: from the first upload after the probe to all fixture tests passing; sandbox creation and the measurement-only probe are excluded.",
@@ -494,6 +545,9 @@ export function summaryMarkdown(site: ServicesSite): string {
       `| ${p.provider}${p.settings ? ` (${p.settings})` : ""}${site.tracks.length > 1 ? ` [${p.track}]` : ""} | ${p.capability.isolation[0]?.value ?? "?"} | ${p.capability.root ?? "?"} | ${p.capability.docker} | ${p.capability.dockerMethods.map((m) => m.value).join(", ") || "–"} | ${greenCell(p.compose)} | ${cell(p.compose.medians.servicesUpS)} | ${greenCell(p.native)} | ${cell(p.native.medians.servicesUpS)} | ${cell(p.native.medians.readyToGreenS)} |`,
     );
 
+  // Which run an entry came from, once there is more than one (Boat's batches reuse ordinals).
+  const from = (runId: string) => (site.runs.length > 1 ? ` (${runId})` : "");
+
   lines.push("", "## Unsupported", "");
 
   for (const p of site.providers)
@@ -503,7 +557,7 @@ export function summaryMarkdown(site: ServicesSite): string {
       if (row.unsupportedReason) lines.push(`- ${p.provider} ${path}: ${row.unsupportedReason}`);
       else
         for (const u of row.unsupported)
-          lines.push(`- ${p.provider} ${path} #${u.attempt}: ${u.reason}`);
+          lines.push(`- ${p.provider} ${path} #${u.attempt}${from(u.runId)}: ${u.reason}`);
     }
 
   lines.push("", "## Not run", "");
@@ -515,14 +569,25 @@ export function summaryMarkdown(site: ServicesSite): string {
   for (const p of site.providers)
     for (const path of servicePaths)
       for (const f of p[path].failures)
-        lines.push(`- ${p.provider} ${path} #${f.attempt}: ${f.stage}: ${f.reason}`);
+        lines.push(
+          `- ${p.provider} ${path} #${f.attempt}${from(f.runId)}: ${f.stage}: ${f.reason}`,
+        );
 
   lines.push("", "## Cleanup unconfirmed", "");
 
   for (const p of site.providers)
     for (const path of servicePaths)
       for (const c of p[path].cleanupUnconfirmed)
-        lines.push(`- ${p.provider} ${path} #${c.attempt}: ${c.attemptId}`);
+        lines.push(`- ${p.provider} ${path} #${c.attempt}${from(c.runId)}: ${c.attemptId}`);
+
+  if (site.partial) {
+    lines.push("", "## Did not complete", "");
+
+    for (const run of site.partial.incomplete) lines.push(`- ${run}`);
+
+    for (const m of site.partial.missing)
+      lines.push(`- ${m.provider} ${m.path} #${m.attempt} (${m.runId}): no result`);
+  }
 
   lines.push("", "## Daemon tries that failed", "");
 

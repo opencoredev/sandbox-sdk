@@ -78,13 +78,17 @@ services() {
   # its no-Docker attempts then also run on the VM runtime, and the run's settings say so.
   # Boat runs alone, paced like its other collections: batches of ten starts (5 attempts, both
   # paths), each followed by wait_batch, on an otherwise idle Boat account.
+  # The summary refuses runs without a runner location, so name the machine (for example evo-1).
   local providers=e2b,daytona,upstash,boxd,freestyle,tenki,superserve,vercel,instabox,archil,beam,baseten,maritime,styne,buddy,microsandbox,microsandbox-shared
+  local location=${BENCH_LOCATION:-}
+  if [[ -z $location && $dry != 1 ]]; then echo 'Set BENCH_LOCATION to the runner machine name' >&2; exit 1; fi
+  location=${location:-RUNNER}
   run bun bench services prepare
-  run bun bench services run --providers "$providers" --attempts 10 --track same-machine --max-dollars 40 --concurrency 4 --run sbx-services-main --out "$results_root/sbx-services-main"
-  run bun bench services run --providers modal --modal-runtime vm --attempts 10 --track same-machine --max-dollars 10 --concurrency 1 --run sbx-services-modal-vm --out "$results_root/sbx-services-modal-vm"
-  run bun bench services run --providers boat --attempts 5 --track same-machine --max-dollars 2 --concurrency 1 --run sbx-services-boat-1 --out "$results_root/sbx-services-boat-1"
+  run bun bench services run --providers "$providers" --attempts 10 --track same-machine --max-dollars 40 --concurrency 4 --location "$location" --run sbx-services-main --out "$results_root/sbx-services-main"
+  run bun bench services run --providers modal --modal-runtime vm --attempts 10 --track same-machine --max-dollars 10 --concurrency 1 --location "$location" --run sbx-services-modal-vm --out "$results_root/sbx-services-modal-vm"
+  run bun bench services run --providers boat --attempts 5 --track same-machine --max-dollars 2 --concurrency 1 --location "$location" --run sbx-services-boat-1 --out "$results_root/sbx-services-boat-1"
   wait_batch
-  run bun bench services run --providers boat --attempts 5 --track same-machine --max-dollars 2 --concurrency 1 --run sbx-services-boat-2 --out "$results_root/sbx-services-boat-2"
+  run bun bench services run --providers boat --attempts 5 --track same-machine --max-dollars 2 --concurrency 1 --location "$location" --run sbx-services-boat-2 --out "$results_root/sbx-services-boat-2"
   wait_batch
   run bun bench services summary --out "$results_root/sbx-services-main" --out "$results_root/sbx-services-modal-vm" --out "$results_root/sbx-services-boat-1" --out "$results_root/sbx-services-boat-2" --to "$results_root/sbx-services-main/services.json"
 }

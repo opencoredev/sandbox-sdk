@@ -242,12 +242,14 @@ function scriptedBox(rules: [RegExp, (command: string) => Partial<RunResult>][])
       commands.push(command);
       const rule = rules.find(([pattern]) => pattern.test(command));
 
-      // Unscripted, the ownership scan sees no other daemon.
+      // Unscripted, the ownership scan sees no other daemon and every stop is confirmed.
       const result = rule
         ? rule[1](command)
-        : command.includes("echo SCANNED")
-          ? { output: "SCANNED" }
-          : { ok: true, exitCode: 0 };
+        : command.includes('"SCANNED $n"')
+          ? { output: "SCANNED 12" }
+          : command.includes("kill -TERM")
+            ? { output: "STOPPED" }
+            : { ok: true, exitCode: 0 };
 
       const output = result.output ?? "";
 
@@ -646,6 +648,7 @@ describe("site data", () => {
     expect(a?.compose.failures).toEqual([]);
     expect(a?.compose.unsupported).toEqual([
       {
+        runId: "r1",
         attempt: 3,
         attemptId: "a-compose-3",
         reason:
@@ -664,7 +667,13 @@ describe("site data", () => {
 
     const failed = servicesSiteData({ records: [inconclusive], runs: site.runs }).providers[0];
     expect(failed?.compose.failures).toEqual([
-      { attempt: 3, attemptId: "a-compose-3", stage: "daemon", reason: "no daemon method worked" },
+      {
+        runId: "r1",
+        attempt: 3,
+        attemptId: "a-compose-3",
+        stage: "daemon",
+        reason: "no daemon method worked",
+      },
     ]);
     expect(failed?.compose.unsupported).toEqual([]);
     expect(a?.capability.docker).toBe("flaky");
@@ -1942,7 +1951,9 @@ describe("compose cleanup obligation", () => {
 
     const p = site.providers[0];
     expect(p?.compose).toMatchObject({ status: "measured", green: 2 });
-    expect(p?.compose.cleanupUnconfirmed).toEqual([{ attempt: 1, attemptId: "p-compose-1" }]);
+    expect(p?.compose.cleanupUnconfirmed).toEqual([
+      { runId: "r1", attempt: 1, attemptId: "p-compose-1" },
+    ]);
     expect(summaryMarkdown(site)).toContain(
       "## Cleanup unconfirmed\n\n- p compose #1: p-compose-1",
     );
@@ -2087,7 +2098,7 @@ describe("network namespace ownership", () => {
 
   test("a dockerd or containerd this attempt did not start keeps every rootful launch off, inconclusively", async () => {
     const { box, started } = scriptedBox([
-      [/echo SCANNED/, () => ({ output: "812:dockerd\n813:containerd\nSCANNED" })],
+      [/SCANNED \$n/, () => ({ output: "812:dockerd\n813:containerd\nSCANNED 40" })],
       [/daemon-ping/, (c) => (c.includes("podman.sock") ? { output: pingOk } : unanswered)],
       [/docker compose version/, () => ({ output: "2.40.0" })],
     ]);
@@ -2116,7 +2127,7 @@ describe("network namespace ownership", () => {
 
   test("a scan that cannot finish keeps rootful launches off too", async () => {
     const { box, started } = scriptedBox([
-      [/echo SCANNED/, () => ({ ok: false, exitCode: 1, output: "" })],
+      [/SCANNED \$n/, () => ({ ok: false, exitCode: 1, output: "" })],
       [/daemon-ping/, (c) => (c.includes("podman.sock") ? { output: pingOk } : unanswered)],
       [/docker compose version/, () => ({ output: "2.40.0" })],
     ]);
@@ -2385,5 +2396,414 @@ describe("open Compose projects in recovery", () => {
     const launched = await sweepWith(leftOn("with-sandbox"));
     expect(launched.exitCode).not.toBe(1);
     expect(launched.stdout).toContain('"openProjects":0');
+  });
+});
+
+describe("shared-network daemons one at a time", () => {
+  const unanswered = { ok: false, exitCode: 1, output: '{"ok":false,"error":"connect ENOENT x"}' };
+
+  test("a rootful launch whose acknowledgement stalls and whose stop is not confirmed blocks every later rootful config", async () => {
+    const { box, commands, started } = scriptedBox([
+      [/kill -TERM/, () => ({ output: "NOPID" })],
+      [/daemon-ping/, (c) => (c.includes("podman.sock") ? { output: pingOk } : unanswered)],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    box.start = (command: string) => {
+      started.push(command);
+
+      // The first rootful daemon spawns but its acknowledgement never comes back.
+      return command.includes("podman.sock")
+        ? Promise.resolve({ name: command })
+        : new Promise(() => {});
+    };
+
+    const g = new Guest(box, new AbortController().signal, [], () => 0);
+    g.pollMs = 0;
+    g.mono = () => 0;
+
+    const d = await getDaemon(
+      g,
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      20,
+      () => {},
+    );
+
+    expect(d.record.method).toBe("podman");
+    expect(started.filter((c) => c.includes("dockerd"))).toHaveLength(1);
+    expect(
+      d.record.tries
+        .filter((t) => t.config === "ownership")
+        .map((t) => [t.method, t.ok, t.conclusive, t.error]),
+    ).toEqual([
+      [
+        "preinstalled-started",
+        false,
+        false,
+        "the preinstalled-started/default launch did not return",
+      ],
+      ["static-rootful", false, false, "the preinstalled-started/default launch did not return"],
+    ]);
+    // Scanned on entering the method and again right before its one launch; never after it.
+    expect(commands.filter((c) => c.includes('"SCANNED $n"'))).toHaveLength(2);
+  });
+
+  test("a storage fallback whose stop is not confirmed starts no other rootful daemon", async () => {
+    let starts = 0;
+
+    const { box, started } = scriptedBox([
+      [/kill -TERM/, () => ({ output: "SURVIVED" })],
+      [
+        /daemon-ping/,
+        (c) => (c.includes("podman.sock") || starts === 1 ? { output: pingOk } : unanswered),
+      ],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    box.start = async (command: string) => {
+      starts++;
+      started.push(command);
+
+      return { name: command };
+    };
+
+    const d = await getDaemon(
+      guestFor(box),
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      10_000,
+      () => {},
+    );
+
+    expect(d.record.method).toBe("preinstalled-started");
+    expect(
+      await d.switchStorage("error creating overlay mount to /x/merged: invalid argument"),
+    ).toBe(true);
+    expect(d.record.method).toBe("podman");
+    expect(started.filter((c) => c.includes("dockerd"))).toHaveLength(1);
+    expect(d.record.tries.filter((t) => t.config === "ownership").map((t) => t.error)).toEqual([
+      "the preinstalled-started/default daemon was not confirmed stopped",
+      "the preinstalled-started/default daemon was not confirmed stopped",
+    ]);
+  });
+
+  test("a scan without its exact completion marker, or with an unreadable process, blocks rootful launches", async () => {
+    for (const output of ["SCANNED", "SCANNED 0", "UNREADABLE:77\nSCANNED 12"]) {
+      const { box, started } = scriptedBox([
+        [/SCANNED \$n/, () => ({ output })],
+        [/daemon-ping/, (c) => (c.includes("podman.sock") ? { output: pingOk } : unanswered)],
+        [/docker compose version/, () => ({ output: "2.40.0" })],
+      ]);
+
+      const d = await getDaemon(
+        guestFor(box),
+        probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+        10_000,
+        () => {},
+      );
+
+      expect(started.some((c) => c.includes("dockerd"))).toBe(false);
+      expect(d.record.tries.find((t) => t.config === "ownership")?.error).toContain(
+        "could not check for another daemon",
+      );
+    }
+  });
+
+  test("the scan runs at launch privilege", async () => {
+    const { box, commands } = scriptedBox([
+      [/daemon-ping/, (c) => (c.includes("podman.sock") ? { output: pingOk } : unanswered)],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    await getDaemon(
+      guestFor(box),
+      probeOf({
+        uid: "1000",
+        user: "dev",
+        sudo: "passwordless",
+        dockerd: "yes",
+        podman: "podman version 5.0.0",
+      }),
+      10_000,
+      () => {},
+    );
+
+    const scans = commands.filter((c) => c.includes('"SCANNED $n"'));
+    expect(scans.length).toBeGreaterThan(0);
+    expect(scans.every((c) => c.includes("sudo -n sh -c "))).toBe(true);
+  });
+});
+
+describe("project claims before up", () => {
+  test("a claim is journaled before up, and its own down or the sandbox resolves it", async () => {
+    const events: string[] = [];
+
+    const { box } = scriptedBox([
+      [/daemon-ping/, () => ({ output: pingOk })],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    const d = await getDaemon(guestFor(box), probeOf(), 10_000, () => {}, "sbx-p-compose-1-abc123");
+    d.owner = { provider: "p", attemptId: "p-compose-1", sandboxId: "sb-1" };
+
+    d.onProject = async (event) => {
+      events.push(`${event.state} ${event.provenance} ${event.daemon} ${event.sandboxId}`);
+    };
+
+    await d.claim();
+    expect(events).toEqual(["pending as-found preinstalled-running/as-found sb-1"]);
+    expect(await d.down(guestFor(box), 1000)).toBe(true);
+    expect(events.at(-1)).toBe("down as-found preinstalled-running/as-found sb-1");
+
+    // A claim that cannot be journaled never lets up run.
+    d.onProject = async () => {
+      throw new Error("EROFS");
+    };
+
+    await expect(d.claim()).rejects.toThrow("EROFS");
+  });
+
+  test("only a daemon launched inside the sandbox is resolved by its deletion", async () => {
+    const events: string[] = [];
+    let starts = 0;
+
+    const { box } = scriptedBox([
+      [/ down -v/, () => ({ ok: false, exitCode: 1, output: "timed out" })],
+      [
+        /daemon-ping/,
+        (c) =>
+          c.includes("/var/run/docker.sock") || starts === 0
+            ? { ok: false, exitCode: 1, output: "x" }
+            : { output: pingOk },
+      ],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    box.start = async (command: string) => {
+      starts++;
+
+      return { name: command };
+    };
+
+    const d = await getDaemon(guestFor(box), probeOf({ dockerd: "yes" }), 10_000, () => {});
+    d.owner = { provider: "p", attemptId: "p-compose-1", sandboxId: "sb-1" };
+
+    d.onProject = async (event) => {
+      events.push(`${event.state} ${event.provenance}`);
+    };
+
+    await d.claim();
+    expect(await d.down(guestFor(box), 1000)).toBe(false);
+    await d.releaseWithSandbox();
+    expect(events).toEqual(["pending launched", "with-sandbox launched"]);
+  });
+});
+
+describe("project claims in recovery", () => {
+  const runFile = {
+    id: "r1",
+    ownerLabel: "r1-abcd",
+    sdkCommit: "a",
+    startedAt: "x",
+    endedAt: null,
+    location: "t",
+    settings: {},
+    artifacts: { node: "n", fixture: "f", native: "b" },
+    providers: [],
+  };
+
+  const claim = (state: "pending" | "down") => ({
+    provider: "p",
+    attemptId: "p-compose-1",
+    project: "sbx-p-compose-1-abc123",
+    daemon: "preinstalled-running/as-found",
+    provenance: "as-found",
+    sandboxId: "sb-1",
+    state,
+  });
+
+  const sweepWith = async (claims: object[]) => {
+    const dir = await mkdtemp(join(tmpdir(), "svc-claims-"));
+    const before = process.exitCode;
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await writeFile(join(dir, "run.json"), JSON.stringify(runFile));
+      // A runner that died mid-attempt: the create was submitted and its sandbox journaled, but
+      // no attempt row was ever written.
+      await writeFile(
+        join(dir, "submissions.jsonl"),
+        `${JSON.stringify({ provider: "p", attemptId: "p-compose-1" })}\n`,
+      );
+      await writeFile(
+        join(dir, "owned.jsonl"),
+        `${JSON.stringify({ provider: "p", id: "sb-1", attemptId: "p-compose-1" })}\n`,
+      );
+      await writeFile(
+        join(dir, "projects.jsonl"),
+        claims.map((c) => `${JSON.stringify(c)}\n`).join(""),
+      );
+      await servicesCommand(["sweep", "--out", dir, "--run", "r1"]);
+
+      return {
+        exitCode: process.exitCode,
+        stderr: stderr.mock.calls.map(([text]) => String(text)).join(""),
+        stdout: stdout.mock.calls.map(([text]) => String(text)).join(""),
+      };
+    } finally {
+      stderr.mockRestore();
+      stdout.mockRestore();
+      process.exitCode = before;
+      await rm(dir, { recursive: true, force: true });
+    }
+  };
+
+  test("a submitted compose attempt with an owned ID and no attempt row: its claim keeps sweep at exit 1", async () => {
+    const open = await sweepWith([claim("pending")]);
+    expect(open.exitCode).toBe(1);
+    expect(open.stderr).toContain("Compose project cleanup unresolved for p-compose-1");
+    expect(open.stdout).toContain('"openProjects":1');
+
+    // A claim its own down resolved is no obligation.
+    const resolved = await sweepWith([claim("pending"), claim("down")]);
+    expect(resolved.stdout).toContain('"openProjects":0');
+    expect(resolved.stderr).not.toContain("Compose project cleanup unresolved");
+  });
+});
+
+describe("runs that share attempt ordinals", () => {
+  const run = (id: string) => ({
+    id,
+    sdkCommit: "a",
+    startedAt: "x",
+    endedAt: null,
+    location: "evo-1",
+    settings: {},
+    artifacts: { node: "n", fixture: "f", native: "b" },
+  });
+
+  test("two Boat batches with the same attempt ID keep both rows apart", () => {
+    const refused = record({ provider: "boat", path: "compose", attempt: 1, up: null });
+
+    const upload: AttemptRecord = {
+      ...record({ provider: "boat", path: "compose", attempt: 1, up: null }),
+      runId: "r2",
+      daemon: null,
+      outcome: { kind: "failed", stage: "upload", reason: "joining failed", detail: "" },
+    };
+
+    const site = servicesSiteData({ records: [refused, upload], runs: [run("r1"), run("r2")] });
+    const compose = site.providers[0]?.compose;
+
+    expect(compose?.attempts).toBe(2);
+    expect(compose?.unsupported.map((u) => `${u.runId}/${u.attemptId}`)).toEqual([
+      "r1/boat-compose-1",
+    ]);
+    expect(compose?.failures).toEqual([
+      {
+        runId: "r2",
+        attempt: 1,
+        attemptId: "boat-compose-1",
+        stage: "upload",
+        reason: "joining failed",
+      },
+    ]);
+    expect(summaryMarkdown(site)).toContain("- boat compose #1 (r2): upload: joining failed");
+  });
+});
+
+describe("placement", () => {
+  const run = (id: string, region: string | null, location = "evo-1") => ({
+    id,
+    sdkCommit: "a",
+    startedAt: "x",
+    endedAt: null,
+    location,
+    settings: {},
+    conditions: {
+      attemptTimeoutMs: 1_500_000,
+      daemonReadyMs: 45_000,
+      placement: { modal: { MODAL_SANDBOX_REGION: region } },
+    },
+    artifacts: { node: "n", fixture: "f", native: "b" },
+  });
+
+  const records = [
+    record({ provider: "modal", path: "native", attempt: 1, up: 2000 }),
+    { ...record({ provider: "modal", path: "native", attempt: 1, up: 8000 }), runId: "r2" },
+  ];
+
+  test("runs that placed a provider differently are never pooled", () => {
+    expect(() =>
+      servicesSiteData({ records, runs: [run("r1", "us-east"), run("r2", "eu-west")] }),
+    ).toThrow("modal was placed differently in r1");
+    expect(
+      servicesSiteData({ records, runs: [run("r1", "us-east"), run("r2", "us-east")] }).providers,
+    ).toHaveLength(1);
+  });
+
+  test("a run without a runner location is refused", () => {
+    expect(() =>
+      servicesSiteData({ records, runs: [run("r1", null, "unknown"), run("r2", null, "unknown")] }),
+    ).toThrow("have no runner location");
+  });
+});
+
+describe("run disposition", () => {
+  const runFile = {
+    id: "r1",
+    ownerLabel: "r1-abcd",
+    sdkCommit: "a",
+    startedAt: "x",
+    endedAt: null,
+    location: "t",
+    settings: {},
+    artifacts: { node: "n", fixture: "f", native: "b" },
+    providers: ["p"],
+    plan: { paths: ["compose", "native"], attempts: 1 },
+  };
+
+  const folder = async (disposition: string) => {
+    const dir = await mkdtemp(join(tmpdir(), "svc-disposition-"));
+    await writeFile(join(dir, "run.json"), JSON.stringify({ ...runFile, disposition }));
+    await writeFile(
+      join(dir, "services-attempts.jsonl"),
+      `${JSON.stringify(record({ provider: "p", path: "native", attempt: 1, up: 2000 }))}\n`,
+    );
+
+    return dir;
+  };
+
+  test("summary refuses a run that did not complete or is missing planned attempts", async () => {
+    for (const disposition of ["running", "complete", "stopped"]) {
+      const dir = await folder(disposition);
+
+      try {
+        await expect(servicesCommand(["summary", "--out", dir])).rejects.toThrow(
+          `Not every run completed: r1 (disposition ${disposition}, 1 planned attempts without a result)`,
+        );
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("--partial publishes what ran and lists what did not", async () => {
+    const dir = await folder("stopped");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await servicesCommand(["summary", "--out", dir, "--partial"]);
+      const site = JSON.parse(await readFile(join(dir, "services.json"), "utf8"));
+      expect(site.partial.missing).toEqual([
+        { runId: "r1", provider: "p", path: "compose", attempt: 1 },
+      ]);
+      expect(await readFile(join(dir, "summary.md"), "utf8")).toContain(
+        "## Did not complete\n\n- r1 (disposition stopped, 1 planned attempts without a result)\n- p compose #1 (r1): no result",
+      );
+    } finally {
+      stdout.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
