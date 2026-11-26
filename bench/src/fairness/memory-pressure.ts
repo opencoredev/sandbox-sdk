@@ -48,6 +48,8 @@ import {
   stampFunction,
   parseRuntime,
   parseSeen,
+  bootIdPattern,
+  valid,
   runtimeCommand,
   runtimes,
 } from "./guest-scripts.js";
@@ -308,6 +310,8 @@ const statusCommand = (dir: string) =>
     "echo status=done",
   ].join("\n");
 
+const healthKeys = ["boot", "canary", "canaryBeat", "now", "health"] as const;
+
 const healthCommand = (dir: string) =>
   [
     identityFunction,
@@ -365,17 +369,22 @@ async function pollHog(input: {
       asked = false;
       maxGapMs = Math.max(maxGapMs, silence);
       lastAnswer = now;
-      const seenBoot = values.get("boot") ?? "";
+      const seenBoot = valid(values.get("boot"), bootIdPattern);
 
-      if (seenBoot !== "" && seenBoot !== "unknown" && seenBoot !== boot)
-        return polled({ kind: "restarted" });
+      if (seenBoot !== null && seenBoot !== boot) return polled({ kind: "restarted" });
 
       if (values.get("dir") !== "1")
         throw new CheckStop("The attempt's directory vanished with the same boot id");
       heldMiB = Math.max(heldMiB, parseHogLog(values.get("last") ?? "").heldMiB);
-      const exit = values.get("exit") ?? "";
+      // The supervisor records the status and the guest seconds since the hog started.
+      const exit = /^(\d+) (\d+)$/.exec(values.get("exit") ?? "");
 
-      if (/^\d+$/.test(exit)) return polled({ kind: "exited", exitCode: Number(exit) });
+      if (exit !== null) {
+        // An exit after the deadline means the hog was still running at it, whenever it was seen.
+        if (Number(exit[2]) * 1000 > options.deadlineMs) return polled({ kind: "stalled" });
+
+        return polled({ kind: "exited", exitCode: Number(exit[1]) });
+      }
 
       const running = parseSeen(values.get("running"));
       const supervisor = parseSeen(values.get("supervisor"));
@@ -466,12 +475,11 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     );
 
     const before = keyValues(prepared.stdout);
-    const boot = before.get("boot") ?? "";
+    const boot = valid(before.get("boot"), bootIdPattern);
     const canaryBefore = parseSeen(before.get("canary"));
 
     if (
-      boot === "" ||
-      boot === "unknown" ||
+      boot === null ||
       !prepared.stdout.includes("health=done") ||
       canaryBefore.kind !== "alive" ||
       canaryOf(before, canaryBefore.id).kind !== "alive"
@@ -487,7 +495,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     await context.exec(
       box,
       detached(
-        `cd ${quote(dir)} && { ${stampFunction}; stamp $$ > hog.sup; ${rt} ${quote(hog)} ${targetMiB} ${options.chunkMiB} > hog.log 2>&1 & stamp $! > hog.pid; wait $!; echo $? > hog.exit; }`,
+        `cd ${quote(dir)} && { ${stampFunction}; t0=$(date +%s); stamp $$ > hog.sup; ${rt} ${quote(hog)} ${targetMiB} ${options.chunkMiB} > hog.log 2>&1 & stamp $! > hog.pid; wait $!; c=$?; echo "$c $(( $(date +%s) - t0 ))" > hog.exit; }`,
         `${dir}/hog.wrap`,
       ),
       60_000,
@@ -561,8 +569,10 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
         const again = await context.exec(box, healthCommand(dir), 60_000).catch(() => null);
 
         // Only a complete read replaces the last one, so its fields all come from one moment.
-        if (again === null || !again.stdout.includes("health=done")) break;
-        after = new Map([...after, ...keyValues(again.stdout)]);
+        const fresh = again === null || again.timedOut ? null : keyValues(again.stdout);
+
+        if (fresh === null || !healthKeys.every((key) => (fresh.get(key) ?? "") !== "")) break;
+        after = new Map([...after, ...fresh]);
       }
 
       const alloc = !ended
@@ -571,9 +581,8 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
             .exec(box, `${rt} ${quote(hog)} ${options.healthAllocMiB} ${options.chunkMiB}`, 120_000)
             .catch(() => null);
 
-      allocOk = !ended
-        ? null
-        : alloc !== null && alloc.exitCode === 0 && /^reached /m.test(alloc.stdout);
+      // A test whose exec never ran is unobserved, not failed.
+      allocOk = alloc === null ? null : alloc.exitCode === 0 && /^reached /m.test(alloc.stdout);
 
       const file = !ended
         ? null
@@ -585,13 +594,11 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
             )
             .catch(() => null);
 
-      fileOk = !ended ? null : file !== null && file.stdout.includes("fileok");
+      fileOk = file === null ? null : file.stdout.includes("fileok");
     }
 
-    const bootAfter = after.get("boot") ?? "";
-
-    const bootSame =
-      !answered || bootAfter === "" || bootAfter === "unknown" ? null : bootAfter === boot;
+    const bootAfter = valid(after.get("boot"), bootIdPattern);
+    const bootSame = !answered || bootAfter === null ? null : bootAfter === boot;
 
     // Alive needs the same process and a fresh beat; gone needs it confirmed gone; else unknown.
     const canaryAfter = answered ? canaryOf(after, canaryBefore.id) : null;
@@ -618,7 +625,13 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
       progress: thinProgress(log.progress),
       outcome,
       scope,
-      usableAfter: !answered ? false : !ended ? null : allocOk === true && fileOk === true,
+      usableAfter: !answered
+        ? false
+        : allocOk === false || fileOk === false
+          ? false
+          : allocOk === true && fileOk === true
+            ? true
+            : null,
       health: {
         answered,
         recoveredAfterMs: polled.recoveredAfterMs,

@@ -39,6 +39,8 @@ import {
   stampFunction,
   parseRuntime,
   parseSeen,
+  bootIdPattern,
+  valid,
   runtimeCommand,
   runtimes,
   type Seen,
@@ -277,8 +279,8 @@ export function parseSnapshot(stdout: string): GuestSnapshot | null {
     dir,
     file,
     size: count("size"),
-    sha: text("sha"),
-    boot: text("boot"),
+    sha: valid(text("sha"), /^[0-9a-f]{64}$/),
+    boot: valid(text("boot"), bootIdPattern),
     worker: parseSeen(values.get("worker")),
     server: parseSeen(values.get("server")),
     beat: count("beat"),
@@ -331,13 +333,16 @@ export function judgeSurvival(input: {
       ? after.beat - before.beat
       : null;
 
-  const missed =
+  // Raw bounds for the verdict, rounded only for the record.
+  const rawMissed =
     beatsDuringHold === null
       ? null
-      : {
-          min: Math.round((window.minS - beatsDuringHold) * 10) / 10,
-          max: Math.round((window.maxS - beatsDuringHold) * 10) / 10,
-        };
+      : { min: window.minS - beatsDuringHold, max: window.maxS - beatsDuringHold };
+
+  const missed =
+    rawMissed === null
+      ? null
+      : { min: Math.round(rawMissed.min * 10) / 10, max: Math.round(rawMissed.max * 10) / 10 };
 
   const body = probe?.ok ? probe.body : null;
 
@@ -385,15 +390,15 @@ export function judgeSurvival(input: {
       `worker ${workerSame ? (advancing ? "kept" : "kept but not beating") : after.worker.kind}, server ${memoryIntact ? "kept" : server.gone ? "gone" : server.answered ? "answered with other state" : "not answering"}`,
     );
 
-  if (missed === null) return judged("inconclusive", "no heartbeat count across the hold");
+  if (rawMissed === null) return judged("inconclusive", "no heartbeat count across the hold");
 
-  if (missed.min - outsideS >= holdS * 0.8) return judged("in-ram");
+  if (rawMissed.min - outsideS >= holdS * 0.8) return judged("in-ram");
 
-  if (missed.max <= holdS * 0.2) return judged("kept-running");
+  if (rawMissed.max + beatSlackS <= holdS * 0.2) return judged("kept-running");
 
   return judged(
     "inconclusive",
-    `the worker missed ${missed.min} to ${missed.max} s of heartbeats around a ${holdS} s hold, ${Math.round(outsideS * 10) / 10} s of which could fall outside it`,
+    `the worker missed ${Math.round(rawMissed.min * 10) / 10} to ${Math.round(rawMissed.max * 10) / 10} s of heartbeats around a ${holdS} s hold, ${Math.round(outsideS * 10) / 10} s of which could fall outside it`,
   );
 }
 

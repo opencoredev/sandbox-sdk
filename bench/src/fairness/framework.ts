@@ -977,27 +977,36 @@ async function cleanUp(input: {
         };
 
   const first = await sweep({ session, failed, log, say, delay });
-  let { error } = first;
+  let { listError } = first;
   const swept = new Set(first.destroyed);
+  const stuck = new Map(first.undestroyed.map((entry) => [entry.id, entry.error]));
 
-  if (error === null && (late || input.createFailed || stillPending > 0)) {
+  if (listError === null && stuck.size === 0 && (late || input.createFailed || stillPending > 0)) {
     await sleep(input.lateSweepDelayMs);
     const second = await sweep({ session, failed: [], log, say, delay });
-    error = second.error;
+    listError = second.listError;
 
     for (const id of second.destroyed) swept.add(id);
+
+    for (const entry of second.undestroyed) stuck.set(entry.id, entry.error);
   }
 
-  if (error !== null) problems.push(error);
+  if (listError !== null) problems.push(listError);
 
-  // A listing can miss a sandbox whose destroy failed (a paused one may not show its labels), so
-  // each one the sweeps did not destroy counts as gone only on the provider's exact lookup.
-  for (const id of failed) {
+  // A listing can miss a sandbox whose destroy failed (a paused one may not show its labels), and a
+  // delete can fail on a sandbox already going, so each destroy that failed, directly or in a
+  // sweep, is settled by the provider's exact lookup.
+  for (const id of new Set([...failed, ...stuck.keys()])) {
     if (swept.has(id)) continue;
     const box = byId.get(id);
 
-    if (box === undefined || !(await confirmGone(box, delay, log)))
-      problems.push(`${id} may still exist: its destroy failed and no exact lookup found it gone`);
+    const failure = stuck.has(id)
+      ? `Could not destroy ${id} (${stuck.get(id)})`
+      : `${id}'s destroy failed`;
+
+    if (box === undefined) problems.push(failure);
+    else if (!(await confirmGone(box, delay, log)))
+      problems.push(`${failure}; it may still exist, as no exact lookup found it gone`);
   }
 
   return problems.length === 0
@@ -1026,14 +1035,21 @@ async function confirmGone(box: Box, delay: number, log: QuietLog) {
   return false;
 }
 
-/** Lists the attempt's sandboxes and destroys any left; `error` is null only when all are gone. */
+/**
+ * Lists the attempt's sandboxes and destroys any left. `listError` is set when the listing failed;
+ * `undestroyed` holds each listed sandbox whose delete failed.
+ */
 async function sweep(input: {
   readonly session: Session;
   readonly failed: readonly string[];
   readonly log: QuietLog;
   readonly say: (text: string) => void;
   readonly delay: number;
-}): Promise<{ readonly error: string | null; readonly destroyed: readonly string[] }> {
+}): Promise<{
+  readonly listError: string | null;
+  readonly destroyed: readonly string[];
+  readonly undestroyed: readonly { readonly id: string; readonly error: string }[];
+}> {
   const { session, failed, log, say, delay } = input;
   let found: string[];
 
@@ -1044,26 +1060,30 @@ async function sweep(input: {
     await log({ kind: "sweep", found: [], destroyed: [], error, at: now() });
     say(`SWEEP FAILED: ${error}`);
 
-    return { error, destroyed: [] };
+    return { listError: error, destroyed: [], undestroyed: [] };
   }
 
   const destroyed: string[] = [];
-  const failures: string[] = [];
+  const undestroyed: { id: string; error: string }[] = [];
 
   for (const id of found) {
     const outcome = await destroyWithRetry(() => session.destroyById(id), delay);
 
     if (outcome.ok) destroyed.push(id);
-    else failures.push(`${id} (${outcome.error ?? "unknown error"})`);
+    else undestroyed.push({ id, error: outcome.error ?? "unknown error" });
   }
 
-  const error = failures.length === 0 ? null : `Could not destroy ${failures.join("; ")}`;
+  const error =
+    undestroyed.length === 0
+      ? null
+      : `Could not destroy ${undestroyed.map((entry) => `${entry.id} (${entry.error})`).join("; ")}`;
+
   await log({ kind: "sweep", found, destroyed, error, at: now() });
 
   if (error !== null) say(`SWEEP FAILED: ${error}`);
   else if (found.length > 0) say(`sweep found ${found.join(", ")}; destroyed ${destroyed.length}`);
 
-  return { error, destroyed };
+  return { listError: null, destroyed, undestroyed };
 }
 
 const round = (value: number, places: number) => {

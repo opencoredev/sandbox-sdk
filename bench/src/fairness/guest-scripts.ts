@@ -79,13 +79,21 @@ async function poll(port, start, timeoutMs, accept) {
   }
 }
 
-function stamp(pid) {
-  try { return pid + " " + fs.readFileSync("/proc/" + pid + "/stat", "utf8").replace(/^.*\\) /s, "").split(" ")[19]; } catch { return pid + " 0"; }
+function stat(pid) {
+  try { return fs.readFileSync("/proc/" + pid + "/stat", "utf8").replace(/^.*\\) /s, "").split(" "); } catch { return null; }
 }
 
+function stamp(pid) {
+  const fields = stat(pid);
+  return pid + " " + (fields ? fields[19] : "0");
+}
+
+// Ours only while running with the start time the file records: not dead, not a zombie, not reused.
 function ours(text) {
   const [pid, start] = String(text).trim().split(/\\s+/).map(Number);
-  return Number.isInteger(pid) && pid > 1 && start > 0 && stamp(pid) === pid + " " + start;
+  if (!Number.isInteger(pid) || pid <= 1 || !(start > 0)) return false;
+  const fields = stat(pid);
+  return fields !== null && fields[0] !== "Z" && fields[0] !== "X" && Number(fields[19]) === start;
 }
 
 async function main() {
@@ -167,19 +175,27 @@ def poll(port, start, timeout_ms, accept):
             return {"ok": False, "ms": ms, "body": None}
         time.sleep(0.005)
 
-def stamp(pid):
+def stat(pid):
     try:
         with open("/proc/%d/stat" % pid) as f:
-            return "%d %s" % (pid, f.read().rsplit(") ", 1)[1].split()[19])
+            return f.read().rsplit(") ", 1)[1].split()
     except Exception:
-        return "%d 0" % pid
+        return None
 
+def stamp(pid):
+    fields = stat(pid)
+    return "%d %s" % (pid, fields[19] if fields else "0")
+
+# Ours only while running with the start time the file records: not dead, not a zombie, not reused.
 def ours(text):
     try:
         pid, start = (int(x) for x in text.split())
     except Exception:
         return False
-    return pid > 1 and start > 0 and stamp(pid) == "%d %d" % (pid, start)
+    if pid <= 1 or start <= 0:
+        return False
+    fields = stat(pid)
+    return fields is not None and fields[0] not in ("Z", "X") and fields[19] == str(start)
 
 mode, args = sys.argv[1], sys.argv[2:]
 if mode == "serve":
@@ -286,6 +302,13 @@ export function detached(command: string, log: string) {
   return `if command -v setsid >/dev/null 2>&1; then setsid ${tail} else ${tail} fi`;
 }
 
+/** A Linux boot id as /proc prints it. */
+export const bootIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** `value` when it matches `pattern`, else null: malformed guest output is never evidence. */
+export const valid = (value: string | null | undefined, pattern: RegExp) =>
+  value !== null && value !== undefined && pattern.test(value) ? value : null;
+
 /** The kernel's boot id: a new one means the guest booted again. */
 export const bootIdCommand = `cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown`;
 
@@ -312,9 +335,10 @@ export const identityFunction = [
   `  [ "$1" -gt 1 ] && [ "$2" -gt 0 ] || { echo unknown; return 0; }`,
   `  p=$1; want=$2`,
   `  [ -e "/proc/$p" ] || { echo gone; return 0; }`,
-  `  t=$(sed 's/^.*) //' "/proc/$p/stat" 2>/dev/null)`,
-  `  [ -n "$t" ] || { echo gone; return 0; }`,
+  // A stat that cannot be read is gone only when the task itself has gone meanwhile.
+  `  t=$(sed 's/^.*) //' "/proc/$p/stat" 2>/dev/null) && [ -n "$t" ] || { [ -e "/proc/$p" ] && echo unknown || echo gone; return 0; }`,
   `  set -- $t`,
+  `  case "\${20}" in ''|*[!0-9]*) echo unknown; return 0;; esac`,
   `  [ "\${20}" = "$want" ] || { echo gone; return 0; }`,
   `  [ "$1" = Z ] && { echo gone; return 0; }`,
   `  echo "$p:$want"`,

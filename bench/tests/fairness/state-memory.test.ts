@@ -142,6 +142,17 @@ describe("state-survival judge", () => {
     expect(partial.reason).toMatch(/missed 34 to 36 s/);
   });
 
+  it("keeps a pause at the edge of the 20% cutoff inconclusive, allowing for beat sampling", () => {
+    const edge = judgeSurvival({
+      ...base,
+      ...kept,
+      after: snapshot({ beat: 58 }),
+      window: { minS: 60, maxS: 60 },
+    });
+
+    expect(edge.verdict).toBe("inconclusive");
+  });
+
   it("does not credit a freeze outside the hold to the hold", () => {
     // Long pause and resume calls: the beats missed during them could account for the shortfall.
     const slowCalls = judgeSurvival({
@@ -251,13 +262,13 @@ describe("state-survival judge", () => {
   it("parses only complete snapshots and probe lines", () => {
     expect(
       parseSnapshot(
-        "boot=unknown\ndir=present\nfile=present\nsize=1048576\nsha=aa\nworker=9:5\nserver=gone\nbeat=12\nsnapshot=done\n",
+        `boot=unknown\ndir=present\nfile=present\nsize=1048576\nsha=${"a".repeat(64)}\nworker=9:5\nserver=gone\nbeat=12\nsnapshot=done\n`,
       ),
     ).toEqual({
       dir: "present",
       file: "present",
       size: 1_048_576,
-      sha: "aa",
+      sha: "a".repeat(64),
       boot: null,
       worker: alive_("9:5"),
       server: gone,
@@ -268,6 +279,12 @@ describe("state-survival judge", () => {
         "boot=b\ndir=unknown\nfile=unknown\nworker=\nserver=unknown\nbeat=\nsnapshot=done\n",
       ),
     ).toMatchObject({ file: "unknown", worker: unknown, server: unknown, beat: null });
+    // Malformed guest output is never evidence: a short hash or a boot id that is not one reads as unknown.
+    expect(
+      parseSnapshot(
+        "boot=bad-id\ndir=present\nfile=present\nsha=aa\nworker=\nserver=\nbeat=\nsnapshot=done\n",
+      ),
+    ).toMatchObject({ boot: null, sha: null });
     expect(parseSnapshot("boot=b\ndir=present\nfile=present\nsha=aa\n")).toBeNull();
     expect(parseSnapshot("boot=b\ndir=1\nfile=present\nsha=aa\nsnapshot=done\n")).toBeNull();
     expect(parseProbe('noise\n{"ok":false,"ms":30001,"body":null}\n')).toEqual({
@@ -556,7 +573,8 @@ describe.runIf(linux && available.length > 0)(
         serverRestarted: false,
       });
 
-      const awake = await plan(6_000);
+      // Long enough that 20% of it covers the 2 s beat-sampling allowance.
+      const awake = await plan(20_000);
       const nothing: Suspend = { kind: "pause", pause: async () => {}, resume: async () => {} };
       const keptCheck = stateSurvivalCheck(awake);
       const keptEntry = await runOnHost(keptCheck, hostSession({ suspend: nothing }).open);
@@ -564,7 +582,7 @@ describe.runIf(linux && available.length > 0)(
         kind: "measured",
         verdict: "kept-running",
       });
-    }, 120_000);
+    }, 180_000);
 
     it("calls a pause that killed the processes a cold restart and times serving again", async () => {
       const options = await plan(1_000);
@@ -782,6 +800,89 @@ describe.runIf(linux && available.length > 0)(
       const entry = await runOnHost(check, open);
       expect(entry.status).not.toBe("completed");
       expect(entry.reason).toMatch(/provider's state is unknown/);
+    }, 60_000);
+
+    it("memory-pressure calls a hog that ends after the deadline stalled", async () => {
+      const check = memoryPressureCheck({
+        ...defaultPressureOptions,
+        advertisedMiB: 128,
+        healthAllocMiB: 64,
+        pollMs: 200,
+        deadlineMs: 1_500,
+        workdir: await scratch("mem-work"),
+      });
+
+      const entry = await runOnHost(check, hostSession().open);
+      expect(entry.status, entry.reason ?? "").toBe("completed");
+      const result = check.resultSchema.parse(entry.result);
+      expect(result.outcome).toEqual({ kind: "stalled" });
+      expect(result.usableAfter).toBe(true);
+    }, 60_000);
+
+    it("memory-pressure leaves usability unknown when its health tests could not run", async () => {
+      const real = hostBox();
+
+      const flaky: Box = {
+        ...real,
+        run: async (command, options) => {
+          if (command.includes("health.bin") || /hog\.(js|py)' 64 64$/.test(command))
+            throw new Error("connection reset");
+
+          return real.run(command, options);
+        },
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => flaky,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const check = memoryPressureCheck({
+        ...defaultPressureOptions,
+        advertisedMiB: 128,
+        healthAllocMiB: 64,
+        pollMs: 200,
+        workdir: await scratch("mem-work"),
+      });
+
+      const entry = await runOnHost(check, open);
+      expect(entry.status, entry.reason ?? "").toBe("completed");
+      const result = check.resultSchema.parse(entry.result);
+      expect(result.health).toMatchObject({ allocOk: null, fileOk: null });
+      expect(result.usableAfter).toBeNull();
+    }, 60_000);
+
+    it("cleanup clears a failed sweep delete once an exact lookup finds the sandbox gone", async () => {
+      const real = hostBox();
+      let deletes = 0;
+
+      const stubborn: Box = {
+        ...real,
+        destroy: async () => {
+          if (++deletes === 1) throw new Error("503");
+        },
+        lookup: async () => ({
+          result: deletes > 1 ? "not-found" : "present",
+          checkedAt: new Date().toISOString(),
+          method: "fake",
+        }),
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => stubborn,
+          leftovers: async () => [stubborn.id],
+          destroyById: () => Promise.reject(new Error("409 still deleting")),
+        },
+      });
+
+      const entry = await runOnHost(stateSurvivalCheck(await plan(1_000)), open);
+      expect(entry).toMatchObject({ destroyed: true, cleanupError: null });
     }, 60_000);
 
     it("cleanup reports a sandbox whose destroy failed until an exact lookup finds it gone", async () => {
