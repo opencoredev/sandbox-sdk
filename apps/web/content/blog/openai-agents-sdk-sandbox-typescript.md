@@ -34,7 +34,7 @@ What to know about it, from the `@openai/agents` 0.20 types and OpenAI's [sandbo
 - **Capabilities decide the tools.** A `SandboxAgent` gets `filesystem()`, `shell()` and `compaction()` by default. Its `capabilities` option also takes `skills()` and an agent-memory capability, also called `memory()` but unrelated to Sandbox SDK's `memory()` provider below.
 - **A manifest describes the workspace.** `Manifest` entries such as `file`, `dir`, `localDir` and `gitRepo` are prepared before the agent runs, and mount entries attach S3, GCS, R2 or Azure Blob storage where the client supports it.
 - **Two local clients.** `UnixLocalSandboxClient` runs commands as host processes and, in OpenAI's words, adds no OS-level filesystem or network isolation. `DockerSandboxClient` runs them in a container, and `networkMode: "none"` turns its network off. For untrusted commands, OpenAI's guide points you at Docker or a hosted client.
-- **Hosted clients live in a second package.** `@openai/agents-extensions` 0.20 has clients for Blaxel, Cloudflare, Daytona, E2B, Modal, Runloop and Vercel Sandbox, each under its own subpath (for example `E2BSandboxClient` from `@openai/agents-extensions/sandbox/e2b`), and each needs that provider's own npm package, except Cloudflare, which talks to a bridge Worker you deploy.
+- **Hosted clients live in a second package.** `@openai/agents-extensions` 0.22 has clients for Blaxel, Cloudflare, Daytona, E2B, Modal and Vercel Sandbox (0.20 also had Runloop; 0.21 removed it), each under its own subpath (for example `E2BSandboxClient` from `@openai/agents-extensions/sandbox/e2b`), and each needs that provider's own npm package, except Cloudflare, which talks to a bridge Worker you deploy.
 - **The runner can own the sandbox.** Pass `{ client }` and the runner creates the sandbox and closes it when the run ends. Pass `{ session }` from `client.create()` and you close it yourself, which lets several runs share one workspace. Sessions can be serialized, resumed and snapshotted.
 
 ## Sandbox tools on a regular Agent
@@ -98,7 +98,7 @@ const result = await run(coder, "Run the tests and summarize any failures.");
 console.log(result.finalOutput);
 ```
 
-`local()` is Docker on your machine. Beyond E2B, Daytona, Modal and Vercel Sandbox, which both routes reach, Sandbox SDK also runs on Upstash Box, Railway, Baseten, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, Instabox, Archil, Maritime, Microsandbox, Styne and agentOS. OpenAI's clients reach Blaxel and Cloudflare, which Sandbox SDK doesn't (`@openai/agents-extensions` 0.20 also had Runloop; 0.21 removed it).
+`local()` is Docker on your machine. Beyond E2B, Daytona, Modal and Vercel Sandbox, which both routes reach, Sandbox SDK also runs on Upstash Box, Railway, Baseten, Boat, Sandboxer, Luxor, Superserve, boxd, Freestyle, Instabox, Archil, Maritime, Microsandbox, Styne and agentOS. OpenAI's clients reach Blaxel and Cloudflare, which Sandbox SDK doesn't.
 
 Providers don't all do the same things. On Vercel Sandbox and Local, a dev server's port must be listed in `ports` when you create the sandbox, and agentOS has no background processes or previews, so `start_process` fails there. An option a provider can't enforce fails with an `unsupported` error instead of being ignored. The [capability matrix](/docs/reference/capabilities) lists the differences.
 
@@ -150,7 +150,7 @@ Both keep provider keys on your server. Neither makes a sandbox safer than the p
 
 **Does the OpenAI Agents SDK have a sandbox?** Yes. `@openai/agents` exports `SandboxAgent` from `@openai/agents/sandbox` and two local clients from `@openai/agents/sandbox/local`. Hosted clients are in `@openai/agents-extensions`.
 
-**Which sandbox providers does the OpenAI Agents SDK support in TypeScript?** In `@openai/agents-extensions` 0.20: Blaxel, Cloudflare, Daytona, E2B, Modal, Runloop and Vercel Sandbox, plus the Unix-local and Docker clients in `@openai/agents` itself.
+**Which sandbox providers does the OpenAI Agents SDK support in TypeScript?** In `@openai/agents-extensions` 0.22: Blaxel, Cloudflare, Daytona, E2B, Modal and Vercel Sandbox (Runloop was removed in 0.21), plus the Unix-local and Docker clients in `@openai/agents` itself.
 
 **Can I use E2B with the OpenAI Agents SDK?** Two ways: `E2BSandboxClient` from `@openai/agents-extensions/sandbox/e2b` with a `SandboxAgent`, or `createSandbox(e2b())` with `sandboxTools(box)` on a regular `Agent`. The [E2B SDK and API guide](/blog/e2b-sdk-api-typescript) shows E2B's own package.
 
