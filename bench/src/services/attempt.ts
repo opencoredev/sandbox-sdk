@@ -670,6 +670,7 @@ class Daemon {
       project,
       launched: false,
       down: null,
+      answered: null,
       finished: false,
     };
   }
@@ -1005,6 +1006,7 @@ class Daemon {
   }
 
   private succeed(method: DaemonMethod, config: DaemonConfig, ping: Ping | null, root: boolean) {
+    this.record.answered ??= `${method}/${config.id}`;
     this.record.method = method;
     this.record.config = config.id;
     this.record.network = config.network;
@@ -1461,21 +1463,19 @@ export async function getDaemon(
 }
 
 /**
- * The line of a pull or start output that says the daemon's storage driver itself cannot work here
- * (an overlay or layer mount refused as invalid, unsupported or not permitted), or null. A full
- * disk, a failed download or extraction, or anything else is the workload's failure, never a
- * reason to change daemons.
+ * The line of a pull or start output that says the daemon's storage driver itself cannot work here:
+ * the storage mount or graph driver refused as invalid, unsupported or not permitted, or null. A
+ * full disk, a layer's file ownership (lchown), a failed download or extraction, or anything else
+ * is the workload's failure, never a reason to change daemons.
  */
 export function storageIncompatibility(output: string): string | null {
   const line = output
     .split("\n")
     .find(
       (text) =>
-        /(?:overlay|failed to (?:extract|register) layer|failed to mount|storage driver)/i.test(
-          text,
-        ) &&
+        /(?:\bmount(?:ing)?\b|graph ?driver|storage[- ]driver|driver not supported)/i.test(text) &&
         /(?:invalid argument|not supported|operation not permitted)/i.test(text) &&
-        !/no space left on device/i.test(text),
+        !/no space left on device|\bl?chown\b/i.test(text),
     );
 
   return line === undefined ? null : line.slice(0, 300);

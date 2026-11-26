@@ -227,8 +227,14 @@ function capability(provider: string, records: readonly AttemptRecord[]) {
   // before `finished` existed, says nothing about Docker, in either direction.
   const decided = compose.filter((r) => r.daemon?.finished === true);
 
+  // A daemon that answered started, whatever its workload did: a storage fallback that cleared
+  // `method` afterwards keeps that start in `answered`.
   const worked = decided.flatMap((r) =>
-    r.daemon?.method ? [`${r.daemon.method}/${r.daemon.config ?? "?"}`] : [],
+    r.daemon?.method
+      ? [`${r.daemon.method}/${r.daemon.config ?? "?"}`]
+      : r.daemon?.answered
+        ? [r.daemon.answered]
+        : [],
   );
 
   const tried = compose.flatMap((r) => r.daemon?.tries ?? []);

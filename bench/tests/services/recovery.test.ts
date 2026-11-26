@@ -235,11 +235,23 @@ describe("recovery tears an as-found project down before it deletes the sandbox"
 
   test("only --abandon-project deletes a kept sandbox, and its project stays open", async () => {
     const { order, files, entry } = await setup(1);
-    const swept = await sweep(files, entry, ["--abandon-project", "e2b-compose-1"]);
 
-    expect(order).toEqual(["down true", "down true", "destroy true"]);
-    expect(swept.stdout).toContain('"retained":0');
-    expect(swept.exitCode).toBe(1);
-    expect(swept.stderr).toContain("Compose project cleanup unresolved for e2b-compose-1");
+    const [abandoned, later] = await sweeps(files, entry, [
+      ["--abandon-project", "e2b-compose-1"],
+      [],
+    ]);
+
+    expect(order.slice(0, 3)).toEqual(["down true", "down true", "destroy true"]);
+    expect(abandoned?.stdout).toContain('"retained":0');
+    expect(abandoned?.exitCode).toBe(1);
+    expect(abandoned?.stderr).toContain("Compose project cleanup unresolved for e2b-compose-1");
+    expect(states(abandoned?.projects ?? "")).toEqual(["pending", "sandbox-gone"]);
+
+    // The confirmed deletion is journaled: the next sweep keeps the project open, claims no kept
+    // sandbox, and never reaches for the guest again.
+    expect(later?.stdout).toContain('"retained":0');
+    expect(later?.stdout).toContain('"openProjects":1');
+    expect(later?.exitCode).toBe(1);
+    expect(order.filter((step) => step.startsWith("down"))).toHaveLength(2);
   });
 });

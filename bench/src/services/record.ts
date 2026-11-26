@@ -92,6 +92,11 @@ const daemonSchema = z.object({
   /** `compose down -v` of that project before the sandbox went: true when it exited 0. */
   down: z.boolean().nullable().default(null),
   /**
+   * The first method/config whose daemon answered /_ping, kept even when a storage fallback later
+   * clears `method`: Docker started here, whatever the workload did on it.
+   */
+  answered: z.string().nullable().default(null),
+  /**
    * The ladder ran to its end: a method was chosen, or every method failed or was skipped (a storage
    * fallback that ran out included). False when a timeout, abort or vanished sandbox cut it short,
    * so the attempt says nothing about Docker.
@@ -156,7 +161,11 @@ export const projectEventSchema = z.object({
   daemon: z.string(),
   provenance: z.enum(["as-found", "launched"]),
   sandboxId: z.string().nullable(),
-  state: z.enum(["pending", "down", "with-sandbox"]),
+  /**
+   * `sandbox-gone`: an operator abandoned the as-found project's sandbox (`sweep
+   * --abandon-project`) and its deletion was confirmed; the project itself stays open.
+   */
+  state: z.enum(["pending", "down", "with-sandbox", "sandbox-gone"]),
   /**
    * The guest command that tears the project down on that daemon, socket included, so recovery can
    * run it on the sandbox before deleting it. Absent in journals from before it was recorded.

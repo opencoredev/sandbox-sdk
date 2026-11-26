@@ -18,7 +18,9 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { connectSandbox } from "@opencoredev/sandbox-sdk";
+import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import {
+  controlPlaneHosts,
   fingerprintSchema,
   journalFingerprint,
   reapConnection,
@@ -139,21 +141,25 @@ const runFileSchema = runInfoSchema.extend({
  * are never pooled: the shared loader's `BENCH_REGION_<ADAPTER>` and native region variable
  * (`regionKeys`, which providerRegion resolves and passes on), and every region variable the
  * provider's own SDK reads (`sdkRegionVariables`, the table its connection fingerprint uses), each
- * with its value or null. Region values, never secrets.
+ * with its value or null. With the loaded adapter, also `controlPlane`: the hosts its resolved
+ * connection sends requests to (controlPlaneHosts), where an endpoint encodes placement, such as
+ * Superserve's region from its key. Region values and hosts, never secrets.
  */
-export function placementOf(
-  adapter: string,
-  env: NodeJS.ProcessEnv,
-): Record<string, string | null> {
+export function placementOf(adapter: string, env: NodeJS.ProcessEnv, provider?: Provider) {
   const native = regionKeys.get(adapter);
 
-  return Object.fromEntries(
-    [
-      `BENCH_REGION_${adapter.toUpperCase()}`,
-      ...(native === undefined ? [] : [native]),
-      ...(sdkRegionVariables.get(adapter) ?? []),
-    ].map((name) => [name, env[name] ?? null]),
-  );
+  const names = [
+    `BENCH_REGION_${adapter.toUpperCase()}`,
+    ...(native === undefined ? [] : [native]),
+    ...(sdkRegionVariables.get(adapter) ?? []),
+  ];
+
+  return Object.fromEntries([
+    ...names.map((name) => [name, env[name] ?? null] as const),
+    ...(provider === undefined
+      ? []
+      : [["controlPlane", controlPlaneHosts(provider)?.join(",") ?? null] as const]),
+  ]);
 }
 
 /** A file's text; null only when it does not exist, so a real read error is never an empty file. */
@@ -315,24 +321,32 @@ async function unconfirmedOwned(
   const claims = new Map<string, (typeof projects.items)[number]>();
   const key = (e: { attemptId: string; daemon: string }) => `${e.attemptId} ${e.daemon}`;
 
+  // A project stays claimed until its `down` (or, on a launched daemon, its sandbox's deletion); an
+  // abandoned sandbox's deletion (`sandbox-gone`) leaves the project claimed, with no sandbox.
   for (const event of projects.items)
-    if (event.state === "pending") claims.set(key(event), event);
+    if (event.state === "pending" || event.state === "sandbox-gone") claims.set(key(event), event);
     else claims.delete(key(event));
 
   const pending = [...claims.values()];
   const asFound = pending.filter((c) => c.provenance === "as-found");
-  // Each project's latest event: a later `down` (recovery's included) clears an older open row,
-  // which stays in the attempt journal for audit.
-  const latest = new Map(projects.items.map((e) => [e.project, e.state]));
+
+  // Projects whose latest event clears them: a later `down` (recovery's included) clears an older
+  // open row, which stays in the attempt journal for audit.
+  const resolvedProjects = new Set(
+    [...new Map(projects.items.map((e) => [e.project, e.state]))].flatMap(([project, state]) =>
+      state === "down" || state === "with-sandbox" ? [project] : [],
+    ),
+  );
 
   const stillOpen = (r: AttemptRecord) =>
-    projectOpen(r) && (latest.get(r.daemon?.project ?? "") ?? "pending") === "pending";
+    projectOpen(r) && !resolvedProjects.has(r.daemon?.project ?? "");
 
   return {
     known,
     unresolved,
     /** Unresolved claims on daemons that were already there: recovery tries their teardown. */
     asFound,
+    resolvedProjects,
     /**
      * Attempts whose Compose project obligation no sandbox deletion resolves, each with the
      * project's full identity: an open project in its row, or a claim on a daemon that was already
@@ -484,16 +498,42 @@ async function sweepRun(input: {
 }) {
   const names = new Set(input.entries.map((e) => e.name));
 
+  // Claims whose sandbox may still be there: an abandoned one's confirmed deletion ended that.
   const claims = async () =>
-    (await unconfirmedOwned(input.out)).asFound.filter((c) => names.has(c.provider));
+    (await unconfirmedOwned(input.out)).asFound.filter(
+      (c) => names.has(c.provider) && c.state === "pending" && c.sandboxId !== null,
+    );
 
   // A reachable sandbox may be the only way back to an as-found daemon: its project is torn down
   // first, and while that has not worked the sandbox is kept out of every deletion below.
   await downAsFound({ ...input, claims: await claims() });
+  const left = await claims();
 
-  const kept = (await claims()).filter(
-    (c) => c.sandboxId !== null && !input.abandon?.has(c.attemptId),
-  );
+  // An operator gave up on these: the sandbox goes, and a confirmed deletion is journaled so later
+  // sweeps keep reporting the project open without claiming a sandbox is kept for it.
+  for (const claim of left.filter((c) => input.abandon?.has(c.attemptId))) {
+    const entry = input.entries.find((e) => e.name === claim.provider);
+
+    const gone =
+      entry !== undefined &&
+      claim.sandboxId !== null &&
+      (await bounded(entry.provider.destroy(claim.sandboxId), 120_000, "destroy").then(
+        () => true,
+        () => false,
+      ));
+
+    await input
+      .note({ kind: "project-abandoned", project: projectIdentity(claim), sandboxDeleted: gone })
+      .catch(() => {});
+
+    if (gone)
+      await appendFile(
+        join(input.out, projectsFile),
+        `${JSON.stringify({ ...claim, state: "sandbox-gone", at: new Date().toISOString() })}\n`,
+      ).catch(() => {});
+  }
+
+  const kept = left.filter((c) => !input.abandon?.has(c.attemptId));
 
   const retain = new Set(kept.flatMap((c) => (c.sandboxId === null ? [] : [c.sandboxId])));
 
@@ -717,6 +757,12 @@ async function run(args: string[]) {
     }
 
     connections[setup.name] = fingerprint.value;
+    // The loaded adapter's resolved routing joins its placement, before anything is created.
+    info.conditions.placement[setup.name] = placementOf(
+      setup.adapter,
+      process.env,
+      loaded.entry.provider,
+    );
     entries.push({ setup, entry: loaded.entry });
   }
 
@@ -755,7 +801,8 @@ async function run(args: string[]) {
   // Cleanups of creates that answered after their attempt returned: awaited before the end.
   const lateCleanups = new Set<Promise<void>>();
   // Attempts whose Compose project may still run on a daemon that outlives the sandbox.
-  const projectsOpen = new Set<string>();
+  // Attempt ID to its project, so a later clearing event in the journal can resolve it.
+  const projectsOpen = new Map<string, string | null>();
 
   // An attempt whose sandbox may still exist (a create with an unknown outcome, or a deletion that
   // was not confirmed) holds admission for the whole run while it is reconciled, so no provider
@@ -894,7 +941,7 @@ async function run(args: string[]) {
         // The project's obligation is its own: whatever happens to the sandbox below, no sandbox
         // reconciliation or sweep resolves it.
         if (projectOpen(record)) {
-          projectsOpen.add(attemptId);
+          projectsOpen.set(attemptId, record.daemon?.project ?? null);
           await note({
             kind: "project-open",
             provider: entry.name,
@@ -1084,7 +1131,10 @@ async function run(args: string[]) {
     const clean = !swept.failed && !swept.undeleted && !swept.unchecked;
 
     const open = new Map([
-      ...[...projectsOpen].map((id) => [id, id] as const),
+      // Kept unless the journal's latest event for its project clears it (recovery tore it down).
+      ...[...projectsOpen].flatMap(([id, project]) =>
+        project !== null && journaled.resolvedProjects.has(project) ? [] : [[id, id] as const],
+      ),
       ...(clean ? [] : journaled.launchedProjects),
       ...journaled.openProjects,
     ]);

@@ -775,6 +775,34 @@ export async function journalFingerprint(provider: Provider): Promise<Fingerprin
   return fingerprintNow(binding);
 }
 
+/**
+ * The control-plane hosts this instance's resolved connection sends requests to: the host of each
+ * http(s) URL in its configuration (never its path, query or credentials), sorted, or null when it
+ * was not resolved. Where the endpoint encodes placement (Superserve's region from its key, an
+ * endpoint override), runs with different hosts ran somewhere else.
+ */
+export function controlPlaneHosts(provider: Provider): string[] | null {
+  const binding = bindings.get(provider);
+
+  if (binding?.kind !== "resolved") return null;
+
+  const hosts = Object.values(binding.connection.config).flatMap((value) => {
+    const text = z.string().safeParse(value);
+
+    if (!text.success) return [];
+
+    try {
+      const url = new URL(text.data);
+
+      return url.protocol === "https:" || url.protocol === "http:" ? [url.host] : [];
+    } catch {
+      return [];
+    }
+  });
+
+  return [...new Set(hosts)].sort();
+}
+
 /** {@link journalFingerprint}'s value, or null when the instance has none. */
 export async function fingerprintOf(provider: Provider): Promise<string | null> {
   const current = await journalFingerprint(provider);

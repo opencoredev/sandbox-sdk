@@ -24,6 +24,8 @@ import {
   type GuestBox,
 } from "../../src/services/attempt.js";
 import { stalePins, x86_64Elf, type Artifacts } from "../../src/services/artifacts.js";
+import { loadSlotProvider } from "../../src/realistic/cli.js";
+import { providerSetup } from "../../src/realistic/setup.js";
 import { placementOf, servicesCommand, servicesFactory } from "../../src/services/cli.js";
 import { node, redisSource, zonkyPostgres } from "../../src/services/pins.js";
 import { SpendGuard, parseProviderCaps } from "../../src/services/budget.js";
@@ -512,6 +514,7 @@ function record(input: {
             project: null,
             launched: green && input.method !== "preinstalled-running",
             down: null,
+            answered: green ? `${input.method ?? "static-rootful"}/default` : null,
             finished: true,
           }
         : null,
@@ -2951,6 +2954,42 @@ describe("placement through the run manifest and the summary", () => {
     }
   });
 
+  test("Superserve's two regions, routed by the key, have different control planes and are never pooled", async () => {
+    const hostsFor = async (region: string) => {
+      vi.stubEnv("SUPERSERVE_API_KEY", `ss_live_${region}_${"a".repeat(32)}`);
+      vi.stubEnv("SUPERSERVE_BASE_URL", "");
+
+      try {
+        const loaded = await loadSlotProvider(providerSetup("superserve"), "same-machine", 0);
+
+        if (loaded.kind !== "ready") throw new Error(loaded.note);
+
+        return placementOf("superserve", {}, loaded.entry.provider);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    };
+
+    const east = await hostsFor("use");
+    const west = await hostsFor("usw");
+    expect(east.controlPlane).toBe("api.superserve.ai");
+    expect(west.controlPlane).toBe("api-usw.superserve.ai");
+    // Never the key.
+    expect(JSON.stringify([east, west])).not.toContain("ss_live");
+
+    const a = await folder("r1", "superserve", east);
+    const b = await folder("r2", "superserve", west);
+
+    try {
+      await expect(servicesCommand(["summary", "--out", a, "--out", b])).rejects.toThrow(
+        "superserve was placed differently",
+      );
+    } finally {
+      await rm(a, { recursive: true, force: true });
+      await rm(b, { recursive: true, force: true });
+    }
+  });
+
   test("services.json carries only the public run fields", async () => {
     const dir = await folder("r1", "modal", placementOf("modal", {}));
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -2983,9 +3022,37 @@ describe("storage fallback only for a storage-driver incompatibility", () => {
     for (const output of [
       "failed to extract layer sha256:abc: write /var/lib/docker/overlay2/x/diff/y: no space left on device",
       "failed to extract layer: unexpected EOF",
+      // A layer's file ownership, not the storage mount: the image, on this daemon, at image-pull.
+      "failed to register layer: lchown /var/lib/docker/overlay2/x/diff/usr/bin/su: operation not permitted",
       "error pulling image: Get https://registry-1.docker.io/v2/: net/http: TLS handshake timeout",
     ])
       expect(storageIncompatibility(output)).toBeNull();
+  });
+
+  test("a daemon that answered stays a Docker start after a storage fallback cleared its method", () => {
+    const base = record({ provider: "p", path: "compose", attempt: 1, up: null });
+
+    const answered: AttemptRecord = {
+      ...base,
+      daemon: base.daemon ? { ...base.daemon, answered: "preinstalled-running/as-found" } : null,
+    };
+
+    const run = {
+      id: "r1",
+      sdkCommit: "a",
+      startedAt: "x",
+      endedAt: null,
+      location: "evo-1",
+      settings: {},
+      artifacts: { node: "n", fixture: "f", native: "b" },
+    };
+
+    expect(servicesSiteData({ records: [base], runs: [run] }).providers[0]?.capability.docker).toBe(
+      "fails",
+    );
+    expect(
+      servicesSiteData({ records: [answered], runs: [run] }).providers[0]?.capability.docker,
+    ).toBe("works");
   });
 
   test("a pull that fails on a working daemon keeps Docker's start apart from the workload verdict", () => {
