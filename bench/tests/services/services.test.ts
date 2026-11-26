@@ -16,13 +16,14 @@ import {
   stepTimeoutMs,
   refusedPrerequisite,
   stopTree,
+  daemonScan,
   cleanupStatus,
   projectCleanupOf,
   systemBin,
   type GuestBox,
 } from "../../src/services/attempt.js";
-import { stalePins, type Artifacts } from "../../src/services/artifacts.js";
-import { servicesCommand, servicesFactory } from "../../src/services/cli.js";
+import { stalePins, x86_64Elf, type Artifacts } from "../../src/services/artifacts.js";
+import { placementOf, servicesCommand, servicesFactory } from "../../src/services/cli.js";
 import { node, redisSource, zonkyPostgres } from "../../src/services/pins.js";
 import { SpendGuard, parseProviderCaps } from "../../src/services/budget.js";
 import {
@@ -2805,5 +2806,125 @@ describe("run disposition", () => {
       stdout.mockRestore();
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the daemon scan reads each daemon's state", () => {
+  test("a zombie or dead daemon is gone, and one whose state cannot be read is unreadable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "svc-proc-"));
+
+    const proc = async (pid: string, comm: string, state: string | null) => {
+      await mkdir(join(root, pid));
+      await writeFile(join(root, pid, "comm"), `${comm}\n`);
+
+      if (state !== null)
+        await writeFile(join(root, pid, "stat"), `${pid} (${comm}) ${state} 1 1 1\n`);
+    };
+
+    try {
+      await proc("11", "containerd", "Z");
+      await proc("12", "dockerd", "X");
+      await proc("13", "containerd", "S");
+      await proc("14", "dockerd", null);
+      await proc("15", "bash", "S");
+
+      const stdout = await new Promise<string>((done, fail) =>
+        execFile("sh", ["-c", daemonScan.replaceAll("/proc", root)], (error, text) =>
+          error ? fail(error) : done(text),
+        ),
+      );
+
+      expect(stdout.trim().split("\n")).toEqual(["13:containerd", "UNREADABLE:14", "SCANNED 5"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("placement through the run manifest and the summary", () => {
+  const folder = async (id: string, placement: Record<string, string | null>) => {
+    const dir = await mkdtemp(join(tmpdir(), "svc-placement-"));
+
+    await writeFile(
+      join(dir, "run.json"),
+      JSON.stringify({
+        id,
+        ownerLabel: `${id}-abcd`,
+        sdkCommit: "a",
+        startedAt: "x",
+        endedAt: "y",
+        location: "evo-1",
+        settings: {},
+        conditions: {
+          attemptTimeoutMs: 1_500_000,
+          daemonReadyMs: 45_000,
+          placement: { modal: placement },
+        },
+        artifacts: { node: "n", fixture: "f", native: "b" },
+        providers: ["modal"],
+        plan: { paths: ["native"], attempts: 1 },
+        disposition: "complete",
+      }),
+    );
+    await writeFile(
+      join(dir, "services-attempts.jsonl"),
+      `${JSON.stringify({ ...record({ provider: "modal", path: "native", attempt: 1, up: id === "r1" ? 2000 : 8000 }), runId: id })}\n`,
+    );
+
+    return dir;
+  };
+
+  test("the loader's BENCH_REGION_MODAL and Modal's own variable are both recorded and never pooled across values", async () => {
+    for (const name of ["BENCH_REGION_MODAL", "MODAL_SANDBOX_REGION"]) {
+      expect(placementOf("modal", { [name]: "us-east" })).toEqual({
+        BENCH_REGION_MODAL: name === "BENCH_REGION_MODAL" ? "us-east" : null,
+        MODAL_SANDBOX_REGION: name === "MODAL_SANDBOX_REGION" ? "us-east" : null,
+      });
+
+      const a = await folder("r1", placementOf("modal", { [name]: "us-east" }));
+      const b = await folder("r2", placementOf("modal", { [name]: "eu-west" }));
+
+      try {
+        await expect(servicesCommand(["summary", "--out", a, "--out", b])).rejects.toThrow(
+          "modal was placed differently",
+        );
+      } finally {
+        await rm(a, { recursive: true, force: true });
+        await rm(b, { recursive: true, force: true });
+      }
+    }
+  });
+});
+
+describe("collection preconditions", () => {
+  test("run refuses a blank or unknown runner location before it starts", async () => {
+    for (const location of [[], ["--location", " "], ["--location", "unknown"]])
+      await expect(
+        servicesCommand([
+          "run",
+          "--providers",
+          "e2b",
+          "--run",
+          "x",
+          "--out",
+          "/nonexistent/x",
+          ...location,
+        ]),
+      ).rejects.toThrow("services run needs --location NAME");
+  });
+
+  test("the Redis build must be an x86_64 ELF", () => {
+    const header = (machine: number) => {
+      const bytes = new Uint8Array(64);
+      bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]);
+      new DataView(bytes.buffer).setUint16(18, machine, true);
+
+      return bytes;
+    };
+
+    expect(x86_64Elf(header(62))).toBe(true);
+    // aarch64 (EM_AARCH64), and a file that is not ELF at all.
+    expect(x86_64Elf(header(183))).toBe(false);
+    expect(x86_64Elf(new TextEncoder().encode("#!/bin/sh\n"))).toBe(false);
   });
 });

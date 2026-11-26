@@ -598,11 +598,12 @@ export const stopTree = (dir: string) =>
   `p=$(cat ${dir}/launch.pid 2>/dev/null); [ -n "$p" ] || { echo NOPID; exit 0; }; tr '\\0' ' ' < /proc/"$p"/cmdline 2>/dev/null | grep -qF -- ${quote(dir)} || { echo STOPPED; exit 0; }; st() { sed 's/.*) //' /proc/"$1"/stat 2>/dev/null | cut -d' ' -f20; }; up() { s=$(sed 's/.*) //' /proc/"$1"/stat 2>/dev/null | cut -d' ' -f1,20); [ -n "$2" ] && [ "\${s#* }" = "$2" ] && [ "\${s%% *}" != Z ] && [ "\${s%% *}" != X ]; }; t() { echo "$1:$(st "$1")"; for c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do t "$c"; done; }; all=$(t "$p"); kill -TERM "$p" 2>/dev/null; i=0; while [ $i -lt 20 ] && [ -d /proc/"$p" ]; do sleep 0.5; i=$((i + 1)); done; for e in $all; do up "\${e%%:*}" "\${e#*:}" && kill -KILL "\${e%%:*}" 2>/dev/null; done; j=0; while :; do left=; for e in $all; do up "\${e%%:*}" "\${e#*:}" && left=1; done; [ -z "$left" ] && { echo STOPPED; exit 0; }; [ $j -ge 10 ] && { echo SURVIVED; exit 0; }; sleep 0.2; j=$((j + 1)); done`;
 
 /**
- * Lists every dockerd or containerd running, one `pid:name` per line, and any PID still there
- * whose name could not be read (`UNREADABLE:pid`), then `SCANNED <count>` exactly. Processes
- * that exit during the scan are skipped.
+ * Lists every dockerd or containerd alive, one `pid:name` per line, and any PID still there whose
+ * name, or a daemon's state, could not be read (`UNREADABLE:pid`), then `SCANNED <count>`
+ * exactly. A zombie or dead daemon (state Z or X) is gone, as stopTree counts it; processes that
+ * exit during the scan are skipped.
  */
-const daemonScan = `n=0; for p in /proc/[0-9]*; do [ -d "$p" ] || continue; if ! c=$(cat "$p"/comm 2>/dev/null); then [ -d "$p" ] && echo "UNREADABLE:\${p#/proc/}"; continue; fi; n=$((n + 1)); case "$c" in dockerd|containerd) echo "\${p#/proc/}:$c" ;; esac; done; echo "SCANNED $n"`;
+export const daemonScan = `n=0; for p in /proc/[0-9]*; do [ -d "$p" ] || continue; if ! c=$(cat "$p"/comm 2>/dev/null); then [ -d "$p" ] && echo "UNREADABLE:\${p#/proc/}"; continue; fi; n=$((n + 1)); case "$c" in dockerd|containerd) s=$(sed 's/.*) //' "$p"/stat 2>/dev/null | cut -d' ' -f1); case "$s" in Z|X) ;; '') [ -d "$p" ] && echo "UNREADABLE:\${p#/proc/}" ;; *) echo "\${p#/proc/}:$c" ;; esac ;; esac; done; echo "SCANNED $n"`;
 
 /** One method of the ladder: tries it, or records the probe fact that rules it out. */
 /** The attempt a Compose project belongs to, as its journal names it. */
@@ -956,6 +957,7 @@ class Daemon {
       daemon: `${this.record.method ?? "?"}/${this.record.config ?? "?"}`,
       provenance: this.record.method === "preinstalled-running" ? "as-found" : "launched",
       state: "pending",
+      down: `${this.g.prelude()}${this.composeCommand(composeDown)}`,
     };
 
     await this.onProject?.(event);
@@ -976,7 +978,7 @@ class Daemon {
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       const result = await via
-        .exec(this.composeCommand("down -v --remove-orphans --timeout 5"), {
+        .exec(this.composeCommand(composeDown), {
           cwd: guest.app,
           timeoutMs: Math.floor(timeoutMs / 2),
         })
@@ -1613,6 +1615,9 @@ export const deadlineGraceMs = 30_000;
 
 /** How long cleanup waits for `compose down -v` of the attempt's project. */
 export const composeDownMs = 45_000;
+
+/** The arguments every teardown of an attempt's project uses, in the attempt and in recovery. */
+const composeDown = "down -v --remove-orphans --timeout 5";
 
 /** Resolves after `ms`, unless `signal` fires first; never rejects. */
 const after = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.());

@@ -157,6 +157,11 @@ export const projectEventSchema = z.object({
   provenance: z.enum(["as-found", "launched"]),
   sandboxId: z.string().nullable(),
   state: z.enum(["pending", "down", "with-sandbox"]),
+  /**
+   * The guest command that tears the project down on that daemon, socket included, so recovery can
+   * run it on the sandbox before deleting it. Absent in journals from before it was recorded.
+   */
+  down: z.string().optional(),
 });
 
 export type ProjectEvent = z.infer<typeof projectEventSchema>;

@@ -17,12 +17,14 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { connectSandbox } from "@opencoredev/sandbox-sdk";
+import { fingerprintSchema, journalFingerprint, reapConnection } from "../connections.js";
 import type { FactoryOptions } from "../providers.js";
 import { attemptBudget, loadSlotProvider, sweepProviders, type RunNote } from "../realistic/cli.js";
 import { providerSetup, providerSetups, tracks, type TrackId } from "../realistic/setup.js";
 import type { SlotProvider } from "../realistic/slots.js";
 import { defaultCacheDir, prepareArtifacts, readArtifact, readArtifacts } from "./artifacts.js";
-import { composeDownMs, deadlineGraceMs, runServicesAttempt } from "./attempt.js";
+import { composeDownMs, deadlineGraceMs, guest, runServicesAttempt } from "./attempt.js";
 import { SpendGuard, parseProviderCaps } from "./budget.js";
 import {
   attemptRecordSchema,
@@ -30,6 +32,7 @@ import {
   projectOpen,
   servicePathSchema,
   type AttemptRecord,
+  type ProjectEvent,
   type ServicePath,
 } from "./record.js";
 import {
@@ -107,6 +110,11 @@ const runFileSchema = runInfoSchema.extend({
   ownerLabel: z.string().min(1).optional(),
   /** Providers the run admitted, so a later sweep knows where to look. */
   providers: z.array(z.string()).optional(),
+  /**
+   * Each admitted provider's connection fingerprint (endpoint, scope and credentials, hashed;
+   * bench/src/connections.ts), so a sweep from another shell never lists or deletes elsewhere.
+   */
+  connections: z.record(z.string(), fingerprintSchema).default({}),
   /** What the run set out to do: every admitted provider, each path, attempts 1..attempts. */
   plan: z
     .object({ paths: z.array(servicePathSchema), attempts: z.number().int().positive() })
@@ -126,12 +134,31 @@ const runFileSchema = runInfoSchema.extend({
  * placed differently are never pooled. Region values, never secrets.
  */
 const placementEnv = new Map([
+  ["e2b", ["E2B_REGION"]],
+  ["vercel", ["VERCEL_REGION"]],
   ["modal", ["MODAL_SANDBOX_REGION"]],
   ["daytona", ["DAYTONA_TARGET"]],
   ["buddy", ["BUDDY_REGION"]],
   ["archil", ["ARCHIL_REGION"]],
   ["sandboxer", ["SANDBOXER_REGION"]],
 ]);
+
+/**
+ * An adapter's placement as the run resolves it: the shared loader's `BENCH_REGION_<ADAPTER>`,
+ * which it passes to the adapter (providerRegion in bench/src/providers.ts), and every native
+ * variable the adapter reads itself, each with its value or null.
+ */
+export function placementOf(
+  adapter: string,
+  env: NodeJS.ProcessEnv,
+): Record<string, string | null> {
+  return Object.fromEntries(
+    [`BENCH_REGION_${adapter.toUpperCase()}`, ...(placementEnv.get(adapter) ?? [])].map((name) => [
+      name,
+      env[name] ?? null,
+    ]),
+  );
+}
 
 /** A file's text; null only when it does not exist, so a real read error is never an empty file. */
 async function readText(path: string): Promise<string | null> {
@@ -297,30 +324,128 @@ async function unconfirmedOwned(
     else claims.delete(key(event));
 
   const pending = [...claims.values()];
+  const asFound = pending.filter((c) => c.provenance === "as-found");
 
   return {
     known,
     unresolved,
+    /** Unresolved claims on daemons that were already there: recovery tries their teardown. */
+    asFound,
     /**
-     * Attempts whose Compose project obligation no sandbox deletion resolves: an open project in
-     * its row, or a claim on a daemon that was already there with no line resolving it.
+     * Attempts whose Compose project obligation no sandbox deletion resolves, each with the
+     * project's full identity: an open project in its row, or a claim on a daemon that was already
+     * there with no line resolving it.
      */
-    openProjects: [
-      ...new Set([
-        ...records.items.flatMap((r) => (projectOpen(r) ? [r.attemptId] : [])),
-        ...pending.flatMap((c) => (c.provenance === "as-found" ? [c.attemptId] : [])),
-      ]),
-    ],
+    openProjects: new Map([
+      ...records.items.flatMap((r) =>
+        projectOpen(r)
+          ? [
+              [
+                r.attemptId,
+                `${r.attemptId} (project ${r.daemon?.project ?? "unknown"} on ${r.provider} sandbox ${r.sandboxIds.join(",") || "unknown"}, daemon ${r.daemon?.method ?? "?"}/${r.daemon?.config ?? "?"})`,
+              ] as const,
+            ]
+          : [],
+      ),
+      ...asFound.map((c) => [c.attemptId, projectIdentity(c)] as const),
+    ]),
     /** Unresolved claims on daemons launched inside their sandbox: a clean sweep resolves them. */
-    launchedProjects: [
-      ...new Set(pending.flatMap((c) => (c.provenance === "launched" ? [c.attemptId] : []))),
-    ],
+    launchedProjects: new Map(
+      pending.flatMap((c) =>
+        c.provenance === "launched" ? [[c.attemptId, projectIdentity(c)] as const] : [],
+      ),
+    ),
     unreadable: owned.bad + records.bad + submissions.bad + projects.bad,
     /** Journals that exist but could not be read: what they held is unknown. */
     unreadableFiles: [owned.error, records.error, submissions.error, projects.error].filter(
       (error): error is string => error !== null,
     ),
   };
+}
+
+/** A claim's full project identity, for the unresolved report. */
+const projectIdentity = (c: ProjectEvent) =>
+  `${c.attemptId} (project ${c.project} on ${c.provider} sandbox ${c.sandboxId ?? "unknown"}, daemon ${c.daemon}, ${c.provenance})`;
+
+/** A promise that rejects once `ms` pass without an answer. */
+const bounded = <T>(work: Promise<T>, ms: number, what: string) =>
+  Promise.race([
+    work,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms).unref(),
+    ),
+  ]);
+
+/**
+ * Before a sweep deletes a sandbox that may be the only way back to an as-found daemon, each
+ * pending as-found claim on it gets a bounded `compose down -v` there: only once the sandbox is
+ * confirmed to carry this run's label and the claim's attempt, through the exact command and
+ * socket the claim recorded (its project name is unique to the attempt). `down` is journaled only
+ * after it exits 0; anything else leaves the claim open, named with its full identity.
+ */
+async function downAsFound(input: {
+  readonly claims: readonly ProjectEvent[];
+  readonly entries: readonly SlotProvider[];
+  readonly label: string;
+  readonly out: string;
+  readonly note: (entry: RunNote) => Promise<void>;
+}) {
+  for (const claim of input.claims) {
+    const entry = input.entries.find((e) => e.name === claim.provider);
+
+    const unresolved = (reason: string) =>
+      input.note({ kind: "project-unresolved", project: projectIdentity(claim), reason });
+
+    if (!entry || claim.sandboxId === null || claim.down === undefined) {
+      await unresolved(
+        !entry
+          ? "its provider was not loaded"
+          : claim.sandboxId === null
+            ? "no sandbox ID was journaled"
+            : "the claim recorded no teardown command",
+      );
+      continue;
+    }
+
+    try {
+      const info = await bounded(entry.provider.connect(claim.sandboxId), 30_000, "connect");
+
+      const ours =
+        info.labels["sandbox-bench-run"] === input.label &&
+        (entry.runLabelOnly || info.labels["svc-attempt"] === claim.attemptId);
+
+      if (!ours) {
+        await unresolved("the sandbox does not carry this run's label and the claim's attempt");
+        continue;
+      }
+
+      const box = await bounded(connectSandbox(entry.provider, claim.sandboxId), 30_000, "connect");
+      let down = false;
+
+      for (let attempt = 1; attempt <= 2 && !down; attempt++) {
+        const result = await bounded(
+          box.run(claim.down, { cwd: guest.app, timeoutMs: composeDownMs / 2 }),
+          composeDownMs / 2 + 5_000,
+          "compose down",
+        ).catch(() => null);
+
+        down = result?.ok === true;
+      }
+
+      if (!down) {
+        await unresolved("compose down did not exit 0");
+        continue;
+      }
+
+      // A clearing line that fails to write leaves the claim pending: the safe side.
+      await appendFile(
+        join(input.out, projectsFile),
+        `${JSON.stringify({ ...claim, state: "down", via: "recovery", at: new Date().toISOString() })}\n`,
+      ).catch(() => {});
+    } catch (error) {
+      await unresolved(error instanceof Error ? error.message : String(error));
+    }
+  }
 }
 
 /**
@@ -437,13 +562,17 @@ async function run(args: string[]) {
       "attempt-timeout-ms": { type: "string", default: "1500000" },
       "daemon-ready-ms": { type: "string", default: "45000" },
       concurrency: { type: "string", default: "4" },
-      location: { type: "string", default: "unknown" },
+      location: { type: "string" },
       "modal-runtime": { type: "string" },
     },
   });
 
   if (!values.run || !values.out || !values.providers)
     throw new Error("services run needs --providers, --run and --out");
+
+  // The summary refuses a run without one, so a paid collection never ends unpublishable.
+  if (!values.location?.trim() || values.location.trim() === "unknown")
+    throw new Error("services run needs --location NAME, the runner machine (for example evo-1)");
   const track = z.enum(tracks).parse(values.track) satisfies TrackId;
   const paths = list(values.paths).map((p) => servicePathSchema.parse(p));
 
@@ -474,6 +603,7 @@ async function run(args: string[]) {
   const out = resolve(values.out);
   const runId = values.run;
   await mkdir(join(out, "outputs"), { recursive: true });
+  const connections: Record<string, string> = {};
 
   const info = {
     id: runId,
@@ -483,23 +613,20 @@ async function run(args: string[]) {
     sdkCommit: sdkCommit(),
     startedAt: new Date().toISOString(),
     endedAt: null,
-    location: values.location,
+    location: values.location.trim(),
     // Per provider: the setting applies to that provider's rows only.
     settings: modalRuntime ? { modal: `runtime=${modalRuntime}` } : {},
     conditions: {
       attemptTimeoutMs: timeoutMs,
       daemonReadyMs,
       placement: Object.fromEntries(
-        setups.map((s) => [
-          s.name,
-          Object.fromEntries(
-            (placementEnv.get(s.adapter) ?? []).map((name) => [name, process.env[name] ?? null]),
-          ),
-        ]),
+        setups.map((s) => [s.name, placementOf(s.adapter, process.env)]),
       ),
     },
     plan: { paths, attempts },
     disposition: "running",
+    // Filled as each provider loads, before it creates anything; every later write carries it.
+    connections,
     artifacts: {
       node: artifacts.node.sha256,
       fixture: artifacts.fixture.sha256,
@@ -531,7 +658,22 @@ async function run(args: string[]) {
     if (loaded.kind === "skipped") {
       await note({ kind: "provider-skipped", provider: setup.name, reason: loaded.note });
       process.stderr.write(`${setup.name}: skipped: ${loaded.note}\n`);
-    } else entries.push({ setup, entry: loaded.entry });
+      continue;
+    }
+
+    // Without its connection's fingerprint a later sweep could not tell it reaches the same
+    // endpoint, account and scope, so the provider creates nothing.
+    const fingerprint = await journalFingerprint(loaded.entry.provider);
+
+    if (fingerprint.kind === "unknown") {
+      const reason = `no connection fingerprint (${fingerprint.reason}); a sweep could not check it reaches this run's sandboxes`;
+      await note({ kind: "provider-skipped", provider: setup.name, reason });
+      process.stderr.write(`${setup.name}: skipped: ${reason}\n`);
+      continue;
+    }
+
+    connections[setup.name] = fingerprint.value;
+    entries.push({ setup, entry: loaded.entry });
   }
 
   await writeFile(
@@ -798,7 +940,7 @@ async function run(args: string[]) {
         ? "complete"
         : "stopped";
   } finally {
-    const { known, unresolved, unreadable, unreadableFiles } = await unconfirmedOwned(
+    const { known, unresolved, unreadable, unreadableFiles, asFound } = await unconfirmedOwned(
       out,
       live,
       unknownLive,
@@ -825,6 +967,7 @@ async function run(args: string[]) {
       known,
     };
 
+    await downAsFound({ claims: asFound, ...sweepInput });
     let swept = await sweepRun(sweepInput);
     const unknownCreates = [...unresolved.values()].reduce((a, b) => a + b, 0);
 
@@ -893,16 +1036,13 @@ async function run(args: string[]) {
     // A claim on a daemon launched inside its sandbox is resolved only by a sweep that left nothing.
     const clean = !swept.failed && !swept.undeleted && !swept.unchecked;
 
-    failOnOpenProjects(
-      [
-        ...new Set([
-          ...projectsOpen,
-          ...journaled.openProjects,
-          ...(clean ? [] : journaled.launchedProjects),
-        ]),
-      ],
-      notesPath,
-    );
+    const open = new Map([
+      ...[...projectsOpen].map((id) => [id, id] as const),
+      ...(clean ? [] : journaled.launchedProjects),
+      ...journaled.openProjects,
+    ]);
+
+    failOnOpenProjects([...open.values()], notesPath);
   }
 }
 
@@ -910,11 +1050,11 @@ async function run(args: string[]) {
  * Compose projects that may still run on a daemon that outlived its sandbox: no sweep can remove
  * them, so they are named and the command fails, every time, until someone removes them by hand.
  */
-function failOnOpenProjects(attemptIds: readonly string[], notesPath: string) {
-  if (!attemptIds.length) return;
+function failOnOpenProjects(projects: readonly string[], notesPath: string) {
+  if (!projects.length) return;
 
   process.stderr.write(
-    `Compose project cleanup unresolved for ${attemptIds.join(", ")}: each project may still run on a daemon that outlived its sandbox (projectCleanup: open); see ${notesPath}\n`,
+    `Compose project cleanup unresolved for ${projects.join("; ")}: each project may still run on a daemon that outlived its sandbox (projectCleanup: open); see ${notesPath}\n`,
   );
   process.exitCode = 1;
 }
@@ -991,7 +1131,8 @@ async function summary(args: string[]) {
   process.stdout.write(summaryMarkdown(site));
 }
 
-async function sweep(args: string[]) {
+/** `services sweep`; `load` builds each provider (the realistic loader, or a test's stand-in). */
+export async function sweep(args: string[], load: typeof loadSlotProvider = loadSlotProvider) {
   const { values } = parseArgs({
     args,
     options: {
@@ -1020,8 +1161,7 @@ async function sweep(args: string[]) {
   const notesPath = join(out, "notes.jsonl");
   const note = bestEffortNotes(notesPath);
 
-  const { known, unresolved, unreadable, unreadableFiles, openProjects, launchedProjects } =
-    await unconfirmedOwned(out);
+  const { known, unresolved, unreadable, unreadableFiles, asFound } = await unconfirmedOwned(out);
 
   for (const error of unreadableFiles) await note({ kind: "journal-unreadable", error });
 
@@ -1037,7 +1177,7 @@ async function sweep(args: string[]) {
     let reason: string;
 
     try {
-      const loaded = await loadSlotProvider(
+      const loaded = await load(
         providerSetup(name),
         track,
         0,
@@ -1047,12 +1187,20 @@ async function sweep(args: string[]) {
         name === "modal" ? extra : undefined,
       );
 
-      if (loaded.kind === "ready") {
-        entries.push(loaded.entry);
-        continue;
-      }
+      if (loaded.kind !== "ready") reason = loaded.note;
+      else {
+        // Only the connection that created the run's sandboxes can list them or prove them gone:
+        // another region, account or endpoint answers empty lists and 404s for live ones.
+        const connection = await reapConnection(loaded.entry.provider, runFile.connections[name]);
 
-      reason = loaded.note;
+        if (connection.kind === "same") {
+          entries.push(loaded.entry);
+          continue;
+        }
+
+        reason = `not swept, connection mismatch: ${connection.reason}`;
+        process.stderr.write(`${name}: ${reason}\n`);
+      }
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
     }
@@ -1079,19 +1227,22 @@ async function sweep(args: string[]) {
       await note({ kind: "sweep-excluded", provider, ids: [...(known.get(provider) ?? [])] });
     }
 
+  // A reachable sandbox may be the only way back to an as-found daemon: tear down first.
+  await downAsFound({ claims: asFound, entries, label, out, note });
   const swept = await sweepRun({ label, entries, note, out, known });
+  const { openProjects, launchedProjects } = await unconfirmedOwned(out);
   const unknownCreates = [...unresolved.values()].reduce((a, b) => a + b, 0);
   const unchecked = swept.unchecked + unreachable + unreadable + unreadableFiles.length;
   // A claim on a daemon launched inside its sandbox is resolved only by a sweep that left nothing.
   const clean = !swept.failed && !swept.undeleted && !unchecked;
-  const open = [...new Set([...openProjects, ...(clean ? [] : launchedProjects)])];
+  const open = new Map([...(clean ? [] : launchedProjects), ...openProjects]);
 
   process.stdout.write(
-    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, unreachable, unreadableJournalLines: unreadable, unreadableJournals: unreadableFiles.length, unresolvedCreates: unknownCreates, openProjects: open.length })}; see ${notesPath}\n`,
+    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, unreachable, unreadableJournalLines: unreadable, unreadableJournals: unreadableFiles.length, unresolvedCreates: unknownCreates, openProjects: open.size })}; see ${notesPath}\n`,
   );
 
   if (swept.failed || swept.undeleted || unchecked || unknownCreates) process.exitCode = 1;
-  failOnOpenProjects(open, notesPath);
+  failOnOpenProjects([...open.values()], notesPath);
 }
 
 export async function servicesCommand(args: string[]) {
@@ -1119,8 +1270,8 @@ export async function servicesCommand(args: string[]) {
     default:
       process.stdout.write(
         "bun bench services prepare [--cache DIR]\n" +
-          "bun bench services run --providers a,b --run ID --out DIR [--paths compose,native] [--attempts 3] [--track same-machine|default] [--max-dollars 15] [--provider-max-dollars a=2] [--attempt-timeout-ms 1500000] [--daemon-ready-ms 45000] [--concurrency 4] [--location TEXT] [--modal-runtime gvisor|vm] [--cache DIR]\n" +
-          "bun bench services summary --out DIR [--out DIR2] [--to services.json]\n" +
+          "bun bench services run --providers a,b --run ID --out DIR [--paths compose,native] [--attempts 3] [--track same-machine|default] [--max-dollars 15] [--provider-max-dollars a=2] [--attempt-timeout-ms 1500000] [--daemon-ready-ms 45000] [--concurrency 4] --location NAME [--modal-runtime gvisor|vm] [--cache DIR]\n" +
+          "bun bench services summary --out DIR [--out DIR2] [--to services.json] [--partial]\n" +
           "bun bench services sweep --out DIR --run ID [--providers a,b]\n",
       );
   }

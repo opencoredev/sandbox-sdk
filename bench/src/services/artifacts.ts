@@ -157,6 +157,19 @@ async function buildFixture(cacheDir: string, work: string) {
   return store(cacheDir, join(work, "fixture.tar.gz"));
 }
 
+/** Whether `bytes` start a 64-bit little-endian ELF for x86_64 (e_machine 62, EM_X86_64). */
+export function x86_64Elf(bytes: Uint8Array): boolean {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  return (
+    bytes.byteLength >= 20 &&
+    view.getUint32(0) === 0x7f454c46 &&
+    bytes[4] === 2 &&
+    bytes[5] === 1 &&
+    view.getUint16(18, true) === 62
+  );
+}
+
 async function buildNative(cacheDir: string, inputs: string, work: string) {
   const stage = join(work, "native");
   await mkdir(join(stage, "pg"), { recursive: true });
@@ -201,6 +214,10 @@ async function buildNative(cacheDir: string, inputs: string, work: string) {
     join(stage, "redis", "redis-server"),
     join(tree, "src", "redis-server"),
   ]);
+
+  // The guests run x86_64 only: a Redis built for the host's own machine would not start there.
+  if (!x86_64Elf(await readFile(join(stage, "redis", "redis-server"))))
+    throw new Error("redis-server was not built as an x86_64 ELF; prepare on a Linux x86_64 host");
   const { stdout: version } = await run(join(stage, "redis", "redis-server"), ["--version"]);
   const { stdout: gcc } = await run("gcc", ["--version"]);
   await pack(stage, join(work, "native.tar.gz"));
