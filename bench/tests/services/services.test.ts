@@ -3068,6 +3068,8 @@ describe("storage fallback only for a storage-driver incompatibility", () => {
       "failed to extract layer: unexpected EOF",
       // A layer's file ownership, not the storage mount: the image, on this daemon, at image-pull.
       "failed to register layer: lchown /var/lib/docker/overlay2/x/diff/usr/bin/su: operation not permitted",
+      // A mount namespace for extracting a layer, not a storage mount: the image, at image-pull.
+      "failed to register layer: ApplyLayer exit status 1 stdout:  stderr: error creating mount namespace before pivot: operation not permitted",
       // A container's runtime mount, not the daemon's storage: the workload, at services-start.
       'OCI runtime create failed: runc create failed: unable to start container process: error during container init: error mounting "proc" to rootfs at "/proc": mount proc:/proc (via /proc/self/fd/7), flags: 0xe: operation not permitted',
       "error pulling image: Get https://registry-1.docker.io/v2/: net/http: TLS handshake timeout",

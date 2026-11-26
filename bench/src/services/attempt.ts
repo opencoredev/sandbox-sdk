@@ -1463,25 +1463,31 @@ export async function getDaemon(
 }
 
 /**
- * The line of a pull or start output that says the daemon's storage driver itself cannot work here:
- * the graph or storage driver refused, or a mount of an image layer or the driver's storage (an
- * overlay) refused, as invalid, unsupported or not permitted; or null. A full disk, a layer's file
- * ownership (lchown), a container's runtime mount (/proc, /sys), a failed download or extraction,
- * or anything else is the workload's failure, never a reason to change daemons.
+ * The line of a pull or start output that says the daemon's storage driver itself cannot work here,
+ * refused as invalid, unsupported or not permitted; or null. It names the graph or storage driver,
+ * or a mount whose filesystem is an overlay or whose target is the daemon's image-layer storage
+ * (/var/lib/docker, /var/lib/containers). A full disk, a layer's file ownership (lchown), a mount
+ * namespace, a container's runtime mount (/proc, /sys), a failed download or extraction, or
+ * anything else is the workload's failure, never a reason to change daemons.
  */
 export function storageIncompatibility(output: string): string | null {
+  const driver = /graph ?driver|storage[- ]driver|driver not supported/i;
+
+  // "error creating overlay mount to …", "failed to mount overlay", "mount … type overlay", or a
+  // mount onto the layer store itself.
+  const storageMount =
+    /\boverlay\w*\s+mount\b|\bmount(?:ing)?\s+"?overlay|\btype\s+"?overlay|\bmount(?:ing)?\b[^\n]*\b(?:to|at|on(?:to)?)\s+"?\/var\/lib\/(?:docker|containers)\//i;
+
+  const notStorage =
+    /no space left on device|\bl?chown\b|mount namespace|rootfs at "|mounting "(?:proc|sysfs|cgroup2?|devpts|mqueue|tmpfs)"/i;
+
   const line = output
     .split("\n")
     .find(
       (text) =>
-        (/graph ?driver|storage[- ]driver|driver not supported/i.test(text) ||
-          /\bmount(?:ing)?\b[^\n]*\b(?:overlay\w*|layers?)\b|\b(?:overlay\w*|layers?)\b[^\n]*\bmount(?:ing)?\b/i.test(
-            text,
-          )) &&
+        (driver.test(text) || storageMount.test(text)) &&
         /(?:invalid argument|not supported|operation not permitted)/i.test(text) &&
-        !/no space left on device|\bl?chown\b|rootfs at "|mounting "(?:proc|sysfs|cgroup2?|devpts|mqueue|tmpfs)"/i.test(
-          text,
-        ),
+        !notStorage.test(text),
     );
 
   return line === undefined ? null : line.slice(0, 300);

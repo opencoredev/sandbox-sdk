@@ -540,8 +540,9 @@ export const connectionProbes = {
   },
   /**
    * The version of `@tenkicloud/sandbox` in the SDK package's install, the one the adapter uses.
-   * It picks the endpoint when no variable does: 1.4 and earlier api.tenki.cloud, 1.5 and later
-   * api.luxor.ai. Throws when the package can't be read.
+   * It picks the endpoint variables (tenkiEndpointVariables) and the endpoint when none is set:
+   * through 1.5.1 api.tenki.cloud, 1.5.2 and later api.luxor.ai. Throws when the package can't be
+   * read.
    */
   tenkiSdkVersion: (): string => {
     const entry = createRequire(sdkPackage).resolve("@tenkicloud/sandbox");
@@ -599,9 +600,9 @@ export const sdkRegionVariables = new Map([["boxd", ["BOXD_REGION"]]]);
 /**
  * What a connection takes from the environment through the provider's own SDK, where
  * `resolveConfig` leaves the field unset: Boxd's and Tenki's endpoints, Boxd's region, Railway's
- * endpoints, Vercel's OIDC token. Modal's are read through its SDK (`modalProfileOf`). Tenki's SDK
- * reads LUXOR_API_ENDPOINT, LUXOR_API_URL, TENKI_API_ENDPOINT, then TENKI_API_URL, and falls back
- * to a default its version decides, so the version is part of the connection too.
+ * endpoints, Vercel's OIDC token. Modal's are read through its SDK (`modalProfileOf`). Tenki's
+ * variables and default endpoint depend on its installed version (tenkiEndpointVariables), so the
+ * version is part of the connection too, and only the variables that version reads are.
  */
 function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields> {
   const env = process.env;
@@ -628,16 +629,17 @@ function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields
       return fields;
     }
 
-    case "tenki":
-      return connection.config.baseUrl?.trim()
-        ? {}
-        : {
-            LUXOR_API_ENDPOINT: env.LUXOR_API_ENDPOINT,
-            LUXOR_API_URL: env.LUXOR_API_URL,
-            TENKI_API_ENDPOINT: env.TENKI_API_ENDPOINT,
-            TENKI_API_URL: env.TENKI_API_URL,
-            tenkiSdkVersion: connectionProbes.tenkiSdkVersion(),
-          };
+    case "tenki": {
+      if (connection.config.baseUrl?.trim()) return {};
+
+      const version = connectionProbes.tenkiSdkVersion();
+
+      return {
+        ...Object.fromEntries(tenkiEndpointVariables(version).map((name) => [name, env[name]])),
+        tenkiSdkVersion: version,
+      };
+    }
+
     case "vercel":
       return "token" in connection.config ? {} : { VERCEL_OIDC_TOKEN: env.VERCEL_OIDC_TOKEN };
     default:
@@ -646,12 +648,33 @@ function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields
 }
 
 /**
+ * The endpoint variables a version of `@tenkicloud/sandbox` reads, first set wins, as its published
+ * builds resolve `baseUrl`: through 1.4.1 TENKI_API_ENDPOINT then TENKI_API_URL; from 1.4.3
+ * LUXORAI_API_ENDPOINT and LUXORAI_API_URL before them; from 1.5.3 LUXOR_API_ENDPOINT and
+ * LUXOR_API_URL instead.
+ */
+function tenkiEndpointVariables(version: string): string[] {
+  const [major = 0, minor = 0, patch = 0] = version
+    .split(/[.-]/)
+    .map((part) => Number.parseInt(part, 10) || 0);
+
+  const release = major * 1_000_000 + minor * 1_000 + patch;
+  const tenki = ["TENKI_API_ENDPOINT", "TENKI_API_URL"];
+
+  if (release <= 1_004_001) return tenki;
+
+  return release <= 1_005_002
+    ? ["LUXORAI_API_ENDPOINT", "LUXORAI_API_URL", ...tenki]
+    : ["LUXOR_API_ENDPOINT", "LUXOR_API_URL", ...tenki];
+}
+
+/**
  * Endpoint variables a provider's own SDK reads, in groups: within a group the first one set wins,
- * as the SDK resolves it (Boxd: BOXD_BASE_URL, then the legacy BOXD_API_URL).
+ * as the SDK resolves it (Boxd: BOXD_BASE_URL, then the legacy BOXD_API_URL). Tenki's group is its
+ * version's (tenkiEndpointVariables).
  */
 const sdkEndpointPrecedence = new Map([
   ["boxd", [["BOXD_BASE_URL", "BOXD_API_URL"]]],
-  ["tenki", [["LUXOR_API_ENDPOINT", "LUXOR_API_URL", "TENKI_API_ENDPOINT", "TENKI_API_URL"]]],
   ["railway", [["RAILWAY_GRAPHQL_ENDPOINT"], ["RAILWAY_TCP_PROXY_WS_ENDPOINT"]]],
 ]);
 
@@ -663,7 +686,12 @@ const sdkEndpointPrecedence = new Map([
 function endpointHosts(connection: Connection): string[] {
   const sdk = sdkEnvironment(connection);
 
-  const chosen = (sdkEndpointPrecedence.get(connection.name) ?? []).flatMap((group) => {
+  const groups =
+    connection.name === "tenki" && sdk.tenkiSdkVersion !== undefined
+      ? [tenkiEndpointVariables(sdk.tenkiSdkVersion)]
+      : (sdkEndpointPrecedence.get(connection.name) ?? []);
+
+  const chosen = groups.flatMap((group) => {
     const name = group.find((key) => sdk[key]?.trim());
 
     return name === undefined ? [] : [sdk[name]];
