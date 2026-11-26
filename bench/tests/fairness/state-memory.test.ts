@@ -47,7 +47,9 @@ import { hostBox, hostSession } from "./host-box.js";
 
 const setup = providerSetup("e2b");
 const linux = platform() === "linux";
-const port = () => 20_000 + Math.floor(Math.random() * 20_000);
+// Below Linux's ephemeral range (32768+), so an outgoing connection never holds the port.
+
+const port = () => 20_000 + Math.floor(Math.random() * 12_000);
 const noSignal = new AbortController().signal;
 const has = (bin: string) => spawnSync("sh", ["-c", `command -v ${bin}`]).status === 0;
 const available = runtimes.filter((runtime) => linux && has(runtime));
@@ -1010,6 +1012,43 @@ describe.runIf(linux && available.length > 0)(
       const entry = await runOnHost(check, open, stop.signal);
       expect(entry.status).not.toBe("completed");
       expect(entry.result).toBeFalsy();
+    }, 60_000);
+
+    it("memory-pressure publishes nothing when the run is interrupted after the hog's status", async () => {
+      const real = hostBox();
+      const stop = new AbortController();
+
+      // The interrupt lands during the recovery read, after the status was recorded.
+      const interrupted: Box = {
+        ...real,
+        run: async (command, options) => {
+          if (command.includes("-log'")) stop.abort(new Error("SIGINT"));
+
+          return real.run(command, options);
+        },
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => interrupted,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const check = memoryPressureCheck({
+        ...defaultPressureOptions,
+        advertisedMiB: 128,
+        healthAllocMiB: 64,
+        pollMs: 200,
+        workdir: await scratch("mem-work"),
+      });
+
+      const entry = await runOnHost(check, open, stop.signal);
+      expect(entry.status).not.toBe("completed");
+      expect(entry.result).toBeFalsy();
+      expect(entry.destroyed).toBe(true);
     }, 60_000);
 
     it("memory-pressure stops when the hog launch does not run to the end", async () => {

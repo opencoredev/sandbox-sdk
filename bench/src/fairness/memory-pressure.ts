@@ -358,6 +358,7 @@ async function pollHog(input: {
 
     try {
       const result = await context.exec(box, statusCommand(dir), pollTimeoutMs);
+      context.signal.throwIfAborted();
       // The boot id comes first, so even a reply cut short can prove a restart.
       const seenBoot = valid(keyValues(result.stdout).get("boot"), bootIdPattern);
 
@@ -404,6 +405,7 @@ async function pollHog(input: {
       if (now - lookedUpAt >= lookupEveryMs) {
         lookedUpAt = now;
         const liveness = await lookUpLiveness(box, "status poll failed");
+        context.signal.throwIfAborted();
 
         if (liveness.kind === "absent")
           return cancelledPoll

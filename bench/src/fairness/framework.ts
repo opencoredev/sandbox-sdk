@@ -837,6 +837,9 @@ async function attempt<R>(input: {
       say,
     });
 
+    // A check that returns after the run was interrupted measured something the interrupt (or the
+    // cleanup it set off) may have changed, so its result is never published.
+    dependencies.signal.throwIfAborted();
     result = check.resultSchema.parse(raw);
     status = "completed";
   } catch (cause) {
