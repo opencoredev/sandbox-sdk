@@ -17,11 +17,12 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import type { FactoryOptions } from "../providers.js";
 import { attemptBudget, loadSlotProvider, sweepProviders, type RunNote } from "../realistic/cli.js";
 import { providerSetup, providerSetups, tracks, type TrackId } from "../realistic/setup.js";
 import type { SlotProvider } from "../realistic/slots.js";
 import { defaultCacheDir, prepareArtifacts, readArtifact, readArtifacts } from "./artifacts.js";
-import { deadlineGraceMs, runServicesAttempt } from "./attempt.js";
+import { composeDownMs, deadlineGraceMs, runServicesAttempt } from "./attempt.js";
 import { SpendGuard, parseProviderCaps } from "./budget.js";
 import {
   attemptRecordSchema,
@@ -71,7 +72,13 @@ const ownedSchema = z.object({ provider: z.string(), id: z.string(), attemptId: 
 
 /** submissions.jsonl: one line just before each create request. */
 const submissionsFile = "submissions.jsonl";
-const submissionSchema = z.object({ provider: z.string(), attemptId: z.string() });
+
+const submissionSchema = z.object({
+  provider: z.string(),
+  attemptId: z.string(),
+  /** False on the line an attempt writes when it ended before sending the create it announced. */
+  sent: z.boolean().optional(),
+});
 
 /** run.json as written by `run`: its identity plus the unique ownership label of its sandboxes. */
 const runFileSchema = runInfoSchema.extend({
@@ -81,20 +88,36 @@ const runFileSchema = runInfoSchema.extend({
   providers: z.array(z.string()).optional(),
 });
 
+/** A file's text; null only when it does not exist, so a real read error is never an empty file. */
 async function readText(path: string): Promise<string | null> {
   try {
     return await readFile(path, "utf8");
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+    throw error;
   }
 }
 
-/** Every line that parses; a torn or foreign line is counted, never fatal (crash recovery). */
+/**
+ * Every line that parses; a torn or foreign line is counted, never fatal (crash recovery). A file
+ * that exists but cannot be read comes back as `error`, so recovery reports it as unchecked.
+ */
 async function readJournal<T>(path: string, schema: z.ZodType<T>) {
   const items: T[] = [];
   let bad = 0;
+  let text: string | null;
 
-  for (const line of ((await readText(path)) ?? "").split("\n")) {
+  try {
+    text = await readText(path);
+  } catch (error) {
+    return {
+      items,
+      bad,
+      error: `${path}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  for (const line of (text ?? "").split("\n")) {
     if (!line.trim()) continue;
 
     try {
@@ -104,7 +127,7 @@ async function readJournal<T>(path: string, schema: z.ZodType<T>) {
     }
   }
 
-  return { items, bad };
+  return { items, bad, error: null };
 }
 
 /** The notes that explain a provider with fewer attempts than planned; other kinds are skipped. */
@@ -121,7 +144,9 @@ const notRunNoteSchema = z.discriminatedUnion("kind", [
 ]);
 
 async function readNotRun(dir: string, runId: string): Promise<NotRun[]> {
-  const { items } = await readJournal(join(dir, "notes.jsonl"), notRunNoteSchema);
+  const { items, error } = await readJournal(join(dir, "notes.jsonl"), notRunNoteSchema);
+
+  if (error) throw new Error(`Cannot read the run's notes: ${error}`);
 
   return items.map((n) => ({
     runId,
@@ -197,8 +222,14 @@ async function unconfirmedOwned(
   const recorded = new Set(records.items.map((r) => r.attemptId));
   const ownedAttempts = new Set(owned.items.map((o) => o.attemptId));
 
+  const notSent = new Set(
+    submissions.items.flatMap((s) => (s.sent === false ? [s.attemptId] : [])),
+  );
+
   for (const sub of submissions.items)
     if (
+      sub.sent !== false &&
+      !notSent.has(sub.attemptId) &&
       !recorded.has(sub.attemptId) &&
       !ownedAttempts.has(sub.attemptId) &&
       !liveDone.has(sub.attemptId)
@@ -211,7 +242,15 @@ async function unconfirmedOwned(
   for (const provider of unknownAttempts.values())
     unresolved.set(provider, (unresolved.get(provider) ?? 0) + 1);
 
-  return { known, unresolved, unreadable: owned.bad + records.bad + submissions.bad };
+  return {
+    known,
+    unresolved,
+    unreadable: owned.bad + records.bad + submissions.bad,
+    /** Journals that exist but could not be read: what they held is unknown. */
+    unreadableFiles: [owned.error, records.error, submissions.error].filter(
+      (error): error is string => error !== null,
+    ),
+  };
 }
 
 /** Wait for a sandbox from an unknown-outcome create to show up in its provider's listing. */
@@ -268,11 +307,34 @@ const destroyWindowMs = 120_000;
  * bounded journal calls.
  */
 const billablePastTimeoutMs = Math.max(
-  deadlineGraceMs + 30_000 + destroyWindowMs + 1000 + 60_000,
+  deadlineGraceMs + 30_000 + composeDownMs + 30_000 + destroyWindowMs + 1000 + 60_000,
   // A sandbox whose create lost its response can live until the hard lifetime the realistic
   // loader gives each provider that takes one: the slot (our timeout) plus 15 minutes.
   15 * 60_000,
 );
+
+/**
+ * Factory options for this suite's adapters. Modal runs Docker only on its VM runtime (docs.ts).
+ * Where an adapter can end a sandbox on its own, it is told to, so one this run loses track of
+ * cannot bill for long: Superserve pauses it after the attempt's slot plus 15 minutes of active
+ * time and deletes it on pause, and Boat stops it after that long. Adapters that take a create
+ * lifetime get the same bound from the realistic loader; Upstash and Buddy take none.
+ */
+export function servicesFactory(
+  adapter: string,
+  timeoutMs: number,
+  modalRuntime: "gvisor" | "vm" | null,
+): FactoryOptions | undefined {
+  const lifetimeMs = timeoutMs + 15 * 60_000;
+
+  if (adapter === "modal") return modalRuntime ? { runtime: modalRuntime } : undefined;
+
+  if (adapter === "superserve") return { autoPauseMs: lifetimeMs, autoDeleteMs: 0 };
+
+  if (adapter === "boat") return { ttlSeconds: Math.ceil(lifetimeMs / 1000) };
+
+  return undefined;
+}
 
 async function run(args: string[]) {
   const { values } = parseArgs({
@@ -357,7 +419,7 @@ async function run(args: string[]) {
 
   for (const setup of setups) {
     // Modal runs Docker only on its VM runtime (docs.ts); the default runtime is gVisor.
-    const extra = setup.adapter === "modal" && modalRuntime ? { runtime: modalRuntime } : undefined;
+    const extra = servicesFactory(setup.adapter, timeoutMs, modalRuntime);
 
     const loaded = await loadSlotProvider(
       setup,
@@ -410,12 +472,42 @@ async function run(args: string[]) {
   // Cleanups of creates that answered after their attempt returned: awaited before the end.
   const lateCleanups = new Set<Promise<void>>();
 
+  // An attempt whose sandbox may still exist (a create with an unknown outcome, or a deletion that
+  // was not confirmed) holds admission for the whole run while it is reconciled, so no provider
+  // starts an attempt on top of spend the guard cannot see. True once every such attempt was
+  // proven gone; false keeps admission closed for the rest of the run.
+  let hold: Promise<boolean> = Promise.resolve(true);
+
+  const reconcile = async (entry: SlotProvider, record: AttemptRecord): Promise<boolean> => {
+    // A create with no ID can never be proven absent: only the end-of-run sweeps look for it.
+    if (record.sandboxIds.length === 0) return false;
+
+    const swept = await sweepRun({
+      label: info.ownerLabel,
+      entries: [entry],
+      note,
+      out,
+      known: new Map([[entry.name, new Set(record.sandboxIds)]]),
+    });
+
+    await note({
+      kind: "reconciled",
+      provider: entry.name,
+      attemptId: record.attemptId,
+      ...swept,
+    }).catch(() => {});
+
+    return !swept.failed && !swept.undeleted && !swept.unchecked;
+  };
+
   const runProvider = async ({ setup, entry }: (typeof entries)[number]) => {
     for (let attempt = 1; attempt <= attempts; attempt++) {
       // Alternate the path order so neither path always runs first on a provider.
       const order: ServicePath[] = attempt % 2 === 1 ? [...paths] : [...paths].reverse();
 
       for (const path of order) {
+        if (!(await hold)) stopping = true;
+
         if (stopping) return;
 
         // Reserved through the attempt's own timeout and its destroy window.
@@ -463,6 +555,11 @@ async function run(args: string[]) {
                 join(out, submissionsFile),
                 `${JSON.stringify({ provider, attemptId: id, at: new Date().toISOString() })}\n`,
               ),
+            onNotSent: (provider, id) =>
+              appendFile(
+                join(out, submissionsFile),
+                `${JSON.stringify({ provider, attemptId: id, sent: false, at: new Date().toISOString() })}\n`,
+              ),
             onSandbox: async (provider, id) => {
               live.set(provider, (live.get(provider) ?? new Set()).add(id));
               await appendFile(
@@ -478,18 +575,35 @@ async function run(args: string[]) {
 
         done.add(attemptId);
 
-        // A sandbox that may still be running keeps its whole reservation, and this provider
-        // takes no more attempts: the sweep at the end retries its deletion.
+        // A sandbox that may still be running keeps its whole reservation and this provider takes
+        // no more attempts. Admission closes for every provider until it is reconciled, right now;
+        // the sweeps at the end retry anything left.
         if (!record.deletionConfirmed) {
           if (record.sandboxIds.length === 0) unknownLive.set(attemptId, entry.name);
+
+          const held = Promise.all([hold, reconcile(entry, record)]).then(
+            ([before, cleared]) => before && cleared,
+          );
+
+          hold = held;
           await note({
             kind: "deletion-unconfirmed",
             provider: entry.name,
             attemptId,
             ids: record.sandboxIds,
           });
-          process.stderr.write(`${attemptId}: deletion unconfirmed; ${entry.name} stops\n`);
           await appendFile(join(out, recordsFile), `${JSON.stringify(record)}\n`);
+
+          if (await held)
+            process.stderr.write(
+              `${attemptId}: deletion unconfirmed, then reconciled; ${entry.name} stops, the others go on\n`,
+            );
+          else {
+            stopping = true;
+            process.stderr.write(
+              `${attemptId}: deletion unconfirmed and not reconciled; admission stops for the whole run\n`,
+            );
+          }
 
           return;
         }
@@ -526,10 +640,24 @@ async function run(args: string[]) {
 
     if (results.some((r) => r.status === "rejected")) process.exitCode = 1;
   } finally {
-    const { known, unresolved, unreadable } = await unconfirmedOwned(out, live, unknownLive, done);
+    const { known, unresolved, unreadable, unreadableFiles } = await unconfirmedOwned(
+      out,
+      live,
+      unknownLive,
+      done,
+    );
 
-    if (unreadable)
-      await note({ kind: "journal-unreadable-lines", count: unreadable }).catch(() => {});
+    // Recovery read less than the journals hold: the sweeps still run by label and every known ID,
+    // but the run cannot claim nothing is left.
+    if (unreadable || unreadableFiles.length) {
+      await note({ kind: "journal-unreadable", lines: unreadable, files: unreadableFiles }).catch(
+        () => {},
+      );
+      process.stderr.write(
+        `Recovery could not read every journal entry (${unreadable} lines; files: ${unreadableFiles.join("; ") || "none"}); recovery is unchecked\n`,
+      );
+      process.exitCode = 1;
+    }
 
     const sweepInput = {
       label: info.ownerLabel,
@@ -670,7 +798,9 @@ async function sweep(args: string[]) {
   const note = (entry: RunNote) =>
     appendFile(notesPath, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 
-  const { known, unresolved, unreadable } = await unconfirmedOwned(out);
+  const { known, unresolved, unreadable, unreadableFiles } = await unconfirmedOwned(out);
+
+  for (const error of unreadableFiles) await note({ kind: "journal-unreadable", error });
 
   const names = values.providers
     ? list(values.providers)
@@ -728,10 +858,10 @@ async function sweep(args: string[]) {
 
   const swept = await sweepRun({ label, entries, note, out, known });
   const unknownCreates = [...unresolved.values()].reduce((a, b) => a + b, 0);
-  const unchecked = swept.unchecked + unreachable + unreadable;
+  const unchecked = swept.unchecked + unreachable + unreadable + unreadableFiles.length;
 
   process.stdout.write(
-    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, unreachable, unreadableJournalLines: unreadable, unresolvedCreates: unknownCreates })}; see ${notesPath}\n`,
+    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, unreachable, unreadableJournalLines: unreadable, unreadableJournals: unreadableFiles.length, unresolvedCreates: unknownCreates })}; see ${notesPath}\n`,
   );
 
   if (swept.failed || swept.undeleted || unchecked || unknownCreates) process.exitCode = 1;

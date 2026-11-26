@@ -61,6 +61,13 @@ const daemonTrySchema = z.object({
   ok: z.boolean(),
   ms: z.number(),
   error: z.string().nullable(),
+  /**
+   * The failure is evidence about the sandbox itself: no daemon on the socket, a daemon log that
+   * names a missing privilege or kernel feature, or storage that cannot mount. False for faults
+   * that say nothing about Docker here (downloads, checksums, transport and exec errors, a daemon
+   * that stayed silent or died without saying why). Rows from before this field read as false.
+   */
+  conclusive: z.boolean().default(false),
 });
 
 export type DaemonTry = z.infer<typeof daemonTrySchema>;
@@ -75,6 +82,10 @@ const daemonSchema = z.object({
   network: z.enum(["bridge", "host"]).nullable(),
   serverVersion: z.string().nullable(),
   compose: z.enum(["preinstalled", "fetched"]).nullable(),
+  /** This attempt's own Compose project name, so no other attempt's containers are touched. */
+  project: z.string().nullable().default(null),
+  /** `compose down -v` of that project before the sandbox went: true when it exited 0. */
+  down: z.boolean().nullable().default(null),
   /**
    * The ladder ran to its end: a method was chosen, or every method failed or was skipped (a storage
    * fallback that ran out included). False when a timeout, abort or vanished sandbox cut it short,

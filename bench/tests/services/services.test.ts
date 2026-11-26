@@ -1,15 +1,22 @@
 import { SandboxError, type RunOptions, type RunResult } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   runServicesAttempt,
   Guest,
   StageFailure,
   getDaemon,
+  composeProject,
   metricsOf,
   stepTimeoutMs,
   type GuestBox,
 } from "../../src/services/attempt.js";
+import { stalePins, type Artifacts } from "../../src/services/artifacts.js";
+import { servicesCommand, servicesFactory } from "../../src/services/cli.js";
+import { node, redisSource, zonkyPostgres } from "../../src/services/pins.js";
 import { SpendGuard, parseProviderCaps } from "../../src/services/budget.js";
 import {
   isolation,
@@ -22,6 +29,7 @@ import {
   attemptRecordSchema,
   type AttemptRecord,
   type DaemonRecord,
+  type DaemonTry,
   type Phase,
 } from "../../src/services/record.js";
 import { median, servicesSiteData, summaryMarkdown } from "../../src/services/summary.js";
@@ -248,6 +256,7 @@ function guestFor(box: GuestBox) {
   let t = 0;
   const g = new Guest(box, new AbortController().signal, [], () => (t += 1000));
   g.pollMs = 0;
+  g.mono = () => (t += 1000);
 
   return g;
 }
@@ -465,12 +474,15 @@ function record(input: {
                 ok: green,
                 ms: 1,
                 error: green ? null : "daemon exited",
+                conclusive: !green,
               },
             ],
             storageDriver: null,
             network: green ? "bridge" : null,
             serverVersion: null,
             compose: green ? "fetched" : null,
+            project: null,
+            down: null,
             finished: true,
           }
         : null,
@@ -614,7 +626,7 @@ describe("site data", () => {
     const b = site.providers.find((p) => p.provider === "b");
     expect(b?.compose.status).toBe("unsupported");
     expect(b?.compose.unsupportedReason).toBe(
-      "No Docker daemon started. tried and failed: static-rootful/default: daemon exited",
+      "No Docker daemon started. tried and refused: static-rootful/default: daemon exited",
     );
     expect(b?.native.status).toBe("measured");
     expect(b?.native.unsupportedReason).toBeNull();
@@ -983,6 +995,56 @@ describe("attempt cleanup", () => {
 
     expect(commands).toHaveLength(2);
   });
+
+  test("an attempt that times out while its submission is journaled sends no create", async () => {
+    const backing = memory();
+    let creates = 0;
+
+    const provider = {
+      ...backing,
+      create: async (input: Parameters<typeof backing.create>[0]) => {
+        creates++;
+
+        return backing.create(input);
+      },
+    };
+
+    const notSent: string[] = [];
+
+    const record = await runServicesAttempt(
+      {
+        runId: "r",
+        ownerLabel: "r-1234",
+        attemptId: "m-native-1",
+        attempt: 1,
+        path: "native",
+        track: "same-machine",
+        entry: { name: "memory", provider, attribution: "none", settlementMs: null, paddingMs: 0 },
+        artifacts,
+        timeoutMs: 10,
+        deadlineGraceMs: 5000,
+      },
+      {
+        read: async () => new Uint8Array(),
+        onSandbox: async () => {},
+        onSubmit: () => new Promise((resolve) => setTimeout(resolve, 50)),
+        onNotSent: async (_, id) => {
+          notSent.push(id);
+        },
+        estimate: () => 0.5,
+      },
+    );
+
+    expect(creates).toBe(0);
+    expect(notSent).toEqual(["m-native-1"]);
+    expect(record.outcome).toMatchObject({
+      kind: "failed",
+      stage: "timeout",
+      detail: "No create was sent",
+    });
+    expect(record.deletionConfirmed).toBe(true);
+    expect(record.estimatedUSD).toBe(0);
+  });
 });
 
 describe("step timeouts", () => {
@@ -1139,5 +1201,402 @@ describe("summary inputs", () => {
         ],
       }),
     ).toThrow("summarize them separately");
+  });
+});
+
+describe("conclusive Docker evidence", () => {
+  const run = {
+    id: "r1",
+    sdkCommit: "a",
+    startedAt: "x",
+    endedAt: null,
+    location: "t",
+    settings: {},
+    artifacts: { node: "n", fixture: "f", native: "b" },
+  };
+
+  const refused: DaemonTry = {
+    method: "static-rootful",
+    config: "default",
+    ok: false,
+    ms: 1,
+    error: "daemon exited: operation not permitted",
+    conclusive: true,
+  };
+
+  const download: DaemonTry = {
+    method: "static-rootful",
+    config: "fetch",
+    ok: false,
+    ms: 1,
+    error: "download failed: HTTP 503",
+    conclusive: false,
+  };
+
+  const ladderFailure = (attempt: number, tries: DaemonTry[]): AttemptRecord => {
+    const base = record({ provider: "p", path: "compose", attempt, up: null });
+
+    return { ...base, daemon: base.daemon ? { ...base.daemon, tries } : null };
+  };
+
+  const compose = (records: AttemptRecord[]) =>
+    servicesSiteData({ records, runs: [run] }).providers[0]?.compose;
+
+  test("a ladder that failed only on a download is failed, not unsupported", () => {
+    expect(compose([ladderFailure(1, [download])])).toMatchObject({
+      status: "failed",
+      unsupportedReason: null,
+    });
+  });
+
+  test("one inconclusive try or attempt keeps the row failed; all conclusive is unsupported", () => {
+    expect(
+      compose([ladderFailure(1, [refused]), ladderFailure(2, [refused, download])])?.status,
+    ).toBe("failed");
+
+    const both = compose([ladderFailure(1, [refused]), ladderFailure(2, [refused])]);
+    expect(both?.status).toBe("unsupported");
+    expect(both?.unsupportedReason).toContain(
+      "static-rootful/default: daemon exited: operation not permitted",
+    );
+  });
+
+  test("an attempt that failed before the ladder is not evidence either way", () => {
+    const upload: AttemptRecord = {
+      ...record({ provider: "p", path: "compose", attempt: 2, up: null }),
+      daemon: null,
+      outcome: { kind: "failed", stage: "upload", reason: "joining failed", detail: "" },
+    };
+
+    expect(compose([ladderFailure(1, [refused]), upload])?.status).toBe("failed");
+  });
+});
+
+describe("daemon evidence and fallbacks", () => {
+  const pingFail = { ok: false, exitCode: 1, output: '{"ok":false}' };
+
+  test("no daemon on the socket and a log that names a missing capability are conclusive; a failed download is not", async () => {
+    const { box } = scriptedBox([
+      [
+        /daemon-ping/,
+        (c) =>
+          c.includes("podman.sock")
+            ? { output: pingOk }
+            : {
+                ok: false,
+                exitCode: 1,
+                output: '{"ok":false,"error":"connect ENOENT /var/run/docker.sock"}',
+              },
+      ],
+      [/pgrep -x dockerd/, () => ({ output: "DEAD" })],
+      [
+        /fetch\.mjs .*docker-29/,
+        () => ({ ok: false, exitCode: 1, output: '{"ok":false,"error":"HTTP 503"}' }),
+      ],
+      [
+        /tail -c 6000/,
+        () => ({ output: 'level=fatal msg="failed to start daemon: operation not permitted"' }),
+      ],
+      [/docker-compose version/, () => ({ output: "5.6.1" })],
+    ]);
+
+    const d = await getDaemon(
+      guestFor(box),
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      10_000,
+      () => {},
+    );
+
+    expect(d.record.method).toBe("podman");
+    await d.collectLogs();
+
+    const conclusive = (method: string, config: string) =>
+      d.record.tries.find((t) => t.method === method && t.config === config)?.conclusive;
+
+    expect(conclusive("preinstalled-running", "as-found")).toBe(true);
+    expect(conclusive("preinstalled-started", "default")).toBe(true);
+    expect(conclusive("static-rootful", "fetch")).toBe(false);
+  });
+
+  test("after the same method's vfs configs fail, the ladder goes on to the next methods", async () => {
+    let starts = 0;
+
+    const { box, started } = scriptedBox([
+      [
+        /daemon-ping/,
+        (c) => (c.includes("podman.sock") || starts === 1 ? { output: pingOk } : pingFail),
+      ],
+      [/pgrep -x dockerd/, () => ({ output: "DEAD" })],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    box.start = async (command: string) => {
+      starts++;
+      started.push(command);
+
+      return { name: command };
+    };
+
+    const g = guestFor(box);
+
+    const d = await getDaemon(
+      g,
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      10_000,
+      () => {},
+    );
+
+    expect(d.record.method).toBe("preinstalled-started");
+    expect(await d.switchStorage("failed to extract layer: invalid argument")).toBe(true);
+    expect(d.record.method).toBe("podman");
+    expect(d.record.finished).toBe(true);
+    expect(new Set(d.record.tries.map((t) => t.method))).toEqual(
+      new Set(["preinstalled-running", "preinstalled-started", "static-rootful", "podman"]),
+    );
+    expect(
+      d.record.tries.find((t) => t.method === "preinstalled-started" && t.config === "default"),
+    ).toMatchObject({ ok: false, conclusive: true });
+    // Docker's static daemon runs from this attempt's own verified download, never a fixed path.
+    expect(started.some((c) => c.includes(g.tools + "/docker/dockerd --host"))).toBe(true);
+  });
+
+  test("a daemon that was already running is never restarted when its storage fails", async () => {
+    let first = true;
+
+    const { box, commands, started } = scriptedBox([
+      [
+        /daemon-ping/,
+        (c) => {
+          if (c.includes("podman.sock")) return { output: pingOk };
+
+          if (first) {
+            first = false;
+
+            return { output: pingOk };
+          }
+
+          return pingFail;
+        },
+      ],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    const d = await getDaemon(
+      guestFor(box),
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      10_000,
+      () => {},
+    );
+
+    expect(d.record.method).toBe("preinstalled-running");
+    expect(await d.switchStorage("failed to register layer: operation not permitted")).toBe(true);
+    expect(d.record.method).toBe("podman");
+    expect(d.record.skipped).toEqual(
+      expect.arrayContaining([
+        { method: "preinstalled-started", reason: expect.stringContaining("never restarted") },
+        { method: "static-rootful", reason: expect.stringContaining("never restarted") },
+      ]),
+    );
+    expect(started.every((c) => c.includes("podman system service"))).toBe(true);
+    expect(commands.some((c) => c.includes("pkill -x dockerd"))).toBe(false);
+  });
+
+  test("a root-only socket is reached through sudo and never chmod; the project is the attempt's own and comes down", async () => {
+    const { box, commands } = scriptedBox([
+      [
+        /daemon-ping/,
+        (c) =>
+          c.includes("sudo -n")
+            ? { output: pingOk }
+            : {
+                ok: false,
+                exitCode: 1,
+                output: '{"ok":false,"error":"connect EACCES /var/run/docker.sock"}',
+              },
+      ],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    const d = await getDaemon(
+      guestFor(box),
+      probeOf({ uid: "1000", user: "dev", sudo: "passwordless" }),
+      10_000,
+      () => {},
+      "sbx-p-compose-1-abc123",
+    );
+
+    expect(d.record.method).toBe("preinstalled-running");
+    expect(d.record.project).toBe("sbx-p-compose-1-abc123");
+    expect(commands.some((c) => c.includes("chmod"))).toBe(false);
+
+    const pull = d.composeCommand("pull --quiet");
+    expect(pull.startsWith('sudo -n env PATH="$PATH" DOCKER_HOST="$DOCKER_HOST"')).toBe(true);
+    expect(pull).toContain(
+      "docker compose -p 'sbx-p-compose-1-abc123' -f compose.yaml pull --quiet",
+    );
+
+    await d.down(guestFor(box), 1000);
+    expect(d.record.down).toBe(true);
+    expect(commands.at(-1)).toContain("-p 'sbx-p-compose-1-abc123' -f compose.yaml down -v");
+  });
+
+  test("each attempt gets its own Compose project", () => {
+    const a = composeProject("e2b-compose-1");
+    expect(a).toMatch(/^sbx-e2b-compose-1-[0-9a-f]{6}$/);
+    expect(composeProject("e2b-compose-1")).not.toBe(a);
+  });
+});
+
+describe("daemon deadline (fake clock)", () => {
+  /** A guest on a fake clock where a launch takes launchMs and each ping takes pingMs. */
+  function slowDaemon(launchMs: number, pingMs: number) {
+    let clock = 0;
+    let launched = false;
+
+    const { box } = scriptedBox([
+      [
+        /daemon-ping/,
+        () => {
+          clock += pingMs;
+
+          // No daemon answers before the first launch.
+          return launched
+            ? { output: pingOk }
+            : {
+                ok: false,
+                exitCode: 1,
+                output: '{"ok":false,"error":"connect ENOENT /var/run/docker.sock"}',
+              };
+        },
+      ],
+    ]);
+
+    box.start = async (command: string) => {
+      launched = true;
+      clock += launchMs;
+
+      return { name: command };
+    };
+
+    const g = new Guest(box, new AbortController().signal, [], () => clock);
+    g.pollMs = 0;
+    g.mono = () => clock;
+
+    return g;
+  }
+
+  const ladderFailure = (g: Guest) =>
+    getDaemon(g, probeOf(), 10, () => {}).then(
+      () => null,
+      (error: Error) => error,
+    );
+
+  test("a launch that outlasts the daemon budget is not accepted, though the daemon then answers", async () => {
+    const failure = await ladderFailure(slowDaemon(1000, 0));
+
+    expect(failure instanceof StageFailure && failure.reason).toBe("no daemon method worked");
+    expect(failure instanceof StageFailure && failure.detail).toContain(
+      "static-rootful/default: no answer within 10 ms",
+    );
+  });
+
+  test("an answer that arrives after the budget is not accepted", async () => {
+    const failure = await ladderFailure(slowDaemon(0, 1000));
+
+    expect(failure instanceof StageFailure && failure.detail).toContain(
+      "static-rootful/default: no answer within 10 ms",
+    );
+  });
+
+  test("an answer within the budget is accepted", async () => {
+    const d = await getDaemon(slowDaemon(2, 2), probeOf(), 10, () => {});
+
+    expect(d.record).toMatchObject({ method: "static-rootful", config: "default" });
+  });
+});
+
+describe("pins and provider expiry", () => {
+  test("a cache built from other pins is refused", () => {
+    const current: Artifacts = {
+      schema: "svc-artifacts/1",
+      createdAt: "x",
+      node: { sha256: node.sha256, bytes: 1, version: node.version },
+      fixture: { sha256: "b".repeat(64), bytes: 1, sourceSha256: "s" },
+      native: {
+        sha256: "c".repeat(64),
+        bytes: 1,
+        postgresInputSha256: zonkyPostgres.sha256,
+        redisSourceSha256: redisSource.sha256,
+        redisBuild: "b",
+      },
+    };
+
+    expect(stalePins(current)).toEqual([]);
+    expect(stalePins({ ...current, node: { ...current.node, sha256: "d".repeat(64) } })).toEqual([
+      "the Node tarball",
+    ]);
+    expect(
+      stalePins({
+        ...current,
+        native: {
+          ...current.native,
+          postgresInputSha256: "e".repeat(64),
+          redisSourceSha256: "f".repeat(64),
+        },
+      }),
+    ).toEqual(["the Postgres binaries", "the Redis source"]);
+  });
+
+  test("adapters that can end a lost sandbox on their own are told to", () => {
+    expect(servicesFactory("superserve", 60_000, null)).toEqual({
+      autoPauseMs: 960_000,
+      autoDeleteMs: 0,
+    });
+    expect(servicesFactory("boat", 60_000, null)).toEqual({ ttlSeconds: 960 });
+    expect(servicesFactory("modal", 60_000, "vm")).toEqual({ runtime: "vm" });
+    expect(servicesFactory("modal", 60_000, null)).toBeUndefined();
+    expect(servicesFactory("upstash", 60_000, null)).toBeUndefined();
+  });
+});
+
+describe("journal read errors", () => {
+  const runFile = {
+    id: "r1",
+    ownerLabel: "r1-abcd",
+    sdkCommit: "a",
+    startedAt: "x",
+    endedAt: null,
+    location: "t",
+    settings: {},
+    artifacts: { node: "n", fixture: "f", native: "b" },
+    providers: [],
+  };
+
+  test("summary fails on an attempt file it cannot read instead of publishing nothing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "svc-read-"));
+
+    try {
+      await writeFile(join(dir, "run.json"), JSON.stringify(runFile));
+      await mkdir(join(dir, "services-attempts.jsonl"));
+      await expect(servicesCommand(["summary", "--out", dir])).rejects.toThrow(/EISDIR/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("sweep counts an unreadable ownership journal as unchecked and exits nonzero", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "svc-read-"));
+    const before = process.exitCode;
+
+    try {
+      await writeFile(join(dir, "run.json"), JSON.stringify(runFile));
+      await mkdir(join(dir, "owned.jsonl"));
+      await servicesCommand(["sweep", "--out", dir, "--run", "r1"]);
+      expect(process.exitCode).toBe(1);
+      expect(await readFile(join(dir, "notes.jsonl"), "utf8")).toContain("journal-unreadable");
+    } finally {
+      process.exitCode = before;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

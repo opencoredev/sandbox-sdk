@@ -240,7 +240,22 @@ export async function prepareArtifacts(cacheDir = defaultCacheDir): Promise<Arti
   }
 }
 
-/** artifacts.json, refused when the fixture changed after it was built. */
+/**
+ * The pins a manifest was built from that differ from the current ones: Node, the Postgres
+ * binaries and the Redis source. Results are labelled with the current pins, so any difference
+ * means the cache must be rebuilt.
+ */
+export function stalePins(artifacts: Artifacts): string[] {
+  return [
+    artifacts.node.sha256 !== node.sha256 || artifacts.node.version !== node.version
+      ? "the Node tarball"
+      : null,
+    artifacts.native.postgresInputSha256 !== zonkyPostgres.sha256 ? "the Postgres binaries" : null,
+    artifacts.native.redisSourceSha256 !== redisSource.sha256 ? "the Redis source" : null,
+  ].filter((pin): pin is string => pin !== null);
+}
+
+/** artifacts.json, refused when the fixture or any pinned input changed after it was built. */
 export async function readArtifacts(cacheDir = defaultCacheDir): Promise<Artifacts> {
   let text: string;
 
@@ -256,6 +271,12 @@ export async function readArtifacts(cacheDir = defaultCacheDir): Promise<Artifac
   if (source !== artifacts.fixture.sourceSha256)
     throw new Error(
       `bench/${fixtureDir} changed since its artifact was built; run \`bun bench services prepare\` again`,
+    );
+  const stale = stalePins(artifacts);
+
+  if (stale.length)
+    throw new Error(
+      `${artifactsFile} in ${cacheDir} was built from other pins than the current ones (${stale.join(", ")}); run \`bun bench services prepare\` again`,
     );
 
   return artifacts;

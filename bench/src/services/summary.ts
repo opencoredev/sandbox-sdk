@@ -79,27 +79,70 @@ const medianOf = (
 ) => median(samples.map((s) => s[key]));
 
 /**
- * What a path's row stands for: `measured` with at least one green attempt; `unsupported` when no
- * attempt went green and either every compose ladder that finished found no daemon or every attempt
- * ended unsupported (the reason says why); `failed` when attempts ran and none went green for
- * another reason; `not-run` with no attempt.
+ * What a path's row stands for: `measured` with at least one green attempt; `unsupported` when every
+ * attempt is conclusive evidence that the path cannot run there (the reason says why); `failed`
+ * when attempts ran and none went green otherwise; `not-run` with no attempt.
  */
 export type PathStatus = "measured" | "unsupported" | "failed" | "not-run";
 
-function pathSummary(records: readonly AttemptRecord[], dockerUnsupported: string | null) {
+/**
+ * Why one compose attempt shows the sandbox cannot run Docker; null when it shows no such thing.
+ * Its ladder must have finished without a daemon, and every try that failed must be conclusive:
+ * skips are probe facts, and a failed try counts only when it found no daemon on the socket, its
+ * log named a missing capability, or its storage could not mount. One download, checksum,
+ * transport or timeout failure makes the attempt inconclusive.
+ */
+function noDocker(record: AttemptRecord): string | null {
+  const daemon = record.daemon;
+
+  if (
+    record.outcome.kind !== "failed" ||
+    record.outcome.stage !== "daemon" ||
+    !daemon?.finished ||
+    daemon.method !== null
+  )
+    return null;
+  const failed = daemon.tries.filter((t) => !t.ok);
+
+  if (failed.some((t) => !t.conclusive)) return null;
+
+  return [
+    "No Docker daemon started",
+    daemon.skipped.length
+      ? `ruled out: ${daemon.skipped.map((s) => `${s.method}: ${s.reason}`).join("; ")}`
+      : null,
+    failed.length
+      ? `tried and refused: ${failed.map((t) => `${t.method}/${t.config}: ${t.error ?? "?"}`).join("; ")}`
+      : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(". ");
+}
+
+/** Why an attempt is a result about the provider rather than a failure; null otherwise. */
+function unsupportedReasonOf(record: AttemptRecord): string | null {
+  if (record.outcome.kind === "unsupported")
+    return `${record.outcome.reason}: ${record.outcome.detail}`;
+
+  return record.path === "compose" ? noDocker(record) : null;
+}
+
+function pathSummary(records: readonly AttemptRecord[]) {
   const green = records.flatMap((r) => (r.outcome.kind === "green" ? [sample(r)] : []));
 
-  const unsupported = records.flatMap((r) =>
-    r.outcome.kind === "unsupported" ? [`${r.outcome.reason}: ${r.outcome.detail}`] : [],
-  );
+  const reasons = records.flatMap((r) => {
+    const reason = unsupportedReasonOf(r);
 
+    return reason === null ? [] : [reason];
+  });
+
+  // Only when every attempt is conclusive: one inconclusive failure keeps the row `failed`.
   const unsupportedReason =
-    dockerUnsupported ??
-    (unsupported.length > 0 && unsupported.length === records.length
-      ? tally(unsupported)
+    reasons.length > 0 && reasons.length === records.length
+      ? tally(reasons)
           .map((u) => u.value)
           .join("; ")
-      : null);
+      : null;
 
   const status: PathStatus =
     records.length === 0
@@ -210,21 +253,6 @@ function capability(provider: string, records: readonly AttemptRecord[]) {
     /** From the provider's docs, not a guest probe; null when not researched. */
     nativeServices: nativeServiceDoc(provider),
   };
-}
-
-/** Why a compose row is unsupported: what ruled each daemon method out, then what failed. */
-function dockerUnsupportedReason(c: ReturnType<typeof capability>): string | null {
-  if (c.docker !== "fails") return null;
-  const skipped = c.skippedMethods.map((s) => s.value);
-  const failed = c.daemonFailures.map((f) => f.value);
-
-  return [
-    "No Docker daemon started",
-    skipped.length ? `ruled out: ${skipped.join("; ")}` : null,
-    failed.length ? `tried and failed: ${failed.join("; ")}` : null,
-  ]
-    .filter((part): part is string => part !== null)
-    .join(". ");
 }
 
 /** A provider a run skipped, or stopped before its planned attempts ended, from the run's notes. */
@@ -353,24 +381,14 @@ export function servicesSiteData(input: {
         a.track.localeCompare(b.track) ||
         a.settings.localeCompare(b.settings),
     )
-    .map(({ provider, track, settings, records }) => {
-      const found = capability(provider, records);
-
-      return {
-        provider,
-        track,
-        settings,
-        capability: found,
-        compose: pathSummary(
-          records.filter((r) => r.path === "compose"),
-          dockerUnsupportedReason(found),
-        ),
-        native: pathSummary(
-          records.filter((r) => r.path === "native"),
-          null,
-        ),
-      };
-    });
+    .map(({ provider, track, settings, records }) => ({
+      provider,
+      track,
+      settings,
+      capability: capability(provider, records),
+      compose: pathSummary(records.filter((r) => r.path === "compose")),
+      native: pathSummary(records.filter((r) => r.path === "native")),
+    }));
 
   const tracks = [...new Set(providers.map((p) => p.track))].sort();
 
@@ -420,7 +438,7 @@ export function servicesSiteData(input: {
       "readyToGreenS: from the first upload after the probe to all fixture tests passing; sandbox creation and the measurement-only probe are excluded.",
       "The compose path fetches Docker and pulls images from the internet inside the sandbox; the no-Docker path uploads its bundle from the harness host. Their transfer sources differ, so the two rankings are separate.",
       "Medians are over green attempts only; failures are listed with the stage they stopped at.",
-      "A compose row is unsupported when every finished daemon ladder found no way to run Docker; unsupportedReason names what ruled each method out. That is a result about the provider, not a harness failure.",
+      "A row is unsupported only when every attempt is conclusive evidence: a guest architecture without pinned artifacts, or a finished daemon ladder whose every failed try found no daemon on the socket, named a missing privilege or kernel feature, or could not mount storage. Download, checksum, transport and timeout failures keep a row failed. unsupportedReason says what ruled each method out.",
     ],
   };
 }

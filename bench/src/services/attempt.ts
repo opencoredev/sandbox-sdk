@@ -11,6 +11,7 @@
  *
  * Both paths share the readiness check (Postgres answers SELECT 1, Redis answers PING) and the tests.
  */
+import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -59,8 +60,6 @@ export const guest = {
   app: "/workspace/svc/app",
 } as const;
 
-const bin = `${guest.root}/bin`;
-
 export interface ServicesPlan {
   runId: string;
   /** The run's unique ownership label value (`sandbox-bench-run`), from run.json. */
@@ -88,6 +87,8 @@ export interface ServicesEnvironment {
   onSandbox(provider: string, id: string): Promise<void>;
   /** Called just before the create request, so a crash mid-create still leaves evidence. */
   onSubmit?(provider: string, attemptId: string): Promise<void>;
+  /** Called when the attempt ended after `onSubmit` but before its create was sent. */
+  onNotSent?(provider: string, attemptId: string): Promise<void>;
   /** Receives the cleanup of a create that answers after the attempt returned; the run awaits it. */
   onLateCleanup?(work: Promise<void>): void;
   /** List-price estimate for a sandbox of this provider and track held this long. */
@@ -173,17 +174,24 @@ export class Guest {
   readonly logs = new Map<string, string>();
   /** Wait between daemon polls. */
   pollMs = 1000;
+  /** Monotonic milliseconds for deadlines; `now` stamps the phases. */
+  mono: () => number = () => performance.now();
 
   constructor(
     readonly box: GuestBox,
     readonly signal: AbortSignal,
     readonly phases: Phase[],
     readonly now: () => number,
+    /**
+     * This attempt's own directory for the Docker and Compose binaries it fetches and verifies.
+     * A fresh random name, so nothing the image left at a fixed path is ever run in their place.
+     */
+    readonly tools = `${guest.root}/tools-${randomBytes(6).toString("hex")}`,
   ) {}
 
   prelude() {
     const parts = [
-      `export PATH=${bin}:${guest.root}/node/bin:${guest.root}/docker:${guest.root}/docker-rootless-extras:"$PATH"`,
+      `export PATH=${guest.root}/node/bin:${this.tools}/bin:${this.tools}/docker:${this.tools}/docker-rootless-extras:"$PATH"`,
     ];
 
     // One endpoint for every docker and compose call: never a configured context's.
@@ -513,37 +521,129 @@ function pingResult(output: string): Ping | null {
   }
 }
 
+/**
+ * Daemon log lines that name a privilege, namespace or kernel feature the sandbox lacks. Only a
+ * failed start whose log says one of these is evidence about Docker here; a daemon that stayed
+ * silent or died without saying why is not.
+ */
+const capabilityRefusal =
+  /operation not permitted|permission denied|must be run as root|are you root|requires root|cgroup|iptables|nf_tables|overlay|user namespace|newuidmap|newgidmap|subuid|unshare|rootlesskit|failed to mount|no such device|not supported|read-only file system/i;
+
+/** A ping refused this way found no daemon it may use on that socket: a fact, not a fault. */
+const noDaemonOnSocket = /ENOENT|ECONNREFUSED|EACCES/;
+
+/** One method of the ladder: tries it, or records the probe fact that rules it out. */
+interface Rung {
+  readonly method: DaemonMethod;
+  readonly run: () => Promise<boolean>;
+}
+
+/** A Compose project name no other attempt uses: lowercase letters, digits and dashes. */
+export const composeProject = (attemptId: string) =>
+  `sbx-${attemptId.toLowerCase().replaceAll(/[^a-z0-9-]/g, "-")}-${randomBytes(3).toString("hex")}`;
+
 class Daemon {
-  readonly record: DaemonRecord = {
-    method: null,
-    config: null,
-    skipped: [],
-    tries: [],
-    storageDriver: null,
-    network: null,
-    serverVersion: null,
-    compose: null,
-    finished: false,
-  };
-  /** The compose command once one works: `docker compose` or the fetched plugin binary. */
+  readonly record: DaemonRecord;
+  /** The compose command once one works: `docker compose` or the fetched plugin binary's path. */
   compose = "";
+  /** Every method in ladder order (getDaemon). */
+  rungs: readonly Rung[] = [];
   /** The ladder and config index that answered, so a storage failure can continue past it. */
   private resume: { input: LadderInput; index: number } | null = null;
+  /** The rung whose daemon is in use, so a storage failure can go on to the methods after it. */
+  private rung = -1;
+  /** What this attempt fetched and verified into its own tool directory. */
+  private readonly fetched = { static: false, rootless: false };
+  /**
+   * A daemon was already answering when the attempt began and was given up: the rootful methods
+   * would restart it, and it is not ours to restart.
+   */
+  keepRunningDaemon = false;
+  /** The daemon's socket needs root: every docker and compose call goes through sudo. */
+  private viaSudo = false;
+  private socket = "/var/run/docker.sock";
+
+  constructor(
+    readonly g: Guest,
+    readonly probe: Probe,
+    readonly readyMs: number,
+    readonly project: string,
+  ) {
+    this.record = {
+      method: null,
+      config: null,
+      skipped: [],
+      tries: [],
+      storageDriver: null,
+      network: null,
+      serverVersion: null,
+      compose: null,
+      project,
+      down: null,
+      finished: false,
+    };
+  }
+
+  private get sudo() {
+    return this.probe.uid === "0" ? "" : "sudo -n ";
+  }
+
+  /**
+   * Prefix for docker and compose calls. A root-only socket is reached through sudo with the same
+   * endpoint and the variables compose.yaml reads; its permissions are never changed.
+   */
+  get client() {
+    return this.viaSudo
+      ? 'sudo -n env PATH="$PATH" DOCKER_HOST="$DOCKER_HOST" SBX_PG_PORT="${SBX_PG_PORT:-}" SBX_REDIS_PORT="${SBX_REDIS_PORT:-}" '
+      : "";
+  }
+
+  get files() {
+    return this.record.network === "host"
+      ? "-f compose.yaml -f compose.host-network.yaml"
+      : "-f compose.yaml";
+  }
+
+  /** A compose command on this attempt's project, against the chosen daemon. */
+  composeCommand(args: string) {
+    return `${this.client}${this.compose} -p ${quote(this.project)} ${this.files} ${args}`;
+  }
+
+  skip(method: DaemonMethod, reason: string) {
+    this.record.skipped.push({ method, reason });
+
+    return false;
+  }
+
+  /** Climb from rung `from`; true once a method's daemon answers. */
+  async climb(from: number): Promise<boolean> {
+    for (let index = from; index < this.rungs.length; index++) {
+      const rung = this.rungs[index];
+
+      if (rung && (await rung.run())) {
+        this.rung = index;
+
+        return true;
+      }
+    }
+
+    return false;
+  }
 
   /**
    * The daemon answered but cannot use its storage driver (Daytona: overlay layers fail to mount
-   * inside the sandbox's own overlay). Records that try as failed and continues the same ladder
-   * at the next vfs config. False when there is none (or the daemon was found running).
+   * inside the sandbox's own overlay). Records that try as failed, tears down this attempt's
+   * project on it, and goes on: the same method's later vfs configs first, then every method after
+   * it in the ladder. False when nothing else answers.
    */
   async switchStorage(reason: string): Promise<boolean> {
     const resume = this.resume;
-
-    if (!resume) return false;
     const last = lastOf(this.record.tries, (t) => t.ok);
 
     if (last) {
       last.ok = false;
       last.error = `answered, but ${tail(reason, 300)}`;
+      last.conclusive = true;
 
       const phase = lastOf(
         this.g.phases,
@@ -556,51 +656,45 @@ class Daemon {
       }
     }
 
+    await this.down(this.g, 30_000);
     this.record.method = null;
     this.record.config = null;
+    this.record.down = null;
     this.resume = null;
+    this.viaSudo = false;
     // Unfinished until the fallback picks a config or runs out; an abort in between leaves it so.
     this.record.finished = false;
 
-    const found = await this.ladder(resume.input, resume.index + 1, (config) =>
-      config.flags.includes("--storage-driver=vfs"),
-    );
+    // A daemon that was running before the attempt is never restarted.
+    if (!resume) this.keepRunningDaemon = true;
+
+    const found =
+      (resume !== null &&
+        (await this.ladder(resume.input, resume.index + 1, (config) =>
+          config.flags.includes("--storage-driver=vfs"),
+        ))) ||
+      (await this.climb(this.rung + 1));
 
     this.record.finished = true;
 
     return found;
   }
-  private socket = "/var/run/docker.sock";
-
-  constructor(
-    readonly g: Guest,
-    readonly probe: Probe,
-    readonly readyMs: number,
-  ) {}
-
-  private get sudo() {
-    return this.probe.uid === "0" ? "" : "sudo -n ";
-  }
-
-  skip(method: DaemonMethod, reason: string) {
-    this.record.skipped.push({ method, reason });
-  }
 
   /** Readiness only: the helper exits as soon as /_ping answers. */
-  private ping(asRoot: boolean, meta = false) {
+  private ping(asRoot: boolean, timeoutMs = 20_000) {
     const runner = asRoot && this.sudo ? `${this.sudo}env PATH="$PATH" ` : "";
 
-    return this.g.exec(
-      `${runner}node ${guest.root}/daemon-ping.mjs ${quote(this.socket)}${meta ? " --meta" : ""}`,
-      { timeoutMs: 20_000 },
-    );
+    return this.g.exec(`${runner}node ${guest.root}/daemon-ping.mjs ${quote(this.socket)}`, {
+      timeoutMs: Math.max(1, Math.ceil(timeoutMs)),
+    });
   }
 
   private readonly pendingLogs: { attempt: DaemonTry; log: string; name: string }[] = [];
 
   /**
-   * Each started daemon's log into the diagnostics, and a failed try's reason from its log. `via`
-   * runs the reads: after the verdict, a guest on its own short signal, never the workload's.
+   * Each started daemon's log into the diagnostics, and a failed try's reason from its log. A try
+   * whose log names a missing capability becomes conclusive. `via` runs the reads: after the
+   * verdict, a guest on its own short signal, never the workload's.
    */
   async collectLogs(via: Guest = this.g) {
     for (const { attempt, log, name } of this.pendingLogs.splice(0)) {
@@ -619,6 +713,8 @@ class Daemon {
           .join(" | ");
 
         if (reason) attempt.error = `${attempt.error}: ${tail(reason, 400)}`;
+
+        if (capabilityRefusal.test(reason)) attempt.conclusive = true;
       }
     }
   }
@@ -630,11 +726,11 @@ class Daemon {
     if (!this.record.method) return;
     via.dockerHost = this.g.dockerHost;
 
+    const runner = this.viaSudo ? 'sudo -n env PATH="$PATH" ' : "";
+
     const result = await via.exec(
-      `node ${guest.root}/daemon-ping.mjs ${quote(this.socket)} --meta`,
-      {
-        timeoutMs: 20_000,
-      },
+      `${runner}node ${guest.root}/daemon-ping.mjs ${quote(this.socket)} --meta`,
+      { timeoutMs: 20_000 },
     );
 
     const ping = pingResult(result.output);
@@ -645,17 +741,38 @@ class Daemon {
     }
   }
 
-  private succeed(method: DaemonMethod, config: DaemonConfig, ping: Ping | null) {
+  /**
+   * `compose down -v` of this attempt's project on the chosen daemon, bounded: whatever runs the
+   * daemon, the attempt's containers, networks and volumes go before the sandbox does.
+   */
+  async down(via: Guest, timeoutMs: number) {
+    if (!this.record.method || !this.compose) return;
+    via.dockerHost = this.g.dockerHost;
+
+    const result = await via
+      .exec(this.composeCommand("down -v --remove-orphans --timeout 5"), {
+        cwd: guest.app,
+        timeoutMs,
+      })
+      .catch((error: Error) => ({ ok: false, output: error.message }));
+
+    this.record.down = result.ok;
+    this.g.diagnostics("compose-down", result.output);
+  }
+
+  private succeed(method: DaemonMethod, config: DaemonConfig, ping: Ping | null, root: boolean) {
     this.record.method = method;
     this.record.config = config.id;
     this.record.network = config.network;
     this.record.serverVersion = ping?.serverVersion ?? null;
     this.record.storageDriver = ping?.storageDriver ?? null;
+    this.viaSudo = root && this.sudo !== "";
   }
 
   /** The daemon the probe found answering. */
   async running(): Promise<boolean> {
     // Bound to the default socket, the one later docker and compose calls use.
+    this.socket = "/var/run/docker.sock";
     this.g.dockerHost = this.socket;
     const startedAt = this.g.now();
     // Checked on the socket itself, whatever DOCKER_HOST or a saved context told the probe's
@@ -676,6 +793,7 @@ class Daemon {
       ok,
       ms: this.g.now() - startedAt,
       error: ok ? null : tail(result.output, 300),
+      conclusive: !ok && noDaemonOnSocket.test(result.output),
     });
     this.g.phases.push({
       name: "daemon-start:preinstalled-running:as-found",
@@ -692,13 +810,15 @@ class Daemon {
       return false;
     }
 
-    if (asRoot) await this.g.exec(`sudo -n chmod 666 ${quote(this.socket)}`, { timeoutMs: 20_000 });
-    this.succeed("preinstalled-running", config, pingResult(result.output));
+    this.succeed("preinstalled-running", config, pingResult(result.output), asRoot);
 
     return true;
   }
 
-  /** Start a daemon with each config in turn until one answers /_ping. */
+  /**
+   * Start a daemon with each config in turn until one answers /_ping within `readyMs`, counted on
+   * the monotonic clock from just before the launch; an answer after that is not accepted.
+   */
   async ladder(
     input: LadderInput,
     from = 0,
@@ -730,6 +850,8 @@ class Daemon {
       try {
         // Rechecked after the cleanup above: no daemon starts once the attempt is aborted.
         this.g.signal.throwIfAborted();
+        const launchedAt = this.g.mono();
+        const deadline = launchedAt + this.readyMs;
         await this.g.box.start(
           `${this.g.prelude()}exec ${input.command(config, log)} >${log} 2>&1`,
           {
@@ -737,20 +859,31 @@ class Daemon {
           },
         );
 
-        const deadline = startedAt + this.readyMs;
-
         for (;;) {
           this.g.signal.throwIfAborted();
-          const result = await this.ping(input.asRoot);
+          const left = deadline - this.g.mono();
+
+          if (left <= 0) {
+            error = `no answer within ${this.readyMs} ms`;
+            break;
+          }
+
+          const result = await this.ping(input.asRoot, Math.min(20_000, left));
 
           if (result.ok) {
+            // An answer that arrives past the deadline does not count.
+            if (this.g.mono() > deadline) {
+              error = `no answer within ${this.readyMs} ms`;
+              break;
+            }
+
             readyAt = this.g.now();
             ping = pingResult(result.output);
             break;
           }
 
           // A daemon that already exited will never answer; give it a few seconds to appear first.
-          if (this.g.now() - startedAt > 3000) {
+          if (this.g.mono() - launchedAt > 3000) {
             const alive = await this.g.exec(
               `if command -v pgrep >/dev/null 2>&1; then pgrep -x ${input.method === "podman" ? "podman" : "dockerd"} >/dev/null || echo DEAD; fi`,
               { timeoutMs: 20_000 },
@@ -762,12 +895,9 @@ class Daemon {
             }
           }
 
-          if (this.g.now() >= deadline) {
-            error = `no answer within ${this.readyMs} ms`;
-            break;
-          }
+          const wait = Math.min(this.g.pollMs, deadline - this.g.mono());
 
-          await new Promise((resolve) => setTimeout(resolve, this.g.pollMs));
+          if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
         }
       } catch (cause) {
         // The sandbox itself is gone: a provider failure, never a Docker result.
@@ -786,12 +916,14 @@ class Daemon {
       const endedAt = readyAt ?? this.g.now();
       const ok = error === null;
 
-      const attempt = {
+      const attempt: DaemonTry = {
         method: input.method,
         config: config.id,
         ok,
         ms: endedAt - startedAt,
         error,
+        // Conclusive only once its log names a missing capability (collectLogs).
+        conclusive: false,
       };
 
       this.record.tries.push(attempt);
@@ -807,9 +939,7 @@ class Daemon {
       });
 
       if (ok) {
-        if (input.asRoot && this.sudo)
-          await this.g.exec(`sudo -n chmod 666 ${quote(input.socket)}`, { timeoutMs: 20_000 });
-        this.succeed(input.method, config, ping);
+        this.succeed(input.method, config, ping, input.asRoot);
         this.resume = { input, index };
 
         return true;
@@ -822,16 +952,22 @@ class Daemon {
     return false;
   }
 
-  /** Docker's static bundle (and the rootless extras when asked), fetched by hash. */
+  /**
+   * Docker's static bundle (and the rootless extras when asked), fetched by hash into this
+   * attempt's own tool directory. Only binaries this attempt fetched and verified are ever run.
+   */
   async fetchStatic(rootless: boolean) {
-    const fetch = (pin: { url: string; sha256: string }, dest: string) =>
-      `node ${guest.root}/fetch.mjs ${quote(pin.url)} ${pin.sha256} ${dest} && tar -xzf ${dest} -C ${guest.root} && rm -f ${dest}`;
+    const tools = this.g.tools;
 
-    const commands = [
-      `[ -x ${guest.root}/docker/dockerd ] || { ${fetch(dockerStatic, `${guest.root}/docker.tgz`)}; }`,
-    ];
+    const fetch = (pin: { url: string; sha256: string }, file: string) =>
+      `node ${guest.root}/fetch.mjs ${quote(pin.url)} ${pin.sha256} ${tools}/${file} && tar -xzf ${tools}/${file} -C ${tools} && rm -f ${tools}/${file}`;
 
-    if (rootless) commands.push(fetch(dockerRootlessExtras, `${guest.root}/rootless.tgz`));
+    const commands = [`mkdir -p -m 700 ${tools}`];
+
+    if (!this.fetched.static) commands.push(fetch(dockerStatic, "docker.tgz"));
+
+    if (rootless && !this.fetched.rootless)
+      commands.push(fetch(dockerRootlessExtras, "rootless.tgz"));
     const method = rootless ? "rootless" : "static-rootful";
 
     const name = `daemon-fetch:${rootless ? "rootless" : "static"}`;
@@ -860,22 +996,30 @@ class Daemon {
     if (this.g.signal.aborted)
       throw new StageFailure("timeout", "daemon fetch timed out", error ?? "");
 
-    // A failed download is a failed rung: the ladder goes on to the next method.
-    if (error !== null)
+    // A failed download is a failed rung, and says nothing about Docker: the ladder goes on.
+    if (error !== null) {
       this.record.tries.push({
         method,
         config: "fetch",
         ok: false,
         ms: this.g.now() - startedAt,
         error,
+        conclusive: false,
       });
 
-    return error === null;
+      return false;
+    }
+
+    this.fetched.static = true;
+
+    if (rootless) this.fetched.rootless = true;
+
+    return true;
   }
 
   async ensureCompose() {
     const found = await this.g
-      .exec("docker compose version --short", { timeoutMs: 30_000 })
+      .exec(`${this.client}docker compose version --short`, { timeoutMs: 30_000 })
       .catch(() => null);
 
     if (found?.ok && /^v?[2-9]\./.test(found.output.trim())) {
@@ -885,13 +1029,16 @@ class Daemon {
       return;
     }
 
+    const tools = this.g.tools;
+    const plugin = `${tools}/bin/docker-compose`;
+
     await this.g.must(
       "daemon",
       "compose-fetch",
-      `mkdir -p ${bin} && node ${guest.root}/fetch.mjs ${quote(composePlugin.url)} ${composePlugin.sha256} ${bin}/docker-compose && chmod +x ${bin}/docker-compose && docker-compose version --short`,
+      `mkdir -p -m 700 ${tools} && mkdir -p ${tools}/bin && node ${guest.root}/fetch.mjs ${quote(composePlugin.url)} ${composePlugin.sha256} ${plugin} && chmod +x ${plugin} && ${plugin} version --short`,
       { timeoutMs: stepTimeoutMs.composeFetch },
     );
-    this.compose = "docker-compose";
+    this.compose = plugin;
     this.record.compose = "fetched";
   }
 }
@@ -904,12 +1051,14 @@ export async function getDaemon(
   probe: Probe,
   readyMs: number,
   keep: (daemon: Daemon) => void,
+  project = composeProject("attempt"),
 ): Promise<Daemon> {
-  const d = new Daemon(g, probe, readyMs);
+  const d = new Daemon(g, probe, readyMs, project);
   keep(d);
   const sudo = probe.uid === "0" ? "" : "sudo -n ";
+  const kept = "a daemon was already running here; it is never restarted";
 
-  const rootful = (method: DaemonMethod) =>
+  const rootful = (method: DaemonMethod, dockerd: string) =>
     d.ladder({
       method,
       configs: rootfulConfigs,
@@ -917,66 +1066,85 @@ export async function getDaemon(
       asRoot: true,
       cleanup: rootfulCleanup(sudo),
       command: (config, _log) =>
-        `${sudo}env PATH="$PATH" dockerd --host unix:///var/run/docker.sock --data-root /var/lib/sbx-docker/${config.id} ${config.flags}`.trim(),
+        `${sudo}env PATH="$PATH" ${dockerd} --host unix:///var/run/docker.sock --data-root /var/lib/sbx-docker/${config.id} ${config.flags}`.trim(),
     });
 
-  let ok = false;
+  d.rungs = [
+    // Always checked first: a healthy daemon on the default socket is used, never restarted.
+    { method: "preinstalled-running", run: () => d.running() },
+    {
+      method: "preinstalled-started",
+      run: async () => {
+        if (d.keepRunningDaemon) return d.skip("preinstalled-started", kept);
 
-  // Always checked first: a healthy daemon on the default socket is used, never restarted.
-  ok = await d.running();
+        if (probe.dockerd !== "yes")
+          return d.skip("preinstalled-started", "the image has no dockerd");
 
-  if (!ok) {
-    if (probe.dockerd !== "yes") d.skip("preinstalled-started", "the image has no dockerd");
-    else if (!canBeRoot(probe)) d.skip("preinstalled-started", "not root and no passwordless sudo");
-    else ok = await rootful("preinstalled-started");
-  }
+        if (!canBeRoot(probe))
+          return d.skip("preinstalled-started", "not root and no passwordless sudo");
 
-  if (!ok) {
-    if (!canBeRoot(probe)) d.skip("static-rootful", "not root and no passwordless sudo");
-    else if (probe.arch !== "x86_64")
-      d.skip("static-rootful", `no pinned static bundle for ${probe.arch}`);
-    else {
-      if (await d.fetchStatic(false)) ok = await rootful("static-rootful");
-    }
-  }
+        return rootful("preinstalled-started", "dockerd");
+      },
+    },
+    {
+      method: "static-rootful",
+      run: async () => {
+        if (d.keepRunningDaemon) return d.skip("static-rootful", kept);
 
-  if (!ok) {
-    const missing = rootlessPrerequisites(probe);
+        if (!canBeRoot(probe)) return d.skip("static-rootful", "not root and no passwordless sudo");
 
-    if (missing) d.skip("rootless", missing);
-    else if (probe.arch !== "x86_64")
-      d.skip("rootless", `no pinned static bundle for ${probe.arch}`);
-    else {
-      const xdg = `${guest.root}/xdg`;
-      ok =
-        (await d.fetchStatic(true)) &&
-        (await d.ladder({
-          method: "rootless",
-          configs: rootlessConfigs,
-          socket: `${xdg}/docker.sock`,
+        if (probe.arch !== "x86_64")
+          return d.skip("static-rootful", `no pinned static bundle for ${probe.arch}`);
+
+        return (
+          (await d.fetchStatic(false)) && rootful("static-rootful", `${g.tools}/docker/dockerd`)
+        );
+      },
+    },
+    {
+      method: "rootless",
+      run: async () => {
+        const missing = rootlessPrerequisites(probe);
+
+        if (missing) return d.skip("rootless", missing);
+
+        if (probe.arch !== "x86_64")
+          return d.skip("rootless", `no pinned static bundle for ${probe.arch}`);
+        const xdg = `${guest.root}/xdg`;
+
+        return (
+          (await d.fetchStatic(true)) &&
+          d.ladder({
+            method: "rootless",
+            configs: rootlessConfigs,
+            socket: `${xdg}/docker.sock`,
+            asRoot: false,
+            // Exact process names: `pkill -f dockerd-rootless` would match this shell's own command line.
+            cleanup: `pkill -x rootlesskit 2>/dev/null; pkill -x dockerd 2>/dev/null; sleep 2; mkdir -p ${xdg} && chmod 700 ${xdg}; true`,
+            command: (config) =>
+              `env XDG_RUNTIME_DIR=${xdg} ${g.tools}/docker-rootless-extras/dockerd-rootless.sh --data-root ${guest.root}/rootless-${config.id} ${config.flags}`.trim(),
+          })
+        );
+      },
+    },
+    {
+      method: "podman",
+      run: async () => {
+        if (probe.podman === "none") return d.skip("podman", "the image has no podman");
+
+        return d.ladder({
+          method: "podman",
+          configs: [{ id: "service", flags: "", network: "bridge" }],
+          socket: `${guest.root}/podman.sock`,
           asRoot: false,
-          // Exact process names: `pkill -f dockerd-rootless` would match this shell's own command line.
-          cleanup: `pkill -x rootlesskit 2>/dev/null; pkill -x dockerd 2>/dev/null; sleep 2; mkdir -p ${xdg} && chmod 700 ${xdg}; true`,
-          command: (config) =>
-            `env XDG_RUNTIME_DIR=${xdg} dockerd-rootless.sh --data-root ${guest.root}/rootless-${config.id} ${config.flags}`.trim(),
-        }));
-    }
-  }
+          cleanup: "true",
+          command: () => `podman system service --time=0 unix://${guest.root}/podman.sock`,
+        });
+      },
+    },
+  ];
 
-  if (!ok) {
-    if (probe.podman === "none") d.skip("podman", "the image has no podman");
-    else
-      ok = await d.ladder({
-        method: "podman",
-        configs: [{ id: "service", flags: "", network: "bridge" }],
-        socket: `${guest.root}/podman.sock`,
-        asRoot: false,
-        cleanup: "true",
-        command: () => `podman system service --time=0 unix://${guest.root}/podman.sock`,
-      });
-  }
-
-  if (!ok) {
+  if (!(await d.climb(0))) {
     if (g.signal.aborted)
       throw new StageFailure("timeout", "attempt timeout", "Aborted during the daemon ladder");
     // The ladder finished failing: that is the verdict, whatever the log reads below do.
@@ -1018,30 +1186,30 @@ async function composePath(
   /** Receives the ladder's record as soon as it exists, so a later failure keeps it. */
   keep: (daemon: Daemon) => void,
 ): Promise<Outcome> {
-  const daemon = await getDaemon(g, probe, plan.daemonReadyMs ?? 45_000, keep);
+  const daemon = await getDaemon(
+    g,
+    probe,
+    plan.daemonReadyMs ?? 45_000,
+    keep,
+    composeProject(plan.attemptId),
+  );
 
-  const filesFor = () =>
-    daemon.record.network === "host"
-      ? "-f compose.yaml -f compose.host-network.yaml"
-      : "-f compose.yaml";
-
-  let files = filesFor();
   const ports = plan.ports ?? servicePorts;
   const composeEnv = { SBX_PG_PORT: String(ports.postgres), SBX_REDIS_PORT: String(ports.redis) };
   await portsFree(g, ports);
 
   try {
-    // A storage-driver failure (pull or container start) moves the daemon to a vfs config and
+    // A storage-driver failure (pull or container start) moves to another daemon (vfs first) and
     // starts over from the pull; every try stays in the phases.
     for (;;) {
-      const pull = await g.step("image-pull", `${daemon.compose} ${files} pull --quiet`, {
+      const pull = await g.step("image-pull", daemon.composeCommand("pull --quiet"), {
         cwd: guest.app,
         env: composeEnv,
         timeoutMs: stepTimeoutMs.imagePull,
       });
 
       const start = pull.ok
-        ? await g.step("services-start", `${daemon.compose} ${files} up -d --no-build`, {
+        ? await g.step("services-start", daemon.composeCommand("up -d --no-build"), {
             cwd: guest.app,
             env: composeEnv,
             timeoutMs: stepTimeoutMs.servicesStart,
@@ -1055,10 +1223,8 @@ async function composePath(
         !g.signal.aborted &&
         storageFailure.test(failed.output) &&
         (await daemon.switchStorage(storageReason(failed.output)))
-      ) {
-        files = filesFor();
+      )
         continue;
-      }
 
       throw new StageFailure(
         g.signal.aborted ? "timeout" : start ? "services-start" : "image-pull",
@@ -1073,7 +1239,7 @@ async function composePath(
   } catch (error) {
     const result = await g
       .exec(
-        `${daemon.compose} ${files} ps -a 2>&1; ${daemon.compose} ${files} logs --tail 40 2>&1`,
+        `${daemon.composeCommand("ps -a")} 2>&1; ${daemon.composeCommand("logs --tail 40")} 2>&1`,
         {
           cwd: guest.app,
           env: composeEnv,
@@ -1137,6 +1303,9 @@ export function metricsOf(path: ServicePath, phases: readonly Phase[], green: bo
 
 /** How long past its own timeout an attempt may run before cleanup starts regardless. */
 export const deadlineGraceMs = 30_000;
+
+/** How long cleanup waits for `compose down -v` of the attempt's project. */
+export const composeDownMs = 45_000;
 
 /** Resolves after `ms`, unless `signal` fires first; never rejects. */
 const after = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.());
@@ -1251,9 +1420,17 @@ export async function runServicesAttempt(
     const submitted = now();
     st.createdAt = submitted;
 
-    // Cleanup may already have run (a stalled journal past the hard deadline): never start a create
-    // it cannot see. Checked synchronously right before the request, so nothing slips between.
-    if (st.closed) throw new StageFailure("timeout", "attempt deadline", "No create was sent");
+    // The attempt may have timed out while the journal was written, or cleanup may already have
+    // run: never start a create then, and journal that it was not sent so recovery does not look
+    // for it. Checked synchronously right before the request, so nothing slips between.
+    if (st.closed || controller.signal.aborted) {
+      await bounded(env.onNotSent?.(plan.entry.name, plan.attemptId));
+      throw new StageFailure(
+        "timeout",
+        st.closed ? "attempt deadline" : "attempt timeout",
+        "No create was sent",
+      );
+    }
 
     {
       // No abort signal: the SDK would reject at once on abort and lose a late allocation's ID.
@@ -1314,7 +1491,9 @@ export async function runServicesAttempt(
     st.guest = runner;
 
     const parsed = await runner.span("probe", async () => {
-      await runner.exec(`mkdir -p ${bin} /workspace/svc ${guest.app}`, { timeoutMs: 30_000 });
+      await runner.exec(`mkdir -p ${guest.root} /workspace/svc ${guest.app}`, {
+        timeoutMs: 30_000,
+      });
       await runner.box.files.write(`${guest.root}/probe.sh`, probeScript);
 
       const result = await runner.exec(`sh ${guest.root}/probe.sh`, {
@@ -1450,14 +1629,22 @@ export async function runServicesAttempt(
       );
   }
 
-  // The verdict is final; now the daemon's version, storage driver and logs, on their own bounded
-  // window (the attempt's own signal has fired), before the sandbox goes.
+  // The verdict is final; now this attempt's compose project comes down on the daemon that ran it,
+  // then the daemon's version, storage driver and logs are read, each on its own bounded window
+  // (the attempt's own signal has fired), before the sandbox goes.
+  // Bounded on their own, so they never shorten the destroy window below.
+  const postWorkFrom = now();
+
   if (st.daemonRef && st.guest && st.box) {
-    // A separate guest on its own short signal: the workload's signal stays aborted, so a body
-    // still running can never start another step.
-    const post = new Guest(st.box, AbortSignal.timeout(30_000), [], now);
+    // Separate guests on their own short signals: the workload's signal stays aborted, so a body
+    // still running can never start another step. They share the attempt's tool directory.
+    const down = new Guest(st.box, AbortSignal.timeout(composeDownMs), [], now, st.guest.tools);
+    await bounded(st.daemonRef.down(down, composeDownMs), composeDownMs);
+    const post = new Guest(st.box, AbortSignal.timeout(30_000), [], now, st.guest.tools);
     await bounded(st.daemonRef.readMetadata(post), 30_000);
   }
+
+  const postWorkMs = now() - postWorkFrom;
 
   const target = st.box;
   const strayId = st.stray;
@@ -1470,7 +1657,7 @@ export async function runServicesAttempt(
       ? () => target.destroy()
       : () => plan.entry.provider.destroy(strayId ?? "");
 
-    const left = Math.max(1000, destroyTimeoutMs - (now() - cleanupStart));
+    const left = Math.max(1000, destroyTimeoutMs - (now() - cleanupStart - postWorkMs));
     st.deletionConfirmed = await Promise.race([
       destroy().then(
         () => true,
