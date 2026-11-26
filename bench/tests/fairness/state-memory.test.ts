@@ -18,7 +18,12 @@ import {
   type OpenSession,
   type Suspend,
 } from "../../src/fairness/framework.js";
-import { guestScripts, ownKillFunction, runtimes } from "../../src/fairness/guest-scripts.js";
+import {
+  guestScripts,
+  ownKillFunction,
+  runtimes,
+  stampFunction,
+} from "../../src/fairness/guest-scripts.js";
 import {
   defaultPressureOptions,
   judgePressure,
@@ -83,7 +88,7 @@ const gone = { kind: "gone" as const };
 const unknown = { kind: "unknown" as const };
 
 const snapshot = (over: Partial<GuestSnapshot> = {}): GuestSnapshot => ({
-  dirExists: true,
+  dir: "present",
   file: "present",
   size: 1_048_576,
   sha: "abc",
@@ -106,7 +111,6 @@ describe("state-survival judge", () => {
     token: "t",
     holdMs: 60_000,
     window: { minS: 64, maxS: 66 },
-    callsMs: 3_000,
   };
 
   const kept = { later: snapshot({ beat: 80 }), probe: answer("t") };
@@ -138,15 +142,26 @@ describe("state-survival judge", () => {
     expect(partial.reason).toMatch(/missed 34 to 36 s/);
   });
 
-  it("does not credit a freeze to the hold when the pause and resume calls were long", () => {
+  it("does not credit a freeze outside the hold to the hold", () => {
+    // Long pause and resume calls: the beats missed during them could account for the shortfall.
     const slowCalls = judgeSurvival({
       ...base,
       ...kept,
       after: snapshot({ beat: 12 }),
-      callsMs: 20_000,
+      window: { minS: 64, maxS: 80 },
     });
 
     expect(slowCalls.verdict).toBe("inconclusive");
+
+    // The worker beat through the hold, then froze for a minute after resume.
+    const afterResume = judgeSurvival({
+      ...base,
+      ...kept,
+      after: snapshot({ beat: 70 }),
+      window: { minS: 120, maxS: 122 },
+    });
+
+    expect(afterResume.verdict).toBe("inconclusive");
     // A snapshot answered late widens the window, so the missed range is too wide to call either way.
 
     const late = judgeSurvival({
@@ -214,7 +229,7 @@ describe("state-survival judge", () => {
 
   it("calls a missing directory or file, or a changed file, files-lost", () => {
     for (const after of [
-      snapshot({ dirExists: false }),
+      snapshot({ dir: "absent", file: "unknown", sha: null }),
       snapshot({ file: "absent", sha: null, size: null }),
       snapshot({ sha: "def" }),
     ])
@@ -222,7 +237,11 @@ describe("state-survival judge", () => {
   });
 
   it("calls a file it could not read inconclusive, not lost", () => {
-    for (const after of [snapshot({ file: "unknown", sha: null }), snapshot({ sha: null })])
+    for (const after of [
+      snapshot({ file: "unknown", sha: null }),
+      snapshot({ sha: null }),
+      snapshot({ dir: "unknown", file: "unknown", sha: null }),
+    ])
       expect(judgeSurvival({ ...base, ...kept, after })).toMatchObject({
         verdict: "inconclusive",
         reason: "the file could not be read",
@@ -232,10 +251,10 @@ describe("state-survival judge", () => {
   it("parses only complete snapshots and probe lines", () => {
     expect(
       parseSnapshot(
-        "boot=unknown\ndir=1\nfile=present\nsize=1048576\nsha=aa\nworker=9:5\nserver=gone\nbeat=12\nsnapshot=done\n",
+        "boot=unknown\ndir=present\nfile=present\nsize=1048576\nsha=aa\nworker=9:5\nserver=gone\nbeat=12\nsnapshot=done\n",
       ),
     ).toEqual({
-      dirExists: true,
+      dir: "present",
       file: "present",
       size: 1_048_576,
       sha: "aa",
@@ -245,9 +264,12 @@ describe("state-survival judge", () => {
       beat: 12,
     });
     expect(
-      parseSnapshot("boot=b\ndir=1\nfile=unknown\nworker=\nserver=unknown\nbeat=\nsnapshot=done\n"),
+      parseSnapshot(
+        "boot=b\ndir=unknown\nfile=unknown\nworker=\nserver=unknown\nbeat=\nsnapshot=done\n",
+      ),
     ).toMatchObject({ file: "unknown", worker: unknown, server: unknown, beat: null });
-    expect(parseSnapshot("boot=b\ndir=1\nfile=present\nsha=aa\n")).toBeNull();
+    expect(parseSnapshot("boot=b\ndir=present\nfile=present\nsha=aa\n")).toBeNull();
+    expect(parseSnapshot("boot=b\ndir=1\nfile=present\nsha=aa\nsnapshot=done\n")).toBeNull();
     expect(parseProbe('noise\n{"ok":false,"ms":30001,"body":null}\n')).toEqual({
       ok: false,
       ms: 30_001,
@@ -328,6 +350,10 @@ describe("memory-pressure judge", () => {
       /no kill evidence/,
     );
     expect(() => judgePressure({ ...base, ending: exited(134) })).toThrow(/no kill evidence/);
+    // A refusal line is a refusal only with the hog's own exit 3.
+    expect(() =>
+      judgePressure({ ...base, ending: exited(143), log: log("refused 64 ENOMEM\n") }),
+    ).toThrow(/no kill evidence/);
   });
 
   it("scopes a kill to the process only with a live canary", () => {
@@ -395,26 +421,29 @@ describe.each(available)("guest programs in %s", (runtime) => {
   }
 
   it("restarts only its own server, and accepts only the child it started", async () => {
-    const { dir, state, pidfile, log } = await fixture();
+    const { state, pidfile, log } = await fixture();
     const at = String(port());
     const other = bystander();
 
     try {
-      // No pid file, a pid of -1, and another process's pid: each only starts a server.
-      for (const content of [null, "-1", String(other.pid)]) {
+      // No pid file, a pid of -1, another process's bare pid, and its pid with another start time:
+      // each only starts a server, and says it signalled nothing.
+      for (const content of [null, "-1", String(other.pid), `${other.pid} 1`]) {
         if (content !== null) await writeFile(pidfile, content);
         const started = parseProbe(run([runtime, state, "restart", at, pidfile, log, "10000"]));
         expect(started?.ok, String(content)).toBe(true);
+        expect(started?.killed, String(content)).toBe(false);
         expect(alive(other.pid)).toBe(true);
-        expect(Number(await readFile(pidfile, "utf8"))).toBe(started?.body?.pid);
+        expect(Number((await readFile(pidfile, "utf8")).split(" ")[0])).toBe(started?.body?.pid);
         // Stop it between cases so the next one starts clean.
-        run([], { shell: `${ownKillFunction}\nownkill '${pidfile}' '${dir}'` });
+        run([], { shell: `${ownKillFunction}\nownkill '${pidfile}'` });
         await sleep(100);
       }
 
       const first = parseProbe(run([runtime, state, "restart", at, pidfile, log, "10000"]));
       const second = parseProbe(run([runtime, state, "restart", at, pidfile, log, "10000"]));
       expect(second?.ok).toBe(true);
+      expect(second?.killed).toBe(true);
       expect(second?.body?.pid).not.toBe(first?.body?.pid);
       expect(second?.body?.nonce).not.toBe(first?.body?.nonce);
       expect(second?.ms).toBeGreaterThan(0);
@@ -427,22 +456,30 @@ describe.each(available)("guest programs in %s", (runtime) => {
           ?.token,
       ).toBe(second?.body?.token);
     } finally {
-      run([], { shell: `${ownKillFunction}\nownkill '${pidfile}' '${dir}'` });
+      run([], { shell: `${ownKillFunction}\nownkill '${pidfile}'` });
       other.stop();
     }
   }, 60_000);
 
-  it("ownkill leaves alone a pid that is not this attempt's", async () => {
-    const { dir, pidfile } = await fixture();
+  it("ownkill signals only the process whose stamp the pid file holds", async () => {
+    const { pidfile } = await fixture();
     const other = bystander();
+    const kill = () => run([], { shell: `${ownKillFunction}\nownkill '${pidfile}'` });
 
     try {
-      await writeFile(pidfile, String(other.pid));
-      run([], { shell: `${ownKillFunction}\nownkill '${pidfile}' '${dir}'` });
-      await writeFile(pidfile, "-1");
-      run([], { shell: `${ownKillFunction}\nownkill '${pidfile}' '${dir}'` });
+      // A bare pid, a negative one, and the right pid with a wrong start time are all left alone.
+      for (const content of [String(other.pid), "-1", `${other.pid} 1`]) {
+        await writeFile(pidfile, content);
+        kill();
+      }
+
       await sleep(100);
       expect(alive(other.pid)).toBe(true);
+      // Its own stamp, as the process would have written it, is what lets the signal through.
+      run([], { shell: `${stampFunction}\nstamp ${other.pid} > '${pidfile}'` });
+      kill();
+      await sleep(100);
+      expect(alive(other.pid)).toBe(false);
     } finally {
       other.stop();
     }
@@ -478,12 +515,12 @@ describe.runIf(linux && available.length > 0)(
       workdir: await scratch("state-work"),
     });
 
-    /** A pause that signals this attempt's server and worker (and nothing else) in the fixture's directory. */
+    /** A pause that signals this attempt's server and worker, each only after its stamp checks out. */
     const signalling =
       (workdir: string, signal: string): (() => Promise<void>) =>
       async () => {
         run([], {
-          shell: `for f in '${workdir}'/.sbx-state-*/server.pid '${workdir}'/.sbx-state-*/worker.pid; do p=$(cat "$f" 2>/dev/null) && [ "$p" -gt 1 ] && kill -${signal} "$p"; done; true`,
+          shell: `${ownKillFunction}\nfor f in '${workdir}'/.sbx-state-*/server.pid '${workdir}'/.sbx-state-*/worker.pid; do ownkill "$f" ${signal}; done; true`,
         });
       };
 
@@ -493,7 +530,7 @@ describe.runIf(linux && available.length > 0)(
       const entry = await runOnHost(check, hostSession().open);
       expect(entry.status, entry.reason ?? "").toBe("completed");
       const result = check.resultSchema.parse(entry.result);
-      expect(result.restart).toMatchObject({ failures: 0 });
+      expect(result.restart).toMatchObject({ failures: 0, startsOnly: 0 });
       expect(result.restart.samplesMs).toHaveLength(2);
       expect(result.restart.medianMs).toBeGreaterThan(0);
       expect(result.workdir.startsWith(options.workdir ?? "")).toBe(true);
@@ -501,7 +538,8 @@ describe.runIf(linux && available.length > 0)(
     }, 60_000);
 
     it("calls a real freeze in-ram and a pause that froze nothing kept-running", async () => {
-      const frozen = await plan(6_000);
+      // Long enough that a 2 s beat-sampling allowance and the calls around it still leave a clear freeze.
+      const frozen = await plan(30_000);
 
       const freeze: Suspend = {
         kind: "pause",
@@ -526,7 +564,7 @@ describe.runIf(linux && available.length > 0)(
         kind: "measured",
         verdict: "kept-running",
       });
-    }, 60_000);
+    }, 120_000);
 
     it("calls a pause that killed the processes a cold restart and times serving again", async () => {
       const options = await plan(1_000);
@@ -553,7 +591,7 @@ describe.runIf(linux && available.length > 0)(
       if (result.suspend.kind === "measured") expect(result.suspend.coldServeMs).toBeGreaterThan(0);
     }, 60_000);
 
-    it("records a refused pause instead of failing", async () => {
+    it("records a failed pause call instead of failing the check", async () => {
       const options = await plan(1_000);
 
       const refusing: Suspend = {
@@ -565,7 +603,7 @@ describe.runIf(linux && available.length > 0)(
       const check = stateSurvivalCheck(options);
       const entry = await runOnHost(check, hostSession({ suspend: refusing }).open);
       expect(check.resultSchema.parse(entry.result).suspend).toMatchObject({
-        kind: "refused",
+        kind: "failed",
         stage: "pause",
         error: "409 busy",
         pauseMs: null,
@@ -706,6 +744,75 @@ describe.runIf(linux && available.length > 0)(
       });
       expect(lookups).toBeGreaterThanOrEqual(2);
       expect(result.scope).toBe("sandbox");
+    }, 60_000);
+
+    it("memory-pressure fails rather than calling a sandbox unresponsive when the lookup cannot answer", async () => {
+      const workdir = await scratch("mem-work");
+      const real = hostBox();
+      let polls = 0;
+
+      const silent: Box = {
+        ...real,
+        run: async (command, options) => {
+          if (command.includes("status=done") && ++polls > 1) throw new Error("connection reset");
+
+          return real.run(command, options);
+        },
+        lookup: () => Promise.reject(new Error("provider API down")),
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => silent,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const check = memoryPressureCheck({
+        ...defaultPressureOptions,
+        advertisedMiB: 128,
+        pollMs: 200,
+        unresponsiveMs: 1_000,
+        recoveryMs: 1_000,
+        workdir,
+      });
+
+      const entry = await runOnHost(check, open);
+      expect(entry.status).not.toBe("completed");
+      expect(entry.reason).toMatch(/provider's state is unknown/);
+    }, 60_000);
+
+    it("cleanup reports a sandbox whose destroy failed until an exact lookup finds it gone", async () => {
+      const real = hostBox();
+      let present = true;
+
+      const stuck: Box = {
+        ...real,
+        destroy: () => Promise.reject(new Error("409 sandbox is paused")),
+        lookup: async () => ({
+          result: present ? "present" : "not-found",
+          checkedAt: new Date().toISOString(),
+          method: "fake",
+        }),
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => stuck,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const left = await runOnHost(stateSurvivalCheck(await plan(1_000)), open);
+      expect(left).toMatchObject({ destroyed: false });
+      expect(left.cleanupError).toMatch(/may still exist/);
+      present = false;
+      const gone = await runOnHost(stateSurvivalCheck(await plan(1_000)), open);
+      expect(gone).toMatchObject({ destroyed: true, cleanupError: null });
     }, 60_000);
   },
 );

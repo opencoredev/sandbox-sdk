@@ -2,7 +2,7 @@
  * memory-pressure: what happens when a process allocates up to the advertised memory and past it.
  *
  * 1. Limits as memory-honesty reads them (MemTotal, the cgroup limit, swap, overcommit), a canary
- *    process that writes the time every second, the boot id and the cgroup OOM counter.
+ *    process that writes the time every second, the boot id and the exec shell's cgroup OOM counter.
  * 2. A detached hog allocates 64 MiB at a time of random (incompressible) bytes, up to `overshoot`
  *    times the provider's advertised memory, logging each chunk; its supervisor shell records the
  *    exit status. The host polls every `pollMs` for the boot id, progress, the hog's liveness and its
@@ -15,11 +15,13 @@
  * (swap, or no enforcement at the advertised size). `process-killed`: its supervisor shell recorded
  * SIGKILL (status 137); the cgroup's OOM count is kept as corroboration only, since other processes
  * share it. `vanished`: the hog and its supervisor were both confirmed gone with no exit status, so
- * how it died is unknown. `refused`: the runtime's allocation failed. `stalled`: confirmed still
+ * how it died is unknown. `refused`: the runtime's allocation failed (its refusal line, then exit 3).
+ * `stalled`: confirmed still
  * running at the deadline (thrashing), then killed; usability is measured only once it is confirmed
  * gone. `sandbox-restarted`: a new boot id. `unresponsive`: no answer for
- * `unresponsiveMs + recoveryMs` while the provider still lists it. `sandbox-lost`: no answer and the
- * provider's exact lookup, made at that moment, says it is gone. Anything else fails the check. The
+ * `unresponsiveMs + recoveryMs` while the provider's exact lookup, made at that moment, still lists
+ * it. `sandbox-lost`: no answer and that lookup says it is gone. Anything else, an unknown provider
+ * state included, fails the check. The
  * scope is `process` only when the canary is the same live process with a fresh beat, `collateral` when it is confirmed gone, and `sandbox` when the
  * whole sandbox was lost, rebooted or stopped answering; unknown otherwise.
  */
@@ -43,6 +45,7 @@ import {
   guestScripts,
   identityFunction,
   ownKillFunction,
+  stampFunction,
   parseRuntime,
   parseSeen,
   runtimeCommand,
@@ -103,7 +106,9 @@ function canaryOf(after: Map<string, string>, beforeId: string) {
 
   if (seen.kind === "gone") return { kind: "gone" as const, beatAgeS };
 
-  if (seen.kind !== "alive" || seen.id !== beforeId) return { kind: "unknown" as const, beatAgeS };
+  // A beat from the future means the two reads did not come from one moment.
+  if (seen.kind !== "alive" || seen.id !== beforeId || (beatAgeS !== null && beatAgeS < 0))
+    return { kind: "unknown" as const, beatAgeS };
 
   return {
     kind: beatAgeS !== null && beatAgeS <= freshBeatS ? ("alive" as const) : ("stale" as const),
@@ -119,7 +124,10 @@ const outcomeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("process-killed"),
     /** 137 (SIGKILL by shell convention), or null when the hog and its supervisor vanished. */
     exitCode: z.number().int().nullable(),
-    /** New OOM kills the hog's cgroup counted; corroboration only, null when unreadable. */
+    /**
+     * New OOM kills counted by the cgroup of the exec shell that read it, which may not be the
+     * hog's; corroboration at most, null when unreadable or the cgroup changed.
+     */
     oomKills: z.number().int().nullable(),
   }),
   z.object({ kind: z.literal("refused"), reason: z.string() }),
@@ -160,8 +168,12 @@ export const pressureResultSchema = z.object({
   progress: z.array(progressSchema),
   outcome: outcomeSchema,
   scope: z.enum(["process", "collateral", "sandbox"]).nullable(),
-  /** The sandbox works afterwards: it answers, a fresh allocation and a file write succeed. */
-  usableAfter: z.boolean(),
+  /**
+   * The sandbox works afterwards: it answers, a fresh allocation and a file write succeed. False
+   * when it stopped answering or a test failed; null when the hog could not be confirmed gone, so
+   * the tests were not run.
+   */
+  usableAfter: z.boolean().nullable(),
   health: healthSchema,
   maxPollGapMs: z.number().int(),
 });
@@ -233,14 +245,16 @@ export function judgePressure(input: {
     case "exited":
       if (bootSame === false) return { kind: "sandbox-restarted" };
 
-      // The hog never exits 137 itself, so the shell's 137 is SIGKILL, even after a refusal line.
+      // Neither the hog's code nor Node or Python on their own exit 137, so the supervisor shell's
+      // 137 is SIGKILL (128 + 9), even after a refusal line.
       if (ending.exitCode === 137)
         return { kind: "process-killed", exitCode: 137, oomKills: oomDelta };
 
       if (ending.exitCode === 0 && log.reached) return { kind: "reached-target" };
 
-      if (log.refused !== null || ending.exitCode === 3)
-        return { kind: "refused", reason: log.refused ?? "exit 3" };
+      // The hog prints its refusal and then exits 3; a refusal line with any other status is not one.
+      if (ending.exitCode === 3 && log.refused !== null)
+        return { kind: "refused", reason: log.refused };
 
       throw new CheckStop(
         `The hog exited ${ending.exitCode} with no kill evidence (held ${log.heldMiB} MiB)`,
@@ -289,8 +303,8 @@ const statusCommand = (dir: string) =>
     `if [ -d ${quote(dir)} ]; then echo dir=1; else echo dir=0; fi`,
     `echo "exit=$(cat ${quote(`${dir}/hog.exit`)} 2>/dev/null)"`,
     `echo "last=$(tail -n 1 ${quote(`${dir}/hog.log`)} 2>/dev/null)"`,
-    `echo "running=$(identity ${quote(`${dir}/hog.pid`)} ${quote(dir)})"`,
-    `echo "supervisor=$(identity ${quote(`${dir}/hog.sup`)} ${quote(dir)})"`,
+    `echo "running=$(identity ${quote(`${dir}/hog.pid`)})"`,
+    `echo "supervisor=$(identity ${quote(`${dir}/hog.sup`)})"`,
     "echo status=done",
   ].join("\n");
 
@@ -298,9 +312,10 @@ const healthCommand = (dir: string) =>
   [
     identityFunction,
     `echo "boot=$(${bootIdCommand})"`,
-    `echo "canary=$(identity ${quote(`${dir}/canary.pid`)} ${quote(dir)})"`,
+    `echo "canary=$(identity ${quote(`${dir}/canary.pid`)})"`,
     `echo "canaryBeat=$(cat ${quote(`${dir}/canary.beat`)} 2>/dev/null)"`,
     `echo "now=$(date +%s)"`,
+    "echo health=done",
   ].join("\n");
 
 type Polled = {
@@ -394,14 +409,13 @@ async function pollHog(input: {
 
         if (liveness.kind === "absent") return polled({ kind: "lost", detail: liveness.detail });
 
-        const listed =
-          liveness.kind === "present"
-            ? "still listed"
-            : `provider state unknown: ${liveness.detail}`;
+        // Unresponsive is a claim about the provider, so it needs the provider to list the sandbox.
+        if (liveness.kind !== "present")
+          throw new CheckStop(`No answer and the provider's state is unknown: ${liveness.detail}`);
 
         return polled({
           kind: "unresponsive",
-          detail: `no answer for ${Math.round(silence)} ms; ${listed}`,
+          detail: `no answer for ${Math.round(silence)} ms; still listed`,
         });
       }
     }
@@ -437,7 +451,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
   await box.write(hog, new TextEncoder().encode(script.hog));
 
   try {
-    const canary = `echo $$ > canary.pid; while :; do date +%s > canary.beat.tmp && mv canary.beat.tmp canary.beat; sleep 1; done`;
+    const canary = `${stampFunction}; stamp $$ > canary.pid; while :; do date +%s > canary.beat.tmp && mv canary.beat.tmp canary.beat; sleep 1; done`;
 
     const prepared = await context.exec(
       box,
@@ -455,8 +469,14 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     const boot = before.get("boot") ?? "";
     const canaryBefore = parseSeen(before.get("canary"));
 
-    if (boot === "" || canaryBefore.kind !== "alive")
-      throw new CheckStop("The baseline has no boot id or canary");
+    if (
+      boot === "" ||
+      boot === "unknown" ||
+      !prepared.stdout.includes("health=done") ||
+      canaryBefore.kind !== "alive" ||
+      canaryOf(before, canaryBefore.id).kind !== "alive"
+    )
+      throw new CheckStop("The baseline has no boot id or no beating canary");
     const oomBefore = parseOomKills(prepared.stdout);
     const oomFileBefore = oomFileOf(prepared.stdout);
 
@@ -467,7 +487,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     await context.exec(
       box,
       detached(
-        `cd ${quote(dir)} && { echo $$ > hog.sup; ${rt} ${quote(hog)} ${targetMiB} ${options.chunkMiB} > hog.log 2>&1 & echo $! > hog.pid; wait $!; echo $? > hog.exit; }`,
+        `cd ${quote(dir)} && { ${stampFunction}; stamp $$ > hog.sup; ${rt} ${quote(hog)} ${targetMiB} ${options.chunkMiB} > hog.log 2>&1 & stamp $! > hog.pid; wait $!; echo $? > hog.exit; }`,
         `${dir}/hog.wrap`,
       ),
       60_000,
@@ -481,7 +501,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     if (polled.ending.kind === "stalled") {
       await context.exec(
         box,
-        [ownKillFunction, `ownkill ${quote(`${dir}/hog.pid`)} ${quote(dir)}`].join("\n"),
+        [ownKillFunction, `ownkill ${quote(`${dir}/hog.pid`)}`].join("\n"),
         30_000,
       );
 
@@ -540,7 +560,8 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
         await sleep(2_000, undefined, { signal: context.signal });
         const again = await context.exec(box, healthCommand(dir), 60_000).catch(() => null);
 
-        if (again === null) break;
+        // Only a complete read replaces the last one, so its fields all come from one moment.
+        if (again === null || !again.stdout.includes("health=done")) break;
         after = new Map([...after, ...keyValues(again.stdout)]);
       }
 
@@ -597,7 +618,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
       progress: thinProgress(log.progress),
       outcome,
       scope,
-      usableAfter: answered && allocOk === true && fileOk === true,
+      usableAfter: !answered ? false : !ended ? null : allocOk === true && fileOk === true,
       health: {
         answered,
         recoveredAfterMs: polled.recoveredAfterMs,
@@ -616,8 +637,8 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
         box,
         [
           ownKillFunction,
-          `ownkill ${quote(`${dir}/hog.pid`)} ${quote(dir)}`,
-          `ownkill ${quote(`${dir}/canary.pid`)} ${quote(dir)}`,
+          `ownkill ${quote(`${dir}/hog.pid`)}`,
+          `ownkill ${quote(`${dir}/canary.pid`)}`,
         ].join("\n"),
         30_000,
       )

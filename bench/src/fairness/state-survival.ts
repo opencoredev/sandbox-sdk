@@ -7,19 +7,21 @@
  *    bumps a heartbeat counter every second. Both run detached from the exec, as an agent's dev
  *    server would. The baseline must show all three, or the check fails rather than judging.
  * 2. Restart speed: `restarts` times, SIGKILL the server and start it again; the guest times each
- *    from the kill to the new child answering on its port with its own launch nonce.
+ *    from the kill to the new child answering on its port with its own launch nonce. A trial that
+ *    found no previous server to signal is counted as a start, outside the median.
  * 3. Pause and resume (only where the adapter has both): pause, hold `holdMs`, resume. From resume
  *    returning, time the first command that answers and the server serving again (restarted when it
  *    is confirmed gone). Then compare the file's sha256, the boot id, and each process's pid and start
  *    time with the baseline.
  *
  * Verdicts: `in-ram` when the server (same process, token and memory digest) and the worker (same
- * process, heartbeat moving again) survived and the worker missed most of the hold's heartbeats (it
- * was frozen); `kept-running` when they survived but the worker missed almost none (the pause did not
- * freeze the guest); `cold-restart` when the boot id changed or both processes are confirmed gone
- * with the file intact; `files-lost` when the directory or file is gone or changed; `inconclusive`
- * for anything in between, with the reason. A pause or resume the provider refuses is recorded as
- * `refused` with its error. The SDK has no portable stop and start, so that half is recorded as not run.
+ * process, heartbeat moving again) survived and the worker missed at least 80% of the hold's
+ * heartbeats even if every second outside the hold was frozen too (it was frozen during the hold);
+ * `kept-running` when they survived and the worker missed at most 20%; `cold-restart` when the boot id
+ * changed or both processes are confirmed gone with the file intact; `files-lost` when the directory
+ * or file is confirmed absent or the file's hash changed; `inconclusive` for anything in between, an
+ * unreadable file or process included, with the reason. A pause, resume or first command that fails,
+ * times out or goes unanswered is recorded as `failed` with its stage and error. The SDK has no portable stop and start, so that half is recorded as not run.
  */
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -34,6 +36,7 @@ import {
   guestScripts,
   identityFunction,
   ownKillFunction,
+  stampFunction,
   parseRuntime,
   parseSeen,
   runtimeCommand,
@@ -58,13 +61,16 @@ export const defaultStateOptions: StateOptions = {
   workdir: null,
 };
 
-/** Each pause or resume call may take this long before it counts as refused. */
+/** Each pause or resume call may take this long before it counts as failed. */
 const suspendCallMs = 5 * 60_000;
 
 /** How long after resume the first command may take to answer. */
 const firstCommandMs = 3 * 60_000;
 
 const probeMs = 30_000;
+
+/** A heartbeat counter read at each end of the window can be up to a beat old. */
+const beatSlackS = 2;
 
 /** After resume, a first quick look for the original server, then a longer wait when it is still alive. */
 const quickProbeMs = 2_000;
@@ -80,7 +86,13 @@ const bodySchema = z.object({
   upMs: z.number(),
 });
 
-const probeSchema = z.object({ ok: z.boolean(), ms: z.number(), body: bodySchema.nullable() });
+const probeSchema = z.object({
+  ok: z.boolean(),
+  ms: z.number(),
+  /** On a restart: whether a previous server was signalled, so the sample times a restart. */
+  killed: z.boolean().optional(),
+  body: bodySchema.nullable(),
+});
 
 export type Probe = z.infer<typeof probeSchema>;
 
@@ -114,8 +126,9 @@ export const verdicts = [
 
 const suspendSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("unsupported"), reason: z.string() }),
+  /** A pause, resume or first command that failed, timed out or went unanswered: not necessarily a refusal. */
   z.object({
-    kind: z.literal("refused"),
+    kind: z.literal("failed"),
     stage: z.enum(["pause", "resume", "first-command"]),
     error: z.string(),
     pauseMs: z.number().nullable(),
@@ -133,6 +146,7 @@ const suspendSchema = z.discriminatedUnion("kind", [
     firstCommandMs: z.number(),
     /** Observed: from resume returning to the original server answering; null when it did not. */
     servingMs: z.number().nullable(),
+    /** The server was confirmed gone, started again and answered. */
     serverRestarted: z.boolean(),
     /**
      * Composed, for a server confirmed gone: the first command plus the guest-timed restart, so it
@@ -152,9 +166,12 @@ export const stateResultSchema = z.object({
   fileMiB: z.number().int(),
   setupMs: z.number(),
   restart: z.object({
+    /** Kill-to-answer times of restarts that signalled the previous server. */
     samplesMs: z.array(z.number()),
     medianMs: z.number().nullable(),
     failures: z.number().int(),
+    /** Trials that found no previous server to signal: a start, so not in the median. */
+    startsOnly: z.number().int(),
   }),
   suspend: suspendSchema,
   stopStart: z.object({ kind: z.literal("not-run"), reason: z.string() }),
@@ -209,17 +226,18 @@ export const snapshotCommand = (dir: string) =>
   [
     identityFunction,
     `echo "boot=$(${bootIdCommand})"`,
-    `if [ -d ${quote(dir)} ]; then echo dir=1; else echo dir=0; fi`,
-    `f=${quote(`${dir}/data.bin`)}`,
-    `if [ -f "$f" ]; then echo file=present; echo "size=$(wc -c < "$f" 2>/dev/null)"; echo "sha=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)"; elif [ -d ${quote(dir)} ] || [ ! -e ${quote(dir)} ]; then echo file=absent; else echo file=unknown; fi`,
-    `echo "worker=$(identity ${quote(`${dir}/worker.pid`)} ${quote(dir)})"`,
-    `echo "server=$(identity ${quote(`${dir}/server.pid`)} ${quote(dir)})"`,
+    `d=${quote(dir)}; f="$d/data.bin"; up=$(dirname "$d")`,
+    // Absent only where the parent could be searched: a denied or failing path is unknown, not lost.
+    `if [ -d "$d" ]; then echo dir=present; elif [ ! -e "$d" ] && [ -r "$up" ] && [ -x "$up" ]; then echo dir=absent; else echo dir=unknown; fi`,
+    `if [ -f "$f" ]; then echo file=present; echo "size=$(wc -c < "$f" 2>/dev/null)"; echo "sha=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)"; elif [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] && [ ! -e "$f" ] && [ ! -L "$f" ]; then echo file=absent; else echo file=unknown; fi`,
+    `echo "worker=$(identity ${quote(`${dir}/worker.pid`)})"`,
+    `echo "server=$(identity ${quote(`${dir}/server.pid`)})"`,
     `echo "beat=$(cat ${quote(`${dir}/worker.beat`)} 2>/dev/null)"`,
     "echo snapshot=done",
   ].join("\n");
 
 export interface GuestSnapshot {
-  readonly dirExists: boolean;
+  readonly dir: "present" | "absent" | "unknown";
   readonly file: "present" | "absent" | "unknown";
   readonly size: number | null;
   readonly sha: string | null;
@@ -235,7 +253,11 @@ export function parseSnapshot(stdout: string): GuestSnapshot | null {
   const dir = values.get("dir");
   const file = values.get("file");
 
-  if (values.get("snapshot") !== "done" || (dir !== "0" && dir !== "1")) return null;
+  if (
+    values.get("snapshot") !== "done" ||
+    (dir !== "present" && dir !== "absent" && dir !== "unknown")
+  )
+    return null;
 
   if (file !== "present" && file !== "absent" && file !== "unknown") return null;
 
@@ -252,7 +274,7 @@ export function parseSnapshot(stdout: string): GuestSnapshot | null {
   };
 
   return {
-    dirExists: dir === "1",
+    dir,
     file,
     size: count("size"),
     sha: text("sha"),
@@ -285,16 +307,21 @@ export function judgeSurvival(input: {
   readonly probe: Probe | null;
   readonly window: Window;
   readonly holdMs: number;
-  /** The pause and resume calls' own time, when a freeze cannot be told from the hold. */
-  readonly callsMs: number;
 }) {
-  const { before, after, later, token, probe, window, holdMs, callsMs } = input;
+  const { before, after, later, token, probe, window, holdMs } = input;
   const holdS = holdMs / 1000;
 
   const fileLost =
-    !after.dirExists || after.file === "absent" || (after.sha !== null && after.sha !== before.sha);
+    after.dir === "absent" ||
+    after.file === "absent" ||
+    (after.file === "present" && after.sha !== null && after.sha !== before.sha);
 
-  const filesystem = after.dirExists && after.file === "present" && after.sha === before.sha;
+  const filesystem =
+    after.dir === "present" && after.file === "present" && after.sha === before.sha;
+  // Everything in the window but the hold (pause and resume calls, first command, probes) plus a
+  // beat's sampling error at each end: a freeze there must not be credited to the hold.
+
+  const outsideS = Math.max(0, window.maxS - holdS) + beatSlackS;
   const bootSame = before.boot === null || after.boot === null ? null : before.boot === after.boot;
   const workerSame = same(before.worker, after.worker) && same(before.worker, later.worker);
   const advancing = later.beat !== null && after.beat !== null && later.beat > after.beat;
@@ -360,13 +387,13 @@ export function judgeSurvival(input: {
 
   if (missed === null) return judged("inconclusive", "no heartbeat count across the hold");
 
-  if (missed.min >= holdS * 0.8 && callsMs / 1000 <= holdS * 0.2) return judged("in-ram");
+  if (missed.min - outsideS >= holdS * 0.8) return judged("in-ram");
 
   if (missed.max <= holdS * 0.2) return judged("kept-running");
 
   return judged(
     "inconclusive",
-    `the worker missed ${missed.min} to ${missed.max} s of heartbeats around a ${holdS} s hold with ${Math.round(callsMs / 100) / 10} s of pause and resume calls`,
+    `the worker missed ${missed.min} to ${missed.max} s of heartbeats around a ${holdS} s hold, ${Math.round(outsideS * 10) / 10} s of which could fall outside it`,
   );
 }
 
@@ -447,7 +474,7 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
 
   try {
     const beat = quote(`${dir}/worker.beat`);
-    const worker = `echo $$ > ${quote(`${dir}/worker.pid`)}; i=0; while :; do i=$((i+1)); echo $i > ${beat}.tmp && mv ${beat}.tmp ${beat}; sleep 1; done`;
+    const worker = `${stampFunction}; stamp $$ > ${quote(`${dir}/worker.pid`)}; i=0; while :; do i=$((i+1)); echo $i > ${beat}.tmp && mv ${beat}.tmp ${beat}; sleep 1; done`;
     const nonce = randomBytes(8).toString("hex");
 
     const setup = await timed(() =>
@@ -474,6 +501,7 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
     context.say(`${found.runtime} server up in ${first.ms} ms, setup ${setup.ms} ms`);
     const samplesMs: number[] = [];
     let failures = 0;
+    let startsOnly = 0;
     let current = first.body.nonce;
 
     for (let index = 0; index < options.restarts; index++) {
@@ -488,12 +516,14 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
       );
 
       if (restarted?.ok && restarted.body) {
-        samplesMs.push(restarted.ms);
         current = restarted.body.nonce;
+
+        if (restarted.killed === true) samplesMs.push(restarted.ms);
+        else startsOnly++;
       } else failures++;
     }
 
-    const restart = { samplesMs, medianMs: median(samplesMs), failures };
+    const restart = { samplesMs, medianMs: median(samplesMs), failures, startsOnly };
     await context.note("restart", restart);
     context.say(`restart median ${restart.medianMs ?? "?"} ms (${failures} failed)`);
 
@@ -530,6 +560,7 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
     const before = await snapshot();
 
     if (
+      before.dir !== "present" ||
       before.file !== "present" ||
       before.size !== options.fileMiB * 1_048_576 ||
       before.sha === null ||
@@ -543,15 +574,15 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
     let pauseMs: number | null = null;
     let resumeMs: number | null = null;
 
-    const refused = (stage: "pause" | "resume" | "first-command", error: string): StateResult => ({
+    const failed = (stage: "pause" | "resume" | "first-command", error: string): StateResult => ({
       ...result,
-      suspend: { kind: "refused", stage, error, pauseMs, resumeMs },
+      suspend: { kind: "failed", stage, error, pauseMs, resumeMs },
     });
 
     try {
       pauseMs = (await timed(() => withLimit(pause(), suspendCallMs, "pause"))).ms;
     } catch (cause) {
-      return refused("pause", errorText(cause));
+      return failed("pause", errorText(cause));
     }
 
     context.say(`paused in ${pauseMs} ms; holding ${options.holdMs / 1000} s`);
@@ -560,13 +591,13 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
     try {
       resumeMs = (await timed(() => withLimit(resume(), suspendCallMs, "resume"))).ms;
     } catch (cause) {
-      return refused("resume", errorText(cause));
+      return failed("resume", errorText(cause));
     }
 
     const resumedAt = performance.now();
     const answered = await firstAnswer(context, box, resumedAt, firstCommandMs);
 
-    if (!answered.ok) return refused("first-command", answered.error);
+    if (!answered.ok) return failed("first-command", answered.error);
     let probe = await probeServer(quickProbeMs);
     let servingMs = probe?.ok ? Math.round(performance.now() - resumedAt) : null;
     const after = await snapshot();
@@ -582,8 +613,6 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
     // A confirmed-gone server is the cold path an agent would take: start it again. Serving is then
     // the first command plus the guest-timed restart, leaving out the harness's own checks.
     if (!probe?.ok && after.server.kind === "gone") {
-      serverRestarted = true;
-
       const again = parseProbe(
         (
           await context.exec(
@@ -594,6 +623,7 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
         ).stdout,
       );
 
+      serverRestarted = again?.ok === true;
       coldServeMs = again?.ok ? Math.round(answered.ms + again.ms) : null;
     }
 
@@ -611,7 +641,6 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
         maxS: (after.answeredAt - before.askedAt) / 1000,
       },
       holdMs: options.holdMs,
-      callsMs: pauseMs + resumeMs,
     });
 
     context.say(
@@ -636,11 +665,7 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
     await context
       .execCleanup(
         box,
-        [
-          ownKillFunction,
-          `ownkill ${pidfile} ${quote(dir)}`,
-          `ownkill ${quote(`${dir}/worker.pid`)} ${quote(dir)}`,
-        ].join("\n"),
+        [ownKillFunction, `ownkill ${pidfile}`, `ownkill ${quote(`${dir}/worker.pid`)}`].join("\n"),
         30_000,
       )
       .catch(() => undefined);

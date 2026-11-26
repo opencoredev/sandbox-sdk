@@ -4,15 +4,16 @@
  *
  * `state` modes (argv after the script):
  * - `serve PORT PIDFILE NONCE`: holds 32 MiB of random bytes and a random token in memory, writes its
- *   pid to PIDFILE once listening on 127.0.0.1:PORT, and answers GET / with
+ *   `PID START` (start time from /proc) to PIDFILE once listening on 127.0.0.1:PORT, and answers GET / with
  *   `{nonce, token, pid, digestAtStart, digestNow, upMs}`. A restarted server has a new token, and a
  *   server whose memory changed has `digestNow !== digestAtStart`.
  * - `probe PORT TIMEOUT_MS NONCE`: polls GET / until the server launched with NONCE answers; prints
  *   `{ok, ms, body}`. Any other listener on the port does not count.
- * - `restart PORT PIDFILE LOG TIMEOUT_MS`: SIGKILLs the server in PIDFILE only when that pid is
- *   running this script (anything else, a missing file or a non-positive pid is left alone), starts a
- *   new one in its own session with a fresh nonce, and prints `{ok, ms, body}` once that child answers;
- *   `ms` runs from the kill.
+ * - `restart PORT PIDFILE LOG TIMEOUT_MS`: SIGKILLs the server in PIDFILE only when that pid still
+ *   has the start time the file records (anything else, a missing file or a non-positive pid is left
+ *   alone), starts a new one in its own session with a fresh nonce, and prints `{ok, ms, killed, body}`
+ *   once that child answers; `ms` runs from the kill. `killed` is false when there was no previous
+ *   server to signal, so that sample times a start, not a restart.
  *
  * `hog TARGET_MIB CHUNK_MIB`: allocates CHUNK_MIB at a time, fills each chunk with random bytes so
  * no compression or page merging can shrink it, and prints `held MIB MS` after each chunk,
@@ -49,7 +50,7 @@ function serve(port, pidfile, nonce) {
     else process.exit(2);
   });
   server.listen(port, "127.0.0.1", () => {
-    fs.writeFileSync(pidfile, String(process.pid));
+    fs.writeFileSync(pidfile, stamp(process.pid));
     console.log("ready " + token);
   });
 }
@@ -78,9 +79,13 @@ async function poll(port, start, timeoutMs, accept) {
   }
 }
 
-function ours(pid) {
-  if (!Number.isInteger(pid) || pid <= 1) return false;
-  try { return fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").split("\\0").includes(__filename); } catch { return false; }
+function stamp(pid) {
+  try { return pid + " " + fs.readFileSync("/proc/" + pid + "/stat", "utf8").replace(/^.*\\) /s, "").split(" ")[19]; } catch { return pid + " 0"; }
+}
+
+function ours(text) {
+  const [pid, start] = String(text).trim().split(/\\s+/).map(Number);
+  return Number.isInteger(pid) && pid > 1 && start > 0 && stamp(pid) === pid + " " + start;
 }
 
 async function main() {
@@ -91,16 +96,17 @@ async function main() {
   }
   if (mode === "restart") {
     const [port, pidfile, log, timeoutMs] = args;
-    let old = -1;
-    try { old = Number(fs.readFileSync(pidfile, "utf8").trim()); } catch {}
+    let old = "";
+    try { old = fs.readFileSync(pidfile, "utf8"); } catch {}
     const start = now();
-    if (ours(old)) process.kill(old, "SIGKILL");
+    const killed = ours(old);
+    if (killed) process.kill(Number(old.trim().split(/\\s+/)[0]), "SIGKILL");
     const nonce = crypto.randomBytes(8).toString("hex");
     const out = fs.openSync(log, "a");
     const child = cp.spawn(process.execPath, [__filename, "serve", port, pidfile, nonce], { detached: true, stdio: ["ignore", out, out] });
     child.unref();
     const result = await poll(Number(port), start, Number(timeoutMs), (b) => b.nonce === nonce && b.pid === child.pid);
-    return console.log(JSON.stringify(result));
+    return console.log(JSON.stringify({ ...result, killed }));
   }
   process.exit(64);
 }
@@ -141,7 +147,7 @@ def serve(port, pidfile, nonce):
     else:
         sys.exit(2)
     with open(pidfile, "w") as f:
-        f.write(str(os.getpid()))
+        f.write(stamp(os.getpid()))
     print("ready", token, flush=True)
     server.serve_forever()
 
@@ -161,14 +167,19 @@ def poll(port, start, timeout_ms, accept):
             return {"ok": False, "ms": ms, "body": None}
         time.sleep(0.005)
 
-def ours(pid):
-    if pid <= 1:
-        return False
+def stamp(pid):
     try:
-        with open("/proc/%d/cmdline" % pid, "rb") as f:
-            return SELF.encode() in f.read().split(b"\\0")
+        with open("/proc/%d/stat" % pid) as f:
+            return "%d %s" % (pid, f.read().rsplit(") ", 1)[1].split()[19])
+    except Exception:
+        return "%d 0" % pid
+
+def ours(text):
+    try:
+        pid, start = (int(x) for x in text.split())
     except Exception:
         return False
+    return pid > 1 and start > 0 and stamp(pid) == "%d %d" % (pid, start)
 
 mode, args = sys.argv[1], sys.argv[2:]
 if mode == "serve":
@@ -179,17 +190,20 @@ elif mode == "probe":
 elif mode == "restart":
     port, pidfile, log, timeout_ms = args
     try:
-        old = int(open(pidfile).read().strip())
+        old = open(pidfile).read()
     except Exception:
-        old = -1
+        old = ""
     start = time.monotonic()
-    if ours(old):
-        os.kill(old, signal.SIGKILL)
+    killed = ours(old)
+    if killed:
+        os.kill(int(old.split()[0]), signal.SIGKILL)
     nonce = secrets.token_hex(8)
     out = open(log, "a")
     child = subprocess.Popen([sys.executable, SELF, "serve", port, pidfile, nonce], stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-    print(json.dumps(poll(int(port), start, float(timeout_ms), lambda b: b.get("nonce") == nonce and b.get("pid") == child.pid)))
+    result = poll(int(port), start, float(timeout_ms), lambda b: b.get("nonce") == nonce and b.get("pid") == child.pid)
+    result["killed"] = killed
+    print(json.dumps(result))
 else:
     sys.exit(64)
 `;
@@ -276,39 +290,50 @@ export function detached(command: string, log: string) {
 export const bootIdCommand = `cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown`;
 
 /**
- * A shell function, `ownkill PIDFILE MARKER`: SIGKILLs the pid in PIDFILE only when it is a positive
- * number above 1 and its command line contains MARKER (this attempt's own directory), so a missing
- * file, a stale pid reused by another process, or a negative pid signals nothing.
+ * A shell function, `stamp PID`: prints `PID START`, START being field 22 of its /proc stat (its start
+ * time since boot), or `PID 0` when that cannot be read. A pid file holds this, so a pid the kernel
+ * later reuses for another process never matches it.
  */
-export const ownKillFunction = [
-  `ownkill() {`,
-  `  p=$(cat "$1" 2>/dev/null)`,
-  `  case "$p" in ''|*[!0-9]*) return 0;; esac`,
-  `  [ "$p" -gt 1 ] || return 0`,
-  `  tr '\\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -qF -- "$2" || return 0`,
-  `  kill -9 "$p" 2>/dev/null`,
-  `  return 0`,
+export const stampFunction = `stamp() { s=$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null); set -- "$1" $s; echo "$1 \${21:-0}"; }`;
+
+/**
+ * A shell function, `identity PIDFILE`: prints `pid:start` when the process PIDFILE's stamp names is
+ * still running with that start time and is not a zombie; `gone` when that pid no longer exists, is
+ * a zombie or has another start time (the pid was reused); `unknown` when /proc or the file cannot be
+ * read or the file is not a valid stamp.
+ */
+export const identityFunction = [
+  `identity() {`,
+  `  [ -r /proc/self/stat ] || { echo unknown; return 0; }`,
+  `  l=$(cat "$1" 2>/dev/null) || { echo unknown; return 0; }`,
+  `  set -- $l`,
+  `  case "$1" in ''|*[!0-9]*) echo unknown; return 0;; esac`,
+  `  case "$2" in ''|*[!0-9]*) echo unknown; return 0;; esac`,
+  `  [ "$1" -gt 1 ] && [ "$2" -gt 0 ] || { echo unknown; return 0; }`,
+  `  p=$1; want=$2`,
+  `  [ -e "/proc/$p" ] || { echo gone; return 0; }`,
+  `  t=$(sed 's/^.*) //' "/proc/$p/stat" 2>/dev/null)`,
+  `  [ -n "$t" ] || { echo gone; return 0; }`,
+  `  set -- $t`,
+  `  [ "\${20}" = "$want" ] || { echo gone; return 0; }`,
+  `  [ "$1" = Z ] && { echo gone; return 0; }`,
+  `  echo "$p:$want"`,
   `}`,
 ].join("\n");
 
 /**
- * A shell function, `identity PIDFILE MARKER`: prints `pid:start` (start is field 22 of its stat) for a
- * live, non-zombie process whose command line contains MARKER (this attempt's own directory);
- * `gone` when the file names a pid that no longer exists, is a zombie, or now belongs to another
- * process; `unknown` when the file or the process's details cannot be read.
+ * Shell functions with `ownkill PIDFILE [SIGNAL]` (SIGKILL by default): signals the pid in PIDFILE
+ * only when `identity` confirms it is the very process that wrote the stamp, so a missing or invalid
+ * file, a pid now used by another process or a negative pid signals nothing. Between that check and
+ * the signal only the kernel's pid reuse could intervene, which needs the process to exit and its
+ * pid to come round again in that instant.
  */
-export const identityFunction = [
-  `identity() {`,
-  `  p=$(cat "$1" 2>/dev/null) || { echo unknown; return 0; }`,
-  `  case "$p" in ''|*[!0-9]*) echo unknown; return 0;; esac`,
-  `  [ "$p" -gt 1 ] || { echo unknown; return 0; }`,
-  `  [ -d "/proc/$p" ] || { echo gone; return 0; }`,
-  `  c=$(tr '\\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || { echo unknown; return 0; }`,
-  `  case "$c" in *"$2"*) ;; *) echo gone; return 0;; esac`,
-  `  s=$(sed 's/^.*) //' "/proc/$p/stat" 2>/dev/null) || { echo unknown; return 0; }`,
-  `  set -- $s`,
-  `  [ "$1" = Z ] && { echo gone; return 0; }`,
-  `  echo "$p:\${20}"`,
+export const ownKillFunction = [
+  identityFunction,
+  `ownkill() {`,
+  `  id=$(identity "$1")`,
+  `  case "$id" in *:*) kill -"\${2:-9}" "\${id%%:*}" 2>/dev/null;; esac`,
+  `  return 0`,
   `}`,
 ].join("\n");
 
