@@ -358,12 +358,19 @@ async function pollHog(input: {
 
     try {
       const result = await context.exec(box, statusCommand(dir), pollTimeoutMs);
+      // The boot id comes first, so even a reply cut short can prove a restart.
+      const seenBoot = valid(keyValues(result.stdout).get("boot"), bootIdPattern);
+
+      if (seenBoot !== null && seenBoot !== boot) return polled({ kind: "restarted" });
 
       if (result.timedOut) cancelledPoll = true;
       else if (result.stdout.includes("status=done")) values = keyValues(result.stdout);
     } catch (cause) {
       context.say(`poll: ${errorText(cause).slice(0, 120)}`);
     }
+
+    // An interrupted run can have its own cleanup delete the sandbox: never judge what follows.
+    context.signal.throwIfAborted();
 
     const now = performance.now();
 
@@ -376,9 +383,6 @@ async function pollHog(input: {
     if (values !== null) {
       if (silence > options.unresponsiveMs) recoveredAfterMs = Math.round(silence);
       lastAnswer = now;
-      const seenBoot = valid(values.get("boot"), bootIdPattern);
-
-      if (seenBoot !== null && seenBoot !== boot) return polled({ kind: "restarted" });
 
       if (values.get("dir") !== "1")
         return unsettled("the attempt's directory vanished with the same boot id");
@@ -496,6 +500,20 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     // Only a recorded status says the hog has ended; then its log is whole and health can be tested.
     const ended = polled.ending.kind === "exited";
 
+    // A valid boot id any exec prints, complete or not, is evidence: a new one is a restart.
+    let rebooted = polled.ending.kind === "restarted";
+
+    const sawBoot = (result: Exec | null) => {
+      const seen = valid(
+        result === null ? undefined : keyValues(result.stdout).get("boot"),
+        bootIdPattern,
+      );
+
+      if (seen !== null && seen !== boot) rebooted = true;
+
+      return seen;
+    };
+
     const read = await context
       .exec(
         box,
@@ -508,6 +526,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
       )
       .catch(() => null);
 
+    sawBoot(read);
     const marker = read?.stdout.match(/^#(end|partial)-log$/m);
     const at = marker?.index ?? -1;
     const logWhole = marker?.[1] === "end";
@@ -538,64 +557,66 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     ) {
       await sleep(2_000, undefined, { signal: context.signal });
 
-      const fresh = healthFrame(
-        await context.exec(box, healthCommand(dir), 60_000).catch(() => null),
-      );
+      const again = await context.exec(box, healthCommand(dir), 60_000).catch(() => null);
+      sawBoot(again);
+      const fresh = healthFrame(again);
 
       if (fresh === null) break;
       after = fresh;
     }
 
     const bootAfter = valid(after?.get("boot"), bootIdPattern);
-    let bootSame = bootAfter === null ? null : bootAfter === boot;
     let allocOk: boolean | null = null;
     let fileOk: boolean | null = null;
 
     /**
-     * Runs one health test after its own boot check: a result only when the test started on the
-     * same boot and ran to the end; a new boot id is kept as a restart.
+     * Runs one health test only when the guest itself still has the original boot id: a result
+     * only when the test started and ran to the end; a new boot id is kept as a restart.
      */
     const probe = async (setup: string, test: string, timeoutMs: number) => {
       const result = await context
         .exec(
           box,
-          [`echo "boot=$(${bootIdCommand})"`, `${setup} || exit 97`, "echo started", test].join(
-            "\n",
-          ),
+          [
+            `b=$(${bootIdCommand}); echo "boot=$b"; [ "$b" = ${quote(boot)} ] || exit 98`,
+            `${setup} || exit 97`,
+            "echo started",
+            test,
+          ].join("\n"),
           timeoutMs,
         )
         .catch(() => null);
 
-      const seen = valid(
-        result === null ? undefined : keyValues(result.stdout).get("boot"),
-        bootIdPattern,
-      );
-
-      if (seen !== null && seen !== boot) bootSame = false;
+      const seen = sawBoot(result);
 
       return ranToEnd(result) && seen === boot && /^started$/m.test(result.stdout) ? result : null;
     };
 
-    // Health is tested only once the hog's status is recorded on the same boot.
-    if (ended && bootSame === true) {
+    // Health is tested only once the hog's status is recorded on the same boot, and never again
+    // once any test has seen a new one.
+    if (ended && !rebooted && bootAfter === boot) {
       const alloc = await probe(
         `test -f ${quote(hog)}`,
         `${rt} ${quote(hog)} ${options.healthAllocMiB} ${options.chunkMiB}`,
         120_000,
       );
 
-      const file = await probe(
-        `cd ${quote(dir)}`,
-        'head -c 1048576 /dev/urandom > health.bin && sync && test "$(wc -c < health.bin)" -eq 1048576 && rm -f health.bin && echo fileok',
-        60_000,
-      );
+      const file = rebooted
+        ? null
+        : await probe(
+            `cd ${quote(dir)}`,
+            'head -c 1048576 /dev/urandom > health.bin && sync && test "$(wc -c < health.bin)" -eq 1048576 && rm -f health.bin && echo fileok',
+            60_000,
+          );
 
       // A restart seen by either test means the old boot's results say nothing.
-      if (bootSame === true) {
+      if (!rebooted) {
         allocOk = alloc === null ? null : alloc.exitCode === 0 && /^reached /m.test(alloc.stdout);
         fileOk = file === null ? null : file.exitCode === 0 && /^fileok$/m.test(file.stdout);
       }
     }
+
+    const bootSame = rebooted ? false : bootAfter === null ? null : bootAfter === boot;
 
     // Alive needs the same process and a fresh beat; gone needs it confirmed gone; else unknown.
     const canaryAfter = after === null ? null : canaryOf(after, canaryBefore.id);

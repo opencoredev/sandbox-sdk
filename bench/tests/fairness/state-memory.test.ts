@@ -63,14 +63,14 @@ const alive = (pid: number) => {
   }
 };
 
-async function runOnHost<R>(check: Check<R>, open: OpenSession) {
+async function runOnHost<R>(check: Check<R>, open: OpenSession, signal = noSignal) {
   const out = await scratch(`fairness-${check.id}`);
 
   await runCheck(
     check,
     [setup],
     { runId: "host-test", out, concurrency: 1 },
-    { open, signal: noSignal, progress: () => {}, retryDelayMs: 0, lateSweepDelayMs: 0 },
+    { open, signal, progress: () => {}, retryDelayMs: 0, lateSweepDelayMs: 0 },
   );
 
   const report = reportSchema.parse(
@@ -927,6 +927,89 @@ describe.runIf(linux && available.length > 0)(
       expect(result.outcome).toEqual({ kind: "sandbox-restarted" });
       expect(result).toMatchObject({ scope: "sandbox", usableAfter: null });
       expect(result.health).toMatchObject({ allocOk: null, fileOk: null });
+    }, 60_000);
+
+    it("memory-pressure keeps a new boot id from a recovery read that timed out", async () => {
+      const real = hostBox();
+      const rebooted = `boot=${randomUUID()}`;
+
+      const cutShort: Box = {
+        ...real,
+        run: async (command, options) => {
+          const result = await real.run(command, options);
+
+          return command.includes("-log'")
+            ? { ...result, stdout: result.stdout.replace(/^boot=.*$/m, rebooted), timedOut: true }
+            : result;
+        },
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => cutShort,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const check = memoryPressureCheck({
+        ...defaultPressureOptions,
+        advertisedMiB: 128,
+        healthAllocMiB: 64,
+        pollMs: 200,
+        workdir: await scratch("mem-work"),
+      });
+
+      const entry = await runOnHost(check, open);
+      expect(entry.status, entry.reason ?? "").toBe("completed");
+      const result = check.resultSchema.parse(entry.result);
+      expect(result.outcome).toEqual({ kind: "sandbox-restarted" });
+      expect(result.health).toMatchObject({ bootSame: false, allocOk: null, fileOk: null });
+    }, 60_000);
+
+    it("memory-pressure never judges a loss once the run is interrupted", async () => {
+      const real = hostBox();
+      const stop = new AbortController();
+      let polls = 0;
+
+      // The interrupt lands mid-poll, and the SDK's fallback deletes the sandbox before rejecting.
+      const interrupted: Box = {
+        ...real,
+        run: async (command, options) => {
+          if (command.includes("status=done") && ++polls > 1) {
+            stop.abort(new Error("SIGINT"));
+            throw new Error("kill failed; sandbox destroyed");
+          }
+
+          return real.run(command, options);
+        },
+        lookup: async () => ({
+          result: "not-found",
+          checkedAt: new Date().toISOString(),
+          method: "fake",
+        }),
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => interrupted,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const check = memoryPressureCheck({
+        ...defaultPressureOptions,
+        advertisedMiB: 128,
+        pollMs: 200,
+        workdir: await scratch("mem-work"),
+      });
+
+      const entry = await runOnHost(check, open, stop.signal);
+      expect(entry.status).not.toBe("completed");
+      expect(entry.result).toBeFalsy();
     }, 60_000);
 
     it("memory-pressure stops when the hog launch does not run to the end", async () => {
