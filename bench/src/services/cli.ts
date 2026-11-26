@@ -26,6 +26,7 @@ import { composeDownMs, deadlineGraceMs, runServicesAttempt } from "./attempt.js
 import { SpendGuard, parseProviderCaps } from "./budget.js";
 import {
   attemptRecordSchema,
+  projectOpen,
   servicePathSchema,
   type AttemptRecord,
   type ServicePath,
@@ -65,6 +66,11 @@ const runInfoSchema = z.object({
   endedAt: z.string().nullable(),
   location: z.string(),
   settings: z.record(z.string(), z.string()),
+  /** The run's effective timing settings; null in runs from before they were recorded. */
+  conditions: z
+    .object({ attemptTimeoutMs: z.number(), daemonReadyMs: z.number() })
+    .nullable()
+    .default(null),
   artifacts: z.object({ node: z.string(), fixture: z.string(), native: z.string() }),
 });
 
@@ -245,6 +251,8 @@ async function unconfirmedOwned(
   return {
     known,
     unresolved,
+    /** Attempts whose Compose project obligation no sandbox deletion resolves. */
+    openProjects: records.items.flatMap((r) => (projectOpen(r) ? [r.attemptId] : [])),
     unreadable: owned.bad + records.bad + submissions.bad,
     /** Journals that exist but could not be read: what they held is unknown. */
     unreadableFiles: [owned.error, records.error, submissions.error].filter(
@@ -416,6 +424,7 @@ async function run(args: string[]) {
     location: values.location,
     // Per provider: the setting applies to that provider's rows only.
     settings: modalRuntime ? { modal: `runtime=${modalRuntime}` } : {},
+    conditions: { attemptTimeoutMs: timeoutMs, daemonReadyMs },
     artifacts: {
       node: artifacts.node.sha256,
       fixture: artifacts.fixture.sha256,
@@ -484,8 +493,8 @@ async function run(args: string[]) {
   const done = new Set<string>();
   // Cleanups of creates that answered after their attempt returned: awaited before the end.
   const lateCleanups = new Set<Promise<void>>();
-  // Attempts whose sandbox went but whose Compose project was not confirmed gone.
-  const cleanupUnconfirmed: string[] = [];
+  // Attempts whose Compose project may still run on a daemon that outlives the sandbox.
+  const projectsOpen = new Set<string>();
 
   // An attempt whose sandbox may still exist (a create with an unknown outcome, or a deletion that
   // was not confirmed) holds admission for the whole run while it is reconciled, so no provider
@@ -615,6 +624,19 @@ async function run(args: string[]) {
 
         done.add(attemptId);
 
+        // The project's obligation is its own: whatever happens to the sandbox below, no sandbox
+        // reconciliation or sweep resolves it.
+        if (projectOpen(record)) {
+          projectsOpen.add(attemptId);
+          await note({
+            kind: "project-open",
+            provider: entry.name,
+            attemptId,
+            project: record.daemon?.project ?? null,
+            method: record.daemon?.method ?? null,
+          });
+        }
+
         // A sandbox that may still be running keeps its whole reservation and this provider takes
         // no more attempts. Admission closes for every provider until it is reconciled, right now;
         // the sweeps at the end retry anything left.
@@ -650,18 +672,6 @@ async function run(args: string[]) {
 
         guard.settle(reservation, record.estimatedUSD);
         await appendFile(join(out, recordsFile), `${JSON.stringify(record)}\n`);
-
-        // The sandbox is gone but its Compose project may not be: the run cannot claim a clean end.
-        if (record.cleanup === "unconfirmed") {
-          cleanupUnconfirmed.push(attemptId);
-          await note({
-            kind: "cleanup-unconfirmed",
-            provider: entry.name,
-            attemptId,
-            project: record.daemon?.project ?? null,
-            method: record.daemon?.method ?? null,
-          });
-        }
 
         const o = record.outcome;
         process.stdout.write(
@@ -784,13 +794,22 @@ async function run(args: string[]) {
       process.exitCode = 1;
     }
 
-    if (cleanupUnconfirmed.length) {
-      process.stderr.write(
-        `Compose cleanup unconfirmed for ${cleanupUnconfirmed.join(", ")}: their project may still run on a daemon that outlived the sandbox; see ${notesPath}\n`,
-      );
-      process.exitCode = 1;
-    }
+    const journaled = await unconfirmedOwned(out, live, unknownLive, done);
+    failOnOpenProjects([...new Set([...projectsOpen, ...journaled.openProjects])], notesPath);
   }
+}
+
+/**
+ * Compose projects that may still run on a daemon that outlived its sandbox: no sweep can remove
+ * them, so they are named and the command fails, every time, until someone removes them by hand.
+ */
+function failOnOpenProjects(attemptIds: readonly string[], notesPath: string) {
+  if (!attemptIds.length) return;
+
+  process.stderr.write(
+    `Compose project cleanup unresolved for ${attemptIds.join(", ")}: each project may still run on a daemon that outlived its sandbox (projectCleanup: open); see ${notesPath}\n`,
+  );
+  process.exitCode = 1;
 }
 
 async function summary(args: string[]) {
@@ -856,7 +875,8 @@ async function sweep(args: string[]) {
   const notesPath = join(out, "notes.jsonl");
   const note = bestEffortNotes(notesPath);
 
-  const { known, unresolved, unreadable, unreadableFiles } = await unconfirmedOwned(out);
+  const { known, unresolved, unreadable, unreadableFiles, openProjects } =
+    await unconfirmedOwned(out);
 
   for (const error of unreadableFiles) await note({ kind: "journal-unreadable", error });
 
@@ -919,10 +939,11 @@ async function sweep(args: string[]) {
   const unchecked = swept.unchecked + unreachable + unreadable + unreadableFiles.length;
 
   process.stdout.write(
-    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, unreachable, unreadableJournalLines: unreadable, unreadableJournals: unreadableFiles.length, unresolvedCreates: unknownCreates })}; see ${notesPath}\n`,
+    `Swept ${entries.length} providers: ${JSON.stringify({ ...swept, unreachable, unreadableJournalLines: unreadable, unreadableJournals: unreadableFiles.length, unresolvedCreates: unknownCreates, openProjects: openProjects.length })}; see ${notesPath}\n`,
   );
 
   if (swept.failed || swept.undeleted || unchecked || unknownCreates) process.exitCode = 1;
+  failOnOpenProjects(openProjects, notesPath);
 }
 
 export async function servicesCommand(args: string[]) {

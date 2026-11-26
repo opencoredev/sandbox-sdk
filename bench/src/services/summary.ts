@@ -24,6 +24,11 @@ export interface RunInfo {
   readonly location: string;
   /** Per-provider settings the run used, such as `{ modal: "runtime=vm" }`. */
   readonly settings: Readonly<Record<string, string>>;
+  /** Effective timing settings; null or absent in runs from before they were recorded. */
+  readonly conditions?: {
+    readonly attemptTimeoutMs: number;
+    readonly daemonReadyMs: number;
+  } | null;
   readonly artifacts: { readonly node: string; readonly fixture: string; readonly native: string };
 }
 
@@ -328,17 +333,26 @@ export function servicesSiteData(input: {
 }): ServicesSite {
   const settingsOf = new Map<string, ReadonlyMap<string, string>>();
 
-  // One summary is one measurement setup: the same harness commit and the same pinned artifacts.
-  // Runs that differ are published from separate summaries, never pooled into one median.
+  // One summary is one measurement setup: the same harness commit, pinned artifacts, runner
+  // location and timing settings (a shorter daemon budget can pick another rung; a farther runner
+  // slows every upload and round trip). Runs that differ are published from separate summaries,
+  // never pooled into one median.
   const setups = new Set(
     input.runs.map((r) =>
-      JSON.stringify([r.sdkCommit, r.artifacts.node, r.artifacts.fixture, r.artifacts.native]),
+      JSON.stringify([
+        r.sdkCommit,
+        r.artifacts.node,
+        r.artifacts.fixture,
+        r.artifacts.native,
+        r.location,
+        r.conditions ?? null,
+      ]),
     ),
   );
 
   if (setups.size > 1)
     throw new Error(
-      `Runs differ in SDK commit or artifacts (${input.runs.map((r) => `${r.id}: ${r.sdkCommit.slice(0, 7)}`).join(", ")}); summarize them separately`,
+      `Runs differ in SDK commit, artifacts, runner location or timing settings (${input.runs.map((r) => `${r.id}: ${r.sdkCommit.slice(0, 7)} at ${r.location}, ${r.conditions ? `attempt ${r.conditions.attemptTimeoutMs} ms, daemon ${r.conditions.daemonReadyMs} ms` : "timing not recorded"}`).join("; ")}); summarize them separately`,
     );
 
   for (const run of input.runs) {

@@ -2,7 +2,8 @@
 # Capability probe for the Docker and services benchmark. Read-only apart from a throwaway cgroup
 # directory and user namespace. Prints one key=value line per fact; the harness parses them
 # (bench/src/services/probe.ts). Never fails: a missing tool is a fact, not an error.
-export LC_ALL=C PATH="$PATH:/usr/sbin:/sbin:/usr/local/sbin"
+# PATH comes from the harness (attempt.ts systemBin), the same one every daemon launch uses.
+export LC_ALL=C
 
 has() { command -v "$1" >/dev/null 2>&1; }
 yn() { if "$@" >/dev/null 2>&1; then echo yes; else echo no; fi; }

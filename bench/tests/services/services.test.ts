@@ -1,7 +1,8 @@
 import { SandboxError, type RunOptions, type RunResult } from "@opencoredev/sandbox-sdk";
 import { memory } from "@opencoredev/sandbox-sdk/memory";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
@@ -16,6 +17,8 @@ import {
   refusedPrerequisite,
   stopTree,
   cleanupStatus,
+  projectCleanupOf,
+  systemBin,
   type GuestBox,
 } from "../../src/services/attempt.js";
 import { stalePins, type Artifacts } from "../../src/services/artifacts.js";
@@ -26,6 +29,7 @@ import {
   isolation,
   nestedVirt,
   parseProbe,
+  probeScript,
   rootlessPrerequisites,
   type Probe,
 } from "../../src/services/probe.js";
@@ -237,7 +241,14 @@ function scriptedBox(rules: [RegExp, (command: string) => Partial<RunResult>][])
     run(command: string, _options: RunOptions) {
       commands.push(command);
       const rule = rules.find(([pattern]) => pattern.test(command));
-      const result = rule ? rule[1](command) : { ok: true, exitCode: 0 };
+
+      // Unscripted, the ownership scan sees no other daemon.
+      const result = rule
+        ? rule[1](command)
+        : command.includes("echo SCANNED")
+          ? { output: "SCANNED" }
+          : { ok: true, exitCode: 0 };
+
       const output = result.output ?? "";
 
       return Promise.resolve({
@@ -518,6 +529,7 @@ function record(input: {
     },
     deletionConfirmed: true,
     cleanup: input.cleanup ?? "confirmed",
+    projectCleanup: input.path === "compose" && green ? "down" : "none",
     estimatedUSD: 0.01,
     artifacts: { node: "n", fixture: "f", native: input.path === "native" ? "b" : null },
     outputDir: null,
@@ -1452,7 +1464,7 @@ describe("daemon evidence and fallbacks", () => {
       d.record.tries.find((t) => t.method === "preinstalled-started" && t.config === "default"),
     ).toMatchObject({ ok: false, conclusive: true });
     // Docker's static daemon runs from this attempt's own verified download, never a fixed path.
-    expect(started.some((c) => c.includes(g.tools + "/docker/dockerd --host"))).toBe(true);
+    expect(started.some((c) => c.includes(g.tools + "/docker/dockerd --config-file"))).toBe(true);
   });
 
   test("a daemon that was already running is never restarted when its storage fails", async () => {
@@ -1863,16 +1875,21 @@ describe("compose cleanup obligation", () => {
     return { projectUsed, record: { ...base, launched, down } };
   };
 
-  test("cleanup is confirmed only when the project came down or went with a sandbox that held its daemon", () => {
-    expect(cleanupStatus(true, daemonOf(false, true))).toBe("confirmed");
-    expect(cleanupStatus(true, daemonOf(false, false))).toBe("unconfirmed");
+  test("the project obligation is tracked apart from the sandbox, and only its own down or a launched daemon resolves it", () => {
+    expect(projectCleanupOf(daemonOf(false, true))).toBe("down");
+    expect(projectCleanupOf(daemonOf(false, false))).toBe("open");
     // A cleanup down that never finished is no proof either.
-    expect(cleanupStatus(true, daemonOf(false, null))).toBe("unconfirmed");
-    expect(cleanupStatus(true, daemonOf(true, false))).toBe("confirmed");
-    expect(cleanupStatus(false, daemonOf(true, false))).toBe("unconfirmed");
-    expect(cleanupStatus(false, daemonOf(false, true))).toBe("unconfirmed");
-    expect(cleanupStatus(true, daemonOf(false, null, false))).toBe("confirmed");
-    expect(cleanupStatus(true, null)).toBe("confirmed");
+    expect(projectCleanupOf(daemonOf(false, null))).toBe("open");
+    expect(projectCleanupOf(daemonOf(true, false))).toBe("with-sandbox");
+    expect(projectCleanupOf(daemonOf(false, null, false))).toBe("none");
+    expect(projectCleanupOf(null)).toBe("none");
+
+    expect(cleanupStatus(true, "down")).toBe("confirmed");
+    expect(cleanupStatus(true, "with-sandbox")).toBe("confirmed");
+    expect(cleanupStatus(false, "with-sandbox")).toBe("unconfirmed");
+    expect(cleanupStatus(false, "down")).toBe("unconfirmed");
+    // A confirmed sandbox deletion never resolves a project left on a daemon that outlives it.
+    expect(cleanupStatus(true, "open")).toBe("unconfirmed");
   });
 
   test("a project that does not come down holds its daemon: down is retried once and no other rung runs", async () => {
@@ -1901,7 +1918,7 @@ describe("compose cleanup obligation", () => {
       down: false,
       launched: false,
     });
-    expect(cleanupStatus(true, d)).toBe("unconfirmed");
+    expect(projectCleanupOf(d)).toBe("open");
   });
 
   test("the summary keeps cleanup apart from the outcome", () => {
@@ -2058,5 +2075,315 @@ describe("recovery notes", () => {
       process.exitCode = before;
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("network namespace ownership", () => {
+  const unanswered = {
+    ok: false,
+    exitCode: 1,
+    output: '{"ok":false,"error":"context deadline exceeded"}',
+  };
+
+  test("a dockerd or containerd this attempt did not start keeps every rootful launch off, inconclusively", async () => {
+    const { box, started } = scriptedBox([
+      [/echo SCANNED/, () => ({ output: "812:dockerd\n813:containerd\nSCANNED" })],
+      [/daemon-ping/, (c) => (c.includes("podman.sock") ? { output: pingOk } : unanswered)],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    const d = await getDaemon(
+      guestFor(box),
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      10_000,
+      () => {},
+    );
+
+    expect(d.record.method).toBe("podman");
+    expect(started.some((c) => c.includes("dockerd"))).toBe(false);
+    expect(d.record.tries.filter((t) => t.config === "ownership")).toMatchObject([
+      {
+        method: "preinstalled-started",
+        ok: false,
+        error: "another daemon owns the network namespace (812:dockerd, 813:containerd)",
+        conclusive: false,
+      },
+      { method: "static-rootful", ok: false, conclusive: false },
+    ]);
+    // Docker's static bundle is not even fetched for a launch that cannot run.
+    expect(d.record.tries.some((t) => t.config === "fetch")).toBe(false);
+  });
+
+  test("a scan that cannot finish keeps rootful launches off too", async () => {
+    const { box, started } = scriptedBox([
+      [/echo SCANNED/, () => ({ ok: false, exitCode: 1, output: "" })],
+      [/daemon-ping/, (c) => (c.includes("podman.sock") ? { output: pingOk } : unanswered)],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    const d = await getDaemon(
+      guestFor(box),
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      10_000,
+      () => {},
+    );
+
+    expect(d.record.method).toBe("podman");
+    expect(started.some((c) => c.includes("dockerd"))).toBe(false);
+    expect(d.record.tries.find((t) => t.config === "ownership")?.error).toBe(
+      "could not check for another daemon in the network namespace",
+    );
+  });
+
+  test("every dockerd launch reads a config file of its own, never the image's", async () => {
+    const { box, started } = scriptedBox([
+      [/daemon-ping/, (c) => (c.includes("podman.sock") ? { output: pingOk } : unanswered)],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    const g = guestFor(box);
+
+    await getDaemon(
+      g,
+      probeOf({ dockerd: "yes", podman: "podman version 5.0.0" }),
+      10_000,
+      () => {},
+    );
+
+    const dockerd = started.filter((c) => c.includes("dockerd"));
+    expect(dockerd.length).toBeGreaterThan(0);
+
+    for (const c of dockerd) {
+      const dir = /mkdir -p -m 700 (\S+) &&/.exec(c)?.[1] ?? "";
+      expect(dir.startsWith(`${g.tools}/`)).toBe(true);
+      expect(c).toContain(`printf '{}' > ${dir}/daemon.json`);
+      expect(c).toContain(`--config-file ${dir}/daemon.json`);
+    }
+  });
+});
+
+describe("stalled readiness calls", () => {
+  test("a stalled as-found ping and stalled liveness checks are aborted at the deadline, and the ladder reaches a working rung", async () => {
+    const aborted: string[] = [];
+
+    const { box } = scriptedBox([
+      [
+        /daemon-ping/,
+        (c) =>
+          c.includes("podman.sock")
+            ? { output: pingOk }
+            : {
+                ok: false,
+                exitCode: 1,
+                output: '{"ok":false,"error":"connect ENOENT /tmp/x/docker.sock"}',
+              },
+      ],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    const run = box.run;
+
+    const stall = (name: string, options: RunOptions) =>
+      new Promise<RunResult>((_, reject) => {
+        options.signal?.addEventListener("abort", () => {
+          aborted.push(name);
+          reject(new Error("aborted"));
+        });
+      });
+
+    box.run = (command: string, options: RunOptions) =>
+      command.includes("daemon-ping") && command.includes("/var/run/docker.sock")
+        ? stall("as-found", options)
+        : command.includes("echo DEAD")
+          ? stall("liveness", options)
+          : run(command, options);
+
+    const g = new Guest(box, new AbortController().signal, [], Date.now);
+    g.pollMs = 0;
+    const startedAt = performance.now();
+
+    const d = await getDaemon(g, probeOf({ podman: "podman version 5.0.0" }), 25, () => {});
+
+    expect(d.record.method).toBe("podman");
+    expect(d.record.tries.find((t) => t.config === "as-found")).toMatchObject({
+      ok: false,
+      error: "no answer within 25 ms",
+      conclusive: false,
+    });
+    expect(aborted).toContain("as-found");
+    expect(aborted).toContain("liveness");
+    // Seven 25 ms budgets (as-found, five static configs, podman) and nothing waiting past them.
+    expect(performance.now() - startedAt).toBeLessThan(5000);
+  });
+});
+
+describe("one search path", () => {
+  test("the probe and every launch search one PATH with the system sbin directories, sudo env included", async () => {
+    expect(probeScript).not.toMatch(/PATH=/);
+
+    const { box, started } = scriptedBox([
+      [
+        /daemon-ping/,
+        (c) =>
+          c.includes("podman.sock")
+            ? { output: pingOk }
+            : { ok: false, exitCode: 1, output: '{"ok":false,"error":"connect ENOENT x"}' },
+      ],
+      [/docker compose version/, () => ({ output: "2.40.0" })],
+    ]);
+
+    const g = guestFor(box);
+
+    // A sudo guest whose stock dockerd lives only in sbin.
+    await getDaemon(
+      g,
+      probeOf({
+        uid: "1000",
+        user: "dev",
+        sudo: "passwordless",
+        dockerd: "yes",
+        podman: "podman version 5.0.0",
+      }),
+      10_000,
+      () => {},
+    );
+
+    const launch = started.find((c) => c.includes("preinstalled-started-default"));
+    expect(launch).toContain(`"$PATH":${systemBin}; `);
+    expect(launch).toContain('sudo -n env PATH="$PATH" dockerd ');
+
+    const sh = (script: string) =>
+      new Promise<string>((resolve, reject) =>
+        execFile("sh", ["-c", script], { env: { PATH: "/usr/bin:/bin" } }, (error, stdout) =>
+          error ? reject(error) : resolve(stdout),
+        ),
+      );
+
+    // From a login PATH without sbin, the guest's PATH has every system sbin directory.
+    const path = (await sh(`${g.prelude()}printf %s "$PATH"`)).split(":");
+
+    for (const dir of systemBin.split(":")) expect(path).toContain(dir);
+
+    // And `env PATH="$PATH"`, as the sudo launch runs it, resolves a binary that is only in sbin.
+    const only = (await readdir("/usr/sbin").catch(() => [])).find(
+      (name) => !existsSync(`/usr/bin/${name}`) && !existsSync(`/bin/${name}`),
+    );
+
+    if (only)
+      expect((await sh(`${g.prelude()}env PATH="$PATH" sh -c 'command -v ${only}'`)).trim()).toBe(
+        `/usr/sbin/${only}`,
+      );
+  });
+});
+
+describe("measurement conditions", () => {
+  const run = {
+    id: "r1",
+    sdkCommit: "a",
+    startedAt: "x",
+    endedAt: null,
+    location: "evo-1",
+    settings: {},
+    conditions: { attemptTimeoutMs: 1_500_000, daemonReadyMs: 45_000 },
+    artifacts: { node: "n", fixture: "f", native: "b" },
+  };
+
+  const records = [
+    record({ provider: "p", path: "native", attempt: 1, up: 2000 }),
+    { ...record({ provider: "p", path: "native", attempt: 2, up: 8000 }), runId: "r2" },
+  ];
+
+  test("runs from another runner location or with other timing settings are never pooled", () => {
+    expect(() =>
+      servicesSiteData({ records, runs: [run, { ...run, id: "r2", location: "evo-2" }] }),
+    ).toThrow("runner location or timing settings");
+    expect(() =>
+      servicesSiteData({
+        records,
+        runs: [run, { ...run, id: "r2", conditions: { ...run.conditions, daemonReadyMs: 10_000 } }],
+      }),
+    ).toThrow("daemon 10000 ms");
+    expect(() =>
+      servicesSiteData({ records, runs: [run, { ...run, id: "r2", conditions: null }] }),
+    ).toThrow("timing not recorded");
+    expect(servicesSiteData({ records, runs: [run, { ...run, id: "r2" }] }).providers).toHaveLength(
+      1,
+    );
+  });
+});
+
+describe("open Compose projects in recovery", () => {
+  const runFile = {
+    id: "r1",
+    ownerLabel: "r1-abcd",
+    sdkCommit: "a",
+    startedAt: "x",
+    endedAt: null,
+    location: "t",
+    settings: {},
+    artifacts: { node: "n", fixture: "f", native: "b" },
+    providers: [],
+  };
+
+  /**
+   * Sol's case: both `down` tries failed on a daemon that was already running and the destroy
+   * timed out; a later reconciliation confirmed the sandbox gone.
+   */
+  const leftOn = (projectCleanup: "open" | "with-sandbox"): AttemptRecord => {
+    const base = record({
+      provider: "p",
+      path: "compose",
+      attempt: 1,
+      up: null,
+      method: "preinstalled-running",
+    });
+
+    return {
+      ...base,
+      daemon: base.daemon
+        ? { ...base.daemon, method: "preinstalled-running", launched: false, down: false }
+        : null,
+      phases: [
+        { name: "destroy", startedAt: 0, endedAt: 1, ok: false, exitCode: null, timedOut: false },
+      ],
+      cleanup: "unconfirmed",
+      projectCleanup,
+    };
+  };
+
+  const sweepWith = async (row: AttemptRecord) => {
+    const dir = await mkdtemp(join(tmpdir(), "svc-project-"));
+    const before = process.exitCode;
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await writeFile(join(dir, "run.json"), JSON.stringify(runFile));
+      await writeFile(join(dir, "services-attempts.jsonl"), `${JSON.stringify(row)}\n`);
+      await servicesCommand(["sweep", "--out", dir, "--run", "r1"]);
+
+      return {
+        exitCode: process.exitCode,
+        stderr: stderr.mock.calls.map(([text]) => String(text)).join(""),
+        stdout: stdout.mock.calls.map(([text]) => String(text)).join(""),
+      };
+    } finally {
+      stderr.mockRestore();
+      stdout.mockRestore();
+      process.exitCode = before;
+      await rm(dir, { recursive: true, force: true });
+    }
+  };
+
+  test("a confirmed sandbox deletion never clears a project on a daemon that outlived it: sweep names it and exits nonzero", async () => {
+    const open = await sweepWith(leftOn("open"));
+    expect(open.exitCode).toBe(1);
+    expect(open.stderr).toContain("Compose project cleanup unresolved for p-compose-1");
+    expect(open.stdout).toContain('"openProjects":1');
+
+    // The same failed down on a daemon launched inside the sandbox went with it.
+    const launched = await sweepWith(leftOn("with-sandbox"));
+    expect(launched.exitCode).not.toBe(1);
+    expect(launched.stdout).toContain('"openProjects":0');
   });
 });

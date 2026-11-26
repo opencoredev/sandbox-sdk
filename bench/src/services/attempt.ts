@@ -39,6 +39,7 @@ import {
   type DaemonTry,
   type Metrics,
   type Outcome,
+  type ProjectCleanup,
   type Phase,
   type ServicePath,
   type Stage,
@@ -161,7 +162,16 @@ interface StepOptions {
   timeoutMs: number;
   cwd?: string;
   env?: Record<string, string>;
+  /** Aborts this one call as well as everything on the guest's own signal. */
+  signal?: AbortSignal;
 }
+
+/**
+ * System binary directories, after the image's own PATH. Every guest command runs with them (the
+ * probe included), and every launch hands that same PATH through `sudo env`, so the probe and the
+ * launch resolve `dockerd`, `docker-proxy` and the rest the same way.
+ */
+export const systemBin = "/usr/local/sbin:/usr/sbin:/sbin";
 
 /** Runs guest commands, records each as a phase and keeps its raw output. */
 /** The sandbox methods the attempt uses; a `Sandbox` is one, and tests script one. */
@@ -191,7 +201,7 @@ export class Guest {
 
   prelude() {
     const parts = [
-      `export PATH=${guest.root}/node/bin:${this.tools}/bin:${this.tools}/docker:${this.tools}/docker-rootless-extras:"$PATH"`,
+      `export PATH=${guest.root}/node/bin:${this.tools}/bin:${this.tools}/docker:${this.tools}/docker-rootless-extras:"$PATH":${systemBin}`,
     ];
 
     // One endpoint for every docker and compose call: never a configured context's.
@@ -207,7 +217,7 @@ export class Guest {
     const runOptions: RunOptions = {
       cwd: options.cwd ?? "/",
       timeoutMs: options.timeoutMs,
-      signal: this.signal,
+      signal: options.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal,
       maxOutputBytes: 256 * 1024,
     };
 
@@ -568,10 +578,18 @@ const noDaemonOnSocket = /ENOENT|ECONNREFUSED/;
 /**
  * Stop the process tree a launch in `dir` recorded, and nothing else: only when the recorded PID
  * is still that launch (its command line names `dir`, so a reused PID is left alone), TERM to its
- * root, then KILL to whatever of the tree, read before the TERM, is still there.
+ * root, then KILL to whatever of the tree, read before the TERM, is still there. Each process is
+ * known by its PID and start time, and KILL goes only to one whose start time still matches.
  */
 export const stopTree = (dir: string) =>
-  `p=$(cat ${dir}/launch.pid 2>/dev/null); [ -n "$p" ] || exit 0; tr '\\0' ' ' < /proc/"$p"/cmdline 2>/dev/null | grep -qF -- ${quote(dir)} || exit 0; t() { echo "$1"; for c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do t "$c"; done; }; all=$(t "$p"); kill -TERM "$p" 2>/dev/null; i=0; while [ $i -lt 20 ] && [ -d /proc/"$p" ]; do sleep 0.5; i=$((i + 1)); done; kill -KILL $all 2>/dev/null; true`;
+  `p=$(cat ${dir}/launch.pid 2>/dev/null); [ -n "$p" ] || exit 0; tr '\\0' ' ' < /proc/"$p"/cmdline 2>/dev/null | grep -qF -- ${quote(dir)} || exit 0; st() { sed 's/.*) //' /proc/"$1"/stat 2>/dev/null | cut -d' ' -f20; }; t() { echo "$1:$(st "$1")"; for c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do t "$c"; done; }; all=$(t "$p"); kill -TERM "$p" 2>/dev/null; i=0; while [ $i -lt 20 ] && [ -d /proc/"$p" ]; do sleep 0.5; i=$((i + 1)); done; for e in $all; do q=\${e%%:*}; [ -n "\${e#*:}" ] && [ "$(st "$q")" = "\${e#*:}" ] && kill -KILL "$q" 2>/dev/null; done; true`;
+
+/**
+ * Lists every dockerd or containerd this attempt did not launch (its command line does not name
+ * the attempt's tool directory), one `pid:name` per line.
+ */
+const foreignDaemons = (tools: string) =>
+  `for p in /proc/[0-9]*; do c=$(cat "$p"/comm 2>/dev/null); case "$c" in dockerd|containerd) a=$(tr '\\0' ' ' < "$p"/cmdline 2>/dev/null); case "$a" in *${tools}/*) ;; *) echo "\${p#/proc/}:$c" ;; esac ;; esac; done; echo SCANNED`;
 
 /** One method of the ladder: tries it, or records the probe fact that rules it out. */
 interface Rung {
@@ -680,9 +698,73 @@ class Daemon {
   private stop(dir: string, asRoot: boolean) {
     const runner = asRoot && this.sudo ? this.sudo : "";
 
-    return this.g
-      .exec(`${runner}sh -c ${quote(stopTree(dir))}`, { timeoutMs: 30_000 })
-      .catch(() => null);
+    // On its own bounded timer: a stalled stop never holds the next rung.
+    return this.within(this.g.mono() + 30_000, (signal) =>
+      this.g.exec(`${runner}sh -c ${quote(stopTree(dir))}`, { timeoutMs: 30_000, signal }),
+    ).catch(() => null);
+  }
+
+  /**
+   * `work` with an abort signal of its own, raced against `deadline` on the monotonic clock. Past
+   * the deadline the call is aborted and null comes back at once, so a stalled exec can never
+   * hold the ladder; a call that settles in time comes back as `{ value }` or rejects.
+   */
+  private async within<T>(
+    deadline: number,
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<{ value: T } | null> {
+    const own = new AbortController();
+    const call = work(own.signal);
+    call.catch(() => {});
+
+    const outcome = await Promise.race([
+      call.then((value) => ({ value })),
+      after(Math.max(0, deadline - this.g.mono())).then(() => null),
+    ]);
+
+    if (outcome === null) own.abort(new Error("past the daemon deadline"));
+
+    return outcome;
+  }
+
+  /** A readiness ping that answers by `deadline`, or null. */
+  private async pingBy(asRoot: boolean, deadline: number) {
+    return (
+      (await this.within(deadline, (signal) => this.ping(asRoot, this.left(deadline), signal)))
+        ?.value ?? null
+    );
+  }
+
+  /**
+   * Before a rootful launch: true when no dockerd or containerd this attempt did not launch is
+   * running. A second rootful daemon beside one would share its bridge and firewall rules, so
+   * otherwise (or when the check itself fails) the method is recorded as an inconclusive failed
+   * try and not launched.
+   */
+  async ownsNetwork(method: DaemonMethod): Promise<boolean> {
+    const startedAt = this.g.now();
+
+    const scan = await this.within(this.g.mono() + 20_000, (signal) =>
+      this.g.exec(foreignDaemons(this.g.tools), { timeoutMs: 20_000, signal }),
+    ).catch(() => null);
+
+    const output = scan?.value.output ?? "";
+    const others = output.split("\n").filter((line) => /^\d+:/.test(line));
+
+    if (output.includes("SCANNED") && others.length === 0) return true;
+
+    this.record.tries.push({
+      method,
+      config: "ownership",
+      ok: false,
+      ms: this.g.now() - startedAt,
+      error: others.length
+        ? `another daemon owns the network namespace (${others.join(", ")})`
+        : "could not check for another daemon in the network namespace",
+      conclusive: false,
+    });
+
+    return false;
   }
 
   /**
@@ -741,11 +823,12 @@ class Daemon {
   }
 
   /** Readiness only: the helper exits as soon as /_ping answers. */
-  private ping(asRoot: boolean, timeoutMs: number) {
+  private ping(asRoot: boolean, timeoutMs: number, signal: AbortSignal) {
     const runner = asRoot && this.sudo ? `${this.sudo}env PATH="$PATH" ` : "";
 
     return this.g.exec(`${runner}node ${guest.root}/daemon-ping.mjs ${quote(this.socket)}`, {
       timeoutMs,
+      signal,
     });
   }
 
@@ -859,33 +942,44 @@ class Daemon {
     // Checked on the socket itself, whatever DOCKER_HOST or a saved context told the probe's
     // `docker info`: as the sandbox user, then through sudo for a root-only socket.
     let asRoot = false;
-    let result = await this.ping(false, this.left(deadline));
+    let result = await this.pingBy(false, deadline);
 
-    if (!result.ok && this.probe.sudo === "passwordless" && this.g.mono() < deadline) {
+    if (
+      result !== null &&
+      !result.ok &&
+      this.probe.sudo === "passwordless" &&
+      this.g.mono() < deadline
+    ) {
       asRoot = true;
-      result = await this.ping(true, this.left(deadline));
+      result = await this.pingBy(true, deadline);
     }
 
-    const late = result.ok && this.g.mono() > deadline;
-    const ok = result.ok && !late;
+    const late = result?.ok === true && this.g.mono() > deadline;
+    const ok = result?.ok === true && !late;
     this.record.tries.push({
       method: "preinstalled-running",
       config: "as-found",
       ok,
       ms: this.g.now() - startedAt,
-      error: ok ? null : late ? `answered only after ${this.readyMs} ms` : tail(result.output, 300),
-      conclusive: !result.ok && noDaemonOnSocket.test(result.output),
+      error: ok
+        ? null
+        : result === null
+          ? `no answer within ${this.readyMs} ms`
+          : late
+            ? `answered only after ${this.readyMs} ms`
+            : tail(result.output, 300),
+      conclusive: result !== null && !result.ok && noDaemonOnSocket.test(result.output),
     });
     this.g.phases.push({
       name: "daemon-start:preinstalled-running:as-found",
       startedAt,
       endedAt: this.g.now(),
       ok,
-      exitCode: result.exitCode,
-      timedOut: result.timedOut,
+      exitCode: result?.exitCode ?? null,
+      timedOut: result === null || result.timedOut,
     });
 
-    if (!ok) {
+    if (!ok || result === null) {
       this.g.dockerHost = null;
 
       return false;
@@ -938,7 +1032,7 @@ class Daemon {
         const deadline = this.g.mono() + this.readyMs;
 
         const start = this.g.box.start(
-          `${this.g.prelude()}mkdir -p -m 700 ${dir} && echo $$ > ${dir}/launch.pid && exec ${input.command(config, dir)} >${log} 2>&1`,
+          `${this.g.prelude()}mkdir -p -m 700 ${dir} && printf '{}' > ${dir}/daemon.json && echo $$ > ${dir}/launch.pid && exec ${input.command(config, dir)} >${log} 2>&1`,
           { name: `sbx-${input.method}-${config.id}` },
         );
 
@@ -961,7 +1055,12 @@ class Daemon {
             break;
           }
 
-          const result = await this.ping(input.asRoot, this.left(deadline));
+          const result = await this.pingBy(input.asRoot, deadline);
+
+          if (result === null) {
+            error = `no answer within ${this.readyMs} ms`;
+            break;
+          }
 
           if (result.ok) {
             // An answer that arrives past the deadline does not count.
@@ -977,12 +1076,14 @@ class Daemon {
 
           // A daemon that already exited will never answer; give it a few seconds to appear first.
           if (this.g.mono() < deadline) {
-            const alive = await this.g.exec(
-              `p=$(cat ${dir}/launch.pid 2>/dev/null); [ -n "$p" ] && [ -d /proc/"$p" ] || echo DEAD`,
-              { timeoutMs: this.left(deadline) },
+            const alive = await this.within(deadline, (signal) =>
+              this.g.exec(
+                `p=$(cat ${dir}/launch.pid 2>/dev/null); [ -n "$p" ] && [ -d /proc/"$p" ] || echo DEAD`,
+                { timeoutMs: this.left(deadline), signal },
+              ),
             );
 
-            if (alive.output.includes("DEAD")) {
+            if (alive?.value.output.includes("DEAD")) {
               error = "daemon exited";
               break;
             }
@@ -1161,7 +1262,7 @@ export async function getDaemon(
       socket: (dir) => `${dir}/docker.sock`,
       asRoot: true,
       command: (config, dir) =>
-        `${sudo}env PATH="$PATH" ${dockerd} --host unix://${dir}/docker.sock --pidfile ${dir}/docker.pid --exec-root ${dir}/exec --data-root ${dataRoot}/${method}-${config.id} --containerd-namespace ${tag}-${method}-${config.id} --containerd-plugins-namespace ${tag}-${method}-${config.id}-plugins ${config.flags}`.trim(),
+        `${sudo}env PATH="$PATH" ${dockerd} --config-file ${dir}/daemon.json --host unix://${dir}/docker.sock --pidfile ${dir}/docker.pid --exec-root ${dir}/exec --data-root ${dataRoot}/${method}-${config.id} --containerd-namespace ${tag}-${method}-${config.id} --containerd-plugins-namespace ${tag}-${method}-${config.id}-plugins ${config.flags}`.trim(),
     });
 
   d.rungs = [
@@ -1176,7 +1277,10 @@ export async function getDaemon(
         if (!canBeRoot(probe))
           return d.skip("preinstalled-started", "not root and no passwordless sudo");
 
-        return rootful("preinstalled-started", "dockerd");
+        return (
+          (await d.ownsNetwork("preinstalled-started")) &&
+          rootful("preinstalled-started", "dockerd")
+        );
       },
     },
     {
@@ -1188,7 +1292,9 @@ export async function getDaemon(
           return d.skip("static-rootful", `no pinned static bundle for ${probe.arch}`);
 
         return (
-          (await d.fetchStatic(false)) && rootful("static-rootful", `${g.tools}/docker/dockerd`)
+          (await d.ownsNetwork("static-rootful")) &&
+          (await d.fetchStatic(false)) &&
+          rootful("static-rootful", `${g.tools}/docker/dockerd`)
         );
       },
     },
@@ -1210,7 +1316,7 @@ export async function getDaemon(
             socket: (dir) => `${dir}/xdg/docker.sock`,
             asRoot: false,
             command: (config, dir) =>
-              `env XDG_RUNTIME_DIR=${dir}/xdg sh -c 'mkdir -p -m 700 "$XDG_RUNTIME_DIR" && exec "$0" "$@"' ${g.tools}/docker-rootless-extras/dockerd-rootless.sh --data-root ${dir}/data ${config.flags}`.trim(),
+              `env XDG_RUNTIME_DIR=${dir}/xdg sh -c 'mkdir -p -m 700 "$XDG_RUNTIME_DIR" && exec "$0" "$@"' ${g.tools}/docker-rootless-extras/dockerd-rootless.sh --config-file ${dir}/daemon.json --data-root ${dir}/data ${config.flags}`.trim(),
           })
         );
       },
@@ -1804,7 +1910,8 @@ export async function runServicesAttempt(
     outcome,
     metrics: metricsOf(plan.path, phases, outcome.kind === "green"),
     deletionConfirmed: st.deletionConfirmed,
-    cleanup: cleanupStatus(st.deletionConfirmed, st.daemonRef),
+    projectCleanup: projectCleanupOf(st.daemonRef),
+    cleanup: cleanupStatus(st.deletionConfirmed, projectCleanupOf(st.daemonRef)),
     // From the create request to the confirmed stop whenever a sandbox may exist; a clean refusal
     // costs nothing.
     estimatedUSD:
@@ -1821,21 +1928,25 @@ export async function runServicesAttempt(
 }
 
 /**
- * Whether everything an attempt made is gone. The sandbox's deletion must be confirmed. Its Compose
- * project's containers, networks and volumes are gone once its own `down` exited 0, or with the
- * sandbox when the daemon holding them was launched inside it; a daemon that was already running
- * may outlive the sandbox, so there only the `down` counts.
+ * The attempt's Compose project, apart from its sandbox: `none` when it never came up, `down`
+ * once its own `down` exited 0, `with-sandbox` when it did not but the daemon holding it was
+ * launched inside the sandbox (it goes when the sandbox's deletion is confirmed), and `open` when
+ * it may still run on a daemon that was already there and can outlive the sandbox. No sandbox
+ * deletion or sweep ever resolves `open`.
  */
-export function cleanupStatus(
-  deletionConfirmed: boolean,
+export function projectCleanupOf(
   daemon: { readonly projectUsed: boolean; readonly record: DaemonRecord } | null,
-): "confirmed" | "unconfirmed" {
-  const projectLeft = daemon !== null && daemon.projectUsed && daemon.record.down !== true;
+): ProjectCleanup {
+  if (daemon === null || !daemon.projectUsed) return "none";
 
-  return deletionConfirmed && (!projectLeft || daemon?.record.launched === true)
-    ? "confirmed"
-    : "unconfirmed";
+  if (daemon.record.down === true) return "down";
+
+  return daemon.record.launched ? "with-sandbox" : "open";
 }
+
+/** Everything the attempt made is gone: its sandbox's deletion is confirmed and no project is open. */
+export const cleanupStatus = (deletionConfirmed: boolean, project: ProjectCleanup) =>
+  deletionConfirmed && project !== "open" ? "confirmed" : "unconfirmed";
 
 function pick(error: StageFailure) {
   return { stage: error.stage, reason: error.reason, detail: error.detail };

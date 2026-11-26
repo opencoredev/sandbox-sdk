@@ -142,6 +142,14 @@ export const metricsSchema = z.object({
 
 export type Metrics = z.infer<typeof metricsSchema>;
 
+export const projectCleanupSchema = z.enum(["none", "down", "with-sandbox", "open"]);
+
+export type ProjectCleanup = z.infer<typeof projectCleanupSchema>;
+
+/** A compose attempt whose project may still run on a daemon that outlives its sandbox. */
+export const projectOpen = (record: { path: string; projectCleanup: ProjectCleanup }) =>
+  record.path === "compose" && record.projectCleanup === "open";
+
 export const attemptRecordSchema = z.object({
   schema: z.literal(attemptSchemaVersion),
   runId: z.string(),
@@ -167,6 +175,12 @@ export const attemptRecordSchema = z.object({
    * read as unconfirmed.
    */
   cleanup: z.enum(["confirmed", "unconfirmed"]).default("unconfirmed"),
+  /**
+   * The Compose project's own obligation, tracked apart from the sandbox (attempt.ts
+   * projectCleanupOf). `open` is never resolved by deleting the sandbox; `with-sandbox` is, once
+   * that deletion is confirmed. Rows from before this field read as open (compose rows only count).
+   */
+  projectCleanup: projectCleanupSchema.default("open"),
   estimatedUSD: z.number().nullable(),
   artifacts: z.object({ node: z.string(), fixture: z.string(), native: z.string().nullable() }),
   outputDir: z.string().nullable(),
