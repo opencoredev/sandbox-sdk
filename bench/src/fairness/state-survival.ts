@@ -685,7 +685,9 @@ async function measure(context: CheckContext, options: StateOptions): Promise<St
 export const stateSurvivalCheck = (
   options: StateOptions = defaultStateOptions,
 ): Check<StateResult> => {
-  const lifetimeMs = 20 * 60_000 + options.holdMs;
+  // At least the 25 minutes memory-pressure uses: Beam sandboxes created with some other lifetimes,
+  // 20 and 21 minutes among them, fail every command.
+  const lifetimeMs = Math.max(25 * 60_000, 20 * 60_000 + options.holdMs);
 
   return {
     id: "state-survival",
