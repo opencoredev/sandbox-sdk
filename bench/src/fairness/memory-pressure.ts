@@ -316,10 +316,13 @@ const ranToEnd = (result: Exec | null): result is Exec =>
 
 /** A health read whose every field came from the one, complete run (an empty beat is unobserved). */
 const healthFrame = (result: Exec | null) => {
-  if (!ranToEnd(result) || !result.stdout.includes("health=done")) return null;
+  if (!ranToEnd(result) || !/^health=done$/m.test(result.stdout)) return null;
   const values = keyValues(result.stdout);
 
-  return ["boot", "canary", "now"].every((key) => (values.get(key) ?? "") !== "") ? values : null;
+  return values.has("canaryBeat") &&
+    ["boot", "canary", "now"].every((key) => (values.get(key) ?? "") !== "")
+    ? values
+    : null;
 };
 
 type Polled = {
@@ -475,7 +478,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
       `${found.runtime}: advertised ${advertisedMiB} MiB, MemTotal ${limits.memTotalGiB ?? "?"} GiB, limit ${limits.memLimitGiB ?? "none"}, target ${targetMiB} MiB`,
     );
 
-    await context.exec(
+    const launched = await context.exec(
       box,
       detached(
         `cd ${quote(dir)} && { ${stampFunction}; stamp $$ > hog.sup; ${rt} ${quote(hog)} ${targetMiB} ${options.chunkMiB} > hog.log 2>&1 & stamp $! > hog.pid; wait $!; echo $? > hog.exit; }`,
@@ -483,6 +486,11 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
       ),
       60_000,
     );
+
+    // An unfinished launch may have been cancelled, and an SDK can answer that by destroying the
+    // sandbox, so nothing after it would be a pressure outcome.
+    if (!ranToEnd(launched) || launched.exitCode !== 0)
+      throw new CheckStop("The hog launch did not run to the end");
 
     const polled = await pollHog({ context, box, dir, boot, options });
     // Only a recorded status says the hog has ended; then its log is whole and health can be tested.
@@ -492,8 +500,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
       .exec(
         box,
         [
-          `cat ${quote(`${dir}/hog.log`)} 2>/dev/null`,
-          "echo '#end-log'",
+          `if cat ${quote(`${dir}/hog.log`)} 2>/dev/null; then echo '#end-log'; else echo '#partial-log'; fi`,
           healthCommand(dir),
           oomCommand,
         ].join("\n"),
@@ -501,7 +508,9 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
       )
       .catch(() => null);
 
-    const at = read?.stdout.indexOf("#end-log") ?? -1;
+    const marker = read?.stdout.match(/^#(end|partial)-log$/m);
+    const at = marker?.index ?? -1;
+    const logWhole = marker?.[1] === "end";
 
     let after =
       at < 0 || read === null ? null : healthFrame({ ...read, stdout: read.stdout.slice(at) });
@@ -538,27 +547,54 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     }
 
     const bootAfter = valid(after?.get("boot"), bootIdPattern);
-    const bootSame = bootAfter === null ? null : bootAfter === boot;
+    let bootSame = bootAfter === null ? null : bootAfter === boot;
     let allocOk: boolean | null = null;
     let fileOk: boolean | null = null;
 
-    // Health is tested only once the hog's status is recorded on the same boot.
-    if (ended && bootSame === true) {
-      const alloc = await context
-        .exec(box, `${rt} ${quote(hog)} ${options.healthAllocMiB} ${options.chunkMiB}`, 120_000)
-        .catch(() => null);
-
-      allocOk = ranToEnd(alloc) ? alloc.exitCode === 0 && /^reached /m.test(alloc.stdout) : null;
-
-      const file = await context
+    /**
+     * Runs one health test after its own boot check: a result only when the test started on the
+     * same boot and ran to the end; a new boot id is kept as a restart.
+     */
+    const probe = async (setup: string, test: string, timeoutMs: number) => {
+      const result = await context
         .exec(
           box,
-          `cd ${quote(dir)} && head -c 1048576 /dev/urandom > health.bin && sync && test "$(wc -c < health.bin)" -eq 1048576 && rm -f health.bin && echo fileok`,
-          60_000,
+          [`echo "boot=$(${bootIdCommand})"`, `${setup} || exit 97`, "echo started", test].join(
+            "\n",
+          ),
+          timeoutMs,
         )
         .catch(() => null);
 
-      fileOk = ranToEnd(file) ? file.exitCode === 0 && file.stdout.includes("fileok") : null;
+      const seen = valid(
+        result === null ? undefined : keyValues(result.stdout).get("boot"),
+        bootIdPattern,
+      );
+
+      if (seen !== null && seen !== boot) bootSame = false;
+
+      return ranToEnd(result) && seen === boot && /^started$/m.test(result.stdout) ? result : null;
+    };
+
+    // Health is tested only once the hog's status is recorded on the same boot.
+    if (ended && bootSame === true) {
+      const alloc = await probe(
+        `test -f ${quote(hog)}`,
+        `${rt} ${quote(hog)} ${options.healthAllocMiB} ${options.chunkMiB}`,
+        120_000,
+      );
+
+      const file = await probe(
+        `cd ${quote(dir)}`,
+        'head -c 1048576 /dev/urandom > health.bin && sync && test "$(wc -c < health.bin)" -eq 1048576 && rm -f health.bin && echo fileok',
+        60_000,
+      );
+
+      // A restart seen by either test means the old boot's results say nothing.
+      if (bootSame === true) {
+        allocOk = alloc === null ? null : alloc.exitCode === 0 && /^reached /m.test(alloc.stdout);
+        fileOk = file === null ? null : file.exitCode === 0 && /^fileok$/m.test(file.stdout);
+      }
     }
 
     // Alive needs the same process and a fresh beat; gone needs it confirmed gone; else unknown.
@@ -570,7 +606,7 @@ async function measure(context: CheckContext, options: PressureOptions): Promise
     const log = parseHogLog(logText);
     const outcome = judgePressure({ ending: polled.ending, log, oomDelta, bootSame });
     const scope = scopeOf(outcome, canaryAlive);
-    const fromLog = ended && log.heldMiB > 0 && log.heldMiB >= polled.heldMiB;
+    const fromLog = ended && logWhole && log.heldMiB > 0 && log.heldMiB >= polled.heldMiB;
     const seenMiB = Math.max(log.heldMiB, polled.heldMiB);
     const reachedMiB = seenMiB > 0 ? seenMiB : null;
     context.say(`memory: ${outcome.kind} at ${reachedMiB ?? "?"} MiB, scope ${scope ?? "-"}`);

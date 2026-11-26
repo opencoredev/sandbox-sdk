@@ -888,6 +888,79 @@ describe.runIf(linux && available.length > 0)(
       expect(result.health).toMatchObject({ bootSame: false, allocOk: null, fileOk: null });
     }, 60_000);
 
+    it("memory-pressure calls a reboot seen by a health test a restart and keeps the tests unrun", async () => {
+      const real = hostBox();
+      const rebooted = `boot=${randomUUID()}`;
+
+      // The guest reboots after the post-hog read, so only the health tests see the new boot id.
+      const rebooting: Box = {
+        ...real,
+        run: async (command, options) => {
+          const result = await real.run(command, options);
+
+          return command.includes("echo started")
+            ? { ...result, stdout: result.stdout.replace(/^boot=.*$/m, rebooted) }
+            : result;
+        },
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => rebooting,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const check = memoryPressureCheck({
+        ...defaultPressureOptions,
+        advertisedMiB: 128,
+        healthAllocMiB: 64,
+        pollMs: 200,
+        workdir: await scratch("mem-work"),
+      });
+
+      const entry = await runOnHost(check, open);
+      expect(entry.status, entry.reason ?? "").toBe("completed");
+      const result = check.resultSchema.parse(entry.result);
+      expect(result.outcome).toEqual({ kind: "sandbox-restarted" });
+      expect(result).toMatchObject({ scope: "sandbox", usableAfter: null });
+      expect(result.health).toMatchObject({ allocOk: null, fileOk: null });
+    }, 60_000);
+
+    it("memory-pressure stops when the hog launch does not run to the end", async () => {
+      const real = hostBox();
+
+      const cancelled: Box = {
+        ...real,
+        run: async (command, options) =>
+          command.includes("hog.wrap")
+            ? { ok: false, exitCode: null, stdout: "", stderr: "", timedOut: true }
+            : real.run(command, options),
+      };
+
+      const open: OpenSession = async () => ({
+        kind: "ready",
+        session: {
+          create: async () => cancelled,
+          leftovers: async () => [],
+          destroyById: async () => {},
+        },
+      });
+
+      const check = memoryPressureCheck({
+        ...defaultPressureOptions,
+        advertisedMiB: 128,
+        pollMs: 200,
+        workdir: await scratch("mem-work"),
+      });
+
+      const entry = await runOnHost(check, open);
+      expect(entry.status).not.toBe("completed");
+      expect(entry.reason).toMatch(/hog launch did not run to the end/);
+    }, 60_000);
+
     it.each([
       ["rejected", () => Promise.reject(new Error("connection reset"))],
       [
