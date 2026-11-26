@@ -384,7 +384,11 @@ export function judgeSurvival(input: {
 
   if (!filesystem) return judged("inconclusive", "the file could not be read");
 
-  if (bootSame === false) return judged("cold-restart");
+  // The server's random token and memory digest cannot outlive a reboot, so a server that still
+  // answers with both outweighs a changed boot id.
+  const survivedReboot = bootSame === false && memoryIntact;
+
+  if (bootSame === false && !survivedReboot) return judged("cold-restart");
 
   if (worker.gone && server.gone) return judged("cold-restart");
 
@@ -396,9 +400,13 @@ export function judgeSurvival(input: {
 
   if (rawMissed === null) return judged("inconclusive", "no heartbeat count across the hold");
 
-  if (rawMissed.min - outsideS >= holdS * 0.8) return judged("in-ram");
+  const note = survivedReboot
+    ? "the boot id changed, but the original processes kept their memory"
+    : null;
 
-  if (rawMissed.max + beatSlackS <= holdS * 0.2) return judged("kept-running");
+  if (rawMissed.min - outsideS >= holdS * 0.8) return judged("in-ram", note);
+
+  if (rawMissed.max + beatSlackS <= holdS * 0.2) return judged("kept-running", note);
 
   return judged(
     "inconclusive",

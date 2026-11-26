@@ -204,7 +204,19 @@ describe("state-survival judge", () => {
       server: { gone: false },
     });
     const rebooted = snapshot({ boot: "boot-2", beat: 11 });
-    expect(judgeSurvival({ ...base, ...kept, after: rebooted }).verdict).toBe("cold-restart");
+    expect(judgeSurvival({ ...base, ...kept, after: rebooted, probe: answer("t2") }).verdict).toBe(
+      "cold-restart",
+    );
+    expect(judgeSurvival({ ...base, ...kept, after: rebooted, probe: null }).verdict).toBe(
+      "cold-restart",
+    );
+    // The original server's token and memory cannot outlive a reboot: a changed boot id is not
+    // a cold restart while that server still answers with both.
+    expect(judgeSurvival({ ...base, ...kept, after: rebooted })).toMatchObject({
+      verdict: "in-ram",
+      reason: expect.stringMatching(/boot id changed/),
+      bootSame: false,
+    });
     // A server that is alive but not answering, or only one process gone, is not enough.
 
     const slow = judgeSurvival({
