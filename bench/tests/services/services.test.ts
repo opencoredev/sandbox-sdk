@@ -392,6 +392,39 @@ describe("daemon ladder", () => {
     }
   });
 
+  test("an ownership proof that settles past the deadline is unverified, even when it beats the timer", async () => {
+    const { box } = scriptedBox([
+      [/daemon-ping/, () => ({ output: pingOk })],
+      [/NOT-LISTENING/, () => ({ output: "OWNER 77 dockerd" })],
+    ]);
+
+    const run = box.run.bind(box);
+    const g = guestFor(box);
+    let clock = 0;
+    g.mono = () => clock;
+
+    // The proof answers at once, but the clock reads past the 10 s budget when it settles.
+    box.run = (command, options) => {
+      if (command.includes("NOT-LISTENING")) clock += 10_001;
+
+      return run(command, options);
+    };
+
+    let kept: Parameters<Parameters<typeof getDaemon>[3]>[0] | undefined;
+
+    await expect(
+      getDaemon(g, probeOf({ arch: "aarch64", dockerd: "no", podman: "none" }), 10_000, (d) => {
+        kept = d;
+      }),
+    ).rejects.toThrow("no daemon method");
+
+    expect(kept?.record.method).toBeNull();
+    expect(kept?.record.tries[0]).toMatchObject({ ok: false, error: ownershipUnverified });
+    expect(g.phases.find((p) => p.name === "daemon-start:preinstalled-running:as-found")?.ok).toBe(
+      false,
+    );
+  });
+
   test("the ownership proof runs within the rung's budget, and the start counts only once it passes", async () => {
     const { box } = scriptedBox([[/daemon-ping/, () => ({ output: pingOk })]]);
     const run = box.run.bind(box);
@@ -3320,12 +3353,24 @@ describe("storage fallback only for a storage-driver incompatibility", () => {
 
     expect(docker(outside)).toBe("external-unused");
     expect(summaryMarkdown(site(outside))).toContain(
-      "- p compose: its only Docker was a daemon outside the sandbox, not used",
+      "- p compose: its Docker was a daemon outside the sandbox, not used",
     );
     expect(docker(unverified)).toBe("ownership-unverified");
     expect(summaryMarkdown(site(unverified))).toContain(
       "- p compose: socket answered; in-sandbox ownership couldn't be verified, not used",
     );
+
+    // One sandbox's external socket never hides another's unverified daemon: both are named.
+    expect(docker(outside, unverified)).toBe("ownership-unverified");
+    expect(docker(unverified, outside)).toBe("ownership-unverified");
+
+    const mixed = summaryMarkdown(site(outside, unverified));
+
+    expect(mixed).toContain(
+      "- p compose: socket answered; in-sandbox ownership couldn't be verified, not used",
+    );
+    expect(mixed).toContain("- p compose: its Docker was a daemon outside the sandbox, not used");
+    expect(summaryMarkdown(site(outside))).not.toContain("ownership couldn't be verified");
 
     // Inconclusive attempts beside them change nothing.
     expect(docker(outside, silent)).toBe("external-unused");

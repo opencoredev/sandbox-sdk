@@ -1096,9 +1096,14 @@ class Daemon {
     if (answered)
       this.g.diagnostics("socket-owner", owner?.value.output ?? "no answer within the budget");
 
+    // A proof that settles after the deadline proves nothing, whichever won the timer race.
+    const inTime = this.g.mono() <= deadline;
+
     const refused = !answered
       ? null
-      : owner?.value.ok === true && /^OWNER \d+ (?:dockerd|podman)$/m.test(owner.value.output)
+      : inTime &&
+          owner?.value.ok === true &&
+          /^OWNER \d+ (?:dockerd|podman)$/m.test(owner.value.output)
         ? null
         : owner?.value.exitCode === 3 && owner.value.output.trim() === "NOT-LISTENING"
           ? outsideSandbox

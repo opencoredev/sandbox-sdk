@@ -281,10 +281,10 @@ function capability(provider: string, records: readonly AttemptRecord[]) {
           ? "flaky"
           : neverAnswered > 0
             ? "fails"
-            : refused(outsideSandbox)
-              ? "external-unused"
-              : refused(ownershipUnverified)
-                ? "ownership-unverified"
+            : refused(ownershipUnverified)
+              ? "ownership-unverified"
+              : refused(outsideSandbox)
+                ? "external-unused"
                 : "not-reached";
 
   return {
@@ -596,12 +596,17 @@ export function summaryMarkdown(site: ServicesSite): string {
     }
 
   for (const p of site.providers)
-    if (p.capability.docker === "external-unused")
-      lines.push(
-        `- ${p.provider} compose: its only Docker was a daemon outside the sandbox, not used`,
-      );
-    else if (p.capability.docker === "ownership-unverified")
-      lines.push(`- ${p.provider} compose: ${ownershipUnverified}`);
+    if (["ownership-unverified", "external-unused"].includes(p.capability.docker)) {
+      const seen = (reason: string) =>
+        p.capability.skippedMethods.some((s) => s.value === `preinstalled-running: ${reason}`);
+
+      if (seen(ownershipUnverified)) lines.push(`- ${p.provider} compose: ${ownershipUnverified}`);
+
+      if (seen(outsideSandbox))
+        lines.push(
+          `- ${p.provider} compose: its Docker was a daemon outside the sandbox, not used`,
+        );
+    }
 
   lines.push("", "## Not run", "");
 
