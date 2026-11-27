@@ -1,9 +1,11 @@
 ---
 title: AI SDK
-description: Give an AI SDK agent sandbox tools with sandboxTools from @opencoredev/sandbox-sdk/ai. Works with generateText, streamText, and useChat, and streams command output.
+description: Give a Vercel AI SDK agent a sandbox to run shell commands and edit files with sandboxTools, on E2B, Daytona, Vercel Sandbox or Docker.
 ---
 
 `sandboxTools(box)` from `@opencoredev/sandbox-sdk/ai` returns an AI SDK tool set. Pass it as `tools` to `generateText` or `streamText` and the model can run commands, read and edit files, and start dev servers in the sandbox.
+
+The AI SDK also has its own sandbox API, marked experimental. `experimental_createBashTool({ sandbox })` from `@ai-sdk/tool-bash` builds one `bash` tool over a session you create with an adapter package, such as `@ai-sdk/sandbox-vercel` for Vercel Sandbox, and you add that tool to `tools`. The `experimental_sandbox` option on `generateText` and `streamText` in AI SDK 7 only hands a session to tools that read it. It doesn't add a `bash` tool. `sandboxTools` takes the other route: the sandbox comes from `createSandbox`, and the model gets separate tools for commands, files and background processes, so the same agent code runs on E2B, Daytona, Vercel Sandbox, Docker on your own machine through `local()`, and the other providers. What a provider can't do still fails: a `createSandbox` option it can't enforce on a new sandbox throws `unsupported`, and a tool it can't back, such as `start_process` on agentOS, returns an `unsupported` result. [Capabilities](/reference/capabilities) lists what each provider supports.
 
 For the tools themselves and how to limit them, see [Give your agent a sandbox](/guides/give-your-agent-a-sandbox).
 
