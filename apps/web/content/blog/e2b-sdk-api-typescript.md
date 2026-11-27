@@ -2,7 +2,7 @@
 title: E2B SDK and API in TypeScript, with examples
 description: How the e2b npm package and E2B's REST API fit together, one upload-and-run-Python task in TypeScript, and how to keep it portable to Daytona or Docker.
 published: 2026-11-03
-updated: 2026-11-16
+updated: 2026-11-27
 ---
 
 E2B gives you two ways in. The [`e2b`](https://www.npmjs.com/package/e2b) npm package is the TypeScript SDK: it creates sandboxes, runs commands and reads and writes files. The [REST API](https://e2b.dev/docs/api-reference) at `https://api.e2b.app` manages sandboxes and templates: create, list, pause, set a timeout, delete. Commands and files don't go through the REST API at all. They go to envd, a daemon inside each sandbox, which the SDK talks to for you.
@@ -167,5 +167,6 @@ They mix, too: `box.native.sdk` gives you the `e2b` package's `Sandbox` whenever
 - [Quickstart](/docs/getting-started/quickstart): your first sandbox in memory, then in Docker, then in the cloud.
 - [E2B provider reference](/docs/providers/e2b): every option, capability and limit.
 - [Daytona provider reference](/docs/providers/daytona): what changes when you switch.
+- [Daytona SDK and API in TypeScript](/blog/daytona-sdk-api-typescript): the same task on Daytona's own SDK, and when to use it.
 - [E2B benchmark](https://aisandboxbench.com/providers/e2b/): E2B's measured cold start, agent tasks and cost on AI Sandbox Bench.
 - [Write a provider](/docs/providers/custom): wrap any other sandbox backend in the same API.
