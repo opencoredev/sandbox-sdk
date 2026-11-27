@@ -43,30 +43,34 @@
     "typescript": "^6.0.3"
   },
   "overrides": {
-    "@hono/node-server@>=2.0.0 <2.1.6": "2.1.6",
+    "@astrojs/prism@>=4.0.0 <4.1.2": "4.1.2",
+    "@hono/node-server@>=2.0.0 <2.1.11": "2.1.11",
     "@modelcontextprotocol/sdk@<1.32.0": "1.32.1",
+    "@opentelemetry/resources@>=2.0.0 <2.12.1": "2.12.1",
     "baseline-browser-mapping@<2.11.0": "2.11.0",
     "body-parser@>=2.0.0 <2.4.0": "2.4.0",
-    "brace-expansion@<1.1.21": "1.1.21",
+    "brace-expansion@<1.1.22": "1.1.22",
     "compression@<1.8.2": "1.8.2",
     "fast-uri@>=3.0.0 <3.1.9": "3.1.9",
     "follow-redirects@<1.16.2": "1.16.2",
     "freestyle": {
-      "undici": "8.12.2"
+      "undici": "8.12.4"
     },
-    "glob@>=9.0.0 <14.0.2": "14.0.2",
+    "glob@>=9.0.0 <14.0.6": "14.0.6",
     "ip-address@<10.7.4": "10.7.4",
-    "minimatch@>=10.0.0 <11.0.1": "11.0.1",
+    "minimatch@>=10.0.0 <11.0.8": "11.0.8",
     "nanoid@<3.3.18": "3.3.18",
     "path-to-regexp@>=4.0.0 <6.3.0": "6.3.0",
-    "postcss-selector-parser@<6.1.5": "6.1.5",
+    "postcss-selector-parser@<6.1.6": "6.1.6",
     "postcss@<8.5.23": "8.5.23",
     "proxy-addr@<2.0.8": "2.0.8",
-    "qs@<6.16.1": "6.16.1",
+    "qs@<6.16.2": "6.16.2",
     "source-map-js@<1.2.2": "1.2.2",
     "tinypool@<2.1.2": "2.1.2",
-    "undici@>=7.0.0 <7.30.1": "7.30.1",
+    "undici@>=7.0.0 <7.30.2": "7.30.2",
+    "undici@>=8.0.0 <8.12.4": "8.12.4",
     "uuid@<11.0.0": "11.1.1",
+    "vite@>=8.3.0 <8.3.8": "8.3.8",
     "zod@<4.6.6": "4.6.7"
   },
   "engines": {
