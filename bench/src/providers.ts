@@ -140,7 +140,7 @@ export const providerNames: readonly string[] = [
   "agentos",
 ];
 
-const regionKeys = new Map([
+export const regionKeys = new Map([
   ["e2b", "E2B_REGION"],
   ["vercel", "VERCEL_REGION"],
   ["daytona", "DAYTONA_TARGET"],

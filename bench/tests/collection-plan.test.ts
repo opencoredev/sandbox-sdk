@@ -201,3 +201,37 @@ it("sets verified explicit account limits for every launched provider", () => {
     }
   }
 });
+
+it("plans the services suite: both paths everywhere, Modal on its VM runtime in its own run", () => {
+  const output = plan("services");
+  const runs = output.split("\n").filter((line) => line.includes("services run"));
+  expect(runs).toHaveLength(4);
+  expect(runs[0]).not.toContain("modal");
+  expect(runs[1]).toContain("--providers modal --modal-runtime vm");
+  // The summary refuses runs without a runner location.
+
+  for (const run of runs) expect(run).toMatch(/--location \S+/);
+
+  expect(output).toContain("services summary");
+  expect(output).toContain("services prepare");
+
+  // Boat runs alone, ten starts per batch, each batch followed by the Boat wait.
+  expect(runs[0]).not.toContain("boat");
+
+  const lines = output.split("\n");
+
+  for (const run of runs.slice(2)) {
+    expect(run).toContain("--providers boat --attempts 5");
+    expect(lines[lines.indexOf(run) + 1]).toBe("WAIT_SECONDS 65");
+  }
+
+  const summary = lines.find((line) => line.includes("services summary")) ?? "";
+
+  for (const id of [
+    "sbx-services-main",
+    "sbx-services-modal-vm",
+    "sbx-services-boat-1",
+    "sbx-services-boat-2",
+  ])
+    expect(summary).toContain(id);
+});

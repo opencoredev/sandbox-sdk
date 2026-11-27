@@ -19,6 +19,7 @@ import { loadProvider, type FactoryOptions } from "../src/providers.js";
 import {
   bindConnection,
   connectionProbes,
+  controlPlaneHosts,
   fingerprintOf,
   type ModalClientParams,
 } from "../src/connections.js";
@@ -57,6 +58,8 @@ const providerEnv = [
   "TENKI_API_URL",
   "LUXOR_API_ENDPOINT",
   "LUXOR_API_URL",
+  "LUXORAI_API_ENDPOINT",
+  "LUXORAI_API_URL",
   "UPSTASH_BOX_API_KEY",
   "UPSTASH_BOX_BASE_URL",
   "VERCEL_TOKEN",
@@ -178,8 +181,6 @@ describe("a connection fingerprint names the whole connection without holding an
     ["boxd", "BOXD_API_URL", { BOXD_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["tenki", "TENKI_API_ENDPOINT", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["tenki", "TENKI_API_URL", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
-    ["tenki", "LUXOR_API_ENDPOINT", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
-    ["tenki", "LUXOR_API_URL", { TENKI_API_KEY: "live-key" }, "https://elsewhere.invalid"],
     ["vercel", "VERCEL_OIDC_TOKEN", {}, "other-oidc-token"],
   ])("%s changes when %s, which its SDK reads itself, does", async (name, variable, env, value) => {
     for (const [key, set] of Object.entries(env)) vi.stubEnv(key, set);
@@ -192,6 +193,49 @@ describe("a connection fingerprint names the whole connection without holding an
 
     expect(await fingerprintOf(run)).toMatch(/^[0-9a-f]{16}$/);
     expect(await fingerprintOf(other)).not.toBe(await fingerprintOf(run));
+  });
+
+  it("tenki on the locked 1.4.1 reads TENKI_API_ENDPOINT, then TENKI_API_URL, and ignores LUXOR_*", async () => {
+    expect(connectionProbes.tenkiSdkVersion()).toBe("1.4.1");
+    vi.stubEnv("TENKI_API_KEY", "live-key");
+    vi.stubEnv("LUXOR_API_ENDPOINT", "https://luxor-endpoint.invalid");
+    vi.stubEnv("LUXOR_API_URL", "https://luxor-url.invalid");
+    vi.stubEnv("TENKI_API_ENDPOINT", "https://nyc.tenki.invalid");
+    vi.stubEnv("TENKI_API_URL", "https://fra.tenki.invalid");
+    const run = await load("tenki", {});
+
+    expect(controlPlaneHosts(run)).toEqual(["nyc.tenki.invalid"]);
+
+    vi.stubEnv("LUXOR_API_ENDPOINT", "https://elsewhere.invalid");
+    expect(await fingerprintOf(await load("tenki", {}))).toBe(await fingerprintOf(run));
+
+    vi.stubEnv("TENKI_API_ENDPOINT", undefined);
+    const fallback = await load("tenki", {});
+
+    expect(controlPlaneHosts(fallback)).toEqual(["fra.tenki.invalid"]);
+    expect(await fingerprintOf(fallback)).not.toBe(await fingerprintOf(run));
+  });
+
+  it.each([
+    ["1.4.4", "LUXORAI_API_ENDPOINT", "LUXORAI_API_URL"],
+    ["1.6.0", "LUXOR_API_ENDPOINT", "LUXOR_API_URL"],
+  ])("tenki %s reads %s, then %s, before TENKI_*", async (version, endpoint, url) => {
+    vi.spyOn(connectionProbes, "tenkiSdkVersion").mockReturnValue(version);
+    vi.stubEnv("TENKI_API_KEY", "live-key");
+    vi.stubEnv("TENKI_API_ENDPOINT", "https://tenki.invalid");
+    const tenki = await load("tenki", {});
+
+    vi.stubEnv(url, "https://luxor-url.invalid");
+    const byUrl = await load("tenki", {});
+
+    vi.stubEnv(endpoint, "https://luxor-endpoint.invalid");
+    const byEndpoint = await load("tenki", {});
+
+    expect(controlPlaneHosts(tenki)).toEqual(["tenki.invalid"]);
+    expect(controlPlaneHosts(byUrl)).toEqual(["luxor-url.invalid"]);
+    expect(controlPlaneHosts(byEndpoint)).toEqual(["luxor-endpoint.invalid"]);
+    expect(await fingerprintOf(byUrl)).not.toBe(await fingerprintOf(tenki));
+    expect(await fingerprintOf(byEndpoint)).not.toBe(await fingerprintOf(byUrl));
   });
 
   it("tenki changes with the installed @tenkicloud/sandbox version, which picks its default endpoint", async () => {

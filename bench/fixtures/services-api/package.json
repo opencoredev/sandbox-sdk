@@ -1,0 +1,19 @@
+{
+  "name": "sandbox-bench-services-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Frozen fixture for the Docker and services benchmark: a small notes API backed by Postgres 16 and Redis 7.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js",
+    "wait-services": "node scripts/wait-services.js",
+    "test": "node --test --test-reporter=spec --test-concurrency=1 test/api.test.js"
+  },
+  "dependencies": {
+    "pg": "8.23.1",
+    "redis": "6.3.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -43,7 +43,7 @@ import { pick, type Candidate } from "../cost/picks.js";
 import { reservationResources } from "../billed-resources.js";
 import { pendingForRun, prepareJournaledApps, reconcileDiscovered } from "../modal-apps.js";
 import { budgetUSD, computeHourly, estimateCost, pricing } from "../pricing.js";
-import { loadProvider, providerRegion } from "../providers.js";
+import { loadProvider, providerRegion, type FactoryOptions } from "../providers.js";
 import {
   appJournalFile,
   attemptAllocation,
@@ -304,6 +304,8 @@ export async function loadSlotProvider(
   journalDir?: string,
   /** A profile with its own factory options (`profileFactory`); unset loads the plain adapter. */
   profile?: string,
+  /** Extra factory options for this suite's adapter (the services suite's Modal runtime). */
+  extraFactory?: FactoryOptions,
 ): Promise<{ kind: "ready"; entry: SlotProvider } | { kind: "skipped"; note: string }> {
   const config = setup.tracks[track];
 
@@ -318,11 +320,16 @@ export async function loadSlotProvider(
     ? { [setup.adapter]: slotMs + 15 * 60_000 }
     : {};
 
+  const factory: FactoryOptions = { ...extraFactory };
+  const profileFactory = profile === undefined ? undefined : setup.profileFactory?.[profile];
+
+  if (profileFactory?.volume) factory.volume = profileFactory.volume;
+
   const loaded = await loadProvider(setup.adapter, process.env, undefined, {
     template: config.template ? { [setup.adapter]: config.template } : {},
     product: setup.product ? { [setup.adapter]: setup.product } : {},
     "lifetime-ms": lifetime,
-    factory: profile === undefined ? undefined : setup.profileFactory?.[profile],
+    factory: profile === undefined && extraFactory === undefined ? undefined : factory,
   });
 
   if (loaded.kind !== "ready") return { kind: "skipped", note: loaded.note };
@@ -688,6 +695,10 @@ export async function sweepProviders(
     readonly known?: ReadonlyMap<string, ReadonlySet<string>>;
     /** Bound on each provider call. Default 120 s. */
     readonly callTimeoutMs?: number;
+    /** Sandbox IDs never deleted, whether listed or known: the caller still needs them. */
+    readonly retain?: ReadonlySet<string>;
+    /** Called once a sandbox's deletion is confirmed, by whichever try deleted it. */
+    readonly onRemoved?: (id: string) => Promise<void>;
   } = {},
 ): Promise<SweepResult> {
   const callTimeoutMs = options.callTimeoutMs ?? sweepCallTimeoutMs;
@@ -714,6 +725,12 @@ export async function sweepProviders(
     };
 
     const remove = async (id: string) => {
+      if (options.retain?.has(id)) {
+        await note({ kind: "retained", provider: name, id }).catch(() => {});
+
+        return;
+      }
+
       const removed = await bounded(`destroy ${id}`, () => provider.destroy(id), callTimeoutMs)
         .then(() => true)
         .catch(() => false);
@@ -721,7 +738,9 @@ export async function sweepProviders(
       // Billing treats a Modal sandbox as settled only after its confirmed stop. A failed write
       // leaves its cost provisional, the safe side, and never stops the sweep.
       if (!removed) undeleted++;
-      else
+      else await options.onRemoved?.(id).catch(() => {});
+
+      if (removed)
         await recordStop({
           path: join(journalDir, stopJournalFile),
           provider: provider.name,

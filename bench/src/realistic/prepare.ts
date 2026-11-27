@@ -11,7 +11,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
-import type { Sandbox } from "@opencoredev/sandbox-sdk";
+import type { RunOptions, RunResult, Sandbox } from "@opencoredev/sandbox-sdk";
 import { quote } from "../workloads.js";
 import type { Clock } from "./gaps.js";
 import {
@@ -148,12 +148,18 @@ export function fileArtifacts(paths: ReadonlyMap<string, string>): ArtifactSourc
   };
 }
 
+/** What an upload needs from a sandbox handle. */
+export interface UploadBox {
+  run(command: string, options: RunOptions): PromiseLike<RunResult>;
+  readonly files: { write(path: string, data: string | Uint8Array): Promise<void> };
+}
+
 /** Write `data` to `dest` through the SDK in chunks, then join them inside the sandbox. */
-async function uploadArtifact(input: {
-  box: Sandbox;
+export async function uploadArtifact(input: {
+  box: UploadBox;
   data: Uint8Array;
   dest: string;
-  settings: UploadSettings;
+  settings: Pick<UploadSettings, "chunkBytes" | "concurrency">;
   signal: AbortSignal;
 }): Promise<{ exitCode: number | null; output: string }> {
   const size = input.settings.chunkBytes ?? 8 * 1024 * 1024;

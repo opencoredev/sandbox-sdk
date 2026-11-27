@@ -417,6 +417,8 @@ type Binding =
       readonly connection: Connection;
       /** The fingerprint's input from the options and environment at bind time. */
       readonly configured: readonly (string | FieldList)[];
+      /** The control-plane hosts that same resolution sends requests to (controlPlaneHosts). */
+      readonly hosts: readonly string[];
     }
   | { readonly kind: "in-process"; readonly fingerprint: string }
   | { readonly kind: "failed"; readonly reason: string };
@@ -454,7 +456,12 @@ export function bindConnection<P extends Provider>(provider: P, options: Factory
 
   try {
     const connection = resolve(provider.name, parsed.data);
-    bindings.set(provider, { kind: "resolved", connection, configured: configured(connection) });
+    bindings.set(provider, {
+      kind: "resolved",
+      connection,
+      configured: configured(connection),
+      hosts: endpointHosts(connection),
+    });
   } catch (error) {
     bindings.set(provider, { kind: "failed", reason: reasonOf(error) });
   }
@@ -533,8 +540,9 @@ export const connectionProbes = {
   },
   /**
    * The version of `@tenkicloud/sandbox` in the SDK package's install, the one the adapter uses.
-   * It picks the endpoint when no variable does: 1.4 and earlier api.tenki.cloud, 1.5 and later
-   * api.luxor.ai. Throws when the package can't be read.
+   * It picks the endpoint variables (tenkiEndpointVariables) and the endpoint when none is set:
+   * through 1.5.1 api.tenki.cloud, 1.5.2 and later api.luxor.ai. Throws when the package can't be
+   * read.
    */
   tenkiSdkVersion: (): string => {
     const entry = createRequire(sdkPackage).resolve("@tenkicloud/sandbox");
@@ -583,26 +591,31 @@ export const fingerprintSchema = z.string().regex(/^[0-9a-f]{16}$/);
 const connectionFields = z.record(z.string(), z.string().optional());
 
 /**
+ * Region variables a provider's own SDK reads from the environment, with no adapter option: part of
+ * its connection fingerprint here, and of the services run's placement. Boxd's SDK routes machine
+ * calls to BOXD_REGION, else the account's home cluster.
+ */
+export const sdkRegionVariables = new Map([["boxd", ["BOXD_REGION"]]]);
+
+/**
  * What a connection takes from the environment through the provider's own SDK, where
  * `resolveConfig` leaves the field unset: Boxd's and Tenki's endpoints, Boxd's region, Railway's
- * endpoints, Vercel's OIDC token. Modal's are read through its SDK (`modalProfileOf`). Tenki's SDK
- * reads LUXOR_API_ENDPOINT, LUXOR_API_URL, TENKI_API_ENDPOINT, then TENKI_API_URL, and falls back
- * to a default its version decides, so the version is part of the connection too.
+ * endpoints, Vercel's OIDC token. Modal's are read through its SDK (`modalProfileOf`). Tenki's
+ * variables and default endpoint depend on its installed version (tenkiEndpointVariables), so the
+ * version is part of the connection too, and only the variables that version reads are.
  */
 function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields> {
   const env = process.env;
 
+  const regions = Object.fromEntries(
+    (sdkRegionVariables.get(connection.name) ?? []).map((name) => [name, env[name]]),
+  );
+
   switch (connection.name) {
     case "boxd":
-      // The adapter has no region option: the SDK routes machine calls to BOXD_REGION, else the
-      // account's home cluster.
       return connection.config.baseURL === undefined
-        ? {
-            BOXD_BASE_URL: env.BOXD_BASE_URL,
-            BOXD_API_URL: env.BOXD_API_URL,
-            BOXD_REGION: env.BOXD_REGION,
-          }
-        : { BOXD_REGION: env.BOXD_REGION };
+        ? { BOXD_BASE_URL: env.BOXD_BASE_URL, BOXD_API_URL: env.BOXD_API_URL, ...regions }
+        : regions;
     case "railway": {
       // Railway's SDK takes its endpoints from the environment, and its token from RAILWAY_TOKEN
       // when the adapter passes none.
@@ -616,21 +629,87 @@ function sdkEnvironment(connection: Connection): z.infer<typeof connectionFields
       return fields;
     }
 
-    case "tenki":
-      return connection.config.baseUrl?.trim()
-        ? {}
-        : {
-            LUXOR_API_ENDPOINT: env.LUXOR_API_ENDPOINT,
-            LUXOR_API_URL: env.LUXOR_API_URL,
-            TENKI_API_ENDPOINT: env.TENKI_API_ENDPOINT,
-            TENKI_API_URL: env.TENKI_API_URL,
-            tenkiSdkVersion: connectionProbes.tenkiSdkVersion(),
-          };
+    case "tenki": {
+      if (connection.config.baseUrl?.trim()) return {};
+
+      const version = connectionProbes.tenkiSdkVersion();
+
+      return {
+        ...Object.fromEntries(tenkiEndpointVariables(version).map((name) => [name, env[name]])),
+        tenkiSdkVersion: version,
+      };
+    }
+
     case "vercel":
       return "token" in connection.config ? {} : { VERCEL_OIDC_TOKEN: env.VERCEL_OIDC_TOKEN };
     default:
       return {};
   }
+}
+
+/**
+ * The endpoint variables a version of `@tenkicloud/sandbox` reads, first set wins, as its published
+ * builds resolve `baseUrl`: through 1.4.1 TENKI_API_ENDPOINT then TENKI_API_URL; from 1.4.3
+ * LUXORAI_API_ENDPOINT and LUXORAI_API_URL before them; from 1.5.3 LUXOR_API_ENDPOINT and
+ * LUXOR_API_URL instead.
+ */
+function tenkiEndpointVariables(version: string): string[] {
+  const [major = 0, minor = 0, patch = 0] = version
+    .split(/[.-]/)
+    .map((part) => Number.parseInt(part, 10) || 0);
+
+  const release = major * 1_000_000 + minor * 1_000 + patch;
+  const tenki = ["TENKI_API_ENDPOINT", "TENKI_API_URL"];
+
+  if (release <= 1_004_001) return tenki;
+
+  return release <= 1_005_002
+    ? ["LUXORAI_API_ENDPOINT", "LUXORAI_API_URL", ...tenki]
+    : ["LUXOR_API_ENDPOINT", "LUXOR_API_URL", ...tenki];
+}
+
+/**
+ * Endpoint variables a provider's own SDK reads, in groups: within a group the first one set wins,
+ * as the SDK resolves it (Boxd: BOXD_BASE_URL, then the legacy BOXD_API_URL). Tenki's group is its
+ * version's (tenkiEndpointVariables).
+ */
+const sdkEndpointPrecedence = new Map([
+  ["boxd", [["BOXD_BASE_URL", "BOXD_API_URL"]]],
+  ["railway", [["RAILWAY_GRAPHQL_ENDPOINT"], ["RAILWAY_TCP_PROXY_WS_ENDPOINT"]]],
+]);
+
+/**
+ * The hosts a connection sends control-plane requests to, from the fingerprint's own inputs: each
+ * URL in its resolved configuration, and the endpoint its SDK takes from the environment where the
+ * configuration leaves it unset (sdkEnvironment, by sdkEndpointPrecedence). Hosts only, sorted.
+ */
+function endpointHosts(connection: Connection): string[] {
+  const sdk = sdkEnvironment(connection);
+
+  const groups =
+    connection.name === "tenki" && sdk.tenkiSdkVersion !== undefined
+      ? [tenkiEndpointVariables(sdk.tenkiSdkVersion)]
+      : (sdkEndpointPrecedence.get(connection.name) ?? []);
+
+  const chosen = groups.flatMap((group) => {
+    const name = group.find((key) => sdk[key]?.trim());
+
+    return name === undefined ? [] : [sdk[name]];
+  });
+
+  const hosts = [...Object.values(connectionFields.parse(connection.config)), ...chosen].flatMap(
+    (value) => {
+      try {
+        const url = new URL(value ?? "");
+
+        return ["https:", "http:", "wss:", "ws:"].includes(url.protocol) ? [url.host] : [];
+      } catch {
+        return [];
+      }
+    },
+  );
+
+  return [...new Set(hosts)].sort();
 }
 
 /** A connection's set fields, sorted by name. */
@@ -768,6 +847,18 @@ export async function journalFingerprint(provider: Provider): Promise<Fingerprin
   if (binding.kind === "in-process") return { kind: "known", value: binding.fingerprint };
 
   return fingerprintNow(binding);
+}
+
+/**
+ * The control-plane hosts this instance's connection sends requests to, resolved at bind time from
+ * the fingerprint's own inputs (endpointHosts): never a path, query or credential. Null when it was
+ * not resolved. Where the endpoint encodes placement (Superserve's region from its key, Boxd's
+ * BOXD_BASE_URL), runs with different hosts ran somewhere else.
+ */
+export function controlPlaneHosts(provider: Provider): readonly string[] | null {
+  const binding = bindings.get(provider);
+
+  return binding?.kind === "resolved" ? binding.hosts : null;
 }
 
 /** {@link journalFingerprint}'s value, or null when the instance has none. */
