@@ -19,6 +19,7 @@ export const cloudProviders = [
   "instabox",
   "maritime",
   "buddy",
+  "agent37",
   "beam",
   "archil",
   "microsandbox",

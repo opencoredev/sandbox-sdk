@@ -454,6 +454,37 @@ export const styneEnded: ReadonlySet<string> = new Set([
   "agent_exit",
 ]);
 
+/**
+ * The fields of an Agent 37 instance object (`GET /v1/instances/{id}`, and each entry of
+ * `GET /v1/instances`) the bench reads: its ID, status and metadata.
+ */
+export const agent37Instance = z.object({
+  id: z.string(),
+  status: z.string(),
+  metadata: z.record(z.string(), z.unknown()).nullish(),
+});
+
+/** Agent 37's instance list: `{ data: [...] }`, the whole workspace in one page. */
+export const agent37InstanceList = z.object({ data: z.array(agent37Instance) });
+
+/** Agent 37 statuses of an instance whose delete was accepted: going or gone. */
+export const agent37Ending: ReadonlySet<string> = new Set(["deleting", "deleted"]);
+
+/**
+ * The metadata entry the Agent 37 adapter marks its snapshots with (`snapshotLabel` in its api.ts):
+ * a stopped fork whose value is the ID of the sandbox it was taken from.
+ */
+export const agent37SnapshotLabel = "sandbox_sdk_snapshot";
+
+/** Agent 37's error code in a failed answer (`{ error: { code } }`), or undefined when it has none. */
+export async function agent37ErrorCode(response: Response): Promise<string | undefined> {
+  const body = z
+    .object({ error: z.object({ code: z.string() }) })
+    .safeParse(await response.json().catch(() => null));
+
+  return body.success ? body.data.error.code : undefined;
+}
+
 /** Buddy's error answer: `{ errors: [{ message }] }`. */
 export const buddyErrors = z.object({ errors: z.array(z.object({ message: z.string() })).min(1) });
 
@@ -653,6 +684,37 @@ export async function lookupSandbox(
           const body = styneSandbox.parse(await response.json());
 
           return { sandboxId: body.sandboxID, state: body.state };
+        }
+
+        case "agent37": {
+          // GET only: it never wakes a sleeping instance. On this adapter instance's key and host; a
+          // redirect would answer from somewhere other than the fingerprinted endpoint.
+          const { apiKey, baseUrl } = connectionOf(provider, "agent37");
+
+          const response = await fetch(`${baseUrl}/v1/instances/${encodeURIComponent(id)}`, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            redirect: "error",
+            signal,
+          });
+
+          // Only Agent 37's own `404 not_found` is absence; any other 404 stays unavailable.
+          if (response.status === 404) {
+            const code = await agent37ErrorCode(response);
+
+            throw Object.assign(new Error("Native lookup failed"), {
+              status: code === "not_found" ? 404 : 502,
+            });
+          }
+
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw Object.assign(new Error("Native lookup failed"), { status: response.status });
+          }
+
+          // `deleting` stays present until it reads `deleted` or 404.
+          const instance = agent37Instance.parse(await response.json());
+
+          return { id: instance.id, status: instance.status };
         }
 
         case "maritime": {

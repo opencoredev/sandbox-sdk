@@ -12,6 +12,7 @@ export const PROVIDERS = {
   microsandbox: { name: "Microsandbox", logo: "/integrations/microsandbox.svg" },
   styne: { name: "Styne", logo: "/integrations/styne.svg" },
   buddy: { name: "Buddy", logo: "/integrations/buddy.svg" },
+  agent37: { name: "Agent 37", logo: "/integrations/agent37.svg" },
   daytona: { name: "Daytona", logo: "/integrations/daytona.svg" },
   upstash: { name: "Upstash Box", logo: "/integrations/upstash.svg" },
   railway: { name: "Railway", logo: "/integrations/railway.svg" },

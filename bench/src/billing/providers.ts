@@ -215,6 +215,17 @@ const sources = new Map<string, BillingSource>(
         "A sandbox with no usage interval counts as $0 only when Maritime's info says it ended with 0 running seconds and $0 so far; otherwise its cost is unavailable, never zero.",
       ],
     },
+    agent37: {
+      source: "https://api.agent37.com/v1/usage?from={day}&to={day} (instances[].compute_micros)",
+      granularity: "per instance over whole UTC days: compute in micro-dollars and awake minutes",
+      delay:
+        "within the hour (metered per minute, settled hourly); final an hour after the window once the instance is deleted",
+      key: "AGENT37_API_KEY",
+      notes: [
+        "Metered, not invoice: Agent 37's own per-minute meter of each instance, at $0.80/vCPU-month, $0.70/GB-month of memory and $0.09/GB-month of disk (monthly / 730 hours / 60; https://www.agent37.com/docs/agents-api/billing). Running time bills the full rate and stopped or sleeping time disk alone, both in compute_micros. Managed LLM, search and tool usage are not read; the bench uses none.",
+        "An adapter snapshot is a stopped fork, an instance of its own, so its disk is billed to its own ID and not to its source. An instance with no usage entry is unavailable, never $0.",
+      ],
+    },
     microsandbox: microsandboxBilling("Standard"),
     "microsandbox-shared": microsandboxBilling("Shared"),
     styne: {
@@ -622,6 +633,70 @@ export function decodeMaritime(
       : !ended
         ? `Partial: the sandbox is ${info.state}, so its intervals are not final`
         : "Partial: an interval of this ended sandbox has no end yet",
+  };
+}
+
+/** The fields of `GET /v1/usage` the Agent 37 collector reads: each instance's compute and awake minutes. */
+export const agent37UsageSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  instances: z.array(
+    z.object({
+      id: z.string(),
+      compute_micros: z.number().int().nonnegative(),
+      awake_minutes: z.number().int().nonnegative(),
+    }),
+  ),
+});
+
+export type Agent37Usage = z.infer<typeof agent37UsageSchema>;
+
+/** The status of `GET /v1/instances/{id}`, which never wakes the instance. */
+const agent37InstanceStatus = z.object({ status: z.string() });
+
+/**
+ * How long after the run window's end Agent 37's usage is final: compute lands in `GET /v1/usage`
+ * within the hour (metered per minute, settled hourly and at each lifecycle change, a delete included).
+ */
+export const agent37SettleMs = 3_600_000;
+
+/** The usage query for a run window: every UTC day it touches (Agent 37 keeps 90 days). */
+export function agent37UsageQuery(window: { start: string; end: string }) {
+  return new URLSearchParams({ from: window.start.slice(0, 10), to: window.end.slice(0, 10) });
+}
+
+/**
+ * One instance's cost from Agent 37's per-instance usage over the run's UTC days. Complete only once
+ * the instance is deleted and the window has settled; no entry is unavailable, never $0, since an
+ * instance that ran is listed only once its first minute settles.
+ */
+export function decodeAgent37(
+  usage: Agent37Usage,
+  id: string,
+  state: { deleted: boolean; settled: boolean },
+): Cost {
+  const entry = usage.instances.find((instance) => instance.id === id);
+
+  if (!entry)
+    return unavailable(
+      state.settled
+        ? "Agent 37 lists no usage for this instance in the run's days; not counted as $0"
+        : "Agent 37 lists no usage for this instance yet; compute settles within the hour",
+    );
+
+  const complete = state.deleted && state.settled;
+
+  return {
+    kind: "metered",
+    usd: entry.compute_micros / 1e6,
+    scope: "sandbox-lifetime",
+    complete,
+    confidence: complete ? "medium" : "low",
+    note: complete
+      ? `Metered, not invoice: Agent 37's per-minute meter of this instance (${entry.awake_minutes} awake minutes, ${usage.from} to ${usage.to} UTC), its disk while stopped included; its snapshots are instances of their own`
+      : !state.deleted
+        ? "Partial: the instance is not deleted, so its meter is still running"
+        : "Partial: the run window has not settled for an hour yet",
   };
 }
 
@@ -1234,6 +1309,7 @@ export async function collectProvider(
     "instabox",
     "archil",
     "maritime",
+    "agent37",
     "microsandbox",
     "microsandbox-shared",
   ].includes(provider);
@@ -1302,6 +1378,64 @@ export async function collectProvider(
             : unavailable(
                 "No sandbox usage returned in window; retention or billing delay, not zero",
               ),
+        });
+      }
+
+      return result;
+    } catch (error) {
+      blocked = errorNote(error);
+    }
+  }
+
+  if (!blocked && provider === "agent37") {
+    try {
+      const headers = { Authorization: `Bearer ${key}` };
+      // From the same environment as the key, as the adapter resolves its host.
+      const root = endpoint(env.AGENT37_API_URL ?? "https://api.agent37.com");
+      const window = windowFor(rows);
+
+      if (!window) {
+        for (const row of rows)
+          result.sandboxes.push({
+            id: row.id,
+            source: spec.source,
+            cost: unavailable(
+              "No run window: no instance in this run has a start and an end, so no usage was read; not zero",
+            ),
+          });
+
+        return result;
+      }
+
+      const usage = agent37UsageSchema.parse(
+        await transport(`${root}/v1/usage?${agent37UsageQuery(window)}`, headers),
+      );
+
+      const settled = (extra.now ?? Date.now()) - Date.parse(window.end) >= agent37SettleMs;
+      result.account = {
+        window,
+        days: { from: usage.from, to: usage.to },
+        note: "Per-instance usage over the run's UTC days, read once; final an hour after the window. Not a net invoice.",
+      };
+
+      for (const row of rows) {
+        // Deletion first: a 404 (Agent 37 answers `not_found` for every missing ID) or a deleting or
+        // deleted status means the delete was accepted and the meter has stopped.
+        const deleted = await transport(
+          `${root}/v1/instances/${encodeURIComponent(row.id)}`,
+          headers,
+        ).then(
+          (raw) => ["deleting", "deleted"].includes(agent37InstanceStatus.parse(raw).status),
+          (cause: unknown) => {
+            if (cause instanceof BillingHttpError && cause.status === 404) return true;
+            throw cause;
+          },
+        );
+
+        result.sandboxes.push({
+          id: row.id,
+          source: spec.source,
+          cost: decodeAgent37(usage, row.id, { deleted, settled }),
         });
       }
 

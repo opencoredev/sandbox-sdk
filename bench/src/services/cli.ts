@@ -642,7 +642,7 @@ const billablePastTimeoutMs = Math.max(
  * Where an adapter can end a sandbox on its own, it is told to, so one this run loses track of
  * cannot bill for long: Superserve pauses it after the attempt's slot plus 15 minutes of active
  * time and deletes it on pause, and Boat stops it after that long. Adapters that take a create
- * lifetime get the same bound from the realistic loader; Upstash and Buddy take none.
+ * lifetime get the same bound from the realistic loader; Upstash, Buddy and Agent 37 take none.
  */
 export function servicesFactory(
   adapter: string,

@@ -45,6 +45,7 @@ import { local } from "../../../packages/sdk/src/providers/local/index.ts";
 import { maritime } from "../../../packages/sdk/src/providers/maritime/index.ts";
 import { createMicrosandboxProvider } from "../../../packages/sdk/src/providers/microsandbox/provider.ts";
 import { buddy } from "../../../packages/sdk/src/providers/buddy/index.ts";
+import { agent37 } from "../../../packages/sdk/src/providers/agent37/index.ts";
 import { createModalProvider } from "../../../packages/sdk/src/providers/modal/provider.ts";
 import { createRailwayProvider } from "../../../packages/sdk/src/providers/railway/provider.ts";
 import { sandboxer } from "../../../packages/sdk/src/providers/sandboxer/index.ts";
@@ -70,7 +71,7 @@ async function stubTransport(): Promise<never> {
 
 const realFetch = globalThis.fetch;
 
-/** E2B, Daytona, Freestyle, Instabox, Maritime, Styne, Buddy, Superserve, Boat and Sandboxer reach their API through the global
+/** E2B, Daytona, Freestyle, Instabox, Maritime, Styne, Buddy, Agent 37, Superserve, Boat and Sandboxer reach their API through the global
  * fetch, so it stands in for them. */
 const stubFetch: typeof fetch = async () => {
   transportCalls += 1;
@@ -171,6 +172,15 @@ const subjects: readonly Subject[] = [
     column: "Buddy",
     build: () =>
       buddy({ token: offlineKey, workspace: "offline", baseUrl: "https://offline.invalid" }),
+  },
+  {
+    column: "Agent 37",
+    build: () =>
+      agent37({
+        apiKey: offlineKey,
+        baseUrl: "https://offline.invalid",
+        execUrl: "https://offline.invalid",
+      }),
   },
   { column: "Memory", build: () => memory() },
 ];
@@ -301,6 +311,12 @@ const rows: readonly Row[] = [
       "vCPUs only": [
         accepts({ size: { cpu: 2, memoryMb: 4096 } }),
         rejects({ size: { cpu: 2, memoryMb: 3072 } }),
+        rejects({ size: { cpu: 2, memoryMb: 4096, diskGb: 20 } }),
+      ],
+      "Fixed tiers": [
+        accepts({ size: { cpu: 2, memoryMb: 4096 } }),
+        accepts({ size: { cpu: 4, memoryMb: 8192, diskGb: 20 } }),
+        rejects({ size: { cpu: 2, memoryMb: 8192 } }),
         rejects({ size: { cpu: 2, memoryMb: 4096, diskGb: 20 } }),
       ],
       "Fixed steps": [

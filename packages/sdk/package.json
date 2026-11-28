@@ -159,6 +159,10 @@
       "types": "./dist/providers/buddy/index.d.ts",
       "default": "./dist/providers/buddy/index.js"
     },
+    "./agent37": {
+      "types": "./dist/providers/agent37/index.d.ts",
+      "default": "./dist/providers/agent37/index.js"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

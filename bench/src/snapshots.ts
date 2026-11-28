@@ -2,6 +2,11 @@ import { z } from "zod";
 import type { DaytonaNative } from "@opencoredev/sandbox-sdk/daytona";
 import type { Provider } from "@opencoredev/sandbox-sdk/provider";
 import {
+  agent37Ending,
+  agent37ErrorCode,
+  agent37Instance,
+  agent37InstanceList,
+  agent37SnapshotLabel,
   buddyErrors,
   daytonaClient,
   e2bConnection,
@@ -203,6 +208,75 @@ function maritimeFetch(provider: Provider, path: string, init: RequestInit = {})
   // Never follow a redirect: a write would be replayed as another request, and a read would
   // answer from somewhere other than the fingerprinted endpoint.
   return fetch(`${baseUrl}/v1${path}`, { ...init, headers, redirect: "error" });
+}
+
+/**
+ * Agent 37's control plane through the adapter instance's connection. An adapter snapshot is an
+ * instance (a stopped fork), so every snapshot call is an instance call.
+ */
+function agent37Fetch(provider: Provider, path: string, init: RequestInit = {}) {
+  const { apiKey, baseUrl } = connectionOf(provider, "agent37");
+  const headers = new Headers(init.headers);
+
+  headers.set("Authorization", `Bearer ${apiKey}`);
+
+  // Never follow a redirect: a DELETE would be replayed at another origin, and a read would answer
+  // from somewhere other than the fingerprinted endpoint.
+  return fetch(`${baseUrl}/v1${path}`, { ...init, headers, redirect: "error" });
+}
+
+/**
+ * One instance as a snapshot: `absent` only on Agent 37's own `404 not_found` or a delete already
+ * accepted; otherwise the instance with the source its snapshot marker names, if it has one.
+ */
+async function readAgent37Snapshot(
+  provider: Provider,
+  id: string,
+  signal?: AbortSignal,
+): Promise<{ kind: "absent" } | { kind: "instance"; sourceId: string | undefined }> {
+  const response = await agent37Fetch(provider, `/instances/${encodeURIComponent(id)}`, { signal });
+
+  if (response.status === 404) {
+    if ((await agent37ErrorCode(response)) === "not_found") return { kind: "absent" };
+    throw new Error("Agent 37 snapshot read answered an unknown 404");
+  }
+
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw httpError("Snapshot metadata unavailable", response.status);
+  }
+
+  const instance = agent37Instance.parse(await response.json());
+
+  if (instance.id !== id) throw new Error("Snapshot metadata ID mismatch");
+
+  if (agent37Ending.has(instance.status)) return { kind: "absent" };
+  const source = z.string().min(1).safeParse(instance.metadata?.[agent37SnapshotLabel]);
+
+  return { kind: "instance", sourceId: source.success ? source.data : undefined };
+}
+
+/** The adapter snapshots of one source: instances whose snapshot marker names it, deletes not yet accepted. */
+async function snapshotsFromAgent37Sandbox(
+  provider: Provider,
+  sourceSandboxId: string,
+  signal?: AbortSignal,
+) {
+  const response = await agent37Fetch(provider, "/instances", { signal });
+
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw httpError("Agent 37 instance listing failed", response.status);
+  }
+
+  return agent37InstanceList
+    .parse(await response.json())
+    .data.filter(
+      (instance) =>
+        instance.metadata?.[agent37SnapshotLabel] === sourceSandboxId &&
+        !agent37Ending.has(instance.status),
+    )
+    .map((instance): Pick<JournaledSnapshotEntry, "id" | "name"> => ({ id: instance.id }));
 }
 
 /**
@@ -917,6 +991,31 @@ export async function snapshotCleaner(
     };
   }
 
+  if (name === "agent37") {
+    // An instance delete, also after the source is gone: it ends the snapshot's disk billing. It is
+    // sent only for an instance whose snapshot marker names this source, read just before the DELETE,
+    // so no other instance is ever deleted as a snapshot.
+    return async (id, signal) => {
+      const read = await readAgent37Snapshot(provider, id, signal);
+
+      if (read.kind === "absent") return;
+
+      if (read.sourceId !== sandboxId)
+        throw new Error("Instance is not a snapshot of this source; no deletion attempted");
+
+      const response = await agent37Fetch(provider, `/instances/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        signal,
+      });
+
+      if (response.status === 404 && (await agent37ErrorCode(response)) === "not_found") return;
+
+      await response.body?.cancel().catch(() => {});
+
+      if (!response.ok) throw httpError("Agent 37 snapshot delete failed", response.status);
+    };
+  }
+
   if (name === "styne") {
     // Deleted by name, also after the source sandbox is gone. Only Styne's `404 not_found` confirms
     // absence; a route-level or undecodable 404 must fail so recovery retains the snapshot.
@@ -1328,6 +1427,9 @@ export async function snapshotsFromSource(
 
   if (name === "styne") return snapshotsFromStyneSandbox(provider, sourceSandboxId, ids);
 
+  // Agent 37's snapshot marker names its source, so every adapter snapshot of a run-owned source is found.
+  if (name === "agent37") return snapshotsFromAgent37Sandbox(provider, sourceSandboxId, signal);
+
   if (name === "maritime") return snapshotsFromMaritimeSandbox(provider, sourceSandboxId, ids);
 
   if (microsandboxTier(name) !== undefined)
@@ -1626,6 +1728,18 @@ export async function inspectSnapshot(
         break;
       }
 
+      case "agent37": {
+        const read = await readAgent37Snapshot(provider, id, signal);
+
+        if (read.kind === "absent") return { exists: false };
+
+        // Only the adapter's snapshot marker proves an instance is a snapshot, and of which source.
+        if (read.sourceId === undefined)
+          throw new Error("Snapshot source metadata unavailable; no deletion attempted");
+
+        return { exists: true, sourceId: read.sourceId };
+      }
+
       case "maritime": {
         const response = await maritimeFetch(provider, `/snapshots/${encodeURIComponent(id)}`);
 
@@ -1757,6 +1871,7 @@ export async function inspectSnapshot(
     return { exists: true, sourceId: parent };
   } catch (error) {
     if (
+      name !== "agent37" &&
       name !== "maritime" &&
       name !== "styne" &&
       name !== "buddy" &&

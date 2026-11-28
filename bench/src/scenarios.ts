@@ -151,6 +151,9 @@ const defaultAccountCaps = new Map([
   ["maritime", 25],
   // Buddy's Pro plan has no published sandbox cap; the bench keeps bursts modest.
   ["buddy", 10],
+  // Agent 37's tier 2 (top-ups of $50 or more): 200 GB of memory awake at once, 50 of its smallest
+  // size, 2 vCPU / 4 GB (GET /v1/billing, 2026-11-28). A 4/8 cohort fits 25.
+  ["agent37", 50],
 ]);
 
 /** The most sandboxes one cohort may hold on a provider's account; boxd never above 50. */

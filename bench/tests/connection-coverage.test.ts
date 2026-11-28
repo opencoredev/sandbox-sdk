@@ -21,6 +21,7 @@ const hex = /^[0-9a-f]{16}$/;
 
 /** Everything a provider's connection reads from the environment, cleared for each test. */
 const connectionEnv = [
+  "AGENT37_API_URL",
   "ARCHIL_API_KEY",
   "ARCHIL_REGION",
   "BEAM_TOKEN",
@@ -323,6 +324,7 @@ describe("no provider the bench builds skips the fingerprint check", () => {
     vi.stubEnv("DOCKER_HOST", docker.host);
 
     for (const key of [
+      "AGENT37_API_KEY",
       "ARCHIL_API_KEY",
       "BASETEN_API_KEY",
       "BEAM_TOKEN",

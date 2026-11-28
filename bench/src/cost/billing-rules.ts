@@ -115,6 +115,9 @@ const docs = {
   archilUsage:
     "GET /api/sandboxes/{id}/usage on Archil's control plane (docs.archil.com/administration/billing.md)",
   maritime: "https://maritime.sh/docs/billing",
+  agent37: "https://www.agent37.com/docs/agents-api/billing",
+  agent37Usage:
+    "https://api.agent37.com/v1/usage?from={day}&to={day} (instances[].compute_micros) and GET /v1/instances/{id}",
   buddy: "https://buddy.works/pricing",
   buddyUsage: "Buddy Workspace Settings > Usage > Sandboxes (no API)",
   maritimeUsage: "https://api.maritime.sh/v1/usage?sandbox={id} and /v1/sandboxes/{id}/info",
@@ -491,6 +494,49 @@ export const billingRules: readonly BillingRule[] = [
   },
   microsandboxRule("microsandbox", "Standard (dedicated CPU)"),
   microsandboxRule("microsandbox-shared", "Shared (shared CPU, dedicated memory and disk)"),
+  {
+    provider: "agent37",
+    product: null,
+    pricingKey: "agent37",
+    tariff: known({ kind: "per-unit", charges: "allocation" }, docs.agent37),
+    billingStarts: known(
+      "sandbox-created",
+      `${docs.agent37} (nothing is debited at create; the meter starts when the instance first reaches running)`,
+    ),
+    billingStops: unknown(
+      "Deleting an instance settles its final minutes and ends billing; whether the last billed minute is the delete request's or its completion's is not stated",
+    ),
+    incrementSeconds: known(60, `${docs.agent37} (metered per minute, billed in whole minutes)`),
+    minimumSeconds: unknown(
+      "Whole minutes are billed; whether a partial first minute bills as a full one is not stated, and estimates assume it does",
+    ),
+    perStartFeeUSD: known(
+      0,
+      `${docs.agent37} (a create debits nothing; a failed create costs nothing)`,
+    ),
+    keepsCharging: known(
+      ["disk", "snapshots"],
+      `${docs.agent37} (a stopped or sleeping instance bills $0.09/GB-month of its disk until deleted; each adapter snapshot is a stopped fork that does the same)`,
+    ),
+    countsFileCacheAsMemory: allocationCache,
+    storage: known(
+      "included",
+      `${docs.agent37} (disk is one of the three priced resources, billed in the running rate and alone while stopped; both land in compute_micros)`,
+    ),
+    settledChargeSource: known(
+      "Per-instance compute over whole UTC days, landing within the hour; deleted instances stay listed for the days they spent",
+      docs.agent37Usage,
+    ),
+    reportedKind: "metered",
+    attribution: "per-sandbox",
+    settlementMs: null,
+    confirmation: unconfirmed,
+    notes: [
+      "Default instances (shared CPU, the 1x rate); VM (2.5x) and Performance (4x) types are not used.",
+      "The usage endpoint is Agent 37's own per-minute meter, not an invoice; the workspace runs on prepaid credit with no plan fee.",
+      "A snapshot's disk is billed to the fork's own instance ID, not its source.",
+    ],
+  },
   {
     provider: "buddy",
     product: null,
