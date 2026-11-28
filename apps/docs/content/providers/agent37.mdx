@@ -1,0 +1,172 @@
+---
+title: Agent 37
+seo:
+  title: Agent 37 Sandbox SDK in TypeScript
+description: Use Agent 37 cloud sandboxes from TypeScript through Agent 37's Sandbox API and one portable API. Debian instances billed per minute, four fixed sizes, sleep with memory, forks as snapshots, signed preview URLs, network policies, and no extra package.
+---
+
+`agent37()` runs each sandbox as an [Agent 37](https://www.agent37.com) instance, a persistent Debian computer billed per minute, by calling Agent 37's Sandbox API directly. There is no other package to install.
+
+With `@opencoredev/sandbox-sdk` you call `createSandbox(agent37())` and then `box.run`, `box.files`, `box.preview`, `box.pause` and `box.snapshot`, and the same code runs on E2B or Daytona when you swap the factory. Agent 37 has no hard lifetime and no terminal through this API. The [capability matrix](/reference/capabilities) lists what differs per provider, and [`box.native`](/reference/native) gives you an authenticated request to Agent 37's API when you need the rest.
+
+## Install
+
+<Tabs hash={false}>
+  <Tab title="npm">
+
+```bash
+npm install @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="pnpm">
+
+```bash
+pnpm add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="yarn">
+
+```bash
+yarn add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+  <Tab title="bun">
+
+```bash
+bun add @opencoredev/sandbox-sdk
+```
+
+  </Tab>
+</Tabs>
+
+Create an API key under Cloud in the [Agent 37 dashboard](https://www.agent37.com/dashboard/cloud) and set `AGENT37_API_KEY`, or pass it as `agent37({ apiKey })`. Creating an instance needs one day of its running rate in the workspace wallet.
+
+## Quickstart
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agent37 } from "@opencoredev/sandbox-sdk/agent37";
+
+await using box = await createSandbox(agent37(), { idleTimeoutMs: 30 * 60_000 });
+const result = await box.run("cat /etc/os-release");
+console.log(result.stdout);
+```
+
+`await using` deletes the instance when the block ends. `idleTimeoutMs` turns on Agent 37's auto-sleep, which checkpoints the instance after 30 minutes with no traffic through its URLs, a backstop if your process dies first. A sleeping instance keeps its disk and memory and bills its disk alone.
+
+## What it supports
+
+| Feature                        | Support     | Notes                                                              |
+| ------------------------------ | ----------- | ------------------------------------------------------------------ |
+| Commands and streaming         | Yes         | Output arrives when the command ends                               |
+| Files                          | Yes         | `/workspace` on the instance's disk                                |
+| Background processes           | Yes         |                                                                    |
+| Preview URLs                   | Yes         | Signed URLs that carry a token and expire; `public: true` opts out |
+| Pause and resume               | Yes         | Sleep checkpoints memory and processes; start restores them        |
+| Snapshots                      | Yes         | Stopped forks, kept until deleted; `deleteSnapshot` works          |
+| Templates                      | No          | Pick an Agent 37 template with the `template` option               |
+| Machine size                   | Yes         | Four fixed sizes: 2x4, 4x8, 4x16 and 4x32 (vCPU x GB)              |
+| Network policy                 | Yes         | `"none"`, or an allow list of up to 100 entries                    |
+| Hard lifetime (`timeoutMs`)    | No          | Fails with `unsupported`                                           |
+| Idle timeout (`idleTimeoutMs`) | Yes         | Auto-sleep after 5 minutes to 1 day without traffic                |
+| Keys                           | Best-effort | Stored in the instance's metadata                                  |
+| Terminal                       | No          |                                                                    |
+
+## Run commands
+
+Await `box.run` for the result, or iterate it to read output in chunks.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agent37 } from "@opencoredev/sandbox-sdk/agent37";
+
+await using box = await createSandbox(agent37());
+const result = await box.run("ls -la", { cwd: "/workspace", timeoutMs: 30_000 });
+console.log(result.exitCode, result.stdout);
+
+for await (const chunk of box.run("for i in 1 2 3; do echo $i; sleep 1; done")) {
+  process.stdout.write(chunk.text);
+}
+```
+
+The default template is `agent37-base`: Debian 12 with Node.js, Python 3 and git. Commands run as root, because the image's `node` user has no `sudo`, and start in `/workspace`, which the adapter makes on create. Each command gets its own process group, and a timeout or abort kills that whole group before `run` returns, children included.
+
+Agent 37's exec answers once a command exits, so a streamed `run` yields its output at the end rather than live. Output up to 256 KiB per stream comes back in that answer; a bigger stream is kept in a file in the sandbox and read back in chunks, so `run` returns all of it (subject to the SDK's own output cap).
+
+## Background processes and previews
+
+`box.preview(port)` returns a signed `https://` URL for the port. It carries an `a37_token` query parameter and expires after `previewTtlMs` (one hour by default), so ask for a new one when it runs out. Nothing needs to be declared at creation.
+
+```ts
+import { createSandbox } from "@opencoredev/sandbox-sdk";
+import { agent37 } from "@opencoredev/sandbox-sdk/agent37";
+
+await using box = await createSandbox(agent37());
+await box.start("python3 -m http.server 8000", { name: "web", ready: { port: 8000 } });
+const preview = await box.preview(8000, { path: "/health" });
+const response = await fetch(preview.url);
+console.log(response.status);
+```
+
+`agent37({ public: true })` makes previewed ports public instead: each port gets a permanent URL with an unguessable slug and no token.
+
+## Pause, resume, and snapshots
+
+`box.pause()` sleeps the instance: Agent 37 checkpoints its memory and disk and releases the CPU, so a sleeping instance bills its disk alone. `box.resume()` starts it again, and running processes carry on where they were. If Agent 37 cannot save the memory, the instance sleeps without it and boots fresh on the next start, with its files kept.
+
+`box.snapshot()` forks the instance into a new, stopped instance that the adapter marks as a snapshot, and returns its ID. Pass it as `from` to create a sandbox from it: that forks the snapshot again, which took about 24 seconds live. A sandbox made from a snapshot keeps the snapshot's environment and network policy, so `env` and `network` fail there. A snapshot bills its disk until you delete it with `deleteSnapshot(provider, id)`, so `expiresInMs` fails with `unsupported`. Snapshots never show up in `listSandboxes`.
+
+## Size and timeouts
+
+| Preset   | vCPUs | Memory | Default disk | Disk range |
+| -------- | ----- | ------ | ------------ | ---------- |
+| `small`  | 2     | 4 GB   | 4 GB         | 2 to 12 GB |
+| `medium` | 4     | 8 GB   | 6 GB         | 2 to 20 GB |
+| `large`  | 4     | 16 GB  | 12 GB        | 2 to 40 GB |
+| (exact)  | 4     | 32 GB  | 24 GB        | 2 to 80 GB |
+
+Without `size`, an instance is 2 vCPU / 4 GB. An exact `size` must be one of the four: `{ cpu: 4, memoryMb: 32768 }` for the largest, and `diskGb`, if given, a whole number in that size's range. Anything else fails with `unsupported` before a request is sent.
+
+Agent 37 meters compute per minute from the workspace wallet: $0.80 per vCPU per month, $0.70 per GB of memory per month and $0.09 per GB of disk per month, divided by 730 hours. The default 2x4 instance costs $4.76 a month awake around the clock and the 4x8 one $9.34. A sleeping or stopped instance, snapshots included, bills its disk alone. `agent37({ type })` picks `vm` (2.5 times the rate) or `performance` (4 times, dedicated cores) instead of `default`.
+
+Agent 37 has no hard lifetime, so `timeoutMs` fails with `unsupported`. `idleTimeoutMs` is auto-sleep in whole seconds, from 5 minutes to 1 day; any request to one of the instance's URLs, or a command, wakes it.
+
+## Configuration
+
+| Option             | Type                                 | Default                       | Env var            |
+| ------------------ | ------------------------------------ | ----------------------------- | ------------------ |
+| `apiKey`           | `string`                             |                               | `AGENT37_API_KEY`  |
+| `baseUrl`          | `string`                             | `https://api.agent37.com`     | `AGENT37_API_URL`  |
+| `execUrl`          | `string`                             | `https://sandbox.agent37.app` | `AGENT37_EXEC_URL` |
+| `template`         | `string`                             | `agent37-base`                |                    |
+| `region`           | `"us" \| "eu" \| "ap-south"`         | `"us"`                        |                    |
+| `type`             | `"default" \| "vm" \| "performance"` | `"default"`                   |                    |
+| `public`           | `boolean`                            | `false`                       |                    |
+| `previewTtlMs`     | `number`                             | 1 hour                        |                    |
+| `requestTimeoutMs` | `number`                             | 60 seconds                    |                    |
+
+`default` instances run only in `us`.
+
+## Limitations
+
+- No hard lifetime, terminal or template builds.
+- Command output arrives when the command ends, not while it runs.
+- A snapshot is a stopped instance, so restoring one takes a fork (about 24 seconds) and the snapshot bills its disk until deleted.
+- Sizes are the four Agent 37 offers; there is no 1 vCPU or 8 vCPU default instance.
+
+## How it works
+
+- Instances are created, read, slept, started, forked and deleted under `/v1/instances` on `api.agent37.com` with `Authorization: Bearer`. Commands run through `POST /v1/instances/{id}/exec` on `sandbox.agent37.app` with `X-Agent37-Key`. Both take the same `sk_live_` workspace key.
+- Every create writes your labels, the key and an allocation ID into the instance's metadata. When a create's answer is lost, the adapter lists the workspace and returns only the instance whose metadata carries this call's allocation ID. An instance is returned once it is running and a setup command has made `/workspace`; if setup fails, the adapter deletes it before it throws.
+- Each command runs under a small supervisor as `setsid -w sh -c wrapper`, so it leads a process group of its own. The wrapper records its PID before it checks for a cancel marker, and the killer writes the marker before it reads the PID, so a timeout or abort either stops the command before it starts or kills its whole group. Agent 37's exec does not stop a command when the request goes away, so the adapter always kills the group itself.
+- Files are read and written through commands in chunks (about 360 KiB per read and 512 KiB per write, four at a time), which keeps every request under Agent 37's 1 MB body limit and every answer under its 512 KB output cap.
+- `box.native` calls Agent 37's API on the planes `control` (`/v1` on the API host, `{id}` bound to the sandbox) and `exec` (`/v1` on the exec host). The provider's `api` property makes account-level calls, such as `api.request("GET", "/billing")`.
+- Errors keep Agent 37's HTTP status, and its error code when Agent 37 documents it, never the key or a preview token.
+
+## Next steps
+
+- [Machine size and network](/guides/machine-size-and-network)
+- [Dev servers and previews](/guides/dev-servers-and-previews)

@@ -95,6 +95,10 @@ const registry = {
     env: [["BUDDY_TOKEN"], ["BUDDY_WORKSPACE"]],
     load: async () => (await import("../src/providers/buddy/index.js")).buddy(),
   },
+  agent37: {
+    env: [["AGENT37_API_KEY"]],
+    load: async () => (await import("../src/providers/agent37/index.js")).agent37(),
+  },
   boxd: {
     env: [["BOXD_API_KEY"]],
     load: async () => (await import("../src/providers/boxd/index.js")).boxd(),

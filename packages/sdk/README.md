@@ -10,7 +10,7 @@ One TypeScript API for running code in a sandbox. The same `createSandbox`, `run
 npm install @opencoredev/sandbox-sdk
 ```
 
-That is the whole install for E2B, Daytona, Freestyle, Superserve, Instabox, Maritime, Styne, Buddy, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Baseten, Microsandbox, Upstash Box, Railway, Luxor, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
+That is the whole install for E2B, Daytona, Freestyle, Superserve, Instabox, Maritime, Styne, Buddy, Agent 37, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Baseten, Microsandbox, Upstash Box, Railway, Luxor, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
 Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 
@@ -103,6 +103,7 @@ Import each provider from its own subpath. The root entry never loads a provider
 | [Instabox](https://sandbox-sdk.app/docs/providers/instabox)         | `/instabox`     | `instabox()`            | `INSTABOX_API_KEY` (optional `INSTABOX_API_URL`)                                |
 | [Maritime](https://sandbox-sdk.app/docs/providers/maritime)         | `/maritime`     | `maritime()`            | `MARITIME_API_KEY` (optional `MARITIME_API_URL`)                                |
 | [Buddy](https://sandbox-sdk.app/docs/providers/buddy)               | `/buddy`        | `buddy()`               | `BUDDY_TOKEN`, `BUDDY_WORKSPACE` (optional `BUDDY_PROJECT`, `BUDDY_REGION`)     |
+| [Agent 37](https://sandbox-sdk.app/docs/providers/agent37)          | `/agent37`      | `agent37()`             | `AGENT37_API_KEY` (optional `AGENT37_API_URL`, `AGENT37_EXEC_URL`)              |
 | [Styne](https://sandbox-sdk.app/docs/providers/styne)               | `/styne`        | `styne()`               | `STYNE_API_KEY` (optional `STYNE_API_URL`)                                      |
 | [Microsandbox](https://sandbox-sdk.app/docs/providers/microsandbox) | `/microsandbox` | `microsandbox()`        | `MSB_API_KEY` (optional `MSB_API_URL`)                                          |
 | [Upstash Box](https://sandbox-sdk.app/docs/providers/upstash)       | `/upstash`      | `upstash()`             | `UPSTASH_BOX_API_KEY` (optional `UPSTASH_BOX_BASE_URL`)                         |

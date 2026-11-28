@@ -53,6 +53,7 @@ const fakes = {
   microsandbox: `{ apiKey: "msb_smoke_key", requestTimeoutMs: 5000 }`,
   styne: `{ apiKey: "smoke-key", requestTimeoutMs: 5000 }`,
   buddy: `{ token: "smoke-token", workspace: "smoke-ws", requestTimeoutMs: 5000 }`,
+  agent37: `{ apiKey: "sk_live_smoke", requestTimeoutMs: 5000 }`,
 };
 
 // Beam's create probe gets a gateway port of its own, and counts only connections to it, so a late
