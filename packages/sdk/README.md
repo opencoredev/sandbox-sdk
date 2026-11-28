@@ -12,11 +12,11 @@ npm install @opencoredev/sandbox-sdk
 
 That is the whole install for E2B, Daytona, Freestyle, Superserve, Instabox, Maritime, Styne, Buddy, Boat, and Sandboxer, which call the provider's HTTP API directly. Vercel, Modal, Baseten, Microsandbox, Upstash Box, Railway, Luxor, boxd, and agentOS also need the provider's package, for example `npm install @vercel/sandbox`. The [peer packages table](https://sandbox-sdk.app/docs/reference/capabilities#peer-packages) lists every one. Those packages are optional peers, so you only download the ones you need. The core has no runtime dependencies.
 
-Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
+Requires Node.js 22+ or Bun 1.3+, ESM only. The examples use top-level `await`, so set `"type": "module"` in your `package.json` or give the file a `.mts` extension. In a CommonJS project, such as one made with `npm init -y`, `npx tsx hello.ts` fails with `Top-level await is currently not supported with the "cjs" output format`, while `npx tsx hello.mts` and `bun hello.ts` run. They also use `await using`, which runs natively on Node.js 24 and Bun. On Node.js 22, compile with TypeScript (target ES2022 or lower) or call `box.destroy()` yourself.
 
 ## Quickstart
 
-This runs with no account and no Docker. The `memory` provider is an in-process fake with a small shell (`echo`, `cat`, `printf`, `sleep`, `ls`, `printenv`):
+This runs with no account and no Docker. The `memory` provider is an in-process fake with a small shell (`echo`, `printf`, `cat`, `ls`, `pwd`, `true`, `false`, `sleep`, `exit`, `printenv`):
 
 ```ts
 import { createSandbox } from "@opencoredev/sandbox-sdk";
