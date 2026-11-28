@@ -97,15 +97,15 @@ console.log(result.stdout);
 
 It needs a running Docker Engine (Docker Desktop, OrbStack or Colima are fine) and nothing else. The trade-offs:
 
-|                  | E2B Embed                         | Docker with `local()`                             |
-| ---------------- | --------------------------------- | ------------------------------------------------- |
-| Isolation        | A Firecracker microVM per sandbox | A container that shares the host's kernel         |
-| Host             | Linux with KVM, about 12 GiB RAM  | A local Docker Engine on a Unix socket            |
-| Pause and resume | Yes, memory included              | Yes, with `docker pause`                          |
-| Templates        | Built through E2B's API           | Any image with `git`, `tar` and a few shell tools |
-| Network limits   | Off, or an allow list of hosts    | Off only (`network: "none"`)                      |
-| Preview URLs     | Through Embed's own port routing  | `http://127.0.0.1` on the Docker host             |
-| What you run     | The E2B stack and its dashboard   | Docker                                            |
+|                  | E2B Embed                         | Docker with `local()`                                     |
+| ---------------- | --------------------------------- | --------------------------------------------------------- |
+| Isolation        | A Firecracker microVM per sandbox | A container that shares the host's kernel                 |
+| Host             | Linux with KVM, about 12 GiB RAM  | A local Docker Engine on a Unix socket                    |
+| Pause and resume | Yes, memory included              | Yes, with `docker pause`                                  |
+| Templates        | Built through E2B's API           | Any image with `node`, `git`, `tar` and a few shell tools |
+| Network limits   | Off, or an allow list of hosts    | Off only (`network: "none"`)                              |
+| Preview URLs     | Through Embed's own port routing  | `http://127.0.0.1` on the Docker host                     |
+| What you run     | The E2B stack and its dashboard   | Docker                                                    |
 
 The isolation row is the one that matters most. A container is a fine boundary for your own agent working on your own repositories, in development and in CI. For code from strangers on a machine that holds secrets, you want a microVM, which is what Embed or a cloud provider gives you. `local({ runtime: "runsc" })` narrows the gap with gVisor if your Docker daemon has it registered. The [security reference](/docs/reference/security) covers the trust boundaries in more detail, and [Docker sandbox for AI agents in TypeScript](/blog/docker-sandbox-for-ai-agents) walks through locking a container down.
 
