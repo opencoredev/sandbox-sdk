@@ -7,6 +7,8 @@ By the end of this page you have run the same code three ways: in memory with no
 
 Haven't installed the package yet? See [Install](/getting-started/installation).
 
+The package is ESM only, and these examples use top-level `await`, so your project has to run them as ES modules. Add `"type": "module"` to `package.json`, for example with `npm pkg set type=module`, or name the file `hello.mts` and run `npx tsx hello.mts`. A project made with `npm init -y` is CommonJS, and there `npx tsx hello.ts` fails with `Top-level await is currently not supported with the "cjs" output format`. `bun hello.ts` runs either way.
+
 ## 1. Run a sandbox in memory
 
 The `memory()` provider runs inside your own process. It has no machine, no network, and needs no account, so it is the quickest way to see the API.
