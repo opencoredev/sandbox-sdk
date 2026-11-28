@@ -1,6 +1,6 @@
 ---
-title: E2B Embed: self-host E2B, or use Docker instead
-description: E2B Embed is E2B's open-source runtime for one Linux machine with KVM. Self-host it with Docker Compose, point TypeScript code at it, or use Docker instead.
+title: E2B Embed: self-host E2B or use plain Docker
+description: E2B Embed is E2B's open-source runtime for one Linux machine with KVM. Self-host it with Docker Compose, point TypeScript at it, or use plain Docker.
 published: 2026-11-02
 updated: 2026-11-27
 ---
@@ -36,6 +36,8 @@ Everything stays on that one machine: templates, logs and sandbox data live on i
 - **It serves plain HTTP.** Embed has no TLS of its own and answers at the machine's address, so it belongs inside your network. The Terraform installs only let in the client addresses you list.
 
 ## Run it with Docker Compose
+
+Embed's services listen on every interface of the machine. Only ports 3000 to 3002 (the API, the dashboard and sandbox traffic) should be reachable, and only from trusted clients. Keep the other nine, including an unauthenticated control API on port 5008, off every address the machine holds, per E2B's [port reference](https://github.com/e2b-dev/runtime/blob/main/embed/docs/REFERENCE.md#ports-on-the-host-network).
 
 On a Linux host that meets the requirements, E2B's quickstart is two files and one command:
 
@@ -95,15 +97,15 @@ console.log(result.stdout);
 
 It needs a running Docker Engine (Docker Desktop, OrbStack or Colima are fine) and nothing else. The trade-offs:
 
-|                  | E2B Embed                         | Docker with `local()`                                     |
-| ---------------- | --------------------------------- | --------------------------------------------------------- |
-| Isolation        | A Firecracker microVM per sandbox | A container that shares the host's kernel                 |
-| Host             | Linux with KVM, about 12 GiB RAM  | Any machine with a Docker Engine                          |
-| Pause and resume | Yes, memory included              | Yes, with `docker pause`                                  |
-| Templates        | Built through E2B's API           | Any image with `node`, `git`, `tar` and a few shell tools |
-| Network limits   | Off, or an allow list of hosts    | Off only (`network: "none"`)                              |
-| Preview URLs     | Through Embed's own port routing  | `http://127.0.0.1` on the Docker host                     |
-| What you run     | The E2B stack and its dashboard   | Docker                                                    |
+|                  | E2B Embed                         | Docker with `local()`                             |
+| ---------------- | --------------------------------- | ------------------------------------------------- |
+| Isolation        | A Firecracker microVM per sandbox | A container that shares the host's kernel         |
+| Host             | Linux with KVM, about 12 GiB RAM  | A local Docker Engine on a Unix socket            |
+| Pause and resume | Yes, memory included              | Yes, with `docker pause`                          |
+| Templates        | Built through E2B's API           | Any image with `git`, `tar` and a few shell tools |
+| Network limits   | Off, or an allow list of hosts    | Off only (`network: "none"`)                      |
+| Preview URLs     | Through Embed's own port routing  | `http://127.0.0.1` on the Docker host             |
+| What you run     | The E2B stack and its dashboard   | Docker                                            |
 
 The isolation row is the one that matters most. A container is a fine boundary for your own agent working on your own repositories, in development and in CI. For code from strangers on a machine that holds secrets, you want a microVM, which is what Embed or a cloud provider gives you. `local({ runtime: "runsc" })` narrows the gap with gVisor if your Docker daemon has it registered. The [security reference](/docs/reference/security) covers the trust boundaries in more detail, and [Docker sandbox for AI agents in TypeScript](/blog/docker-sandbox-for-ai-agents) walks through locking a container down.
 
