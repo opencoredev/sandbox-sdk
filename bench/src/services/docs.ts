@@ -136,6 +136,13 @@ const docs = {
     sidecar: none(),
   },
   upstash: { checkedAt, docker: none(), sidecar: none() },
+  agent37: {
+    checkedAt: "2026-11-28",
+    docker: none(
+      "Documented only for VM instances (type vm, 2.5x the rate); the bench runs default instances",
+    ),
+    sidecar: none("A default instance runs one container; only a VM runs several"),
+  },
   superserve: {
     checkedAt,
     docker: {

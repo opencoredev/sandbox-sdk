@@ -27,6 +27,7 @@ import {
 } from "../src/microsandbox-raw.js";
 import { adapterSpec } from "../src/providers.js";
 import { buddyRun, buddyWrite, createRawBuddy } from "../src/buddy-raw.js";
+import { agent37Run, createRawAgent37 } from "../src/agent37-raw.js";
 
 type Sdk = typeof Core;
 
@@ -96,6 +97,8 @@ const nativePackages = {
   styne: null,
   // Direct HTTP too: the floor is fetch against Buddy's API, commands on its synchronous route.
   buddy: null,
+  // Direct HTTP: the floor is fetch against Agent 37's API, commands on its exec host.
+  agent37: null,
 } as const;
 
 /** A provider this script can measure. */
@@ -508,6 +511,22 @@ const providers = {
         exec: (command = "true") => buddyRun(id, command),
         write: (path, data) => buddyWrite(id, path, data),
       }),
+    };
+  },
+
+  async agent37() {
+    const m: typeof import("@opencoredev/sandbox-sdk/agent37") = await import(
+      moduleUrl("providers/agent37/index.js")
+    );
+
+    const template = templates.get("agent37");
+    const provider = m.agent37(template === undefined ? {} : { template });
+
+    // The adapter calls the REST API itself; the floor is the same API with plain fetch. The adapter
+    // moves files through exec, so the floor writes through exec too.
+    return {
+      provider,
+      floor: (id) => ({ exec: (command = "true") => agent37Run(id, command) }),
     };
   },
 } satisfies Record<ProviderName, () => Promise<Loaded>>;
@@ -1112,6 +1131,14 @@ async function rawCreate(name: ProviderName, admit: (box: NativeBox) => void): P
   if (name === "buddy")
     // Admitted for use and cleanup only once its answer carries this create's own owner marker.
     return createRawBuddy({ labels: label, admit });
+
+  if (name === "agent37")
+    // Admitted for use and cleanup only once its answer carries this create's own owner marker.
+    return createRawAgent37({
+      template: templates.get(name) ?? "agent37-base",
+      labels: label,
+      admit,
+    });
 
   throw new Error(`Unknown provider ${name}`);
 }

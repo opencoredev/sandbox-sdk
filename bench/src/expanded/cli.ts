@@ -611,6 +611,7 @@ const labelAttaches: ReadonlyMap<string, "at-allocation" | "after-allocation"> =
   ["freestyle", "at-allocation"],
   ["styne", "at-allocation"],
   ["maritime", "at-allocation"],
+  ["agent37", "at-allocation"],
   ["instabox", "at-allocation"],
   ["superserve", "at-allocation"],
   ["modal", "at-allocation"],

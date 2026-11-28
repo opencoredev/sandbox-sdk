@@ -42,11 +42,12 @@ import { resolveConfig as vercelConfig, type VercelConfig } from "@opencoredev/s
  * use, from the SDK's `resolveConfig`. The harness reads, snapshots and cleans up through the
  * connection of the exact adapter instance that created the sandboxes. A read sent to another
  * endpoint, account, team or project answers 404 for a sandbox that is running, which would be
- * recorded as absence. Archil, Local, Maritime, Modal, Railway and Styne have no `resolveConfig`;
- * their connection is read here from the same options and variables their adapters read.
- * Microsandbox's and Buddy's are too, as their adapters resolve them.
+ * recorded as absence. Agent 37, Archil, Local, Maritime, Modal, Railway and Styne have no
+ * `resolveConfig`; their connection is read here from the same options and variables their
+ * adapters read. Microsandbox's and Buddy's are too, as their adapters resolve them.
  */
 export interface Connections {
+  agent37: Agent37Config;
   archil: ArchilConfig;
   baseten: BasetenConfig;
   beam: BeamConfig;
@@ -77,6 +78,16 @@ export interface Connections {
 export interface ArchilConfig {
   readonly apiKey: string;
   readonly region: string;
+}
+
+/**
+ * What `agent37()` sends its control-plane requests with (`createAgent37Provider`): the key, trimmed,
+ * and the API host without trailing slashes. The control plane is `${baseUrl}/v1`. The exec host
+ * (`AGENT37_EXEC_URL`) only runs commands, so it decides nothing a lookup or cleanup reads.
+ */
+export interface Agent37Config {
+  readonly apiKey: string;
+  readonly baseUrl: string;
 }
 
 /**
@@ -185,6 +196,18 @@ function archilConfig(options: ConnectionOptions): ArchilConfig {
   if (!apiKey) throw Object.assign(new Error("Archil API key is missing"), { code: "auth" });
 
   return { apiKey, region: options.region ?? process.env.ARCHIL_REGION ?? "aws-us-east-1" };
+}
+
+/** As the Agent 37 adapter resolves it: options, then AGENT37_API_KEY and AGENT37_API_URL. */
+export function agent37Config(options: ConnectionOptions = {}): Agent37Config {
+  const apiKey = (options.apiKey ?? process.env.AGENT37_API_KEY)?.trim();
+
+  if (!apiKey) throw Object.assign(new Error("Agent 37 API key is missing"), { code: "auth" });
+
+  return {
+    apiKey,
+    baseUrl: endpoint(options.baseUrl ?? process.env.AGENT37_API_URL ?? "https://api.agent37.com"),
+  };
 }
 
 /** As the Maritime adapter resolves it: options, then MARITIME_API_KEY and MARITIME_API_URL. */
@@ -297,6 +320,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
   const env = process.env;
 
   switch (name) {
+    case "agent37":
+      return { name, config: agent37Config(options) };
     case "archil":
       return { name, config: archilConfig(options) };
     case "baseten":
@@ -363,6 +388,8 @@ function resolve(name: string, options: ConnectionOptions): Connection {
 /** A connection keyed by its provider, for typed reads by name. */
 function byName(connection: Connection): Partial<Connections> {
   switch (connection.name) {
+    case "agent37":
+      return { agent37: connection.config };
     case "archil":
       return { archil: connection.config };
     case "baseten":

@@ -30,6 +30,9 @@ const templates: TemplateAllocations = {
     python: { cpu: 2, memoryGiB: 4, diskGiB: 12 },
     "code-interpreter": { cpu: 2, memoryGiB: 4, diskGiB: 12 },
   },
+  // Agent 37's base template starts at its default size, 2 vCPU / 4 GB with a 4 GB disk
+  // (https://www.agent37.com/docs/agents-api/instance-sizing, 2026-11-28).
+  agent37: { "agent37-base": { cpu: 2, memoryGiB: 4, diskGiB: 4 } },
   // GET /templates on 2026-11-23; df on /workspace read 51G for base.
   styne: {
     base: { cpu: 4, memoryGiB: 8, diskGiB: 51 },
@@ -92,6 +95,9 @@ const defaults: DefaultAllocations = {
   // Buddy's default tier, 2x4: 2 vCPU and 4 decimal GB (3814 MiB to the guest) with a 50 GB disk
   // (46 GiB usable). Disk is billed on used data as storage, outside the estimate.
   buddy: { cpu: 2, memoryGiB: 4, diskGiB: 50 },
+  // Agent 37's default size, 2 vCPU / 4 GB, with that size's default 4 GB disk (instance-sizing,
+  // 2026-11-28). Its GB are counted as GiB, as the adapter maps 4096 MiB to 4 GB.
+  agent37: { cpu: 2, memoryGiB: 4, diskGiB: 4 },
 };
 
 export function provisionedAllocation(provider: string, template: string | null) {

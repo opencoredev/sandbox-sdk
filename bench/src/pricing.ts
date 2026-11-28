@@ -148,6 +148,25 @@ export const pricing: PriceTable = {
     notes:
       "Published Sandboxes rates: $0.00024/CPU-minute ($0.0144/vCPU-hour) and $0.00024/GB-minute ($0.0144/GB-hour) of the tier's memory, billed per started minute with a one-minute minimum (a 25-second 2x4 probe billed 2 CPU-minutes and 4 GB-minutes on 2026-11-24). Twelve fixed tiers, 1x2 to 12x24, 2 GB per vCPU and a 50 GB disk; the default is 2x4. Priced on the tier, not the guest: Buddy's GB are decimal, so a 2x4 guest shows 3814 MiB (3.73 GiB) and a 4x8 guest 7629 MiB (7.45 GiB), about 6.9% under the binary GiB the tier name suggests; that gap stays as an allocation caveat. Storage ($0.00011/GB-hour of used disk and snapshots, about $0.08/GB-month, not the 50 GB allocation) and the $29/month Pro plan are excluded. Buddy has no usage or billing API, so every Buddy figure is this estimate.",
   },
+  agent37: {
+    ...base,
+    // Monthly rates metered per minute: the monthly price / 730 hours / 60.
+    cpuSecond: 0.8 / 730 / 3600,
+    memoryGiBSecond: 0.7 / 730 / 3600,
+    diskGiBSecond: 0.09 / 730 / 3600,
+    minimumSeconds: 60,
+    incrementSeconds: 60,
+    retrieved: "2026-11-28",
+    source: "https://www.agent37.com/docs/agents-api/billing",
+    offeredSizes: [
+      { cpu: 2, memoryGiB: 4 },
+      { cpu: 4, memoryGiB: 8 },
+      { cpu: 4, memoryGiB: 16 },
+      { cpu: 4, memoryGiB: 32 },
+    ],
+    notes:
+      "Published default-instance rates: $0.80/vCPU-month, $0.70/GB-month of memory and $0.09/GB-month of disk, metered per minute (monthly / 730 hours / 60) while running or starting, stopping, restarting or updating; at each size's default disk, 2/4/4 GB is $4.76/month ($0.00652/hour) and 4/8/6 GB $9.34/month ($0.01279/hour). Billed in whole minutes: GET /v1/usage on 2026-11-28 showed short adapter-test instances at 109 and 213 micro-dollars per awake minute for 2/4 and 4/8. A stopped or sleeping instance, and each adapter snapshot (a stopped fork), bills its disk alone until deleted, which these estimates leave out. VM (2.5x) and Performance (4x) instance types are not used. No plan fee; the workspace runs on prepaid credit.",
+  },
   superserve: {
     ...base,
     cpuSecond: 0.0504 / 3600,
@@ -397,6 +416,8 @@ export const defaultCompute: ComputeTable = {
   styne: { cpu: 4, memoryGiB: 8 },
   // Buddy's default tier, 2x4: 2 vCPU and 4 decimal GB.
   buddy: { cpu: 2, memoryGiB: 4 },
+  // Agent 37's default size, 2 vCPU / 4 GB.
+  agent37: { cpu: 2, memoryGiB: 4 },
   // Beam's TypeScript SDK default: 1 CPU, 128 MiB.
   beam: { cpu: 1, memoryGiB: 0.125 },
   // Archil's default: 1 vCPU, 2048 MiB.

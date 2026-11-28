@@ -7,7 +7,8 @@
  *   the 4 vCPU / 8 GiB defaults of Boat and Freestyle. Luxor and Superserve get 20 GB disks
  *   (2026-11-18): their 5 GB and 4 GiB disks left too little free space for the workloads.
  * - Default sizes and "default size too small" come from FIT.md (SBX-95, fetched 2026-11-05).
- * - `lifetime`: whether the adapter accepts `timeoutMs` (Upstash, Superserve, Boat and Buddy refuse it).
+ * - `lifetime`: whether the adapter accepts `timeoutMs` (Upstash, Superserve, Boat, Buddy and Agent 37
+ *   refuse it).
  * - `provisioned` is the size each is billed for, used for list prices and the budget guard.
  */
 import type { CreateInput } from "@opencoredev/sandbox-sdk/provider";
@@ -364,6 +365,27 @@ export const providerSetups: readonly ProviderSetup[] = [
         tooSmall: {},
       },
       default: { vcpu: 2, provisioned: size(2, 4, 50), tooSmall: {} },
+    },
+  },
+  {
+    // Agent 37 (2026-11-28): the default is its smallest size, 2 vCPU / 4 GB with a 4 GB disk, on
+    // agent37-base (Debian 12 with Node.js, Python 3 and git); same-machine asks for 4/8, which gets
+    // that size's 6 GB default disk. Default instances share their host's CPU. Commands run as root.
+    // Instances have no time limit, so the adapter refuses `timeoutMs`; the bench deletes each one.
+    // https://www.agent37.com/docs/agents-api/instance-sizing
+    name: "agent37",
+    adapter: "agent37",
+    product: null,
+    lifetime: false,
+    pricingKey: "agent37",
+    tracks: {
+      "same-machine": {
+        size: { cpu: 4, memoryMb: 8192 },
+        vcpu: 4,
+        provisioned: size(4, 8, 6),
+        tooSmall: {},
+      },
+      default: { vcpu: 2, provisioned: size(2, 4, 4), tooSmall: {} },
     },
   },
   {

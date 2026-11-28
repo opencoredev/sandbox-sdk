@@ -311,12 +311,14 @@ const errorNote = (cause: unknown) =>
 /**
  * Credential shapes no environment variable names: Maritime's account and server keys (`mk_`, `mlk_`),
  * sandbox secrets (`mst_`) and URL tokens (`mut_`), Microsandbox's organization keys and personal
- * access tokens (`msb_`, `msb_pat_`), and any `token=` query value, such as a preview URL's.
+ * access tokens (`msb_`, `msb_pat_`), Agent 37's workspace keys (`sk_live_`), and any `token=` or
+ * `a37_token=` query value, such as a preview URL's.
  */
 const leakPatterns: [RegExp, string][] = [
   [/(?:mst|mut|mk|mlk)_[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
   [/msb_(?:pat_)?[A-Za-z0-9_-]+/g, "[REDACTED]"],
-  [/([?&;]token=)[^&#\s"'<>]+/gi, "$1[REDACTED]"],
+  [/sk_live_[A-Za-z0-9_-]{8,}/g, "[REDACTED]"],
+  [/([?&;](?:a37_)?token=)[^&#\s"'<>]+/gi, "$1[REDACTED]"],
   // Buddy's encrypted variable values and the Basic credentials of its private previews.
   [/!encrypted [^\s"'<>]+/g, "[REDACTED]"],
   [/\bBasic [A-Za-z0-9+/]{8,}={0,2}/g, "Basic [REDACTED]"],
@@ -2520,7 +2522,9 @@ export async function runV2(
               };
 
               if (
-                ["daytona", "superserve", "maritime", "styne", "buddy"].includes(p.name) ||
+                ["daytona", "superserve", "maritime", "styne", "buddy", "agent37"].includes(
+                  p.name,
+                ) ||
                 microsandboxTier(p.name) !== undefined
               ) {
                 owned.set(`${p.name}/snapshot-source/${active.id}`, {

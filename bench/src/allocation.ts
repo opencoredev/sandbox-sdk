@@ -79,6 +79,12 @@ const presets: SizePresets = {
     medium: { cpu: 4, memoryGiB: 8 },
     large: { cpu: 8, memoryGiB: 16 },
   },
+  // The Agent 37 adapter's presets: three of Agent 37's four sizes (4/32 is exact-size only).
+  agent37: {
+    small: { cpu: 2, memoryGiB: 4 },
+    medium: { cpu: 4, memoryGiB: 8 },
+    large: { cpu: 4, memoryGiB: 16 },
+  },
   // The Baseten adapter's presets: memory sets CPU at 2 GiB per vCPU.
   baseten: {
     small: { cpu: 1, memoryGiB: 2 },
