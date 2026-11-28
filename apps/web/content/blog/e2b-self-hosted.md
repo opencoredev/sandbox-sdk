@@ -1,11 +1,11 @@
 ---
-title: E2B self-hosted: E2B Embed, or Docker instead
-description: Self-host E2B with E2B Embed on one Linux machine with KVM, point your TypeScript code at it, or run the same sandbox code in a local Docker container instead.
+title: E2B Embed: self-host E2B or use plain Docker
+description: E2B Embed is E2B's open-source runtime for one Linux machine with KVM. Self-host it with Docker Compose, point TypeScript at it, or use plain Docker.
 published: 2026-11-02
-updated: 2026-11-16
+updated: 2026-11-27
 ---
 
-Yes, you can self-host E2B. Its runtime is open source under Apache-2.0, and [E2B Embed](https://github.com/e2b-dev/runtime/blob/main/embed/README.md) packages the whole stack, Firecracker microVMs included, to run on one Linux machine with KVM. You start it with Docker Compose, Terraform on GCP, AWS or Azure, or a Kubernetes manifest. Your code then talks to it through the same SDK and API as E2B Cloud.
+[E2B Embed](https://github.com/e2b-dev/runtime/blob/main/embed/README.md) is E2B's open-source runtime packaged to run on one Linux machine with KVM, Firecracker microVMs included, so yes, you can self-host E2B. The code is in the e2b-dev/runtime repository on GitHub under Apache-2.0. You start it with Docker Compose, Terraform on GCP, AWS or Azure, or a Kubernetes manifest. Your code then talks to it through the same SDK and API as E2B Cloud.
 
 Whether you should depends on why you want to. This guide covers what Embed runs and needs, how to point TypeScript code at it, and when a plain Docker container on your own machine is the simpler answer. With [Sandbox SDK](/) (`@opencoredev/sandbox-sdk`), the same sandbox code runs against E2B Cloud, a self-hosted E2B node and Docker, so you can start on one and move later.
 
@@ -36,6 +36,8 @@ Everything stays on that one machine: templates, logs and sandbox data live on i
 - **It serves plain HTTP.** Embed has no TLS of its own and answers at the machine's address, so it belongs inside your network. The Terraform installs only let in the client addresses you list.
 
 ## Run it with Docker Compose
+
+Embed's services listen on every interface of the machine. Only ports 3000 to 3002 (the API, the dashboard and sandbox traffic) should be reachable, and only from trusted clients. Keep the other nine, including an unauthenticated control API on port 5008, off every address the machine holds, per E2B's [port reference](https://github.com/e2b-dev/runtime/blob/main/embed/docs/REFERENCE.md#ports-on-the-host-network).
 
 On a Linux host that meets the requirements, E2B's quickstart is two files and one command:
 
@@ -98,7 +100,7 @@ It needs a running Docker Engine (Docker Desktop, OrbStack or Colima are fine) a
 |                  | E2B Embed                         | Docker with `local()`                                     |
 | ---------------- | --------------------------------- | --------------------------------------------------------- |
 | Isolation        | A Firecracker microVM per sandbox | A container that shares the host's kernel                 |
-| Host             | Linux with KVM, about 12 GiB RAM  | Any machine with a Docker Engine                          |
+| Host             | Linux with KVM, about 12 GiB RAM  | A local Docker Engine on a Unix socket                    |
 | Pause and resume | Yes, memory included              | Yes, with `docker pause`                                  |
 | Templates        | Built through E2B's API           | Any image with `node`, `git`, `tar` and a few shell tools |
 | Network limits   | Off, or an allow list of hosts    | Off only (`network: "none"`)                              |
