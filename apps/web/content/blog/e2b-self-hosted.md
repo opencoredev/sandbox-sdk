@@ -1,11 +1,11 @@
 ---
-title: E2B self-hosted: E2B Embed, or Docker instead
-description: Self-host E2B with E2B Embed on one Linux machine with KVM, point your TypeScript code at it, or run the same sandbox code in a local Docker container instead.
+title: E2B Embed: self-host E2B, or use Docker instead
+description: E2B Embed is E2B's open-source runtime for one Linux machine with KVM. Self-host it with Docker Compose, point TypeScript code at it, or use Docker instead.
 published: 2026-11-02
-updated: 2026-11-16
+updated: 2026-11-27
 ---
 
-Yes, you can self-host E2B. Its runtime is open source under Apache-2.0, and [E2B Embed](https://github.com/e2b-dev/runtime/blob/main/embed/README.md) packages the whole stack, Firecracker microVMs included, to run on one Linux machine with KVM. You start it with Docker Compose, Terraform on GCP, AWS or Azure, or a Kubernetes manifest. Your code then talks to it through the same SDK and API as E2B Cloud.
+[E2B Embed](https://github.com/e2b-dev/runtime/blob/main/embed/README.md) is E2B's open-source runtime packaged to run on one Linux machine with KVM, Firecracker microVMs included, so yes, you can self-host E2B. The code is in the e2b-dev/runtime repository on GitHub under Apache-2.0. You start it with Docker Compose, Terraform on GCP, AWS or Azure, or a Kubernetes manifest. Your code then talks to it through the same SDK and API as E2B Cloud.
 
 Whether you should depends on why you want to. This guide covers what Embed runs and needs, how to point TypeScript code at it, and when a plain Docker container on your own machine is the simpler answer. With [Sandbox SDK](/) (`@opencoredev/sandbox-sdk`), the same sandbox code runs against E2B Cloud, a self-hosted E2B node and Docker, so you can start on one and move later.
 
